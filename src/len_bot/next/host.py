@@ -1,4 +1,4 @@
-"""Run explicit isolated scenes behind one configured OneBot connection."""
+"""Run the configured multi-scene host with OneBot or explicit simulated stdin."""
 
 import asyncio
 from contextlib import contextmanager, nullcontext
@@ -9,6 +9,7 @@ import signal
 import uvicorn
 
 from .config import load_host_config
+from .instance_lock import instance_lock
 from .operations import host_logging, credentials
 from .chat import PROMPTS, build_tools, tool_catalog
 from .host_panel import create_app
@@ -92,6 +93,8 @@ async def run() -> None:
     ) for settings, persona in scenes}
     slots = ModelSlots(config.max_model_requests)
     with host_logging(config.logging, credentials(config)), Store(config.database) as store:
+        if config.onebot is None and (TaskStore(store).containers() or TaskStore(store).browser_in_use()):
+            raise ValueError('stdin模拟宿主不能清理原库中残留的容器或账号浏览会话；先在所属原实例明确处理，不使用导入的定位访问外部实例')
         budget = ModelBudget(config, store, None, root=config._instance_root)
         budget.trials_root = root / ".runtime" / "chat-tests"
         slots.admit = budget.check
@@ -114,7 +117,7 @@ async def run() -> None:
                     for settings in config.scenes.values())
              else nullcontext(None)) as learner_model,
             open_expression_service(config, store, slots=slots) as expression_service,
-            open_memory(config, store, slots=slots) as memory,
+            open_memory(config, store, active_personas={settings.scene: persona.id for settings, persona in scenes}, slots=slots) as memory,
             open_memory_ingestor(config, store, memory, list(config.scenes), slots=slots) as ingestor,
         ):
             budget.memory = memory
@@ -143,7 +146,9 @@ async def run() -> None:
             tasks = (WorkTasks(config, store, slots, task_update, skills=skills,
                               memory=memory, data_tools=data_tools,
                               skill_permissions={settings.scene: persona.skills
-                                                 for settings, persona in scenes})
+                                                 for settings, persona in scenes},
+                              tool_permissions={settings.scene: persona.tools
+                                                for settings, persona in scenes})
                      if config.worker is not None else None)
             learning = (None if not any(settings.learning is not None and settings.learning.extract
                                         for settings in config.scenes.values()) else
@@ -155,7 +160,8 @@ async def run() -> None:
             sticker_collection = (None if not any(
                 settings.learning is not None and settings.learning.collect_stickers
                 for settings in config.scenes.values()) else
-                StickerCollector(config, store, vision, slots=slots))
+                StickerCollector(config, store, vision, slots=slots,
+                                 recording=lambda scene: runtime.chats[scene].replay_images))
             reply_effects = (None if not any(
                 settings.learning is not None and settings.learning.reply_effects
                 for settings in config.scenes.values()) else
@@ -166,6 +172,8 @@ async def run() -> None:
                           | (set() if plugins is None else set(plugins.tool_owner)))
             try:
                 await mcp.start()
+                if tasks is not None:
+                    tasks.mcp = mcp
                 runtime = NetworkRuntime(config, scenes, store, mind, voice, vision=vision, slots=slots,
                                          memory=memory, ingestor=ingestor, tasks=tasks, budget=budget, learning=learning, jargon=jargon,
                                          expression_service=expression_service, sticker_collection=sticker_collection,
@@ -184,7 +192,8 @@ async def run() -> None:
 
 
 def main() -> None:
-    asyncio.run(run())
+    with instance_lock(Path.cwd()):
+        asyncio.run(run())
 
 
 if __name__ == "__main__":

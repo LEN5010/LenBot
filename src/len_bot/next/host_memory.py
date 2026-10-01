@@ -14,6 +14,8 @@ from .config import STRICT
 from .memory_local import LocalMemory
 from .network import NetworkRuntime
 from .recall import RecallArguments, message_page
+from .operations import credentials, redact, redact_record
+from .memory_jobs import processing_records
 
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,17 @@ class WriteRequest(BaseModel):
     scope: Literal["scene", "public"]
     content: str
     reason: str = Field(min_length=1)
+
+
+class PendingAdoption(BaseModel):
+    model_config = STRICT
+    scene: str
+    source: str = Field(min_length=1)
+    original: str
+    target: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    remove_source: bool
 
 
 class SummaryRequest(BaseModel):
@@ -64,6 +77,25 @@ class DeleteRequest(BaseModel):
 
 
 def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None:
+    secrets = credentials(runtime.config)
+
+    def clean_embedding(value):
+        return redact_record(value, lambda text: redact(text, secrets))
+
+    @asynccontextmanager
+    async def record_operation(scene: str):
+        if scene not in runtime.chats:
+            raise HTTPException(404, '当前宿主未配置这一场景')
+        try:
+            with processing_records(runtime.config.database, None if runtime.memory is None else runtime.memory.jobs) as records:
+                if records is None:
+                    raise FileNotFoundError('本根未见现有记忆处理库；未创建记录源或启用服务，不能据此判断历史费用为零')
+                yield records
+        except Exception as error:
+            logger.exception('记忆调用记录读取失败，场景 %s：%s', scene, error)
+            code = 404 if isinstance(error, FileNotFoundError) else 422 if isinstance(error, ValueError) else 500
+            raise HTTPException(code, redact(f'{type(error).__name__}: {error}', secrets)) from error
+
     @asynccontextmanager
     async def operation(scene: str):
         if scene not in runtime.chats:
@@ -74,7 +106,8 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
             yield runtime.memory
         except Exception as error:
             logger.exception("记忆请求失败，场景 %s：%s", scene, error)
-            code = (404 if isinstance(error, FileNotFoundError) else
+            code = (409 if isinstance(error, FileExistsError) else
+                    404 if isinstance(error, FileNotFoundError) else
                     422 if isinstance(error, ValueError) else 500)
             raise HTTPException(code, f"{type(error).__name__}: {error}") from error
 
@@ -93,6 +126,8 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
             "summaries": memory is not None and memory.settings.summaries,
             "scenes": [{"scene": scene, "persona": {"id": chat.persona.id, "name": chat.persona.name}}
                        for scene, chat in runtime.chats.items()],
+            'persona_ids': {} if memory is None else {scene: sorted(memory.known_persona_ids(scene))
+                                                     for scene in runtime.chats},
         }
 
     @app.get("/api/host/memory/browse")
@@ -101,6 +136,21 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
                      _: str = Depends(user)):
         async with operation(scene) as memory:
             return asdict(await memory.backend.browse(scene, path, scope=scope, offset=offset, limit=limit))
+
+    @app.get('/api/host/memory/embedding-calls')
+    async def embedding_calls(scene: str, scope: Literal['scene', 'public'] = 'scene',
+                              offset: int = Query(default=0, ge=0), limit: int = Query(default=20, ge=1, le=100),
+                              snapshot: int | None = Query(default=None, ge=0), _: str = Depends(user)):
+        async with record_operation(scene) as records:
+            result = records.embedding_calls('public' if scope == 'public' else scene, offset=offset,
+                                             limit=limit, snapshot=snapshot)
+            return clean_embedding({**result, 'read_at': runtime.store.now()})
+
+    @app.get('/api/host/memory/embedding-calls/{id}')
+    async def embedding_call(id: int, scene: str, scope: Literal['scene', 'public'] = 'scene', _: str = Depends(user)):
+        async with record_operation(scene) as records:
+            record = records.embedding_call('public' if scope == 'public' else scene, id)
+            return clean_embedding({'read_at': runtime.store.now(), 'call': record})
 
     @app.get("/api/host/memory/read")
     async def read(scene: str, path: str, scope: Literal["scene", "public"] = "scene", _: str = Depends(user)):
@@ -129,6 +179,12 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
     async def write(body: WriteRequest, _: str = Depends(user)):
         async with operation(body.scene) as memory:
             return await memory.write(body.scene, body.path, body.content, body.reason, scope=body.scope)
+
+    @app.post('/api/host/memory/adopt-pending')
+    async def adopt_pending(body: PendingAdoption, _: str = Depends(user)):
+        async with operation(body.scene) as memory:
+            return await memory.adopt_pending(body.scene, body.source, body.original, body.target,
+                                              body.content, body.reason, remove_source=body.remove_source)
 
     @app.post("/api/host/memory/delete")
     async def delete(body: DeleteRequest, _: str = Depends(user)):

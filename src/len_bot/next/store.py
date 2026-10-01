@@ -20,7 +20,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_cron, parse_cron
 
 
-FORMAT_VERSION = 33
+FORMAT_VERSION = 35
 
 
 def encode(value: object) -> str:
@@ -101,7 +101,7 @@ class Store:
                     CREATE TABLE messages (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         platform_id TEXT, body TEXT NOT NULL, raw TEXT,
-                        received_at REAL
+                        received_at REAL, persona_id TEXT
                     );
                     CREATE UNIQUE INDEX platform_messages ON messages(scene, platform_id)
                         WHERE platform_id IS NOT NULL;
@@ -155,7 +155,7 @@ class Store:
                     CREATE TABLE tasks (
                         id INTEGER PRIMARY KEY, scene TEXT NOT NULL, requester TEXT NOT NULL,
                         goal TEXT NOT NULL, deliverable TEXT NOT NULL, context TEXT NOT NULL,
-                        input TEXT NOT NULL,
+                        input TEXT NOT NULL, materials TEXT NOT NULL DEFAULT '[]',
                         status TEXT NOT NULL CHECK(status IN
                             ('queued','running','waiting_input','done','failed','cancelled')),
                         created REAL NOT NULL, started REAL, ended REAL,
@@ -663,7 +663,7 @@ class Store:
                 "next_before": rows[limit-1]["id"] if len(rows) > limit else None}
 
     def _save_message(self, message: ChatMessage, raw: dict | None,
-                      received_at: float | None = None) -> int:
+                      received_at: float | None = None, *, persona_id: str | None = None) -> int:
         if message.platform_message_id is not None and self.db.execute(
             "SELECT 1 FROM notices WHERE scene=? AND platform_id=? "
             "AND kind IN ('group_recall','friend_recall') LIMIT 1",
@@ -671,9 +671,9 @@ class Store:
         ).fetchone() is not None:
             message = replace(message, recalled=True)
         cursor = self.db.execute(
-            "INSERT INTO messages(scene,platform_id,body,raw,received_at) VALUES (?,?,?,?,?)",
+            "INSERT INTO messages(scene,platform_id,body,raw,received_at,persona_id) VALUES (?,?,?,?,?,?)",
             (message.scene, message.platform_message_id, encode(asdict(message)),
-             None if raw is None else encode(raw), received_at),
+             None if raw is None else encode(raw), received_at, persona_id),
         )
         seq = cursor.lastrowid
         self.db.execute(
@@ -844,11 +844,11 @@ class Store:
             })
 
     def start_expression_part(self, entry_seq: int, expression: ChatMessage, content: str,
-                              *, turn_id: str | None = None,
+                              *, persona_id: str, turn_id: str | None = None,
                               sticker: tuple[str, PersonaSticker] | CollectedSticker | None = None) -> int:
         """Only attempted parts become chat messages; the remainder stays in the result."""
         with self.db:
-            message_seq = self._save_message(expression, None)
+            message_seq = self._save_message(expression, None, persona_id=persona_id)
             if sticker is not None:
                 if isinstance(sticker, CollectedSticker):
                     self._save_collected_sticker(message_seq, sticker)
@@ -901,8 +901,8 @@ class Store:
                 if (not received.is_self or received.sender.uid != expression.sender.uid
                         or echo[0] <= message_seq or received.send_status != "received"):
                     raise ValueError(f"Send receipt conflicts with an existing message: {expression.platform_message_id}")
-                self.db.execute("UPDATE messages SET body=? WHERE seq=?",
-                                (encode(asdict(replace(received, send_status="sent"))), echo[0]))
+                self.db.execute("UPDATE messages SET body=?,persona_id=(SELECT persona_id FROM messages WHERE seq=?) WHERE seq=?",
+                                (encode(asdict(replace(received, send_status="sent"))), message_seq, echo[0]))
                 self.db.execute("UPDATE message_media SET message_seq=? WHERE message_seq=?",
                                 (echo[0], message_seq))
                 self.db.execute("UPDATE media SET source_message_seq=? WHERE source_message_seq=?",
@@ -1063,7 +1063,7 @@ class Store:
 
     def memory_messages(self, scene: str, after: int, *, limit: int,
                         through: int | None = None,
-                        exclude_records: Sequence[int] = ()) -> list[tuple[int, ChatMessage, float]]:
+                        exclude_records: Sequence[int] = ()) -> list[tuple[int, ChatMessage, float, str | None]]:
         """Actual inbound and confirmed outbound content, never simulated expressions."""
         conditions = ["scene=?", "seq>?", "json_extract(body,'$.send_status') IN ('received','sent')",
                       "(raw IS NULL OR received_at IS NOT NULL)"]
@@ -1075,10 +1075,20 @@ class Store:
             conditions.append("seq NOT IN (SELECT value FROM json_each(?))")
             values.append(encode(exclude_records))
         rows = self.db.execute(
-            "SELECT seq,body,CASE WHEN raw IS NULL THEN json_extract(body,'$.time') ELSE received_at END "
+            "SELECT seq,body,CASE WHEN raw IS NULL THEN json_extract(body,'$.time') ELSE received_at END,persona_id "
             "FROM messages WHERE " + " AND ".join(conditions) + " ORDER BY seq LIMIT ?", [*values, limit],
         ).fetchall()
-        return [(row[0], self._message(row[1]), row[2]) for row in rows]
+        return [(row[0], self._message(row[1]), row[2], row[3]) for row in rows]
+
+    def message_persona_ids(self, scene: str) -> set[str]:
+        """Loaded role identities actually recorded for this scene, including unsent expressions."""
+        return {row[0] for row in self.db.execute(
+            "SELECT DISTINCT persona_id FROM messages WHERE scene=? AND persona_id IS NOT NULL "
+            "AND json_extract(body,'$.is_self')=1", (scene,))}
+
+    def message_persona_scenes(self) -> set[str]:
+        return {row[0] for row in self.db.execute(
+            "SELECT DISTINCT scene FROM messages WHERE persona_id IS NOT NULL AND json_extract(body,'$.is_self')=1")}
 
     def last_memory_input_at(self, scene: str, after: int, *, exclude_records: Sequence[int] = ()) -> float | None:
         row = self.db.execute(
@@ -1404,10 +1414,10 @@ class Store:
             "SELECT id,plugin,kind,content,created,delivered_at FROM plugin_events "
             "WHERE scene=? ORDER BY id DESC LIMIT ?", (scene, limit))]
 
-    def start_outgoing(self, message: ChatMessage, *, image: tuple[OriginalImage, str] | None = None) -> int:
+    def start_outgoing(self, message: ChatMessage, *, persona_id: str, image: tuple[OriginalImage, str] | None = None) -> int:
         """Save a host-originated part (not a mind expression) before sending it."""
         with self.db:
-            seq = self._save_message(message, None)
+            seq = self._save_message(message, None, persona_id=persona_id)
             if image is not None:
                 original, description = image
                 media_id = self.db.execute(

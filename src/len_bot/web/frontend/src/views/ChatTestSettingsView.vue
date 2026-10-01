@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
+import ScenePersonaEditor from '../components/ScenePersonaEditor.vue'
 
 const snapshot = ref(null)
 const loading = ref(false)
@@ -33,9 +34,9 @@ onMounted(refresh)
   <div class="page-stack settings-snapshot">
     <header class="page-intro">
       <div>
-        <p class="eyebrow">隔离测试 · 只读快照</p>
+        <p class="eyebrow">隔离测试 · 运行快照与场景补充编辑</p>
         <h1>场景与角色</h1>
-        <p class="muted">这里展示当前实例启动时加载的场景配置和角色内容，不读取磁盘上的后续修改。编辑角色文件或根配置后，需停机并重启此实例才会生效。</p>
+        <p class="muted">下方运行快照展示当前实例已加载的角色和场景内容；独立编辑区读取根配置中已保存的三项场景补充。保存不会热加载，角色文件、样例和模型仍只读。</p>
       </div>
       <div class="intro-actions">
         <v-btn :to="{name:'chat-test'}" variant="outlined">返回对话测试</v-btn>
@@ -48,9 +49,11 @@ onMounted(refresh)
     </v-alert>
     <div v-if="loading && !snapshot" class="surface empty-state" role="status">正在读取当前实例已加载的场景与角色…</div>
 
+    <ScenePersonaEditor />
+
     <template v-if="snapshot">
       <v-alert type="info" variant="tonal" class="snapshot-note">
-        <strong>{{ error ? '上次成功读取的快照' : '当前实例的已加载快照' }}</strong> · 只读 · 模拟发送，不会发送到 QQ。刷新只向运行中的实例重新取值，不会热加载配置或角色文件。
+        <strong>{{ error ? '上次成功读取的运行快照' : '当前实例的运行快照' }}</strong> · 只读 · 模拟发送，不会发送到 QQ。刷新只向运行中的实例重新取值，不会热加载配置或角色文件；编辑区保存后这里仍显示旧运行值。
       </v-alert>
 
       <section class="surface" aria-labelledby="scene-title">
@@ -65,7 +68,7 @@ onMounted(refresh)
       </section>
 
       <section class="surface" aria-labelledby="scene-persona-title">
-        <div class="section-heading"><h2 id="scene-persona-title">本场景的角色补充</h2><span class="muted">不改写共享角色包</span></div>
+        <div class="section-heading"><h2 id="scene-persona-title">当前运行的场景补充</h2><span class="muted">运行快照 · 不改写共享角色包</span></div>
         <div class="content-block">
           <h3>补充称呼</h3>
           <ul v-if="snapshot.scene_persona.persona_aliases.length" class="plain-list chip-list">

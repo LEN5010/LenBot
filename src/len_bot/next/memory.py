@@ -16,6 +16,7 @@ from .memory_local import LocalMemory, LocalMemorySettings
 from .memory_jobs import MemoryJobs
 from .memory_openviking import OpenVikingMemory, OpenVikingSettings
 from .memory_summary import MemorySummarizer
+from .memory_role_paths import require_bot_path
 from .messages import ChatMessage, plain_text
 from .model import ChatModel
 from .model_slots import ModelSlots
@@ -154,9 +155,16 @@ MEMORY_TOOL = {"type": "function", "function": {
 
 class MemoryService:
     def __init__(self, settings: LocalMemoryConfig | OpenVikingMemoryConfig,
-                 backend: LocalMemory | OpenVikingMemory, *, jobs: MemoryJobs, store: Store):
+                 backend: LocalMemory | OpenVikingMemory, *, jobs: MemoryJobs, store: Store,
+                 active_personas: dict[str, str]):
         self.settings, self.backend = settings, backend
         self.jobs, self.store = jobs, store
+        self.active_personas = dict(active_personas)
+        for scene in self.store.message_persona_scenes() | self.active_personas.keys():
+            ids = self.store.message_persona_ids(scene)
+            if scene in self.active_personas:
+                ids.add(self.active_personas[scene])
+            self.jobs.remember_personas(scene, ids)
         self.summarizer: MemorySummarizer | None = None
         # A complete read/generate/write extraction shares this queue with edits.
         self.write_locks: dict[str, asyncio.Lock] = {}
@@ -214,6 +222,9 @@ class MemoryService:
     def write_lock(self, scene: str) -> asyncio.Lock:
         return self.write_locks.setdefault(scene, asyncio.Lock())
 
+    def known_persona_ids(self, scene: str) -> set[str]:
+        return self.jobs.persona_ids(scene)
+
     @property
     def actions(self) -> list[str]:
         common = ["browse", "read", "search", "write", "delete", "history"]
@@ -237,11 +248,13 @@ class MemoryService:
             if scene in self.pending_native_tasks:
                 raise ValueError(f"OpenViking 抽取仍在处理：{self.pending_native_tasks[scene]}")
             if isinstance(self.backend, LocalMemory):
+                require_bot_path(path, self.known_persona_ids(scene))
                 result = (await self.backend.write(scene, path, content, reason) if scope == "scene"
                           else await self.backend.owner_write_public(path, content, reason))
             else:
                 if scope != "scene":
                     raise ValueError("OpenViking 公共目录仅可读取")
+                require_bot_path(path, self.known_persona_ids(scene), native=True)
                 result = await self.backend.write(scene, path, content)
             return asdict(result)
 
@@ -272,6 +285,33 @@ class MemoryService:
                     raise ValueError("当前 OpenViking 接口未实现可访问历史和派生内容的完整遗忘")
                 result = await self.backend.delete(scene, path)
             return asdict(result)
+
+    async def adopt_pending(self, scene: str, source: str, original: str, target: str,
+                            content: str, reason: str, *, remove_source: bool) -> dict:
+        """One explicit owner operation, not a model tool or a multi-file transaction."""
+        if not isinstance(self.backend, LocalMemory):
+            raise ValueError('待确认旧资料采用仅用于本地后端')
+        if not source.startswith(LEGACY_IMPORT + '/'):
+            raise ValueError(f'采用源必须是本场景实际待确认原件：{source!r}')
+        if target == LEGACY_IMPORT or target.startswith(LEGACY_IMPORT + '/'):
+            raise ValueError('正式目标不能继续位于待确认区域')
+        if not reason.strip() or not content.strip():
+            raise ValueError('采用须明确核对后的非空正文与实际原因')
+        async with self.write_lock(scene):
+            saved = await self.backend.read(scene, source, scope='scene')
+            if saved.content != original:
+                raise ValueError(f'待确认原件已变化，本次未创建正式文件：{source!r}。请重读原文后明确核对。')
+            require_bot_path(target, self.known_persona_ids(scene))
+            change = await self.backend.write(scene, target, content, reason, create_only=True)
+            if remove_source:
+                try:
+                    await self.backend.delete(scene, source, reason)
+                except Exception as error:
+                    raise RuntimeError(f'正式文件{target!r}已保存，但待确认原件{source!r}删除失败：'
+                                       f'{type(error).__name__}: {error}。请核对两边，不自动重试。') from error
+            return {'source': source, 'target': target, 'target_saved': True, 'source_removed': remove_source,
+                    'change': asdict(change), 'notice': '仅本场景正式正文采用；源普通删除仍留历史，不是完整遗忘。'
+                    '原聊天、抽取位置/排除与角色样例未改，无公共提升。'}
 
     async def history(self, scene: str, path: str) -> list[dict]:
         if not isinstance(self.backend, LocalMemory):
@@ -346,9 +386,7 @@ async def open_memory_backend(config: SharedConfig):
     if settings is None:
         yield None
     elif isinstance(settings, OpenVikingMemoryConfig):
-        from .config import LabConfig
-        recordings = config.replay_memory if isinstance(config, LabConfig) else None
-        async with OpenVikingMemory(settings.openviking, recordings=recordings) as backend:
+        async with OpenVikingMemory(settings.openviking, recordings=config.replay_memory) as backend:
             yield backend
     else:
         binding = settings.local.embedding
@@ -364,13 +402,17 @@ async def open_memory_backend(config: SharedConfig):
 
 
 @asynccontextmanager
-async def open_memory(config: SharedConfig, store: Store, *, slots: ModelSlots | None = None):
+async def open_memory(config: SharedConfig, store: Store, *, active_personas: dict[str, str] | None = None,
+                      slots: ModelSlots | None = None):
     async with open_memory_backend(config) as backend:
         if backend is None:
             yield None
             return
         with MemoryJobs(config.database.with_name(config.database.name + ".memory.sqlite3")) as jobs:
-            service = MemoryService(config.memory, backend, jobs=jobs, store=store)
+            jobs.recover_embeddings(store.now())
+            # Offline index/import/transfer owners do not have a running chat role.
+            service = MemoryService(config.memory, backend, jobs=jobs, store=store,
+                                    active_personas={} if active_personas is None else active_personas)
             if isinstance(backend, LocalMemory) and backend.embedding is not None:
                 binding = config.memory.local.embedding
                 price = config.models.prices.get(binding.provider, {}).get(binding.model)

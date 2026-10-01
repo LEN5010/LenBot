@@ -168,10 +168,12 @@ async def worker_session(
     compaction_keep_recent_tokens: int,
     start_call: Callable[[dict[str, Any]], int],
     finish_call: Callable[[int, dict[str, Any]], None],
+    on_proxy: Callable[[WorkerModelProxy], None],
     input_support: Literal["text", "text-image"] = "text",
     slots: ModelSlots | None = None,
     on_container: Callable[[str], None] | None = None,
     task_request: Callable[[str, bytes], Awaitable[dict]] | None = None,
+    input_names: tuple[str, ...] = (),
 ) -> AsyncIterator[WorkerSession]:
     """Start one network-isolated task with host-mediated model access.
 
@@ -190,8 +192,9 @@ async def worker_session(
     pi: PiRpc | None = None
     original: BaseException | None = None
     try:
+        on_proxy(proxy)
         await proxy.__aenter__()
-        handle = await sandbox.ensure(scene, task_id, skills=skills, on_container=on_container)
+        handle = await sandbox.ensure(scene, task_id, skills=skills, on_container=on_container, input_names=input_names)
         _write_json(handle.control / "task-api.json", {
             "base_url": "http://127.0.0.1:18181", "token": token,
             "timeout_seconds": task_timeout_seconds,

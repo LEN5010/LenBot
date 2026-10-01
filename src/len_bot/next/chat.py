@@ -704,7 +704,7 @@ class Chat:
                 errors.append(None)
                 content = report_parts(parts, errors, self.render)
                 message_seq = self.store.start_expression_part(entry_seq, part, prefix + content,
-                                                              turn_id=turn_id,
+                                                              persona_id=self.persona.id, turn_id=turn_id,
                                                               sticker=(sticker if isinstance(sticker, CollectedSticker)
                                                                        else None if sticker is None
                                                                        else (self.persona.id, sticker)))
@@ -755,7 +755,7 @@ class Chat:
                     part.send_status = "simulated" if self.send_message is None else "unconfirmed"
                     errors.append(None)
                     image = prepared[index].image
-                    seq = self.store.start_outgoing(part, image=(None if image is None else
+                    seq = self.store.start_outgoing(part, persona_id=self.persona.id, image=(None if image is None else
                                                     (image, prepared[index].description)))
                     self.notify()
                     if self.send_message is None:

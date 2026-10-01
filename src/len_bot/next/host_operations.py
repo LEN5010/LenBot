@@ -3,6 +3,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 import json
 import re
+import sqlite3
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -13,6 +14,7 @@ from .operations import diagnostic_zip
 from .tasks_store import TaskStore
 from .usage import usage
 from .limits import LimitReached
+from .memory_jobs import processing_records
 
 
 class QuietChange(BaseModel):
@@ -161,8 +163,18 @@ def register_host_operations(app, *, runtime, user):
             end = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
         else:
             end = start + timedelta(days=1)
-        return {"timezone": zone, "period": period, **usage(store, list(runtime.chats) if scene is None else [scene],
-                start.timestamp(), end.timestamp(), memory=runtime.memory)}
+        try:
+            with processing_records(config.database, None if runtime.memory is None else runtime.memory.jobs) as records:
+                result = usage(store, None if scene is None else [scene],
+                               start.timestamp(), end.timestamp(), memory=runtime.memory,
+                               memory_db=None if records is None else records.db)
+                return {"timezone": zone, "period": period, **result,
+                        'scope': '当前实例业务及记忆计量；全部范围含public与已移除场景，不含独立保留试聊（预算另含）',
+                        'memory_record_source':
+                        'not_present' if records is None else 'running_connection' if runtime.memory is not None else 'read_only_existing'}
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise HTTPException(422 if isinstance(error, ValueError) else 500,
+                                f'{type(error).__name__}: {error}') from error
 
     def log_files():
         if config.logging is None:

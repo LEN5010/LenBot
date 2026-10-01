@@ -122,6 +122,7 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                          "memory": chat.memory is not None,
                          "vision": chat.config.models.roles.vision is not None,
                          "worker": chat.tasks is not None,
+                         "worker_mcp": chat.tasks is not None and chat.tasks.settings.mcp,
                          "skills": (chat.tasks is not None
                                     and chat.tasks.settings.skills_directory is not None),
                          "public_browser": (chat.tasks is not None

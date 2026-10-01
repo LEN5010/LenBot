@@ -512,6 +512,60 @@ class HistoryImportSettings(BaseModel):
         return _history_scenes(scenes, "history_import")
 
 
+class MediaImportSettings(BaseModel):
+    model_config = STRICT
+    source: Path
+    directory: Path
+    original_directory: str
+    backup: Path
+    scenes: list[str] = Field(min_length=1)
+
+    @field_validator('scenes')
+    @classmethod
+    def valid_scenes(cls, value: list[str]) -> list[str]:
+        return _history_scenes(value, 'media_import')
+
+    @field_validator('original_directory')
+    @classmethod
+    def original_root(cls, value: str) -> str:
+        if not value.startswith('/') or '\\' in value or any(part in {'.', '..'} for part in value.split('/')):
+            raise ValueError('media_import.original_directory must be the original absolute POSIX media directory')
+        return value
+
+
+class MediaArchiveSettings(BaseModel):
+    model_config = STRICT
+    source: Path
+    directory: Path
+    original_directory: str
+    destination: Path
+    scenes: list[str] = Field(min_length=1)
+    include_public: bool
+
+    @field_validator('scenes')
+    @classmethod
+    def valid_scenes(cls, value: list[str]) -> list[str]:
+        return _history_scenes(value, 'media_archive')
+
+    @field_validator('original_directory')
+    @classmethod
+    def original_root(cls, value: str) -> str:
+        if not value.startswith('/') or '\\' in value or any(part in {'.', '..'} for part in value.split('/')):
+            raise ValueError('media_archive.original_directory must be the original absolute POSIX media directory')
+        return value
+
+
+class TaskArchiveSettings(BaseModel):
+    model_config = STRICT
+    destination: Path
+    scenes: list[str] = Field(min_length=1)
+
+    @field_validator('scenes')
+    @classmethod
+    def valid_scenes(cls, value: list[str]) -> list[str]:
+        return _history_scenes(value, 'task_archive')
+
+
 class ReminderImportSettings(BaseModel):
     model_config = STRICT
 
@@ -531,12 +585,69 @@ class ReminderImportSettings(BaseModel):
         return _valid_timezone(value)
 
 
+class ReminderExportSettings(BaseModel):
+    model_config = STRICT
+    target: Path
+    backup: Path
+    scenes: list[str] = Field(min_length=1)
+    pending: Literal['restore', 'hold']
+
+    @field_validator('scenes')
+    @classmethod
+    def valid_scenes(cls, value: list[str]) -> list[str]:
+        return _history_scenes(value, 'reminder_export')
+
+
+class PersonaMemoryTemplate(BaseModel):
+    model_config = STRICT
+    persona: Path
+    self_type: str = Field(pattern=r'^lenbot_[a-z][a-z0-9_]{0,63}$')
+    promises_type: str = Field(pattern=r'^lenbot_[a-z][a-z0-9_]{0,63}$')
+
+
+class PersonaMemoryExportSettings(BaseModel):
+    model_config = STRICT
+    destination: Path
+    personas: list[PersonaMemoryTemplate] = Field(min_length=1)
+
+    @model_validator(mode='after')
+    def distinct_types(self):
+        names = [name for item in self.personas for name in (item.self_type, item.promises_type)]
+        reserved = {'lenbot_portrait', 'lenbot_events', 'lenbot_bot', 'lenbot_commitments', 'lenbot_participant_commitments'}
+        if len(names) != len(set(names)) or set(names) & reserved:
+            raise ValueError(f'角色专用原生类别须全局唯一，不覆盖现有共享类别：{names!r}')
+        return self
+
+
+class MemoryTransferSettings(BaseModel):
+    model_config = STRICT
+    operation: Literal['export', 'import']
+    source: MemorySettings
+    archive: Path
+    scenes: list[str] = Field(min_length=1)
+    public_scene: str
+
+    @field_validator('scenes')
+    @classmethod
+    def valid_scenes(cls, value: list[str]) -> list[str]:
+        return _history_scenes(value, 'memory_transfer')
+
+    @model_validator(mode='after')
+    def selected_identity(self):
+        if self.public_scene not in self.scenes:
+            raise ValueError('memory_transfer.public_scene must be among selected scenes')
+        if isinstance(self.source, OpenVikingMemoryConfig) and set(self.source.openviking.scenes) != set(self.scenes):
+            raise ValueError('memory_transfer.source must have exactly the selected native scene identities')
+        return self
+
+
 class HistoryExportSettings(BaseModel):
     model_config = STRICT
 
     target: Path
     backup: Path
     scenes: list[str] = Field(min_length=1)
+    media_directory: Path | None = None
 
     @field_validator("scenes")
     @classmethod
@@ -605,13 +716,29 @@ class SharedConfig(BaseModel):
     web_read: WebReadSettings | None = None
     web_search: WebSearchSettings | None = None
     memory: MemorySettings | None = None
+    replay_memory: Path | None = None
+    memory_transfer: MemoryTransferSettings | None = None
+    persona_memory_export: PersonaMemoryExportSettings | None = None
     worker: WorkerSettings | None = None
     images: ImageSettings = Field(default_factory=ImageSettings)
     audio: AudioSettings = Field(default_factory=AudioSettings)
     history_import: HistoryImportSettings | None = None
     reminder_import: ReminderImportSettings | None = None
+    reminder_export: ReminderExportSettings | None = None
+    media_import: MediaImportSettings | None = None
+    media_archive: MediaArchiveSettings | None = None
+    task_archive: TaskArchiveSettings | None = None
     history_export: HistoryExportSettings | None = None
     models: Models
+
+    @model_validator(mode='after')
+    def recorded_memory_has_no_live_client(self):
+        if self.replay_memory is not None:
+            if self.onebot is not None or self.delivery != 'simulated':
+                raise ValueError('replay_memory requires explicit simulated input, not a platform connection')
+            if not isinstance(self.memory, OpenVikingMemoryConfig) or self.memory.ingest is not None:
+                raise ValueError('replay_memory requires openviking memory with automatic ingest disabled')
+        return self
 
     @model_validator(mode="after")
     def budget_prices(self):
@@ -633,6 +760,18 @@ class SharedConfig(BaseModel):
 
     @model_validator(mode="after")
     def memory_provider_exists(self) -> SharedConfig:
+        if self.memory_transfer is not None and (
+                self.memory is None or self.memory.backend == self.memory_transfer.source.backend):
+            raise ValueError('memory_transfer requires an explicit target memory with a different backend')
+        if self.memory_transfer is not None:
+            source = self.memory_transfer.source
+            if isinstance(source, LocalMemoryConfig) and source.local.embedding is not None:
+                if source.local.embedding.provider not in self.models.providers:
+                    raise ValueError('memory_transfer.source.local.embedding.provider references an unknown provider')
+            if isinstance(self.memory, OpenVikingMemoryConfig):
+                missing = set(self.memory_transfer.scenes) - self.memory.openviking.scenes.keys()
+                if missing:
+                    raise ValueError(f'memory_transfer target lacks native scene identities: {sorted(missing)!r}')
         if isinstance(self.memory, LocalMemoryConfig) and self.memory.local.embedding is not None:
             provider = self.memory.local.embedding.provider
             if provider not in self.models.providers:
@@ -712,11 +851,11 @@ class SharedConfig(BaseModel):
             paths = [self.database.resolve(), importing.source.resolve(), importing.backup.resolve()]
             if len(set(paths)) != len(paths):
                 raise ValueError("history_import.source, history_import.backup and database must differ")
-        exporting = self.history_export
-        if exporting is not None:
-            paths = [self.database.resolve(), exporting.target.resolve(), exporting.backup.resolve()]
-            if len(set(paths)) != len(paths):
-                raise ValueError("history_export.target, history_export.backup and database must differ")
+        for field, exporting in (('history_export', self.history_export), ('reminder_export', self.reminder_export)):
+            if exporting is not None:
+                paths = [self.database.resolve(), exporting.target.resolve(), exporting.backup.resolve()]
+                if len(set(paths)) != len(paths):
+                    raise ValueError(f'{field}.target, {field}.backup and database must differ')
         return self
 
     def model_settings(self, role: Literal["mind", "voice", "vision", "memory", "worker", "learner"]) -> ModelSettings:
@@ -769,6 +908,8 @@ class ScenePersona(BaseModel):
 
 
 class SceneSettings(ScenePersona):
+    replay_web: Path | None = None
+    replay_images: Path | None = None
     chat_control_roles: list[ScheduleRole] = Field(default_factory=lambda: ["owner", "admin", "group_manager"])
 
     @field_validator("chat_control_roles")
@@ -839,9 +980,6 @@ class LabConfig(SharedConfig, SceneSettings):
     panel: PanelSettings | None = None
     evaluation: EvaluationSettings | None = None
     replay_clock: ReplayClockSettings | None = None
-    replay_web: Path | None = None
-    replay_images: Path | None = None
-    replay_memory: Path | None = None
 
     @field_validator("scene")
     @classmethod
@@ -853,9 +991,6 @@ class LabConfig(SharedConfig, SceneSettings):
         if (self.replay_web is not None or self.replay_images is not None or self.replay_memory is not None) and (
                 self.onebot is not None or self.panel is not None or self.delivery != 'simulated'):
             raise ValueError('replay materials require isolated stdin, simulated delivery and no panel')
-        if self.replay_memory is not None and (
-                not isinstance(self.memory, OpenVikingMemoryConfig) or self.memory.ingest is not None):
-            raise ValueError('replay_memory requires openviking memory with automatic ingest disabled')
         _check_schedule_identity(self.bot_qq, self.schedules)
         if (self.tasks.owner == self.bot_qq or self.bot_qq in self.tasks.admins
                 or self.bot_qq in self.tasks.whitelist):
@@ -889,6 +1024,16 @@ class LabConfig(SharedConfig, SceneSettings):
             raise ValueError("history_export.scenes must contain only the configured scene")
         if self.reminder_import is not None and self.reminder_import.scenes != [self.scene]:
             raise ValueError('reminder_import.scenes must contain only the configured scene')
+        if self.reminder_export is not None and self.reminder_export.scenes != [self.scene]:
+            raise ValueError('reminder_export.scenes must contain only the configured scene')
+        if self.media_import is not None and self.media_import.scenes != [self.scene]:
+            raise ValueError('media_import.scenes must contain only the configured scene')
+        if self.media_archive is not None and self.media_archive.scenes != [self.scene]:
+            raise ValueError('media_archive.scenes must contain only the configured scene')
+        if self.task_archive is not None and self.task_archive.scenes != [self.scene]:
+            raise ValueError('task_archive.scenes must contain only the configured scene')
+        if self.memory_transfer is not None and self.memory_transfer.scenes != [self.scene]:
+            raise ValueError('memory_transfer.scenes must contain only the configured scene')
         if self.replay_clock is not None:
             incompatible = [
                 field for field, enabled in (
@@ -901,6 +1046,12 @@ class LabConfig(SharedConfig, SceneSettings):
                     ("history_import", self.history_import is not None),
                     ("history_export", self.history_export is not None),
                     ('reminder_import', self.reminder_import is not None),
+                    ('reminder_export', self.reminder_export is not None),
+                    ('media_import', self.media_import is not None),
+                    ('media_archive', self.media_archive is not None),
+                    ('task_archive', self.task_archive is not None),
+                    ('memory_transfer', self.memory_transfer is not None),
+                    ('persona_memory_export', self.persona_memory_export is not None),
                     ("worker", self.worker is not None),
                     ("delivery", self.delivery != "simulated"),
                 ) if enabled
@@ -921,11 +1072,29 @@ class LabConfig(SharedConfig, SceneSettings):
 class HostConfig(SharedConfig):
     mode: Literal["isolated-multi"]
     account_browser: AccountBrowserSettings | None = None
-    onebot: OneBotSettings
+    onebot: OneBotSettings | None = Field(...)
     panel: PanelSettings | None = None
     scenes: dict[str, SceneSettings] = Field(min_length=1)
     plugins: PluginSettings | None = None
     mcp: dict[str, MCPService] = Field(default_factory=dict)
+
+    @model_validator(mode='after')
+    def stdin_host_is_explicitly_simulated(self):
+        recorded = [scene for scene, settings in self.scenes.items()
+                    if settings.replay_web is not None or settings.replay_images is not None]
+        if recorded and self.onebot is not None:
+            raise ValueError(f'Per-scene replay materials require the explicit stdin host, not platform input: {recorded!r}')
+        if self.onebot is None:
+            incompatible = [name for name, enabled in (
+                ('delivery', self.delivery != 'simulated'), ('panel', self.panel is not None),
+                ('plugins', self.plugins is not None), ('mcp', bool(self.mcp)),
+                ('account_browser', self.account_browser is not None),
+                ('live native memory', isinstance(self.memory, OpenVikingMemoryConfig) and self.replay_memory is None),
+                ('automatic audio transcription', any(scene.transcribe_audio for scene in self.scenes.values())),
+            ) if enabled]
+            if incompatible:
+                raise ValueError(f'stdin host requires simulated delivery and no platform/production services: {incompatible!r}')
+        return self
 
     @field_validator("mcp")
     @classmethod
@@ -995,6 +1164,26 @@ class HostConfig(SharedConfig):
             unknown = [scene for scene in self.reminder_import.scenes if scene not in self.scenes]
             if unknown:
                 raise ValueError(f'reminder_import.scenes are not configured: {unknown!r}')
+        if self.reminder_export is not None:
+            unknown = set(self.reminder_export.scenes) - self.scenes.keys()
+            if unknown:
+                raise ValueError(f'reminder_export.scenes are not configured: {sorted(unknown)!r}')
+        if self.media_import is not None:
+            unknown = set(self.media_import.scenes) - self.scenes.keys()
+            if unknown:
+                raise ValueError(f'media_import.scenes are not configured: {sorted(unknown)!r}')
+        if self.media_archive is not None:
+            unknown = set(self.media_archive.scenes) - self.scenes.keys()
+            if unknown:
+                raise ValueError(f'media_archive.scenes are not configured: {sorted(unknown)!r}')
+        if self.task_archive is not None:
+            unknown = set(self.task_archive.scenes) - self.scenes.keys()
+            if unknown:
+                raise ValueError(f'task_archive.scenes are not configured: {sorted(unknown)!r}')
+        if self.memory_transfer is not None:
+            unknown = set(self.memory_transfer.scenes) - self.scenes.keys()
+            if unknown:
+                raise ValueError(f'memory_transfer.scenes are not configured: {sorted(unknown)!r}')
         return self
 
     def scene_config(self, scene: str) -> LabConfig:
@@ -1008,6 +1197,12 @@ class HostConfig(SharedConfig):
         shared["history_import"] = None
         shared["history_export"] = None
         shared['reminder_import'] = None
+        shared['reminder_export'] = None
+        shared['media_import'] = None
+        shared['media_archive'] = None
+        shared['task_archive'] = None
+        shared['memory_transfer'] = None
+        shared['persona_memory_export'] = None
         local = {name: getattr(self.scenes[scene], name) for name in SceneSettings.model_fields}
         shared["timezone"] = self.scene_timezone(scene)
         del local["timezone"]
@@ -1062,10 +1257,35 @@ def _validation_error(path: Path, error: ValidationError, kind: str) -> ValueErr
 
 
 def _resolve_history_paths(root: Path, source: dict) -> None:
+    tasks = source.get('task_archive')
+    if isinstance(tasks, dict):
+        tasks['destination'] = _resolved_path(root, tasks.get('destination'), within_root=True,
+                                               field='task_archive.destination')
+        backup_root = root.resolve() / '.backups'
+        if tasks['destination'] == backup_root or not tasks['destination'].is_relative_to(backup_root):
+            raise ValueError(f'task_archive.destination must be a new directory below root .backups: {tasks["destination"]}')
+    archive = source.get('media_archive')
+    if isinstance(archive, dict):
+        for field in ('source', 'directory', 'destination'):
+            archive[field] = _resolved_path(root, archive.get(field), within_root=field == 'destination',
+                                            field=f'media_archive.{field}')
+        backup_root = root.resolve() / '.backups'
+        if archive['destination'] == backup_root or not archive['destination'].is_relative_to(backup_root):
+            raise ValueError(f'media_archive.destination must be a new directory below the root .backups, not a release/source directory: {archive["destination"]}')
+    media = source.get('media_import')
+    if isinstance(media, dict):
+        for field in ('source', 'directory', 'backup'):
+            media[field] = _resolved_path(root, media.get(field), within_root=field == 'backup',
+                                          field=f'media_import.{field}')
     reminders = source.get('reminder_import')
     if isinstance(reminders, dict):
         reminders['source'] = _resolved_path(root, reminders.get('source'), within_root=False, field='reminder_import.source')
         reminders['backup'] = _resolved_path(root, reminders.get('backup'), within_root=True, field='reminder_import.backup')
+    reminder_export = source.get('reminder_export')
+    if isinstance(reminder_export, dict):
+        for field in ('target', 'backup'):
+            reminder_export[field] = _resolved_path(root, reminder_export.get(field), within_root=True,
+                                                     field=f'reminder_export.{field}')
     importing = source.get("history_import")
     if isinstance(importing, dict):
         importing["source"] = _resolved_path(
@@ -1082,9 +1302,33 @@ def _resolve_history_paths(root: Path, source: dict) -> None:
         exporting["backup"] = _resolved_path(
             root, exporting.get("backup"), within_root=True, field="history_export.backup"
         )
+        if exporting.get('media_directory') is not None:
+            exporting['media_directory'] = _resolved_path(
+                root, exporting['media_directory'], within_root=True, field='history_export.media_directory'
+            )
 
 
 def _resolve_memory_path(root: Path, source: dict) -> None:
+    if source.get('replay_memory') is not None:
+        source['replay_memory'] = _resolved_path(root, source['replay_memory'], within_root=True,
+                                                field='replay_memory')
+    templates = source.get('persona_memory_export')
+    if isinstance(templates, dict):
+        templates['destination'] = _resolved_path(root, templates.get('destination'), within_root=True,
+                                                   field='persona_memory_export.destination')
+        if isinstance(templates.get('personas'), list):
+            for index, item in enumerate(templates['personas']):
+                if isinstance(item, dict):
+                    item['persona'] = _resolved_path(root, item.get('persona'), within_root=False,
+                                                      field=f'persona_memory_export.personas.{index}.persona')
+    transfer = source.get('memory_transfer')
+    if isinstance(transfer, dict):
+        transfer['archive'] = _resolved_path(root, transfer.get('archive'), within_root=True,
+                                             field='memory_transfer.archive')
+        original = transfer.get('source')
+        if isinstance(original, dict) and isinstance(original.get('local'), dict):
+            original['local']['directory'] = _resolved_path(root, original['local'].get('directory'),
+                within_root=False, field='memory_transfer.source.local.directory')
     memory = source.get("memory")
     if isinstance(memory, dict) and isinstance(memory.get("local"), dict):
         memory["local"]["directory"] = _resolved_path(
@@ -1112,7 +1356,7 @@ def _resolve_worker_paths(root: Path, source: dict) -> None:
 
 def _load_lab_source(path: Path, source: dict) -> LabConfig:
     root = path.parent
-    for name in ('replay_web', 'replay_images', 'replay_memory'):
+    for name in ('replay_web', 'replay_images'):
         if source.get(name) is not None:
             source[name] = _resolved_path(root, source[name], within_root=True, field=name)
     source["database"] = _resolved_path(root, source.get("database"), within_root=True, field="database")
@@ -1164,6 +1408,10 @@ def _load_host_source(path: Path, source: dict) -> HostConfig:
                     root, settings.get("persona"), within_root=False,
                     field=f"scenes.{scene}.persona",
                 )
+                for name in ('replay_web', 'replay_images'):
+                    if settings.get(name) is not None:
+                        settings[name] = _resolved_path(root, settings[name], within_root=True,
+                                                        field=f'scenes.{scene}.{name}')
     if isinstance(source.get("logging"), dict):
         source["logging"]["directory"] = _resolved_path(root, source["logging"].get("directory"),
                                                        within_root=True, field="logging.directory")
@@ -1196,6 +1444,11 @@ def _load_host_source(path: Path, source: dict) -> HostConfig:
     try:
         config = HostConfig.model_validate(source)
         object.__setattr__(config, '_source_root', root)
+        if config.onebot is None and config.worker is not None:
+            for name in ('workspace_root', 'runtime_root', 'delivery_root'):
+                location = getattr(config.worker, name)
+                if location == root.resolve():
+                    raise ValueError(f'stdin worker.{name} must be below its independent instance root: {location}')
         return config
     except ValidationError as error:
         raise _validation_error(path, error, "host") from error

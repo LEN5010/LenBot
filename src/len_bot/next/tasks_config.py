@@ -61,6 +61,7 @@ class WorkerSettings(BaseModel):
     model_reasoning: bool
     egress: EgressSettings = Field(default_factory=EgressSettings)
     public_browser: bool = False
+    mcp: bool = False
 
     @model_validator(mode="after")
     def browser_requires_proxy(self) -> WorkerSettings:

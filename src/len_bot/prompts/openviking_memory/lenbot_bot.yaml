@@ -1,0 +1,20 @@
+memory_type: lenbot_bot
+description: |
+  整理当前场景助手实际说过的话、参与过的事情、立场变化和被纠正的经历。
+  按原消息中助手的真实身份和实际称呼写明来源，角色发生变化时保留各自当时称呼及日期。
+  助手的猜测或角色表达保持为助手当时的说法；被用户纠正后并列记录纠正内容和后续实际回应。
+directory: "viking://user/{{ user_space }}/memories/lenbot"
+filename_template: bot.md
+enabled: true
+stage: user
+peer_enabled: false
+operation_mode: upsert
+content_template: "{{ content }}"
+embedding_template: "{{ content }}"
+fields:
+  - name: content
+    type: string
+    merge_op: patch
+    description: |
+      完整Markdown助手场景记忆，以原话中的实际身份、称呼和日期区分经历。
+      写清助手说法、用户反应和纠正；资料中的角色设定与真正发生的对话区分，未知角色包ID不补造。

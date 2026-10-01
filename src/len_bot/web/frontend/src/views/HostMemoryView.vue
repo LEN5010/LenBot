@@ -9,6 +9,8 @@ import HostMemoryIngest from '../components/HostMemoryIngest.vue'
 import HostMemorySources from '../components/HostMemorySources.vue'
 import HostMemorySummary from '../components/HostMemorySummary.vue'
 import HostNativeOverview from '../components/HostNativeOverview.vue'
+import PendingMemoryAdoption from '../components/PendingMemoryAdoption.vue'
+import HostMemoryEmbeddings from '../components/HostMemoryEmbeddings.vue'
 
 const route = useRoute(), router = useRouter()
 const state = ref(null), scene = ref(''), scope = ref('scene'), directory = ref('')
@@ -18,6 +20,7 @@ const searchQuery = ref(''), hits = ref([]), history = ref([]), lastResult = ref
 const searched = ref(false)
 const tab = ref('browse')
 const settingsDirty = ref(false)
+const adoptionDirty = ref(false), adopting = ref(false)
 const sourceSelections = ref([])
 const stateLoading = ref(false), browsing = ref(false), reading = ref(false), searching = ref(false)
 const writing = ref(false), deleting = ref(false), historyLoading = ref(false)
@@ -40,7 +43,8 @@ const forgettable = computed(() => scope.value === 'scene' && can('forget') && s
 const dirty = computed(() => selected.value === null
   ? editPath.value !== '' || content.value !== '' || reason.value !== ''
   : editPath.value !== selected.value || content.value !== original.value || reason.value !== '')
-const pageDirty = computed(() => dirty.value || settingsDirty.value)
+const fileDirty = computed(() => dirty.value || adoptionDirty.value)
+const pageDirty = computed(() => fileDirty.value || settingsDirty.value)
 const options = computed(() => state.value?.scenes.map(item => ({
   title: `${sceneName(item.scene)} · ${item.persona.name}`, value: item.scene,
 })) || [])
@@ -49,12 +53,13 @@ const scopes = computed(() => [
   ...(state.value?.public_readable ? [{ title: '公共', value: 'public' }] : []),
 ])
 useUnsavedChanges(pageDirty)
-onBeforeRouteUpdate(() => !dirty.value || window.confirm('有未保存的记忆正文或修改原因。放弃并切换场景？'))
+onBeforeRouteUpdate(() => !adopting.value && (!fileDirty.value || window.confirm('有未保存的记忆或采用草稿。放弃并切换场景？')))
 function query(path, values) { return `${path}?${new URLSearchParams(values)}` }
 function parentOf(path) { return path.split('/').slice(0, -1).join('/') }
 function displayTime(value) { return new Date(value * 1000).toISOString() }
 function resetFile() {
   ++editorEpoch
+  adoptionDirty.value = false; adopting.value = false
   sourceSelections.value = []
   selected.value = null; editPath.value = ''; content.value = ''; original.value = ''; reason.value = ''
   staleFile.value = false; history.value = []; fileError.value = ''; historyError.value = ''
@@ -83,29 +88,34 @@ async function browse(more = false) {
   finally { if (fresh()) browsing.value = false }
 }
 function openDirectory(path) {
-  if (dirty.value && !window.confirm('放弃未保存的记忆草稿并打开目录？')) return
+  if (adopting.value) return
+  if (fileDirty.value && !window.confirm('放弃未保存的记忆或采用草稿并打开目录？')) return
   directory.value = path; nodes.value = []; hasMore.value = false; resetFile()
   browseError.value = ''; browse()
 }
 function changeScope(value) {
+  if (adopting.value) return
   if (value === scope.value) return
   if (value === 'public' && !state.value?.public_readable) return
-  if (dirty.value && !window.confirm('放弃未保存的记忆草稿并切换范围？')) return
+  if (fileDirty.value && !window.confirm('放弃未保存的记忆或采用草稿并切换范围？')) return
   scope.value = value; resetSelection(); browse()
 }
 function changeScene(value, fromRoute = false) {
+  if (adopting.value) return
   if (value === scene.value) return
-  if (!fromRoute && dirty.value && !window.confirm('放弃未保存的记忆草稿并切换场景？')) return
+  if (!fromRoute && fileDirty.value && !window.confirm('放弃未保存的记忆或采用草稿并切换场景？')) return
   scene.value = value; resetSelection()
   if (!fromRoute) router.replace({ name: 'host-memory', query: { scene: value } })
   browse()
 }
 async function readFile(path, access = scope.value) {
+  if (adopting.value) return
   if (!can('read')) return
   if (access === 'public' && !state.value.public_readable) return
-  if (dirty.value && !window.confirm('放弃未保存的记忆草稿并读取另一文件？')) return
+  if (fileDirty.value && !window.confirm('放弃未保存的记忆或采用草稿并读取另一文件？')) return
   if (access !== scope.value) { scope.value = access; resetSelection() }
   ++editorEpoch
+  adoptionDirty.value = false
   historyLoading.value = false
   const target = scene.value, actualScope = scope.value, fresh = beginFile()
   reading.value = true; fileError.value = ''
@@ -122,8 +132,9 @@ async function readFile(path, access = scope.value) {
   finally { if (fresh()) reading.value = false }
 }
 function createFile() {
+  if (adopting.value) return
   if (!writable.value) return
-  if (dirty.value && !window.confirm('放弃当前未保存草稿并新建文件？')) return
+  if (fileDirty.value && !window.confirm('放弃当前未保存记忆或采用草稿并新建文件？')) return
   resetFile(); tab.value = 'browse'
 }
 async function search() {
@@ -162,6 +173,7 @@ function errorMessage(error, action) {
     : `${action}结果未确认：${error.message} 草稿已保留；请手动重读核对，不会自动重试。`
 }
 async function writeFile() {
+  if (adoptionDirty.value || adopting.value) return
   if (!writable.value || writing.value || deleting.value || !editPath.value || !reason.value.trim()) return
   const target = scene.value, access = scope.value, path = editPath.value
   const text = content.value, why = reason.value, fresh = beginWrite()
@@ -182,6 +194,7 @@ async function writeFile() {
   finally { writing.value = false }
 }
 async function deleteFile(forget) {
+  if (adoptionDirty.value || adopting.value) return
   if (!(forget ? forgettable.value : deletable.value) || deleting.value || writing.value) return
   const target = scene.value, path = selected.value, why = reason.value
   if (!why.trim()) { deleteError.value = '请先填写本次删除或忘记的实际原因。'; return }
@@ -209,7 +222,8 @@ async function deleteFile(forget) {
   finally { deleting.value = false }
 }
 async function loadState(confirmDiscard = true) {
-  if (confirmDiscard && dirty.value && !window.confirm('放弃当前未保存的记忆草稿，重新读取后端状态？')) return
+  if (adopting.value) return
+  if (confirmDiscard && fileDirty.value && !window.confirm('放弃当前未保存的记忆或采用草稿，重新读取后端状态？')) return
   const fresh = beginState()
   stateLoading.value = true
   try {
@@ -226,6 +240,14 @@ async function loadState(confirmDiscard = true) {
   } catch (error) { if (fresh()) stateError.value = error.message }
   finally { if (fresh()) stateLoading.value = false }
 }
+function adopted(value) {
+  adopting.value = false; adoptionDirty.value = false
+  lastResult.value = { kind: 'adopt-pending', scope: 'scene', path: value.target, value }
+  if (value.source_removed) {
+    staleFile.value = true; history.value = []; sourceSelections.value = []
+  }
+  if (can('browse')) browse()
+}
 onMounted(() => loadState(false))
 watch(() => route.query.scene, value => {
   if (typeof value === 'string' && state.value && value !== scene.value) changeScene(value, true)
@@ -239,7 +261,7 @@ watch(editPath, value => {
   <div class="page-stack host-memory">
     <header class="page-intro"><div><p class="eyebrow">独立多场景宿主</p><h1>认识与记忆</h1>
       <p class="muted">按当前宿主实际后端浏览、搜索和维护文件。这里不从聊天自动提炼事实，也不把检索结果当成模型已采用的记忆。</p></div>
-      <v-btn variant="outlined" :loading="stateLoading" :disabled="writing||deleting" @click="loadState()">重读后端状态</v-btn></header>
+      <v-btn variant="outlined" :loading="stateLoading" :disabled="writing||deleting||adopting" @click="loadState()">重读后端状态</v-btn></header>
     <v-alert v-if="stateError" type="error" variant="tonal" role="alert" :title="state?'状态读取失败 · 保留上次结果':'状态读取失败'">{{ stateError }}</v-alert>
     <div v-if="stateLoading && !state" class="surface empty-state" role="status">正在读取实际记忆后端…</div>
     <section v-if="state" class="surface"><div class="section-heading"><h2>当前能力</h2><v-chip variant="tonal" :color="enabled?'info':'warning'">{{ enabled?state.backend:'未配置记忆后端' }}</v-chip></div>
@@ -248,8 +270,8 @@ watch(editPath, value => {
       <p v-else class="muted">当前运行未启用记忆后端，没有可浏览的空树。下方可保存根配置；现有进程不会热启，须按停机流程重启后才可能生效。</p>
     </section>
     <template v-if="enabled && scene">
-      <section class="surface"><h2>场景与范围</h2><div class="form-grid"><v-select :model-value="scene" :items="options" label="场景" :disabled="writing||deleting" hide-details="auto" @update:model-value="changeScene" />
-        <v-select :model-value="scope" :items="scopes" label="范围" :disabled="writing||deleting" hide-details="auto" @update:model-value="changeScope" /></div></section>
+      <section class="surface"><h2>场景与范围</h2><div class="form-grid"><v-select :model-value="scene" :items="options" label="场景" :disabled="writing||deleting||adopting" hide-details="auto" @update:model-value="changeScene" />
+        <v-select :model-value="scope" :items="scopes" label="范围" :disabled="writing||deleting||adopting" hide-details="auto" @update:model-value="changeScope" /></div></section>
       <v-tabs v-model="tab" aria-label="记忆查看方式"><v-tab value="browse">目录与文件</v-tab><v-tab v-if="can('search')" value="search">搜索</v-tab></v-tabs>
       <section v-if="tab==='browse'" class="surface"><div class="section-heading"><h2>目录</h2><v-btn variant="outlined" :loading="browsing" :disabled="!can('browse')" @click="browse(false)">重读目录</v-btn></div>
         <div class="path-actions"><v-btn variant="text" :disabled="directory===''" @click="openDirectory('')">根目录</v-btn>
@@ -279,18 +301,22 @@ watch(editPath, value => {
         <p v-else class="muted">从目录或搜索结果选择文件；有写入权限时也可新建。路径是后端实际相对路径，不另造编号。</p>
         <v-alert v-if="fileError" type="error" variant="tonal" role="alert">读取正文失败：{{ fileError }}</v-alert>
         <p v-if="reading" role="status" class="muted">正在读取正文…</p>
-        <form v-if="writable" class="editor" @submit.prevent="writeFile"><v-text-field v-model="editPath" label="相对 Markdown 路径（例如 notes/topic.md）" :disabled="writing||deleting" hide-details="auto" />
-          <v-textarea v-model="content" label="文件完整正文" rows="12" auto-grow :disabled="writing||deleting" hide-details="auto" class="content-editor" />
-          <v-textarea v-model="reason" label="本次修改原因" rows="2" auto-grow :disabled="writing||deleting" hide-details="auto" />
+        <form v-if="writable" class="editor" @submit.prevent="writeFile"><v-text-field v-model="editPath" label="相对 Markdown 路径（例如 notes/topic.md）" :disabled="writing||deleting||adopting" hide-details="auto" />
+          <v-textarea v-model="content" label="文件完整正文" rows="12" auto-grow :disabled="writing||deleting||adopting" hide-details="auto" class="content-editor" />
+          <v-textarea v-model="reason" label="本次修改原因" rows="2" auto-grow :disabled="writing||deleting||adopting" hide-details="auto" />
           <p v-if="dirty" class="dirty-note" role="status">当前有未保存的正文、路径或原因草稿。</p>
-          <div class="form-actions"><v-btn type="submit" color="primary" :loading="writing" :disabled="!editPath || !reason.trim() || writing || deleting">写入文件</v-btn>
+          <div class="form-actions"><v-btn type="submit" color="primary" :loading="writing" :disabled="!editPath || !reason.trim() || writing || deleting || adoptionDirty || adopting">写入文件</v-btn>
             <span class="muted">写入只保存当前正文；向量、语义和概览状态看下方后端实际返回，不统一称“已索引”。</span></div></form>
         <template v-else-if="selected"><p class="muted">此范围当前只读。</p><pre class="original-text">{{ content }}</pre></template>
         <v-alert v-if="writeError" type="error" variant="tonal" role="alert">{{ writeError }}</v-alert>
+        <PendingMemoryAdoption v-if="state.backend==='local' && scope==='scene' && selected?.startsWith('legacy-import/') && !staleFile && !reading"
+          :key="`adopt|${scene}|${selected}|${editorEpoch}`" :scene="scene" :source="selected" :original="original"
+          :persona-ids="state.persona_ids[scene]" :blocked="dirty || writing || deleting || stateLoading"
+          @dirty="value=>adoptionDirty=value" @busy="value=>adopting=value" @adopted="adopted" />
         <HostMemorySources v-if="forgettable" :key="`${scene}:${selected}:${editorEpoch}`" :scene="scene" :target="selected" @selection="value=>sourceSelections=value" />
         <div v-if="selected && scope==='scene'" class="file-actions"><v-btn v-if="can('history')" variant="outlined" :loading="historyLoading" @click="readHistory">查看修改历史</v-btn>
-          <v-btn v-if="deletable" variant="outlined" color="error" :loading="deleting" :disabled="!reason.trim()" @click="deleteFile(false)">普通删除</v-btn>
-          <v-btn v-if="forgettable" variant="outlined" color="error" :loading="deleting" :disabled="!reason.trim()" @click="deleteFile(true)">定向遗忘 · 已选 {{ sourceSelections.length }} 条原消息</v-btn></div>
+          <v-btn v-if="deletable" variant="outlined" color="error" :loading="deleting" :disabled="!reason.trim() || adoptionDirty || adopting" @click="deleteFile(false)">普通删除</v-btn>
+          <v-btn v-if="forgettable" variant="outlined" color="error" :loading="deleting" :disabled="!reason.trim() || adoptionDirty || adopting" @click="deleteFile(true)">定向遗忘 · 已选 {{ sourceSelections.length }} 条原消息</v-btn></div>
         <p v-if="deletable && can('forget')" class="muted">普通删除保留本地可访问历史且不影响原消息；定向遗忘只针对目标文件、其可访问记忆历史版本及本次选中的原消息后台抽取。</p>
         <v-alert v-if="deleteError" type="error" variant="tonal" role="alert">{{ deleteError }}</v-alert>
         <v-alert v-if="historyError" type="error" variant="tonal" role="alert">历史读取失败：{{ historyError }}</v-alert>
@@ -304,6 +330,7 @@ watch(editPath, value => {
         <p v-if="lastResult.kind==='forget' && lastResult.value.excluded_records" class="muted">本次明确选择并保存排除 {{ lastResult.value.excluded_records.length }} 条原消息，其中新增加 {{ lastResult.value.new_exclusions }} 条；不等于聊天、模型请求或备份已删除。</p>
         <pre>{{ JSON.stringify(lastResult.value,null,2) }}</pre></section>
     </template>
+    <HostMemoryEmbeddings v-if="scene" :key="`embeddings:${scene}:${scope}`" :scene="scene" :scope="scope" :scenes="options" />
     <HostMemoryIngest :scene="scene" />
     <HostMemorySettings @dirty="value=>settingsDirty=value" />
   </div>

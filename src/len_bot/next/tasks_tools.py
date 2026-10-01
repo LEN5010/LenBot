@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from .task_materials import MaterialSelection
 
 if TYPE_CHECKING:
     from .tasks import WorkTasks
 
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
-TaskAction = Literal["list", "status", "append", "continue", "answer", "cancel"]
+TaskAction = Literal["list", "status", "events", "read_event", "append", "continue", "answer", "cancel"]
 TaskStatus = Literal["active", "all", "queued", "running", "waiting_input", "done", "failed", "cancelled"]
 
 
@@ -23,6 +24,7 @@ class DelegateArguments(BaseModel):
     requester: str = Field(pattern=r"^[1-9][0-9]*$")
     context: str = ""
     account_browser: bool = False
+    materials: MaterialSelection = Field(default_factory=list, description='本场景共享普通资料的实际文件名选集；登记前复制为本任务私有只读快照，最多16份。不选择整个共享目录。')
 
     @field_validator("goal", "deliverable")
     @classmethod
@@ -44,12 +46,16 @@ class TaskArguments(BaseModel):
     status: TaskStatus = "active"
     offset: int = Field(default=0, ge=0, strict=True)
     limit: int = Field(default=20, ge=1, le=20, strict=True)
+    snapshot: int | None = Field(default=None, ge=0, strict=True)
+    event: int | None = Field(default=None, gt=0, strict=True)
 
     @model_validator(mode="after")
     def action_fields(self) -> TaskArguments:
         allowed = {
             "list": {"action", "status", "offset", "limit"},
             "status": {"action", "id"},
+            "events": {"action", "id", "requester", "offset", "snapshot"},
+            "read_event": {"action", "id", "requester", "event", "offset"},
             "append": {"action", "id", "requester", "text"},
             "continue": {"action", "id", "requester", "text"},
             "answer": {"action", "id", "requester", "text", "confirmed", "question_id"},
@@ -60,8 +66,12 @@ class TaskArguments(BaseModel):
             raise ValueError(f"task action {self.action!r} does not accept fields {sorted(unexpected)!r}")
         if self.action != "list" and self.id is None:
             raise ValueError(f"task action {self.action!r} requires id")
-        if self.action in {"append", "continue", "answer", "cancel"} and self.requester is None:
+        if self.action in {"events", "read_event", "append", "continue", "answer", "cancel"} and self.requester is None:
             raise ValueError(f"task action {self.action!r} requires requester")
+        if self.action == 'read_event' and self.event is None:
+            raise ValueError('task read_event requires the actual event ID from events')
+        if self.action == 'events' and self.offset > 0 and self.snapshot is None:
+            raise ValueError('task events continuation requires its original snapshot')
         if self.action in {"append", "continue"} and (self.text is None or not self.text.strip()):
             raise ValueError(f"task action {self.action!r} requires nonblank text")
         if self.action == "answer":
@@ -89,6 +99,7 @@ DELEGATE_TOOL = {"type": "function", "function": {
 TASK_TOOL = {"type": "function", "function": {
     "name": "task",
     "description": "查询或管理当前场景的真实任务：list/status 查看状态，append 追加运行中要求，"
+    "events按真实requester权限读最近过程（每页5条、续页带snapshot），read_event按原event ID和字符offset读文本投影；"
     "continue 续接已结束任务，answer 回答待输入，cancel 取消。执行结束不等于目标完成；"
     "answer 的 question_id 使用当前 question.id，避免答复到已变化的另一个问题；"
     "文件已复制到交付区也不等于已上传到平台。需要操作者的动作填写实际 requester QQ。",
@@ -103,6 +114,7 @@ async def execute_tasks(service: WorkTasks, scene: str, name: str, args: dict) -
         return await service.delegate(
             scene, requester=parsed.requester, goal=parsed.goal,
             deliverable=parsed.deliverable, context=parsed.context, account_browser=parsed.account_browser,
+            materials=parsed.materials,
         )
     if name != "task":
         raise ValueError(f"unknown task tool {name!r}")
@@ -115,6 +127,10 @@ async def perform_task_action(service: WorkTasks, scene: str, parsed: TaskArgume
         return service.list(scene, status=parsed.status, offset=parsed.offset, limit=parsed.limit)
     if parsed.action == "status":
         return service.status(scene, parsed.id)
+    if parsed.action == 'events':
+        return service.events(scene, parsed.id, requester=parsed.requester, offset=parsed.offset, snapshot=parsed.snapshot)
+    if parsed.action == 'read_event':
+        return service.read_event(scene, parsed.id, parsed.event, requester=parsed.requester, offset=parsed.offset)
     if parsed.action == "append":
         return await service.append(scene, parsed.id, requester=parsed.requester, text=parsed.text)
     if parsed.action == "continue":

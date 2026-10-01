@@ -6,13 +6,23 @@ from dataclasses import dataclass
 import json
 import sqlite3
 from typing import Literal
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .messages import UploadResult
 from .store import Store, encode
+from .task_materials import MATERIALS
+from .memory_embeddings import _reject_constant
 
 
 TaskStatus = Literal["queued", "running", "waiting_input", "done", "failed", "cancelled"]
 TERMINAL = frozenset({"done", "failed", "cancelled"})
+
+
+class TaskInput(BaseModel):
+    model_config = ConfigDict(strict=True, extra='forbid')
+    mode: Literal['continue', 'steer']
+    requester: str = Field(pattern=r'^[1-9][0-9]*$')
+    text: str = Field(min_length=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +34,7 @@ class Task:
     deliverable: str
     context: str
     input: str
+    materials: list[str]
     status: TaskStatus
     created: float
     started: float | None
@@ -51,6 +62,11 @@ class TaskFile:
 
 def _task(row: sqlite3.Row) -> Task:
     values = dict(row)
+    raw_materials = values['materials']
+    try:
+        values['materials'] = MATERIALS.validate_json(raw_materials, strict=True)
+    except ValidationError as error:
+        raise ValueError(f'Invalid task material selection: {error}; raw={raw_materials[:1000]!r}') from error
     values["question"] = None if values["question"] is None else json.loads(values["question"])
     values["account_browser"] = bool(values["account_browser"])
     values["browser_active"] = bool(values["browser_active"])
@@ -65,12 +81,12 @@ class TaskStore:
         self.now = store.now
 
     def create(self, scene: str, requester: str, goal: str, deliverable: str,
-               context: str, input: str, *, account_browser: bool = False) -> Task:
+               context: str, input: str, *, account_browser: bool = False, materials: tuple[str, ...] = ()) -> Task:
         with self.db:
             cursor = self.db.execute(
-                "INSERT INTO tasks(scene,requester,goal,deliverable,context,input,status,created,account_browser) "
-                "VALUES (?,?,?,?,?,?,'queued',?,?)",
-                (scene, requester, goal, deliverable, context, input, self.now(), int(account_browser)),
+                "INSERT INTO tasks(scene,requester,goal,deliverable,context,input,materials,status,created,account_browser) "
+                "VALUES (?,?,?,?,?,?,?,'queued',?,?)",
+                (scene, requester, goal, deliverable, context, input, encode(list(materials)), self.now(), int(account_browser)),
             )
         return self.get(scene, cursor.lastrowid)
 
@@ -87,6 +103,13 @@ class TaskStore:
         if row is None:
             raise ValueError(f"Scene {scene} has no task {id}")
         return _task(row)
+
+    def workspace_discarded(self, scene: str, id: int) -> bool:
+        return self.db.execute("SELECT 1 FROM task_events WHERE scene=? AND task_id=? AND kind='workspace_discard' LIMIT 1",
+                               (scene, id)).fetchone() is not None
+
+    def registered_files(self) -> list[TaskFile]:
+        return [TaskFile(**dict(row)) for row in self.db.execute('SELECT * FROM task_files ORDER BY id')]
 
     def list(self, scene: str, *, status: str = "active", offset: int = 0,
              limit: int = 20) -> list[Task]:
@@ -139,12 +162,22 @@ class TaskStore:
 
     def execution_requester(self, item: Task) -> str:
         """A continued run is authorized by its actual continue operator."""
-        row = self.db.execute(
-            "SELECT json_extract(body,'$.requester') FROM task_events "
-            "WHERE scene=? AND task_id=? AND kind='input' AND json_extract(body,'$.mode')='continue' "
-            "ORDER BY id DESC LIMIT 1", (item.scene, item.id),
-        ).fetchone()
-        return item.requester if row is None else row[0]
+        continuation = self.continuation(item)
+        return item.requester if continuation is None else continuation.requester
+
+    def continuation(self, item: Task) -> TaskInput | None:
+        rows = self.db.execute(
+            "SELECT body FROM task_events "
+            "WHERE scene=? AND task_id=? AND kind='input' ORDER BY id DESC", (item.scene, item.id),
+        )
+        for row in rows:
+            try:
+                actual = TaskInput.model_validate_json(row[0])
+            except ValidationError as error:
+                raise ValueError(f'Invalid task input: {error}; raw={row[0][:1000]!r}') from error
+            if actual.mode == 'continue':
+                return actual
+        return None
 
     def set_container(self, scene: str, id: int, container: str | None) -> Task:
         with self.db:
@@ -231,7 +264,27 @@ class TaskStore:
         ).fetchone()
         if row is None:
             raise ValueError(f"Scene {scene} task {id} has no event {event_id}")
-        return {**dict(row), "body": json.loads(row["body"])}
+        return self._event_record(row)
+
+    @staticmethod
+    def _event_record(row: sqlite3.Row) -> dict:
+        try:
+            body = json.loads(row['body'], parse_constant=_reject_constant)
+        except ValueError as error:
+            raise ValueError(f'Invalid task event {row["id"]}: {error}; raw={row["body"][:500]!r}') from error
+        return {**dict(row), 'body': body}
+
+    def event_page(self, scene: str, id: int, *, offset: int, snapshot: int | None) -> dict:
+        self.get(scene, id)
+        maximum = self.db.execute('SELECT COALESCE(MAX(id),0) FROM task_events WHERE scene=? AND task_id=?',
+                                  (scene, id)).fetchone()[0]
+        boundary = maximum if snapshot is None else snapshot
+        if boundary > maximum:
+            raise ValueError(f'Task event snapshot exceeds actual task range: task={id}, snapshot={boundary}, maximum={maximum}')
+        rows = self.db.execute('SELECT * FROM task_events WHERE scene=? AND task_id=? AND id<=? '
+                               'ORDER BY id DESC LIMIT 6 OFFSET ?', (scene, id, boundary, offset)).fetchall()
+        return {'snapshot': boundary, 'offset': offset, 'next_offset': offset + 5 if len(rows) > 5 else None,
+                'events': [self._event_record(row) for row in rows[:5]]}
 
     def pending_notices(self, scene: str) -> list[tuple[int, str]]:
         return [(row[0], row[1]) for row in self.db.execute(

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "QQ group-chat bot with tool calls, background work, and an operator dashboard"
 readme = "README.md"
 license = "AGPL-3.0-only"
-license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/**/OFL.txt", "licenses/**/SOURCE.md"]
 authors = [
     { name = "LEN5010", email = "1649211052@qq.com" }
 ]
@@ -46,13 +46,54 @@ browser = [
 requires = ["uv_build==0.12.18"]
 build-backend = "uv_build"
 
-# The wheel ships the built control panel (web/static/dist), not its build
-# toolchain. The source distribution keeps the frontend sources and lockfile
-# so the panel can be rebuilt, while omitting local installed dependencies.
+# The installed wheel is the current core plus its actual shared components.
+# The source distribution retains frozen legacy code for explicit migration
+# and later cleanup, and keeps the panel sources/lockfile for rebuilding.
 [tool.uv.build-backend]
-source-include = ["uv.lock", ".dockerignore", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "scripts/**", "containers/**", "docker/**", "deploy/**"]
-source-exclude = ["src/len_bot/web/frontend/node_modules", "scripts/__pycache__"]
-wheel-exclude = ["web/frontend"]
+source-include = ["uv.lock", ".dockerignore", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "scripts/**", "containers/**", "docker/**", "deploy/**", "licenses/**"]
+source-exclude = ["src/len_bot/web/frontend/node_modules", "scripts/__pycache__", "**/.lenbot-instance.lock"]
+wheel-exclude = [
+    "**/.lenbot-instance.lock",
+    "/src/len_bot/actions/**",
+    "/src/len_bot/adapters/**",
+    "/src/len_bot/browser/**",
+    "/src/len_bot/cards/**",
+    "/src/len_bot/cognition/**",
+    "/src/len_bot/events/**",
+    "/src/len_bot/execution/**",
+    "/src/len_bot/memory/**",
+    "/src/len_bot/migrations/**",
+    "/src/len_bot/plugins/**",
+    "/src/len_bot/runtime/**",
+    "/src/len_bot/scenes/**",
+    "/src/len_bot/scheduler/**",
+    "/src/len_bot/services/**",
+    "/src/len_bot/skills/**",
+    "/src/len_bot/state/**",
+    "/src/len_bot/testing/**",
+    "/src/len_bot/tools/**",
+    "/src/len_bot/config.py",
+    "/src/len_bot/config_edit.py",
+    "/src/len_bot/config_store.py",
+    "/src/len_bot/main.py",
+    "/src/len_bot/media/bilibili_segment.py",
+    "/src/len_bot/media/file_config.py",
+    "/src/len_bot/media/files.py",
+    "/src/len_bot/media/models.py",
+    "/src/len_bot/media/segment_protocol.py",
+    "/src/len_bot/media/segment_service.py",
+    "/src/len_bot/media/segment_worker.py",
+    "/src/len_bot/media/service.py",
+    "/src/len_bot/media/store.py",
+    "/src/len_bot/media/transcription.py",
+    "/src/len_bot/web/frontend/**",
+    "/src/len_bot/web/routes/**",
+    "/src/len_bot/web/app.py",
+    "/src/len_bot/web/capability_status.py",
+    "/src/len_bot/web/group_quick.py",
+    "/src/len_bot/web/log_ring.py",
+    "/src/len_bot/web/query_service.py",
+]
 
 [dependency-groups]
 dev = [

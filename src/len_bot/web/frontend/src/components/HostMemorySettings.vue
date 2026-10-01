@@ -25,6 +25,7 @@ function normalizedMemory(value) {
   return { ...common, summaries: value.summaries, openviking: {
     base_url: value.openviking.base_url, account_id: value.openviking.account_id,
     timeout_seconds: value.openviking.timeout_seconds, public_root: value.openviking.public_root,
+    memory_policy: copy(value.openviking.memory_policy),
     scenes: Object.fromEntries(Object.entries(value.openviking.scenes).sort(([left], [right]) => left.localeCompare(right)).map(([scene, item]) =>
       [scene, { user_id: item.user_id, api_key: null }])),
   } }
@@ -39,6 +40,7 @@ function body() {
     base_url: draft.value.openviking.base_url, account_id: draft.value.openviking.account_id,
     timeout_seconds: draft.value.openviking.timeout_seconds,
     public_root: draft.value.openviking.public_root,
+    memory_policy: copy(draft.value.openviking.memory_policy),
     scenes: Object.fromEntries([...identities.value].sort((left, right) => left.scene.localeCompare(right.scene)).map(item => [item.scene, {
       user_id: item.user_id, api_key: item.api_key === '' ? null : item.api_key,
     }])),
@@ -78,7 +80,7 @@ function chooseBackend(value) {
     identities.value = []
   } else {
     draft.value = { backend: 'openviking', summaries: false, auto_recall: true, recall_budget_chars: 1500, recall_limit: 5, ingest: null,
-      openviking: { base_url: '', account_id: '', timeout_seconds: 20, public_root: null } }
+      openviking: { base_url: '', account_id: '', timeout_seconds: 20, public_root: null, memory_policy: null } }
     identities.value = identityRows(null, configuredScenes.value)
   }
   saveError.value = ''; savedNotice.value = ''
@@ -90,6 +92,11 @@ function toggleIngest(value) {
   draft.value.ingest = value ? {
     idle_seconds: 1800, min_messages: 50, max_age_seconds: 86400,
     batch_size: 100, max_steps: 8, timeout_seconds: 180,
+  } : null
+}
+function toggleNativePolicy(value) {
+  draft.value.openviking.memory_policy = value ? {
+    self: { enabled: true }, peer: { enabled: true }, working_memory: { enabled: false }, memory_types: null,
   } : null
 }
 async function save() {
@@ -163,6 +170,22 @@ onMounted(() => read(false))
             <v-alert v-if="draft.summaries && snapshot.saved.models.roles.memory===null" type="warning" variant="tonal">最近读取的根配置尚无 memory 用途绑定；后端会拒绝开启目录摘要。</v-alert>
           </template>
           <template v-else><h3>OpenViking 后端</h3>
+            <v-switch :model-value="draft.openviking.memory_policy !== null" label="明确指定原生会话抽取策略（否则沿服务默认）" hide-details @update:model-value="toggleNativePolicy" />
+            <div v-if="draft.openviking.memory_policy" class="native-policy">
+              <v-switch v-model="draft.openviking.memory_policy.self.enabled" label="处理当前场景根的记忆" hide-details />
+              <v-switch v-model="draft.openviking.memory_policy.peer.enabled" label="处理按真实 QQ 的 peer 记忆" hide-details />
+              <v-switch v-model="draft.openviking.memory_policy.working_memory.enabled" label="启用原生 working memory" hide-details />
+              <v-switch :model-value="draft.openviking.memory_policy.memory_types !== null" label="只选择显式类别（空名单表示不选任何类别）" hide-details @update:model-value="value=>draft.openviking.memory_policy.memory_types=value?[]:null" />
+              <template v-if="draft.openviking.memory_policy.memory_types !== null">
+                <div v-for="(name,index) in draft.openviking.memory_policy.memory_types" :key="index" class="native-type-row">
+                  <v-text-field v-model="draft.openviking.memory_policy.memory_types[index]" :label="`服务已加载类别 ${index+1}`" hide-details="auto" />
+                  <v-btn variant="outlined" @click="draft.openviking.memory_policy.memory_types.splice(index,1)">删除</v-btn>
+                </div>
+                <v-btn variant="outlined" @click="draft.openviking.memory_policy.memory_types.push('')">添加类别名</v-btn>
+              </template>
+              <p class="muted">新批次创建后读取真实 session.meta 核对策略，差异或协议错误结束该次抽取，不退回默认重试。类别须先在远端服务加载；保存此配置不上传模板、不改服务模型，也不重做旧批次。类别顺序无语义，名称原文不清洗。</p>
+              <p class="muted">独立分类模板位于 src/len_bot/prompts/openviking_memory：lenbot_portrait、lenbot_events、lenbot_bot、lenbot_commitments。运营者须先按部署说明加载远端模板，再明确选择；模板存在不等于远端已生效或抽取质量通过。</p>
+            </div>
             <v-switch v-model="draft.summaries" label="使用原生场景概览并在抽取完成后刷新" hide-details />
             <p class="muted">开启后每次大脑请求分页发现并读取实际存在的 memories 与 peers 人物记忆概览，按真实目录区分归属；新鲜度未知、过期、未采样或明确缺失子项的目录不注入正文。后台抽取完成后逐个刷新这些目录的概览与向量，使用远端自身服务，可能计费；失败或不完整时停止后续刷新。请先为各记忆根生成概览；读取失败会结束当前轮次，不自动降级或重试。概览不保证覆盖所有历史和全部深层正文。保存后重启生效。</p><p class="muted">地址、账户和每个场景身份都须显式填写；配置中的场景必须逐一覆盖且用户 ID 不重复。旧密钥仅在同地址、账户、用户身份不变时可用空输入保留。</p>
             <div class="form-grid"><v-text-field v-model="draft.openviking.base_url" label="服务 HTTP 地址" hide-details="auto" />
@@ -185,6 +208,7 @@ onMounted(() => read(false))
 
 <style scoped>
 .memory-settings{min-width:0;overflow-wrap:anywhere}.section-heading,.status-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}.section-heading h2{font-size:18px;margin:0 0 12px}
+.native-policy{border:1px solid var(--line);border-radius:10px;padding:14px;margin:14px 0}.native-type-row{display:flex;align-items:flex-start;gap:12px;margin-bottom:12px}.native-type-row :deep(.v-input){min-width:0;flex:1}
 .eyebrow{font-size:12px;letter-spacing:.08em;color:var(--primary);font-weight:700;margin:0 0 5px}.memory-settings h3{font-size:16px;margin:20px 0 8px}.memory-settings h4{font-size:15px;margin:0 0 10px}
 .memory-settings fieldset{border:0;padding:0;min-width:0;margin:18px 0}.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:12px;margin:12px 0}.identity{border:1px solid var(--line);border-radius:10px;padding:14px;margin:12px 0}
 .ingest-editor{border-top:1px solid var(--line);margin-top:18px;padding-top:8px}

@@ -19,7 +19,10 @@ def collect(output: Path) -> None:
         notices = []
         if files is not None:
             for file in files:
-                if not re.match(r'^(licen[cs]es?|copying|notice|copyright)(?:[._-].*|$)', file.name, re.I):
+                declared_directory = any(part.endswith('.dist-info') and file.parts[index + 1:index + 2] == ('licenses',)
+                                         for index, part in enumerate(file.parts))
+                if not declared_directory and not re.match(
+                        r'^(licen[cs]es?|copying|notice|copyright)(?:[._-].*|$)', file.name, re.I):
                     continue
                 source = Path(distribution.locate_file(file))
                 if not source.is_file():

@@ -6,10 +6,6 @@ All runtime settings come from that directory's lenbot.config.json.
 """
 
 import asyncio
-import json
-import os
-import stat
-import sys
 import time
 from contextlib import nullcontext
 from pathlib import Path
@@ -17,6 +13,7 @@ from pathlib import Path
 from .chat import Chat
 from .attention import SceneRunner
 from .config import load_config
+from .instance_lock import instance_lock
 from .model import ChatModel
 from .model_slots import ModelSlots
 from .limits import ModelBudget
@@ -26,30 +23,7 @@ from .expression_selection import open_expression_service
 from .network import run_network
 from .persona import load_persona
 from .store import Store, encode
-
-
-async def input_lines():
-    # Regular redirected files are immediately readable; pipes/TTYs need async IO.
-    if stat.S_ISREG(os.fstat(sys.stdin.fileno()).st_mode):
-        for line in sys.stdin:
-            yield line
-            await asyncio.sleep(0)
-        return
-    reader = asyncio.StreamReader()
-    transport, _ = await asyncio.get_running_loop().connect_read_pipe(
-        lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
-    try:
-        pending = b""
-        while chunk := await reader.read(65536):
-            lines = (pending + chunk).split(b"\n")
-            pending = lines.pop()
-            for line in lines:
-                yield line.decode("utf-8")
-                await asyncio.sleep(0)
-        if pending:
-            yield pending.decode("utf-8")
-    finally:
-        transport.close()
+from .stdin_input import input_lines, parse_input
 
 
 async def run() -> None:
@@ -73,7 +47,7 @@ async def run() -> None:
             (ChatModel(config.model_settings("vision")) if config.models.roles.vision is not None
              else nullcontext(None)) as vision,
             open_expression_service(config, store, slots=slots) as expression_service,
-            open_memory(config, store, slots=slots) as memory,
+            open_memory(config, store, active_personas={config.scene: persona.id}, slots=slots) as memory,
             open_memory_ingestor(config, store, memory, [config.scene], slots=slots) as ingestor,
         ):
             budget.memory = memory
@@ -93,7 +67,7 @@ async def run() -> None:
                 tasks.create_task(runner.run())
                 async for line in input_lines():
                     try:
-                        result = runner.receive(json.loads(line))
+                        result = runner.receive(parse_input(line, config.bot_qq))
                     except Exception as error:
                         result = {"status": "error", "error": f"{type(error).__name__}: {error}",
                                   "input_fragment": line[:500]}
@@ -102,7 +76,8 @@ async def run() -> None:
 
 
 def main() -> None:
-    asyncio.run(run())
+    with instance_lock(Path.cwd()):
+        asyncio.run(run())
 
 
 if __name__ == "__main__":

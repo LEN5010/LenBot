@@ -4,11 +4,19 @@ import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { api, sceneName } from '../api.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
+import PersonaPackageTransfer from '../components/PersonaPackageTransfer.vue'
+import PersonaDraftTrial from '../components/PersonaDraftTrial.vue'
+import PersonaKnowledgeEditor from '../components/PersonaKnowledgeEditor.vue'
+import PersonaStickerEditor from '../components/PersonaStickerEditor.vue'
+import PersonaAvatarEditor from '../components/PersonaAvatarEditor.vue'
 
 const route = useRoute(), router = useRouter()
 const host = ref(null), scene = ref(''), snapshot = ref(null)
 const stickerSnapshot = ref(null), stickerLoading = ref(false), stickerError = ref(''), stickerImageErrors = ref({})
 const file = ref('persona.yaml'), draft = ref('')
+const knowledgeDirty = ref(false)
+const stickersDirty = ref(false)
+const avatarDirty = ref(false)
 const loading = ref(false), hostLoading = ref(false), saving = ref(false)
 const readError = ref(''), saveError = ref(''), savedNotice = ref('')
 const files = [
@@ -22,8 +30,9 @@ const options = computed(() => host.value?.scenes.map(item => ({
 })) || [])
 const selectedFile = computed(() => files.find(item => item.value === file.value))
 const dirty = computed(() => snapshot.value !== null && draft.value !== snapshot.value.saved[file.value])
+const trialFiles = computed(() => snapshot.value === null ? null : { ...snapshot.value.saved, [file.value]: draft.value })
 useUnsavedChanges(dirty)
-onBeforeRouteUpdate(() => !dirty.value || window.confirm('有尚未保存的角色文件草稿。放弃并打开另一场景？'))
+onBeforeRouteUpdate(() => (!dirty.value && !knowledgeDirty.value && !stickersDirty.value && !avatarDirty.value) || window.confirm('有未保存的角色文件、知识、表情或头像编辑。放弃并打开另一场景？'))
 let selectionEpoch = 0
 const selection = () => `${scene.value}\u0000${selectionEpoch}`
 const beginRead = useRequestGuard(selection)
@@ -61,7 +70,7 @@ function selectFile(next) {
 }
 function selectScene(next, fromRoute = false) {
   if (!host.value?.scenes.some(item => item.scene === next) || next === scene.value) return
-  if (!fromRoute && dirty.value && !window.confirm('放弃当前文件尚未保存的原文并切换场景？')) return
+  if (!fromRoute && (dirty.value || knowledgeDirty.value || stickersDirty.value || avatarDirty.value) && !window.confirm('放弃角色文件、知识、表情和头像的未保存编辑并切换场景？')) return
   scene.value = next
   ++selectionEpoch
   snapshot.value = null
@@ -78,7 +87,7 @@ function selectScene(next, fromRoute = false) {
   readFiles(false)
   readStickers()
 }
-async function readFiles(confirmDiscard = true) {
+async function readFiles(confirmDiscard = true, preserveDraft = false) {
   if (confirmDiscard && dirty.value && !window.confirm('放弃当前文件尚未保存的原文，重新读取角色包？')) return
   const target = scene.value
   const fresh = beginRead()
@@ -86,11 +95,15 @@ async function readFiles(confirmDiscard = true) {
   try {
     const value = await api(`/api/host/scenes/${encodeURIComponent(target)}/persona-files`)
     if (!fresh()) return
+    const keepDraft = preserveDraft && dirty.value, currentDraft = draft.value
+    if (keepDraft && value.saved_path !== snapshot.value.saved_path) {
+      readError.value = `保存绑定已变化为 ${value.saved_path}。当前草稿仍属于 ${snapshot.value.saved_path}，未混入新包文件；请明确放弃或另存草稿后重读。`
+      return
+    }
     snapshot.value = value
-    draft.value = value.saved[file.value]
+    draft.value = keepDraft ? currentDraft : value.saved[file.value]
     readError.value = ''
-    saveError.value = ''
-    savedNotice.value = ''
+    if (!keepDraft) { saveError.value = ''; savedNotice.value = '' }
   } catch (error) {
     if (fresh()) readError.value = error.message
   } finally {
@@ -125,7 +138,7 @@ async function save() {
   savedNotice.value = ''
   try {
     const value = await api(`/api/host/scenes/${encodeURIComponent(targetScene)}/persona-files/${targetFile}`, {
-      method: 'PUT', body: JSON.stringify({ content }),
+      method: 'PUT', body: JSON.stringify({ content, directory: snapshot.value.saved_path }),
     })
     if (!fresh() || file.value !== targetFile) return
     snapshot.value = value
@@ -150,7 +163,7 @@ watch(() => route.query.scene, value => {
 <template>
   <div class="page-stack host-persona">
     <header class="page-intro"><div><p class="eyebrow">独立多场景宿主</p><h1>角色文件</h1>
-      <p class="muted">只编辑当前配置角色包的四个真实文件。单次仅保存选中的原文；保存前完整校验角色和所有共用场景的工具依赖，不热加载运行中的角色。</p></div>
+      <p class="muted">编辑当前配置角色包的四个真实文件，或导入独立 ZIP。单次仅保存选中的原文；保存前完整校验角色和所有共用场景的工具依赖，不热加载运行中的角色。</p></div>
       <v-btn variant="outlined" :loading="loading || hostLoading" :disabled="saving || !scene" @click="readFiles()">重读角色包</v-btn></header>
     <v-alert v-if="readError" type="error" variant="tonal" role="alert" :title="snapshot?'读取失败 · 保留上次草稿':'读取角色文件失败'">{{ readError }}</v-alert>
     <v-alert v-if="saveError" type="error" variant="tonal" role="alert">{{ saveError }}</v-alert>
@@ -159,10 +172,15 @@ watch(() => route.query.scene, value => {
       <v-select :model-value="scene" :items="options" label="选择场景" hide-details="auto" :disabled="!host || saving" @update:model-value="selectScene" />
       <p v-if="(loading || hostLoading) && !snapshot" class="muted" role="status">正在读取角色包原文和运行角色…</p>
       <template v-if="snapshot"><p>当前运行角色：<strong>{{ snapshot.running.name }}</strong> <span class="muted">{{ snapshot.running.id }}</span></p>
+        <p class="muted">本页已读保存包：{{ snapshot.saved_path }}；运行包：{{ snapshot.running_path }}。绑定改变时旧草稿操作被拒绝，不自动切换目标。</p>
         <p class="muted">同一角色包用于：{{ snapshot.affected_scenes.map(sceneName).join('、') }}。本页保存会影响这些场景的下次启动，不会修改当前会话。</p>
         <v-chip variant="tonal" :color="snapshot.restart_required?'warning':'info'">{{ snapshot.restart_required?'角色包保存值待重启':'角色包与运行值一致' }}</v-chip>
       </template>
     </section>
+    <PersonaPackageTransfer :scene="scene" :unsaved-role="dirty || knowledgeDirty || stickersDirty || avatarDirty" />
+    <PersonaAvatarEditor v-if="scene" :key="scene" :scene="scene" @dirty="avatarDirty=$event" @changed="readFiles(false,true)" />
+    <PersonaKnowledgeEditor v-if="scene" :key="scene" :scene="scene" @dirty="knowledgeDirty=$event" @changed="readFiles(false,true)" />
+    <PersonaStickerEditor v-if="scene" :key="scene" :scene="scene" @dirty="stickersDirty=$event" @changed="readFiles(false,true)" />
     <section v-if="scene" class="surface" aria-labelledby="stickers-title">
       <div class="section-heading"><h2 id="stickers-title">当前运行角色的表情目录</h2>
         <v-btn variant="outlined" :loading="stickerLoading" :disabled="stickerLoading" @click="readStickers">重读目录</v-btn></div>
@@ -192,6 +210,7 @@ watch(() => route.query.scene, value => {
         <div class="form-actions"><v-btn type="submit" color="primary" :loading="saving" :disabled="!dirty || loading">保存所选文件</v-btn>
           <span class="muted">失败时保留原文草稿与接口错误，不自动重试；根配置的角色路径不在此修改。</span></div>
       </form>
+      <PersonaDraftTrial :scene="scene" :directory="snapshot.saved_path" :files="trialFiles" :disabled="saving || loading" />
       <section class="surface"><h2>当前运行角色摘要 · 只读</h2>
         <dl class="role-facts"><div><dt>身份简述</dt><dd>{{ snapshot.running.brief }}</dd></div>
           <div><dt>行为风格</dt><dd>{{ snapshot.running.behavior }}</dd></div>

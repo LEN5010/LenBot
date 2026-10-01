@@ -10,6 +10,7 @@ import sqlite3
 import sys
 
 from .config import SharedConfig, load_instance_config
+from .instance_lock import instance_lock
 from .memory import LocalMemoryConfig, open_memory
 from .store import Store, encode
 from .model_slots import ModelSlots
@@ -27,8 +28,11 @@ def _backup(index: Path) -> Path | None:
         with closing(sqlite3.connect(index.as_uri() + "?mode=ro", uri=True)) as source:
             with closing(sqlite3.connect(backup)) as target:
                 source.backup(target)
-    except BaseException:
-        backup.unlink()
+    except BaseException as error:
+        try:
+            backup.unlink()
+        except OSError as cleanup_error:
+            error.add_note(f'Incomplete memory index backup cleanup also failed at {backup}: {cleanup_error}')
         raise
     return backup
 
@@ -59,8 +63,9 @@ async def rebuild(config: SharedConfig) -> dict:
 def main() -> None:
     if len(sys.argv) != 1:
         raise SystemExit("Memory reindex takes no arguments; stop the host and run from its root")
-    config = load_instance_config(Path.cwd())
-    print(encode(asyncio.run(rebuild(config))), flush=True)
+    with instance_lock(Path.cwd()):
+        config = load_instance_config(Path.cwd())
+        print(encode(asyncio.run(rebuild(config))), flush=True)
 
 
 if __name__ == "__main__":

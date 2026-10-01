@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import ExitStack, closing
 from pathlib import Path
 import sqlite3
 import sys
 
 from .config import load_instance_config
+from .instance_lock import instance_lock
 from .memory_jobs import FORMAT_VERSION
 
 
@@ -52,6 +53,8 @@ def _step(db: sqlite3.Connection, path: Path, version: int) -> Path:
                        "id INTEGER PRIMARY KEY,scene TEXT NOT NULL,purpose TEXT NOT NULL,"
                        "started REAL NOT NULL,ended REAL,request TEXT NOT NULL,response TEXT,usage TEXT,cost TEXT,error TEXT)")
             db.execute("CREATE INDEX memory_embedding_usage ON memory_embedding_calls(started,scene)")
+        elif version == 4:
+            db.execute('CREATE TABLE memory_personas (scene TEXT NOT NULL,persona_id TEXT NOT NULL,PRIMARY KEY(scene,persona_id))')
         db.execute(f"PRAGMA user_version={version + 1}")
         db.commit()
     except BaseException:
@@ -61,7 +64,7 @@ def _step(db: sqlite3.Connection, path: Path, version: int) -> Path:
 
 
 def migrate_memory_jobs(path: Path) -> Path:
-    """Upgrade format 1 or 2 step by step; return the copy of the input format."""
+    """Upgrade one stopped old format step by step; return the copy of the input format."""
     path = Path(path).resolve()
     with closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, isolation_level=None)) as db:
         application_id = db.execute("PRAGMA application_id").fetchone()[0]
@@ -81,20 +84,27 @@ def migrate_memory_jobs(path: Path) -> Path:
 def main() -> None:
     if len(sys.argv) != 1:
         raise SystemExit("Memory processing migration takes no arguments; stop the instance and run from its root")
-    config = load_instance_config(Path.cwd())
-    paths = [config.database.with_name(config.database.name + ".memory.sqlite3")]
-    paths.extend(sorted((Path.cwd() / '.runtime' / 'chat-tests').glob('*/state.db.memory.sqlite3')))
-    for path in paths:
-        if not path.exists():
-            continue
-        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
-            app, version = (db.execute('PRAGMA application_id').fetchone()[0],
-                                     db.execute('PRAGMA user_version').fetchone()[0])
-        if app == APPLICATION_ID and version == FORMAT_VERSION:
-            print(f"Already current: {path}")
-            continue
-        backup = migrate_memory_jobs(path)
-        print(f"Offline memory processing migration completed; input-format copy: {backup}")
+    root = Path.cwd()
+    with ExitStack() as locks:
+        locks.enter_context(instance_lock(root))
+        config = load_instance_config(root)
+        trials = sorted((root / '.runtime' / 'chat-tests').glob('*/state.db.memory.sqlite3'))
+        for path in trials:
+            if path.is_symlink():
+                raise ValueError(f'Trial processing database must not be a symbolic link: {path}')
+            locks.enter_context(instance_lock(path.parent))
+        paths = [config.database.with_name(config.database.name + '.memory.sqlite3'), *trials]
+        for path in paths:
+            if not path.exists():
+                continue
+            with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+                app, version = (db.execute('PRAGMA application_id').fetchone()[0],
+                                db.execute('PRAGMA user_version').fetchone()[0])
+            if app == APPLICATION_ID and version == FORMAT_VERSION:
+                print(f"Already current: {path}")
+                continue
+            backup = migrate_memory_jobs(path)
+            print(f"Offline memory processing migration completed; input-format copy: {backup}")
 
 
 

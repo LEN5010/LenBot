@@ -13,6 +13,7 @@ import sys
 from zoneinfo import ZoneInfo
 
 from .config import HostConfig, LabConfig, load_instance_config
+from .instance_lock import instance_lock
 from .legacy_messages import convert_legacy_message
 from .messages import ChatMessage, render_message
 from .store import Store, encode
@@ -52,8 +53,11 @@ def _backup(store: Store, path: Path) -> None:
     try:
         with closing(sqlite3.connect(path)) as backup:
             store.db.backup(backup)
-    except BaseException:
-        path.unlink()
+    except BaseException as error:
+        try:
+            path.unlink()
+        except OSError as cleanup_error:
+            error.add_note(f'Incomplete history backup cleanup also failed at {path}: {cleanup_error}')
         raise
 
 
@@ -183,7 +187,8 @@ def import_history(config: LabConfig | HostConfig) -> dict:
 def main() -> None:
     if len(sys.argv) != 1:
         raise SystemExit("History import takes no arguments; use the instance's lenbot.config.json")
-    print(encode(import_history(load_instance_config(Path.cwd()))))
+    with instance_lock(Path.cwd()):
+        print(encode(import_history(load_instance_config(Path.cwd()))))
 
 
 if __name__ == "__main__":

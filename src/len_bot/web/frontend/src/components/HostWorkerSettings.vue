@@ -49,7 +49,7 @@ function freshWorker() {
     compaction_reserve_tokens: 16384, compaction_keep_recent_tokens: 20000,
     active_timeout_seconds: 1800, input_timeout_seconds: 1800,
     max_file_bytes: 25 * 1024 * 1024, input_support: 'text', model_reasoning: null,
-    skills_directory: null, public_browser: false,
+    skills_directory: null, public_browser: false, mcp: false,
     egress: { enabled: true, max_task_bytes: 524288000, max_scene_daily_bytes: 2147483648,
       max_connections: 16, bytes_per_second: 8388608,
       connect_timeout_seconds: 30, header_timeout_seconds: 30 },
@@ -183,6 +183,7 @@ onMounted(() => read(false))
           <v-chip variant="tonal" :color="snapshot.restart_required.worker?'warning':'info'">{{ snapshot.restart_required.worker?'保存值待重启':'保存值与运行值一致' }}</v-chip></div>
         <p class="muted">公共联网代理：运行值 {{ snapshot.running.worker?.egress.enabled?'配置启用':'未启用' }}；保存值 {{ snapshot.saved.worker?.egress.enabled?'计划启用':'未启用' }}。这里不表示域名已实际联网。</p>
         <p class="muted">公共浏览：运行值 {{ snapshot.running.worker?.public_browser?'已配置':'未配置' }}；保存值 {{ snapshot.saved.worker?.public_browser?'计划启用':'未启用' }}。配置不代表浏览器已启动或浏览成功。</p>
+        <p class="muted">任务 MCP：运行值 {{ snapshot.running.worker?.mcp?'允许宿主桥调用':'未启用' }}；保存值 {{ snapshot.saved.worker?.mcp?'计划启用':'未启用' }}。仅当前场景实际连通且角色允许的工具进入任务；密钥不进容器，启用不代表工具已执行。</p>
         <p class="muted">技能目录：运行值 {{ snapshot.running.worker?.skills_directory ?? '未设置' }}；保存值 {{ snapshot.saved.worker?.skills_directory ?? '未设置' }}。目录保存不表示角色已选择技能或任务实际执行过技能。</p>
         <p class="muted">保存值中的任务模型：{{ snapshot.saved.models.roles.worker===null?'未绑定':`${snapshot.saved.models.roles.worker.provider} / ${snapshot.saved.models.roles.worker.model}` }}。配置费用上限时，须在模型页为此提供方与精确模型设置价格。</p>
         <form @submit.prevent="saveWorker"><fieldset :disabled="loading || Boolean(saving)">
@@ -220,6 +221,7 @@ onMounted(() => read(false))
             <details><summary>任务内公共浏览</summary>
               <p class="muted">固定使用任务镜像内的 Playwright CLI 1.62.0，不另选浏览后端。启用须同时启用公共联网回环代理；本页不会自动打开联网。保存配置不代表浏览器已启动、已连接或浏览成功，也不会为每个任务预占 Chromium。</p>
               <v-switch v-model="workerDraft.public_browser" label="允许任务按需使用公共浏览" :disabled="loading || Boolean(saving)" hide-details />
+              <v-switch v-model="workerDraft.mcp" label="允许任务通过宿主调用本场景 MCP 工具" :disabled="loading || Boolean(saving)" hide-details />
               <p v-if="workerDraft.public_browser && !workerDraft.egress.enabled" class="muted">公共浏览需要上方公共联网代理；请明确启用后一起保存，不能只开启浏览。</p>
               <p class="muted">真实任务中核对 CLI 后按需通过 <code>lenbot-browser</code> 打开；仅供任务容器，不会给群聊大脑直接注册 browser 工具。匿名 Cookie 只保留在该任务会话，任务容器清理后不跨任务沿用。</p>
             </details>

@@ -7,16 +7,17 @@ WORKDIR /build/src/len_bot/web/frontend
 COPY src/len_bot/web/frontend/package.json src/len_bot/web/frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY src/len_bot/web/frontend/ ./
-COPY scripts/collect_frontend_licenses.cjs /build/collect_frontend_licenses.cjs
-RUN node /build/collect_frontend_licenses.cjs /build/src/len_bot/web/frontend/node_modules /build/licenses/frontend
+COPY scripts/collect_frontend_licenses.cjs /build/scripts/collect_frontend_licenses.cjs
 # vite.config.js writes to ../static/dist, so this lands at
 # /build/src/len_bot/web/static/dist and keeps the repository layout.
 RUN npm run build
+RUN mkdir -p /build/licenses && cp -r ../static/dist/assets/licenses/frontend /build/licenses/frontend
 
 FROM python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 AS build
 RUN python -m pip install --no-cache-dir uv==0.12.13
 WORKDIR /opt/lenbot
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
+COPY licenses/ ./licenses/
 COPY scripts/collect_python_licenses.py /build/collect_python_licenses.py
 COPY src ./src
 # The panel must exist before the wheel is built; uv_build packages it as
@@ -26,6 +27,7 @@ RUN uv sync --locked --no-dev --no-editable
 RUN .venv/bin/python /build/collect_python_licenses.py /build/licenses/python
 COPY --from=frontend /build/licenses/frontend /build/licenses/frontend
 RUN mkdir /build/licenses/project && cp LICENSE NOTICE THIRD_PARTY_NOTICES.md /build/licenses/project/
+RUN cp -r licenses /build/licenses/project/third-party
 
 FROM python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata \

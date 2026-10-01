@@ -239,12 +239,16 @@ function resetExample(value) {
 }
 async function saveExample() {
   if (!expression.value || expressionDirty.value || exampleSaving.value) return
-  const fresh = beginExample(), id = expression.value.id
+  const fresh = beginExample(), id = expression.value.id, scene = selectedScene.value
+  const body = { expression_id: id, context: exampleDraft.value.context, line: exampleDraft.value.line,
+    tags: exampleDraft.value.tags.map(row => row.value) }
   exampleSaving.value = true; exampleError.value = ''; exampleNotice.value = ''
   try {
-    const value = await api(`/api/host/scenes/${encodeURIComponent(selectedScene.value)}/persona-examples`, {
-      method:'POST', body:JSON.stringify({ expression_id:id, context:exampleDraft.value.context, line:exampleDraft.value.line,
-        tags:exampleDraft.value.tags.map(row => row.value) }),
+    const target = await api(`/api/host/scenes/${encodeURIComponent(scene)}/persona-location`)
+    if (!fresh() || expression.value?.id !== id) return
+    if (!window.confirm(`将此采用表达追加到 ${target.saved_path}/examples.yaml？共用场景：${target.affected_scenes.map(sceneName).join('、')}。运行角色不热替换。`)) return
+    const value = await api(`/api/host/scenes/${encodeURIComponent(scene)}/persona-examples`, {
+      method:'POST', body:JSON.stringify({ ...body, directory: target.saved_path }),
     })
     if (!fresh() || expression.value?.id !== id) return
     const shared = value.affected_scenes.length > 1 ? `该角色包同时用于 ${value.affected_scenes.map(sceneName).join('、')}。` : ''

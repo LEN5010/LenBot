@@ -1,0 +1,20 @@
+memory_type: lenbot_participant_commitments
+description: |
+  整理本来源参与者（非助手）的实际承诺、原约定和后续进展。按真实QQ和原话区分承诺者及对象。
+  提议、明确答应、修改、撤销、进行中、实际完成和结果未知分别记录，保留当时来源和日期。
+  助手角色的承诺由角色专用分类整理；身份未知的说法保持未知，交给事件分类保留。
+directory: "viking://user/{{ user_space }}/memories/lenbot"
+filename_template: participant-commitments.md
+enabled: true
+stage: user
+peer_enabled: false
+operation_mode: upsert
+content_template: "{{ content }}"
+embedding_template: "{{ content }}"
+fields:
+  - name: content
+    type: string
+    merge_op: patch
+    description: |
+      本来源参与者承诺的完整Markdown，按实际QQ注明谁承诺了什么、给谁、原约定时间和最新具体进展。
+      保留仍未结束且本批次未涉及的事项，记录不冒充已经创建提醒、执行任务或确认发送。

@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 from .config import load_instance_config
+from .instance_lock import instance_lock
 from .expression_selection import open_expression_service
 from .store import Store, encode
 from .model_slots import ModelSlots
@@ -27,7 +28,8 @@ async def rebuild() -> None:
 def main() -> None:
     if len(sys.argv) != 1:
         raise SystemExit("Expression reindex takes no arguments; stop the host and run from its configured directory")
-    asyncio.run(rebuild())
+    with instance_lock(Path.cwd()):
+        asyncio.run(rebuild())
 
 
 if __name__ == "__main__":

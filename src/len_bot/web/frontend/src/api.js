@@ -13,7 +13,7 @@ export function resetApiSession() {
   ++sessionGeneration
 }
 
-export async function api(path, options = {}) {
+export async function api(path, options = {}, responseFormat = 'json') {
   const session = sessionGeneration
   const headers = { ...(options.headers || {}) }
   if (options.body && !(options.body instanceof FormData)) {
@@ -23,10 +23,11 @@ export async function api(path, options = {}) {
   if (res.status === 401 && path !== '/api/auth/login' && session === sessionGeneration) onUnauthorized()
   let data
   try {
-    data = await res.json()
+    data = responseFormat === 'blob' && res.ok ? await res.blob() : await res.json()
   }
-  catch {
-    const error = new Error(`HTTP ${res.status}：接口未返回可读取的 JSON，本次请求结果需核对；没有自动重试。`)
+  catch (problem) {
+    const format = responseFormat === 'blob' && res.ok ? '二进制文件' : 'JSON'
+    const error = new Error(`HTTP ${res.status}：接口未返回可读取的 ${format}：${problem.message}。本次请求结果需核对；没有自动重试。`)
     error.status = res.status
     throw error
   }

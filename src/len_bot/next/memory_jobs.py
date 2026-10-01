@@ -7,19 +7,24 @@ rebuildable index. Enabling memory for the first time starts with new messages.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
+import stat
 import time
+from typing import Iterator
 
 from .store import encode
+from .memory_embeddings import _reject_constant
 
 
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 
 
 class MemoryJobs:
-    def __init__(self, path: Path):
-        self.db = sqlite3.connect(path)
+    def __init__(self, path: Path, *, readonly: bool = False):
+        self.db = (sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
+                   if readonly else sqlite3.connect(path))
         self.db.row_factory = sqlite3.Row
         try:
             tables = self.db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -33,13 +38,19 @@ class MemoryJobs:
                 if application_id != 0x4C424D4A or version != FORMAT_VERSION:
                     raise ValueError(f"unsupported memory processing database: {path}")
             else:
+                if readonly:
+                    raise ValueError(f'Existing memory processing database is not initialized: {path}')
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id=1279413578;
-                    PRAGMA user_version=4;
+                    PRAGMA user_version=5;
                     CREATE TABLE memory_cursors (
                         scene TEXT PRIMARY KEY, after_seq INTEGER NOT NULL,
                         enabled_at REAL NOT NULL
+                    );
+                    CREATE TABLE memory_personas (
+                        scene TEXT NOT NULL, persona_id TEXT NOT NULL,
+                        PRIMARY KEY(scene,persona_id)
                     );
                     CREATE TABLE memory_jobs (
                         id INTEGER PRIMARY KEY, scene TEXT NOT NULL, backend TEXT NOT NULL,
@@ -74,6 +85,45 @@ class MemoryJobs:
     def close(self) -> None:
         self.db.close()
 
+    def recover_embeddings(self, now: float) -> None:
+        error = 'Interrupted: previous memory embedding call has no confirmed result; not replayed; service usage and cost remain unknown'
+        with self.db:
+            self.db.execute("UPDATE memory_embedding_calls SET ended=?,error=CASE WHEN error IS NULL THEN ? "
+                            "ELSE error || char(10) || ? END WHERE ended IS NULL", (now, error, error))
+
+    @staticmethod
+    def _embedding_record(row: sqlite3.Row, *, request: bool) -> dict:
+        result = dict(row)
+        fields = ('request', 'response', 'usage', 'cost') if request else ('response', 'usage', 'cost')
+        for field in fields:
+            raw = result[field]
+            if raw is None:
+                continue
+            try:
+                result[field] = json.loads(raw, parse_constant=_reject_constant)
+            except ValueError as error:
+                raise ValueError(f'Invalid memory embedding call {row["id"]} {field}: {error}; raw={raw[:500]!r}') from error
+        return result
+
+    def embedding_calls(self, source: str, *, offset: int, limit: int, snapshot: int | None) -> dict:
+        maximum = self.db.execute('SELECT COALESCE(MAX(id),0) FROM memory_embedding_calls WHERE scene=?',
+                                  (source,)).fetchone()[0]
+        boundary = maximum if snapshot is None else snapshot
+        if boundary > maximum:
+            raise ValueError(f'Embedding call snapshot is beyond this source: source={source!r}, snapshot={boundary}, maximum={maximum}')
+        rows = self.db.execute('SELECT id,scene,purpose,started,ended,response,usage,cost,error '
+            'FROM memory_embedding_calls WHERE scene=? AND id<=? ORDER BY id DESC LIMIT ? OFFSET ?',
+            (source, boundary, limit + 1, offset)).fetchall()
+        return {'source': source, 'snapshot': boundary, 'offset': offset,
+                'next_offset': offset + limit if len(rows) > limit else None,
+                'calls': [self._embedding_record(row, request=False) for row in rows[:limit]]}
+
+    def embedding_call(self, source: str, id: int) -> dict:
+        row = self.db.execute('SELECT * FROM memory_embedding_calls WHERE scene=? AND id=?', (source, id)).fetchone()
+        if row is None:
+            raise FileNotFoundError(f'Memory embedding call {id} does not exist in source {source!r}')
+        return self._embedding_record(row, request=True)
+
     def __enter__(self) -> MemoryJobs:
         return self
 
@@ -90,6 +140,14 @@ class MemoryJobs:
 
     def after(self, scene: str) -> int:
         return self.db.execute("SELECT after_seq FROM memory_cursors WHERE scene=?", (scene,)).fetchone()[0]
+
+    def remember_personas(self, scene: str, persona_ids: set[str]) -> None:
+        with self.db:
+            self.db.executemany('INSERT OR IGNORE INTO memory_personas(scene,persona_id) VALUES(?,?)',
+                                ((scene, persona_id) for persona_id in sorted(persona_ids)))
+
+    def persona_ids(self, scene: str) -> set[str]:
+        return {row[0] for row in self.db.execute('SELECT persona_id FROM memory_personas WHERE scene=?', (scene,))}
 
     def exclude_records(self, scene: str, records: list[int]) -> int:
         """Persist selected real message positions; ownership is checked by the host."""
@@ -193,3 +251,21 @@ class MemoryJobs:
             return None
         return {**dict(row), **{key: None if row[key] is None else json.loads(row[key])
                                 for key in ("request", "response", "usage", "cost")}}
+
+
+@contextmanager
+def processing_records(database: Path, active: MemoryJobs | None) -> Iterator[MemoryJobs | None]:
+    """Borrow the active owner or read this root's existing records without starting memory."""
+    if active is not None:
+        yield active
+        return
+    path = database.with_name(database.name + '.memory.sqlite3')
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        yield None
+        return
+    if not stat.S_ISREG(info.st_mode) or path.resolve(strict=True) != path:
+        raise ValueError(f'Memory record source must be an existing regular file without links: {path}; mode={oct(info.st_mode)}')
+    with MemoryJobs(path, readonly=True) as records:
+        yield records

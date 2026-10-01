@@ -27,7 +27,7 @@ class PersonaSticker:
     data: bytes = field(repr=False)
 
 
-class _StickerEntry(BaseModel):
+class StickerEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     file: str
@@ -58,7 +58,7 @@ class _StickerEntry(BaseModel):
         return values
 
 
-def _image(path: Path, entry: _StickerEntry) -> PersonaSticker:
+def _image(path: Path, entry: StickerEntry) -> PersonaSticker:
     try:
         if not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode):
             raise ValueError("sticker asset must be a regular file")
@@ -90,6 +90,10 @@ def load_stickers(persona_directory: Path) -> dict[str, PersonaSticker]:
     except UnicodeDecodeError as error:
         fragment = raw[max(0, error.start - 30):error.end + 30]
         raise ValueError(f"{index}: invalid UTF-8: {error}; raw={fragment!r}") from error
+    return parse_sticker_index(persona_directory, content)
+
+
+def sticker_entries(index: Path, content: str) -> list[StickerEntry]:
     try:
         items = yaml.safe_load(content)
     except yaml.YAMLError as error:
@@ -97,24 +101,38 @@ def load_stickers(persona_directory: Path) -> dict[str, PersonaSticker]:
     if not isinstance(items, list):
         raise ValueError(f"{index}: expected a list; raw={content[:500]!r}")
 
-    result: dict[str, PersonaSticker] = {}
+    result: list[StickerEntry] = []
+    names: set[str] = set()
     for position, item in enumerate(items):
         try:
-            entry = _StickerEntry.model_validate(item)
+            entry = StickerEntry.model_validate(item)
         except ValidationError as error:
             details = "; ".join(f"{'.'.join(map(str, issue['loc']))}: {issue['msg']}"
                                 for issue in error.errors(include_input=False))
             raise ValueError(f"{index}[{position}]: {details}; raw={str(item)[:500]!r}") from error
-        if entry.file in result:
+        if entry.file in names:
             raise ValueError(f"{index}[{position}]: duplicate sticker file {entry.file!r}; raw={str(item)[:500]!r}")
+        names.add(entry.file)
+        result.append(entry)
+    return result
+
+
+def parse_sticker_index(persona_directory: Path, content: str) -> dict[str, PersonaSticker]:
+    """Validate one operator-edited index against its actual images, without writing files."""
+    directory = persona_directory / 'stickers'
+    if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+        raise ValueError(f'{directory}: stickers must be an actual directory')
+    index = directory / 'index.yaml'
+    result: dict[str, PersonaSticker] = {}
+    for position, entry in enumerate(sticker_entries(index, content)):
         parts = entry.file.split("/")
         path = directory.joinpath(*parts)
         for component in (directory.joinpath(*parts[:end]) for end in range(1, len(parts) + 1)):
             if component.is_symlink():
                 raise ValueError(f"{index}[{position}]: sticker path traverses symbolic link: {component}; "
-                                 f"raw={str(item)[:500]!r}")
+                                 f"raw={entry.model_dump()!r}")
         try:
             result[entry.file] = _image(path, entry)
         except ValueError as error:
-            raise ValueError(f"{index}[{position}]: {error}; raw={str(item)[:500]!r}") from error
+            raise ValueError(f"{index}[{position}]: {error}; raw={entry.model_dump()!r}") from error
     return result

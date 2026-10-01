@@ -134,7 +134,7 @@ def _source_text(path: Path) -> str:
         raise ValueError(f"{path}: invalid UTF-8: {error}; raw={snippet!r}") from error
 
 
-def _atomic_replace(path: Path, content: str) -> None:
+def _atomic_replace(path: Path, content: str, *, create_only: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".memory-write-", dir=path.parent)
     try:
@@ -142,7 +142,10 @@ def _atomic_replace(path: Path, content: str) -> None:
             output.write(content.encode("utf-8"))
             output.flush()
             os.fsync(output.fileno())
-        os.replace(temporary, path)
+        if create_only:
+            os.link(temporary, path)
+        else:
+            os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -428,7 +431,20 @@ class LocalMemory:
             raise ValueError("reindex_embeddings requires configured embedding")
         files = self._source_files()
         ordered = sorted(files.items())
-        batch = await self._embedding("public", [content for _, content in ordered], "reindex") if ordered else None
+        partitions: dict[str, list[tuple[str, str]]] = {}
+        for (scope, path), content in ordered:
+            partitions.setdefault(scope, []).append((path, content))
+        vectors: dict[tuple[str, str], tuple[float, ...]] = {}
+        dimensions: int | None = None
+        for scope, entries in partitions.items():
+            batch = await self._embedding(scope, [content for _, content in entries], "reindex")
+            if dimensions is None:
+                dimensions = batch.dimensions
+            elif dimensions != batch.dimensions:
+                raise ValueError(f'Memory reindex partitions have different embedding dimensions: '
+                                 f'expected={dimensions}, scope={scope!r}, actual={batch.dimensions}; index not replaced')
+            for index, (path, _) in enumerate(entries):
+                vectors[scope, path] = batch.vectors[index]
         with self._db() as db:
             db.execute("BEGIN EXCLUSIVE")
             if self._vector_table_exists(db):
@@ -437,14 +453,13 @@ class LocalMemory:
             old_rows = db.execute("SELECT id,content FROM memory_files").fetchall()
             for row in old_rows:
                 self._remove_index(db, row)
-            if batch is not None:
-                self._create_vector_table(db, batch.dimensions)
-            for index, ((scope, path), content) in enumerate(ordered):
+            if dimensions is not None:
+                self._create_vector_table(db, dimensions)
+            for (scope, path), content in ordered:
                 self._put_index(db, scope, path, content, None)
-                if batch is not None:
-                    rowid = db.execute("SELECT id FROM memory_files WHERE scope=? AND path=?",
-                                       (scope, path)).fetchone()[0]
-                    self._put_vector(db, rowid, scope, batch.vectors[index], remove_existing=False)
+                rowid = db.execute("SELECT id FROM memory_files WHERE scope=? AND path=?",
+                                   (scope, path)).fetchone()[0]
+                self._put_vector(db, rowid, scope, vectors[scope, path], remove_existing=False)
         return len(ordered)
 
     def _browse_sync(self, scope: str, path: str, offset: int, limit: int) -> MemoryPage:
@@ -507,8 +522,10 @@ class LocalMemory:
             return await asyncio.to_thread(self._profiles_sync, source, qqs)
 
     def _write_sync(self, scope: str, path: str, content: str, reason: str,
-                    vector: tuple[float, ...] | None) -> LocalMemoryChange:
+                    vector: tuple[float, ...] | None, create_only: bool = False) -> LocalMemoryChange:
         target = self._target(scope, path, file=True)
+        if create_only and target.exists():
+            raise FileExistsError(f'New formal memory never overwrites an existing file: {target}')
         before = _source_text(target) if target.exists() else None
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -520,7 +537,7 @@ class LocalMemory:
                 elif len(vector) != dimensions:
                     raise ValueError(f"memory vector dimension {len(vector)} differs from index {dimensions}")
             old = self._indexed(db, scope, path, before)
-            _atomic_replace(target, content)
+            _atomic_replace(target, content, create_only=create_only)
             self._put_index(db, scope, path, content, old)
             rowid = old["id"] if old is not None else db.execute(
                 "SELECT id FROM memory_files WHERE scope=? AND path=?", (scope, path)).fetchone()[0]
@@ -530,14 +547,16 @@ class LocalMemory:
                        "VALUES(?,?,?,?,?,?,?)", (scope, path, changed_at, "write", reason, before, content))
         return LocalMemoryChange("write", path, changed_at, reason, before, content)
 
-    async def write(self, scene: str, path: str, content: str, reason: str) -> LocalMemoryChange:
+    async def write(self, scene: str, path: str, content: str, reason: str, *, create_only: bool = False) -> LocalMemoryChange:
         if not reason.strip():
             raise ValueError("memory write reason must not be blank")
         source = _scene_scope(scene)
         async with self._lock(source):
-            self._target(source, path, file=True)
+            target = self._target(source, path, file=True)
+            if create_only and target.exists():
+                raise FileExistsError(f'New formal memory never overwrites an existing file: {target}')
             vector = await self._embed_text(source, content)
-            return await _finish_write_thread(self._write_sync, source, path, content, reason, vector)
+            return await _finish_write_thread(self._write_sync, source, path, content, reason, vector, create_only)
 
     async def owner_write_public(self, path: str, content: str, reason: str) -> LocalMemoryChange:
         """Management-only entry; the authenticated host must establish owner authority."""

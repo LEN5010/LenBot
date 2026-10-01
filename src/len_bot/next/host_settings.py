@@ -28,6 +28,7 @@ from .skills import load_catalog, select_skills
 from .pricing import ModelPrice
 from .web_search import WebSearchSettings
 from .memory import RecallSettings, LocalMemoryConfig, OpenVikingMemoryConfig
+from .memory_openviking import NativeMemoryPolicy
 from .memory_embeddings import EmbeddingBinding
 from .tasks_config import TaskSettings
 from len_bot.web.auth import hash_password
@@ -117,6 +118,7 @@ class OpenVikingChangeSettings(BaseModel):
     account_id: str
     timeout_seconds: float
     public_root: str | None
+    memory_policy: NativeMemoryPolicy | None = None
     scenes: dict[str, MemorySceneIdentityChange]
 
 
