@@ -33,11 +33,11 @@ class OverviewMetadata(BaseModel):
 @dataclass(frozen=True, slots=True)
 class NativeOverview:
     path: str
-    content: str
+    content: str | None
     freshness: OverviewFreshness | None
 
     def as_dict(self) -> dict:
-        return {"path": self.path, "content": self.content,
+        return {"path": self.path, "available": self.content is not None, "content": self.content,
                 "freshness": None if self.freshness is None else self.freshness.model_dump(),
                 "coverage": "direct_children"}
 

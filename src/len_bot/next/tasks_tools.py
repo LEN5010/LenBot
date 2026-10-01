@@ -35,12 +35,18 @@ class DelegateArguments(BaseModel):
 
 
 class TaskArguments(BaseModel):
-    model_config = STRICT
+    model_config = ConfigDict(**STRICT, json_schema_extra={
+        "allOf": [{
+            "if": {"properties": {"action": {"enum": ["append", "continue"]}}},
+            "then": {"required": ["text"], "properties": {"text": {"type": "string", "pattern": r"\S"}}},
+        }],
+    })
 
     action: TaskAction
     id: int | None = Field(default=None, gt=0, strict=True)
     requester: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
-    text: str | None = None
+    text: str | None = Field(default=None,
+        description="append/continue 必填非空补充原文；continue 沿用原任务会话与未被更正的要求。answer 的文字答复与 confirmed 二选一。")
     confirmed: bool | None = None
     question_id: str | None = Field(default=None, min_length=1)
     status: TaskStatus = "active"
@@ -100,7 +106,7 @@ TASK_TOOL = {"type": "function", "function": {
     "name": "task",
     "description": "查询或管理当前场景的真实任务：list/status 查看状态，append 追加运行中要求，"
     "events按真实requester权限读最近过程（每页5条、续页带snapshot），read_event按原event ID和字符offset读文本投影；"
-    "continue 续接已结束任务，answer 回答待输入，cancel 取消。执行结束不等于目标完成；"
+    "continue 按请求人明确要求续接已结束任务；append/continue 必填非空 text。answer 回答待输入，cancel 取消。执行结束不等于目标完成；"
     "answer 的 question_id 使用当前 question.id，避免答复到已变化的另一个问题；"
     "文件已复制到交付区也不等于已上传到平台。需要操作者的动作填写实际 requester QQ。",
     "parameters": TaskArguments.model_json_schema(),

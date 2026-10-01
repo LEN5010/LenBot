@@ -647,6 +647,9 @@ class WorkTasks:
                     failed = asyncio.create_task(session.wait_failure())
                     try:
                         done, _ = await asyncio.wait({consuming, failed}, return_when=asyncio.FIRST_COMPLETED)
+                        session.bridge.raise_if_failed()
+                        if session.egress is not None:
+                            session.egress.raise_if_failed()
                         if failed in done:
                             await failed
                         summary = await consuming
@@ -654,6 +657,9 @@ class WorkTasks:
                         consuming.cancel()
                         failed.cancel()
                         await asyncio.gather(consuming, failed, return_exceptions=True)
+                session.bridge.raise_if_failed()
+                if session.egress is not None:
+                    session.egress.raise_if_failed()
                 self.records.set_container(item.scene, item.id, None)
                 status = "done"
         except asyncio.CancelledError:

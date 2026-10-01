@@ -111,7 +111,8 @@ REACT_TOOL = {"type": "function", "function": {
     "parameters": ReactArguments.model_json_schema(),
 }}
 WAIT_TOOL = {"type": "function", "function": {
-    "name": "wait", "description": "短时等待补充消息，新消息可提前结束；受本轮剩余时限约束。",
+    "name": "wait", "description": "短时等待群友补充消息，新消息可提前结束；受本轮剩余时限约束。"
+        "后台任务由已有追问和结束事件唤醒，委托后结束本轮，不用此工具轮询任务。",
     "parameters": WaitArguments.model_json_schema(),
 }}
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts"

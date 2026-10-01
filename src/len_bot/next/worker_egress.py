@@ -273,6 +273,10 @@ class EgressTransport:
     async def wait_failure(self) -> None:
         raise await asyncio.shield(self._failure)
 
+    def raise_if_failed(self) -> None:
+        if self._failure.done():
+            raise self._failure.result()
+
     async def close(self) -> None:
         self._closing = True
         try:

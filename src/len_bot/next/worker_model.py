@@ -274,6 +274,7 @@ class WorkerModelProxy:
         status: int | None = None
         response_bytes = 0
         error_body = bytearray()
+        deadline: asyncio.Timeout | None = None
         try:
             outgoing, wire, text_estimate, image_unknown = self._request(payload_bytes)
             async with self._slot():
@@ -290,7 +291,8 @@ class WorkerModelProxy:
                     "image_tokens_unknown": image_unknown,
                 })
                 self._calls += 1
-                async with asyncio.timeout(self.settings.timeout_seconds):
+                deadline = asyncio.timeout(self.settings.timeout_seconds)
+                async with deadline:
                     request = self._client.build_request(
                         "POST", "chat/completions", content=wire,
                         headers={
@@ -364,6 +366,13 @@ class WorkerModelProxy:
                     finally:
                         await upstream.aclose()
         except BaseException as error:
+            original_error = error
+            if isinstance(error, TimeoutError) and deadline is not None and deadline.expired():
+                error = TimeoutError(
+                    f"worker model {self.provider}/{self.settings.model} POST chat/completions "
+                    f"exceeded {self.settings.timeout_seconds:g} seconds; "
+                    f"HTTP status={status}, received_bytes={response_bytes}; request did not finish"
+                )
             if isinstance(error, asyncio.CancelledError):
                 self._closed = True
             if call_id is not None and not settled:
@@ -389,6 +398,8 @@ class WorkerModelProxy:
                     self._closed = True
                     error.add_note(f"model-call recording also failed: {finish_error}")
                 self._add_cost(cost)
+            if error is not original_error:
+                raise error from original_error
             raise
         finally:
             self._active_task = None

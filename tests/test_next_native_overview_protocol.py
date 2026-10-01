@@ -1,8 +1,9 @@
-"""Native overview wire format, matching storage/abstract_overview.py and reindex_executor.py."""
+"""Native overview/reindex formats and de-identified session-commit task responses."""
 
 import pytest
 
 from len_bot.next.memory_overview import parse_overview, parse_refresh
+from len_bot.next.memory_openviking import parse_ingest_task
 
 URI = 'viking://user/synthetic-group/memories'
 DOCUMENT = '''---
@@ -67,3 +68,51 @@ def test_invalid_refresh_receipt_fails_at_boundary(field, value):
     row[field] = value
     with pytest.raises(ValueError, match='synthetic raw response'):
         parse_refresh(row, uri=URI, raw='synthetic raw response')
+
+
+def commit_task():
+    """Relevant fields of an observed completed task; identities and URIs are synthetic."""
+    return dict(task_id='synthetic-task', task_type='session_commit', resource_id='synthetic-session',
+                status='completed', error=None,
+                result=dict(session_id='synthetic-session',
+                            archive_uri='viking://user/synthetic-group/sessions/synthetic-session/history/archive_001',
+                            memories_extracted={'memory_edit': 3}, session_skills_extracted=0,
+                            session_skill_uris=[], usage_events_extracted=0,
+                            agent_evolution_enabled=False))
+
+
+@pytest.mark.parametrize('counts', [{'memory_edit': 3}, {}])
+def test_native_commit_preserves_category_counts_and_total(counts):
+    row = commit_task()
+    row['result']['memories_extracted'] = counts
+    task = parse_ingest_task(row, task_id='synthetic-task', raw='de-identified completed response')
+    assert task.status == 'completed'
+    assert task.memories_extracted == counts
+    assert task.memories_extracted_total == sum(counts.values())
+    assert task.result == row['result']
+
+
+def test_native_commit_missing_count_stays_unknown():
+    row = commit_task()
+    del row['result']['memories_extracted']
+    task = parse_ingest_task(row, task_id='synthetic-task', raw='de-identified missing-count response')
+    assert task.memories_extracted is None
+    assert task.memories_extracted_total is None
+
+
+@pytest.mark.parametrize('counts', [3, [], None, {'memory_edit': True}, {'memory_edit': -1},
+                                   {'memory_edit': 1.5}, {'memory_edit': '3'}])
+def test_native_commit_invalid_count_reports_original_input(counts):
+    row = commit_task()
+    row['result']['memories_extracted'] = counts
+    with pytest.raises(ValueError, match='de-identified invalid-count response'):
+        parse_ingest_task(row, task_id='synthetic-task', raw='de-identified invalid-count response')
+
+
+@pytest.mark.parametrize(('field', 'value'), [('task_id', 'another-task'), ('task_type', 'reindex'),
+                                             ('status', 'unknown')])
+def test_native_commit_invalid_task_reports_original_input(field, value):
+    row = commit_task()
+    row[field] = value
+    with pytest.raises(ValueError, match='de-identified invalid-task response'):
+        parse_ingest_task(row, task_id='synthetic-task', raw='de-identified invalid-task response')

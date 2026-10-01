@@ -1,6 +1,6 @@
 {
   "format": "structured-development",
-  "source": "全部身份、时间、群号与原话均为人工合成的结构化开发用例，不是历史聊天录制。",
+  "source": "全部身份、时间、群号与原话均为人工合成。新增任务与表达场景依据本轮已观察失误脱敏改写，不是历史聊天录制；任务用例的宿主事件前提见各自 expect，现有隔离回放不提供任务执行覆盖。",
   "cases": [
     {
       "id": "correction-restart",
@@ -71,6 +71,225 @@
           }
         },
         {"type": "observe", "seconds": 0.2}
+      ]
+    },
+    {
+      "id": "background-task-no-turn-wait",
+      "set": "coherence",
+      "expect": [
+        "任务联调前提：使用已配置独立任务的隔离实例，让真实任务在后台生成文件；现有开发回放的 LOCAL_TOOLS 不含 delegate/task，本例不构成该入口已覆盖任务执行。",
+        "委托入队后可简短告知并结束本轮，后续根据已有任务进度／完成事件处理；不连续 task.status 与 wait 占住当前回合。",
+        "交付通知分别依据真实登记结果与平台回执；任务排队、生成文件不能说成已上传。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "synthetic-3001",
+            "time": 1790001000,
+            "sender": {
+              "nickname": "合成甲",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "请把社团活动清单做成 CSV 文件给我：周六九点读书会，周日下午两点手工课。"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "failed-task-keeps-original-work",
+      "set": "coherence",
+      "expect": [
+        "任务联调前提：由执行器产生真实单次模型请求超时和失败事件，期间不添加人类重做要求；现有回放不注入宿主事件，本例只记录需上机复核的行为场景。",
+        "失败事件是原任务结果，不是新的用户指令；保留失败原文与原任务，不自动 delegate 新任务或自行简化交付要求。",
+        "若回执只说明超时／中止，就按已知错误说明；不把失败断言成画面太精致、代码太多或用户要求不合理。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "synthetic-3101",
+            "time": 1790001100,
+            "sender": {
+              "nickname": "合成甲",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "请做一个小机器人荡秋千的单文件 HTML，用 SVG 绘制并保留摆动动画。"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "explicit-task-continuation-has-text",
+      "set": "coherence",
+      "expect": [
+        "任务联调前提：同一场景已有该请求人的终态海报任务及其原会话，以下为请求人新的续接要求；现有回放未提供该任务快照或任务工具，不得把缺少前提的运行判为通过。",
+        "定位实际原任务后使用 task.continue，带实际 id、requester 与非空 text，传递此次配色补充并保留原要求和已有会话。",
+        "不因续接重新 delegate 同一任务，也不先发送缺 text 的 continue 等待工具报错补参。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "synthetic-3201",
+            "time": 1790001200,
+            "sender": {
+              "nickname": "合成甲",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "继续刚才中断的活动海报任务，配色改成暖色，文字内容和布局保持原来的要求。"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "voice-keeps-care-when-concise",
+      "set": "coherence",
+      "expect": [
+        "两轮关怀对话；比较各轮实际 say.content 与 voice 输出。若本轮大脑没有给出关怀意图，不把结果说成表达器已经保留了关怀。",
+        "当表达意图含调侃后的安慰或照顾时，短句可以改词但保留事实、态度与关怀落点，不只留下反问或顶嘴。",
+        "第二条是在反馈前一条回复的感受；承接对方的感受，不把原本缓和语气的表达改成责备。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "synthetic-3301",
+            "time": 1790001300,
+            "sender": {
+              "nickname": "合成甲",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "我被噩梦吓醒了，想听你安慰两句。"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "synthetic-3302",
+            "time": 1790001340,
+            "sender": {
+              "nickname": "合成甲",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "你能说得温柔一点吗，我现在不太想被逗。"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 2
+        }
       ]
     }
   ]

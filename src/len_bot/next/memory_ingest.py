@@ -354,7 +354,7 @@ class MemoryIngestor:
             self.jobs.status(job, "complete")
             self._refresh.discard(scene)
             self.memory.pending_native_tasks.pop(scene, None)
-            if self.memory.settings.summaries and task.memories_extracted != 0:
+            if self.memory.settings.summaries and task.memories_extracted_total != 0:
                 await self._refresh_native_overview(scene, job)
         elif task.status in {"failed", "cancelled"}:
             job["details"]["native_phase"] = task.status
