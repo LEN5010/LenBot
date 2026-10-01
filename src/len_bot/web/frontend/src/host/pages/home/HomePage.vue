@@ -23,12 +23,12 @@ const effects = computed(() => Object.entries(effectLabels)
 // Only things a person needs to act on, one line and one link each.
 const todo = computed(() => {
   const items = []
-  for (const [kind, list] of [['插件', state.value?.plugins || []], ['MCP 服务', state.value?.mcp || []]]) {
+  for (const [kind, tab, list] of [['插件', 'plugins', state.value?.plugins || []], ['MCP 服务', 'mcp', state.value?.mcp || []]]) {
     for (const item of list) {
       if (item.status === 'failed') items.push({ key: `${kind}:${item.name}`, text: `${kind} ${item.name} 没有启动成功`,
-        error: item.error, to: { name: 'host-capabilities' }, action: '查看' })
+        error: item.error, to: { name: 'host-capabilities', query: { tab } }, action: '查看' })
       else if (item.latest_error) items.push({ key: `${kind}:${item.name}`, text: `${kind} ${item.name} ${formatAgo(item.latest_error.at)}报错`,
-        error: item.latest_error.error, to: { name: 'host-capabilities' }, action: '查看' })
+        error: item.latest_error.error, to: { name: 'host-capabilities', query: { tab } }, action: '查看' })
     }
   }
   if (!day.value) return items

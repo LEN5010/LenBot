@@ -9,6 +9,7 @@ import { clone, numberOrBlank, numberOrNull, same } from '../../forms.js'
 import ErrorNote from '../../components/ErrorNote.vue'
 import AdvancedFields from '../../components/AdvancedFields.vue'
 import QuietControl from './QuietControl.vue'
+import SaveBar from '../../components/SaveBar.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
 const router = useRouter()
@@ -202,12 +203,8 @@ async function removeScene() {
           </AdvancedFields>
         </section>
 
-        <div class="save-bar" :class="{ show: dirty || save.error.value }">
-          <ErrorNote v-if="save.error.value" title="没有保存成功" :error="save.error.value" />
-          <div class="save-row"><span>{{ dirty ? '有未保存的修改' : '' }}</span>
-            <v-btn variant="text" :disabled="!dirty || save.busy.value" @click="adopt">放弃修改</v-btn>
-            <v-btn type="submit" color="primary" :loading="save.busy.value" :disabled="!dirty || duplicateQQ">保存本群设置</v-btn></div>
-        </div>
+        <SaveBar :dirty="dirty" :saving="save.busy.value" :error="save.error.value" label="保存本群设置"
+          :problem="duplicateQQ ? '和群友的关系里有重复的 QQ' : ''" @discard="adopt" />
       </form>
 
       <section class="surface">
@@ -234,9 +231,5 @@ h3{font-size:14px;margin:0}
 .error-line{color:var(--error-text);margin:0}
 .bind-row{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
 .bind-row .v-input{flex:1 1 320px}
-.save-bar{position:sticky;bottom:0;z-index:2;display:none;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 16px;box-shadow:0 -4px 16px rgba(23,43,70,.08)}
-.save-bar.show{display:grid}
-.save-row{display:flex;align-items:center;justify-content:flex-end;gap:8px}
-.save-row span{margin-right:auto;color:var(--muted)}
 @media(max-width:600px){.relation-row{grid-template-columns:1fr auto}.relation-row .v-textarea{grid-column:1/-1;grid-row:2}}
 </style>

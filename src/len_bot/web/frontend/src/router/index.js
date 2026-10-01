@@ -52,13 +52,13 @@ const router = createRouter({
     {
       path:'/host/capabilities',
       name:'host-capabilities',
-      component:()=>import('../views/HostCapabilitiesView.vue'),
+      component:()=>import('../host/pages/capabilities/CapabilitiesPage.vue'),
       meta:{title:'能力'}
     },
     {
       path:'/host/models',
       name:'host-models',
-      component:()=>import('../views/HostModelsView.vue'),
+      component:()=>import('../host/pages/models/ModelsPage.vue'),
       meta:{title:'模型'}
     },
     { path:'/host/history', name:'host-history', redirect:to=>({name:'host-scenes',query:{...to.query,tab:'brain'}}) },
