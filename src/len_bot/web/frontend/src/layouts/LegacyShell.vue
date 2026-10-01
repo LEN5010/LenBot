@@ -2,19 +2,17 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
-import { mdiViewDashboardOutline, mdiForumOutline, mdiAccountOutline, mdiBriefcaseSearchOutline, mdiBookOpenPageVariantOutline, mdiCalendarClockOutline, mdiCogOutline, mdiMenu, mdiClose, mdiLogout, mdiRefresh, mdiChevronDown, mdiArrowLeft } from '@mdi/js'
+import { mdiViewDashboardOutline, mdiForumOutline, mdiAccountOutline, mdiBriefcaseSearchOutline, mdiBookOpenPageVariantOutline, mdiCogOutline, mdiMenu, mdiClose, mdiLogout, mdiRefresh, mdiChevronDown, mdiArrowLeft } from '@mdi/js'
 import { useAppState,refreshStatus } from '../composables/useAppState.js'
 import { logout, useAuth } from '../composables/useAuth.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 import { fmtTime } from '../api.js'
 import markUrl from '../assets/lenbot-mark.svg'
 import { returnTarget, sourcePath } from '../router/navigation.js'
-import { hostAreas, hostTarget } from '../router/hostNavigation.js'
 const route=useRoute(),router=useRouter(),app=useAppState(),{mobile}=useDisplay()
 const drawer=ref(!mobile.value),busy=ref(false),error=ref('')
 const logoutGuard=useRequestGuard()
 const isolated=computed(()=>useAuth().panelContext?.mode==='isolated')
-const multi=computed(()=>useAuth().panelContext?.mode==='isolated-multi')
 const legacy=computed(()=>useAuth().panelContext?.mode==='legacy')
 const legacySections=[
   {
@@ -37,14 +35,9 @@ const legacySections=[
 const sections=computed(()=>isolated.value?[
   {id:'chat-test',label:'对话测试',icon:mdiForumOutline,to:{name:'chat-test'},items:[]},
   {id:'chat-test-settings',label:'场景与角色',icon:mdiAccountOutline,to:{name:'chat-test-settings'},items:[]}
- ]:multi.value?hostAreas.map((area, index)=>({
-  id:area.id, label:area.title, icon:[mdiViewDashboardOutline,mdiForumOutline,mdiForumOutline,mdiAccountOutline,
-    mdiBookOpenPageVariantOutline,mdiBriefcaseSearchOutline,mdiCogOutline,mdiViewDashboardOutline,mdiCalendarClockOutline,mdiCogOutline][index],
-  to:hostTarget(area.name,route), items:area.pages.length>1?area.pages.map(([label,name])=>[label,hostTarget(name,route)]):[],
-})):legacySections)
+ ]:legacySections)
 const activeSection=computed(()=>{
   if(isolated.value)return route.name==='chat-test-settings'?'chat-test-settings':'chat-test'
-  if(multi.value)return hostAreas.find(area=>area.pages.some(([,name])=>name===route.name))?.id || 'home'
   if(route.name==='overview')return 'overview'
   if(['scenes','scene','groups','group'].includes(route.name))return 'scenes'
   if(['jobs','job','tasks'].includes(route.name))return 'work'
@@ -104,7 +97,7 @@ async function exit(){
   >
     <div class="app-brand">
       <img class="app-mark" :src="markUrl" alt="LenBot" />
-      <div><strong>LenBot</strong><span>{{ isolated?'隔离对话测试':multi?'运行管理':'运行管理中心' }}</span></div>
+      <div><strong>LenBot</strong><span>{{ isolated?'隔离对话测试':'运行管理中心' }}</span></div>
       <v-btn
         v-if="mobile"
         :icon="mdiClose"
@@ -168,7 +161,6 @@ async function exit(){
     <v-chip v-if="isolated" size="small" variant="tonal" color="secondary" class="isolated-chip">
       隔离 · 模拟发送
     </v-chip>
-    <v-chip v-if="multi" size="small" variant="tonal" color="secondary" class="isolated-chip">运行管理</v-chip>
     <v-divider v-if="legacy" vertical class="toolbar-divider" />
     <v-chip
       v-if="legacy && app.status"

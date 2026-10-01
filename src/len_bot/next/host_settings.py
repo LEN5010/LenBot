@@ -19,7 +19,7 @@ from .config import (
     STRICT, Compaction, ImageSettings, Attention, HostConfig, LearningSettings, Proactive, Roles, ScenePersona, ScheduleSettings,
     TextDelivery, WebReadSettings, _load_host_source, _read_root,
 )
-from .persona import load_persona
+from .persona import Persona, load_persona
 from .asr_model import AudioSettings
 from .operations import LoggingSettings
 from .limits import ResourceLimits
@@ -302,6 +302,27 @@ def _snapshot(running: HostConfig, saved: HostConfig) -> dict:
     }
 
 
+def restart_summary(root: Path, running: HostConfig, personas: dict[str, Persona]) -> dict:
+    """Which parts of the saved root config and persona packages differ from what is running."""
+    saved = _read_saved(root)
+    loaded: dict[Path, Persona] = {}
+    changed_personas = {}
+    for scene, settings in saved.scenes.items():
+        if scene not in personas:
+            continue
+        if settings.persona not in loaded:
+            loaded[settings.persona] = load_persona(settings.persona)
+        if loaded[settings.persona] != personas[scene]:
+            changed_personas[str(settings.persona)] = loaded[settings.persona].name
+    return {
+        "sections": [name for name in HostConfig.model_fields
+                     if name != "scenes" and getattr(running, name) != getattr(saved, name)],
+        "scenes": sorted(scene for scene in running.scenes.keys() | saved.scenes.keys()
+                         if running.scenes.get(scene) != saved.scenes.get(scene)),
+        "personas": [{"path": path, "name": name} for path, name in sorted(changed_personas.items())],
+    }
+
+
 def _prepare(root: Path, edit: Callable[[dict, HostConfig], None]
              ) -> tuple[Path, Path, HostConfig]:
     path, original = _read_root(root)
@@ -360,6 +381,7 @@ async def _body(request: Request, kind: type[BaseModel]) -> BaseModel:
 
 
 def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
+                           personas: Callable[[], dict[str, Persona]],
                            user: Callable[[Request], str], write_lock: asyncio.Lock) -> None:
     def learning_snapshot(scene: str, snapshot: dict) -> dict:
         if scene not in snapshot["saved"]["scenes"]:
@@ -403,6 +425,15 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                 raise HTTPException(422 if isinstance(error, ValueError) else 500,
                                     f"{type(error).__name__}: {error}") from error
             return _snapshot(running, saved)
+
+    @app.get("/api/host/pending-restart")
+    async def pending_restart(_: str = Depends(user)):
+        async with write_lock:
+            try:
+                return await asyncio.to_thread(restart_summary, root, running, personas())
+            except (ValueError, OSError) as error:
+                raise HTTPException(422 if isinstance(error, ValueError) else 500,
+                                    f"{type(error).__name__}: {error}") from error
 
     @app.put("/api/host/settings/retention")
     async def retention(request: Request, _: str = Depends(user)):

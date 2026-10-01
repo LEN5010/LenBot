@@ -141,11 +141,19 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                     change = permissions['saved']
                     change['global_identities']['admins'] = ['70003']
                     change['scene_identities'] = {'admins':[], 'whitelist':['70004'], 'blacklist':['70005']}
+                    change['task_identities'] = {'owner':'70006', 'admins':['70007'], 'whitelist':[]}
                     saved = await client.put('/api/host/permissions?scene=group:80001', json=change)
                     assert saved.status_code == 200, saved.text
                     assert saved.json()['restart_required'] is True
                     assert saved.json()['running']['global_identities']['admins'] == []
                     assert load_host_config(root).scene_config('group:80001').permissions.admins == ['70003']
+                    saved_tasks = load_host_config(root).scenes['group:80001'].tasks
+                    assert (saved_tasks.owner, saved_tasks.admins) == ('70006', ['70007'])
+                    pending = (await client.get('/api/host/pending-restart')).json()
+                    assert {'permissions', 'account_browser'} <= set(pending['sections'])
+                    assert pending['scenes'] == ['group:80001'] and pending['personas'] == []
+                    bad_scoped = {**change, 'schedule_identities': {'owner':'0', 'admins':[], 'whitelist':[]}}
+                    assert (await client.put('/api/host/permissions?scene=group:80001', json=bad_scoped)).status_code == 422
                     assert load_host_config(root).scene_config('group:80002').permissions.whitelist == []
                     invalid_change = {**change, 'global_identities': {'admins':['70003','70003'], 'whitelist':[], 'blacklist':[]}}
                     assert (await client.put('/api/host/permissions?scene=group:80001', json=invalid_change)).status_code == 422
