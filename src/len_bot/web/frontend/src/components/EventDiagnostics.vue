@@ -47,11 +47,11 @@ function download() {
 <template>
   <section class="event-diagnostics" aria-label="只读诊断材料">
     <h3>只读诊断材料</h3>
-    <p>读取此事件的受限关联，导出身份、状态、用量和缺档说明；不包含正文、工具参数、错误原文或请求快照。仍含业务编号，分享前请先预览核对。</p>
+    <p>导出这件事的诊断信息，不含聊天正文和工具参数，但含有编号，分享前先看一眼。</p>
     <v-btn variant="outlined" size="small" :loading="loading" @click="load">读取并预览诊断材料</v-btn>
     <v-alert v-if="error" type="error" variant="tonal" class="mt-3">读取失败：{{ error }}。本次没有可下载材料。</v-alert>
     <template v-if="record">
-      <p>读取区间：{{ fmtTime(record.read_started_at) }} — {{ fmtTime(record.read_finished_at) }}。下载的是本次预览，不会重新读取或执行。</p>
+      <p>读取区间：{{ fmtTime(record.read_started_at) }} — {{ fmtTime(record.read_finished_at) }}。</p>
       <p v-if="Object.values(record.truncated).some(Boolean)">关联已截断；具体类别和上限见预览。该文件不是完整历史，也不是单条消息独占消耗。</p>
       <details>
         <summary>预览导出 JSON</summary>

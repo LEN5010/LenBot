@@ -16,8 +16,8 @@ const emit = defineEmits(['keep', 'take', 'reload'])
   <v-alert v-if="conflict" type="warning" variant="tonal" class="mb-4">
     <p>{{ conflict.message || '配置已被其他操作修改；草稿未保存。' }}</p>
     <p v-if="pathLabel" class="mt-2">冲突字段：{{ pathLabel }}</p>
-    <p v-if="current" class="mt-2">已读入当前保存值<span v-if="readAt">（{{ fmtTime(readAt) }}）</span>；选择只更新本页草稿和基线，不自动保存。“保留我的改动”保留实际改过的字段，未改字段采用现值；改过的列表按整组保留。</p>
-    <p v-if="current&&exclusiveBackend" class="mt-2">互斥后端冲突保留自己编辑的分支，保存前请核对。</p>
+    <p v-if="current" class="mt-2">已读入当前保存值<span v-if="readAt">（{{ fmtTime(readAt) }}）</span>。选好后还要再点保存。“保留我的改动”只保留你改过的项，其他项用现在的值。</p>
+    <p v-if="current&&exclusiveBackend" class="mt-2">保留的是你选的那种后端，保存前看一眼。</p>
     <p v-if="!current" class="mt-2">尚未取得冲突后的保存值，不能用之前的记录重建基线。请先重读，原草稿保留。</p>
     <p v-if="readError" class="mt-2" role="alert">重读失败：{{ readError }}</p>
     <details v-if="current&&$slots.current" class="conflict-current mt-3">

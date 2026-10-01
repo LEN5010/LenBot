@@ -87,7 +87,7 @@ watch(selection,load,{immediate:true})
 </script>
 <template>
   <div class="page-stack">
-    <PageHeader title="工具能力" description="分别核对部署、保存值、当前运行、使用资格和真实记录。">
+    <PageHeader title="工具能力" description="Bot 能用的工具，以及谁能用。">
       <v-btn variant="outlined" :loading="loading||participantLoading" @click="refresh">刷新事实</v-btn>
     </PageHeader>
     <div class="filters">
@@ -104,7 +104,7 @@ watch(selection,load,{immediate:true})
       />
     </div>
     <p v-if="participantReadAt" class="muted">成员读取于 {{ fmtTime(participantReadAt) }}{{ participantError ? '，本群刷新失败，保留该次列表' : '' }}；选择账号只预览当前授予，不构成实际工作来源。</p>
-    <v-alert v-if="unknownRequester" type="info" variant="tonal">地址中选择的账号未出现在本次成员列表中。下方仅按此账号核对授予，不证明它实际发起过工作。</v-alert>
+    <v-alert v-if="unknownRequester" type="info" variant="tonal">这个账号不在成员列表里，下面只显示给它的授权。</v-alert>
     <v-alert v-if="error" type="error" variant="tonal">
       {{ error }}<span v-if="data"> · 下方保留 {{ fmtTime(data.sampled_at) }} 的结果</span>
     </v-alert>

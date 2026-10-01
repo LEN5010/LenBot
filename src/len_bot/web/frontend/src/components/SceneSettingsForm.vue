@@ -13,13 +13,11 @@ import { withReturn } from '../router/navigation.js'
 import {blankConfigDraft,configDraft,configValue,draftProblems,rebasePluginDraft} from '../lib/pluginConfig.js'
 import { rebaseConfigDraft } from '../lib/configDraft.js'
 
-const ATTENTION_HELP = `普通周期观察开启时，第一条待观察消息会安排实际截止时间；不需要等下一条消息来唤醒。
+const ATTENTION_HELP = `开启周期观察后，Bot 会隔一段时间看看群里的新消息，自己决定要不要接话。
 
-原话按条数和文本预算分批提供，未覆盖范围仍保留。间隔只控制普通观察调度，不是回复延迟承诺，也不是总模型调用上限。
+@ Bot、回复 Bot 和私聊会很快处理；提到 Bot 的名字或关键词也会让它留意。关掉周期观察不影响这些。
 
-真实 @、回复 Bot 和私聊使用短合并等待；短时观察期内第三人的接话也能被读取。名称和关键词有独立机会，冷却只限制提速，不丢弃已获准的周期观察输入。关闭普通周期观察不关闭这些入口。
-
-读到不等于会说。沉默可以结束本次处理并保留有限观察期；无新输入时不调用模型。睡眠、权限、额度和每群单轮执行仍生效。`
+看了不一定会说。没有新消息时不会调用模型。`
 
 const props = defineProps({sceneId:{type:String,required:true}})
 const emit = defineEmits(['saved', 'loaded'])
@@ -74,7 +72,7 @@ const pluginSections = computed(() => {
 })
 function sceneSchema(id, source = record.value) {
   const plugin = source?.plugins?.find(item => item.id === id)
-  if (!plugin?.scene_config_schema) throw new Error(`当前目录缺少 ${id} 的群参数定义；保留原草稿，不用空参数替代。请先核对插件目录。`)
+  if (!plugin?.scene_config_schema) throw new Error(`找不到 ${id} 的群参数，你的修改还在。请检查插件是否已加载。`)
   return plugin.scene_config_schema
 }
 function pluginFact(plugin) {
@@ -287,7 +285,7 @@ async function save() {
       scene_id:id, baseline:baseline.value, values:{settings,
         ...(JSON.stringify(sendFile.value)!==sendFileOriginal.value?{send_file_principals:sendFile.value}:{})}})})
     if (!fresh()) return
-    if(data.scene_id!==id||data.config_saved!==true)throw new Error('保存响应缺少本群写入确认或群身份与提交目标不一致；结果须回原群核对，未采用返回草稿。')
+    if(data.scene_id!==id||data.config_saved!==true)throw new Error('不确定有没有成功，请刷新看看。')
     confirmed=true
     adoptRecord(data);
     record.value=data
@@ -337,7 +335,7 @@ function keepMine() {
     sendFile.value=nextPrincipals
     clearConflict();
     error.value='';
-    message.value='已保留实际改过的字段，未改字段采用当前值；请核对草稿后保存本群设置。'
+    message.value='已保留你改过的项，其他用现在的值。看一下再保存。'
   }catch(e){
     error.value=e.message
   }
@@ -346,7 +344,7 @@ function takeCurrent() {
   if(saving.value||loading.value)return
   const source=saveOutcome.value?outcomeRecord.value:conflict.value?conflictCurrent.value:record.value
   if(source?.scene_id!==props.sceneId)return
-  if((dirty.value||saveOutcome.value)&&!window.confirm(saveOutcome.value?'放弃原本群设置及文件申请者草稿，采用本次读取值继续编辑？这不重发保存、不重试运行应用，也不证明旧请求的结果。':'放弃本页未保存的修改，采用已读取的本群保存值？'))return
+  if((dirty.value||saveOutcome.value)&&!window.confirm(saveOutcome.value?'放弃没保存的修改，用现在保存的设置继续编辑？':'放弃本页未保存的修改，采用已读取的本群保存值？'))return
   try{
     record.value=source;
     adoptRecord(source);
@@ -395,7 +393,7 @@ watch(()=>props.sceneId,()=>{
     <v-alert v-if="!isGroup" type="info" variant="tonal">分群设置只用于 QQ 群；私聊不使用这些字段。</v-alert>
     <template v-else>
       <div class="settings-heading">
-        <div><h3>本群设置</h3><p class="muted-copy">编辑只改变草稿；保存本群规则不会自动执行工具、重启或发送消息。</p></div>
+        <div><h3>本群设置</h3><p class="muted-copy">改完记得保存。</p></div>
         <v-btn variant="text" :loading="loading||factsLoading" :disabled="saving" @click="refresh">刷新设置与事实</v-btn>
       </div>
       <div v-if="record" class="status-row mb-4">
@@ -442,8 +440,8 @@ watch(()=>props.sceneId,()=>{
       <v-alert v-if="message" type="success" variant="tonal" class="mb-4">{{ message }}</v-alert>
       <v-alert v-if="saveOutcome" type="warning" variant="tonal" class="mb-4">
         <p>
-          {{ saveOutcome==='apply'?'本群设置已写入，但运行应用未完成。':saveOutcome==='readback'?'本群设置已写入并完成运行应用，但保存值未能采用。':'本次保存结果未知。' }}请先核对，不重复提交原草稿；读取当前值不恢复失败步骤，也不追认旧请求。</p>
-        <p v-if="outcomeRecord">已读取本群 {{ fmtTime(outcomeReadAt) }} 的保存值，可明确采用后继续编辑。当前运行事实仍在下方独立显示。</p>
+          {{ saveOutcome==='apply'?'设置已保存，但还没生效。':saveOutcome==='readback'?'设置已保存并生效，刷新看看最新状态。':'不确定有没有保存成功。' }}刷新看看再决定要不要重新保存。</p>
+        <p v-if="outcomeRecord">下面是 {{ fmtTime(outcomeReadAt) }} 读到的保存值，可以换成它继续编辑。</p>
         <v-btn variant="text" :disabled="saving||loading" @click="refresh">读取当前保存值</v-btn>
         <v-btn variant="text" :disabled="saving||loading||!outcomeRecord" @click="takeCurrent">采用当前值继续编辑</v-btn>
       </v-alert>
@@ -451,19 +449,19 @@ watch(()=>props.sceneId,()=>{
       <v-expansion-panels class="mb-4">
         <v-expansion-panel title="当前运行、能力缺项与最近结果">
           <v-expansion-panel-text>
-            <p class="muted-copy mb-3">下面是独立只读事实，不使用当前草稿推算。开关、装载、部署、申请者资格和实际结果分别显示。</p>
+            <p class="muted-copy mb-3">现在实际运行的情况。</p>
             <v-progress-linear v-if="factsLoading" indeterminate aria-label="正在读取能力事实" />
             <v-alert v-if="factsError" type="error" variant="tonal" class="my-3">运行事实读取失败：{{ factsError }}<p v-if="runtimeFacts">保留 {{ fmtTime(runtimeFacts.sampled_at) }} 的记录。</p>
             </v-alert>
             <template v-if="runtimeFacts">
-              <p class="muted-copy mb-3">采样于 {{ fmtTime(runtimeFacts.sampled_at) }} · {{ runtimeFacts.evidence_note }}
+              <p class="muted-copy mb-3">更新于 {{ fmtTime(runtimeFacts.sampled_at) }} · {{ runtimeFacts.evidence_note }}
               </p>
               <v-alert
                 v-if="runtimeFacts.requires_restart"
                 type="info"
                 variant="tonal"
                 class="mb-3"
-              >另有已保存配置等待手动重启；各插件当前装载情况如下，保存成功不代表全部运行条件已满足。</v-alert>
+              >有修改等待重启。下面是各插件现在的加载情况。</v-alert>
               <CapabilityCards :data="runtimeFacts" />
             </template>
             <v-btn
@@ -510,7 +508,7 @@ watch(()=>props.sceneId,()=>{
               />
               <v-switch v-model="draft.semantic_retrieval" label="允许语义检索本群认识" color="primary" />
             </div>
-            <p class="muted-copy">开启聊天不会自动开放外发、文件或账号动作。白名单例外：{{ (record.whitelist||[]).join('、') || '未设置' }}。</p>
+            <p class="muted-copy">发文件、用账号这些要另外开启。白名单：{{ (record.whitelist||[]).join('、') || '未设置' }}。</p>
             <div class="attention-box">
               <div class="settings-heading">
                 <h5>旁听<HelpHint :text="ATTENTION_HELP" /></h5>
@@ -578,7 +576,7 @@ watch(()=>props.sceneId,()=>{
               </AdvancedSection>
             </div>
             <p v-if="record.allowance" class="muted-copy">
-              本群这一小时已发 {{ record.allowance.scene_used }} 条{{ record.allowance.scene_limit ? '（上限 ' + record.allowance.scene_limit + '）' : '（不限）' }}{{ record.allowance.scene_exhausted ? ' · 已达上限，闲聊与主动分享暂不进入模型，不会自动发提示；日程命令与直播推送不受影响' : '' }}。单人上限 {{ record.allowance.user_limit || '不限' }} 条/小时，按实际送达滚动计算。
+              本群这一小时已发 {{ record.allowance.scene_used }} 条{{ record.allowance.scene_limit ? '（上限 ' + record.allowance.scene_limit + '）' : '（不限）' }}{{ record.allowance.scene_exhausted ? ' · 已达上限，这一小时不再闲聊和主动分享，日程命令和直播推送照常' : '' }}。每人每小时最多 {{ record.allowance.user_limit || '不限' }} 条。
             </p>
             <v-select
               v-model="sticker"
@@ -589,12 +587,12 @@ watch(()=>props.sceneId,()=>{
           </section>
           <section class="config-block">
             <h4>能力与来源</h4>
-            <p class="muted-copy mb-3">每行只改本群是否使用已配置插件。全局缺失条件不会被一个开关补齐。</p>
+            <p class="muted-copy mb-3">选这个群用哪些已配置的插件。</p>
             <div v-for="card in pluginSections" :key="card.id" class="plugin-setting">
               <h5>{{ card.title }}</h5>
-              <p v-if="card.id==='files'" class="muted-copy">生成文件走工作空间；上传还需要下方申请者和已核对的文件部署。当前：{{ record.file_delivery.blocked_reason || (record.file_delivery.can_upload_to_target ? '上传条件已具备（仍取决于申请者）' : '尚未具备上传条件') }}
+              <p v-if="card.id==='files'" class="muted-copy">上传文件还需要给具体的人授权。现在：{{ record.file_delivery.blocked_reason || (record.file_delivery.can_upload_to_target ? '可以上传' : '尚未具备上传条件') }}
               </p>
-              <p v-if="card.id==='account'" class="muted-copy">账号动作需要独立授予，本页不会因为打开本群而授予点赞/收藏。</p>
+              <p v-if="card.id==='account'" class="muted-copy">点赞、收藏这些账号操作要另外授权。</p>
               <div
                 v-for="plugin in card.plugins"
                 :key="plugin.id"
@@ -670,11 +668,11 @@ watch(()=>props.sceneId,()=>{
               />
               <v-btn variant="tonal" :disabled="saving||!!saveOutcome" @click="addUid">添加</v-btn>
             </div>
-            <p class="muted-copy mt-2">不会把本群文件开关翻译成所有人已授权，也不会创建通配主体。兴趣分享和研究仍使用各自授予，本页不代为创建系统研究。</p>
+            <p class="muted-copy mt-2">打开文件开关后，还要给具体的人授权。</p>
           </section>
           <div class="save-bar">
             <div>
-              <p v-if="changeList.length" class="muted-copy">将写入：{{ changeList.join('、') }}。只影响本群；旁听 +2 保存具体数值，不会每次再乘一次。</p>
+              <p v-if="changeList.length" class="muted-copy">将写入：{{ changeList.join('、') }}。只影响这个群。</p>
               <p v-if="record.file_delivery.blocked_reason" class="muted-copy">文件平台：{{ record.file_delivery.blocked_reason }}
               </p>
             </div>

@@ -57,7 +57,7 @@ onBeforeUnmount(() => {
       <v-btn v-if="selectedId" variant="text" @click="navigate({interest:undefined})">返回列表</v-btn>
       <v-btn variant="outlined" :loading="loading" @click="load">刷新</v-btn>
     </div>
-    <p>公共事实、研究评价与研究意图分别标注。这里是已采用的兴趣记录，不是全部待采用候选；可用性仍取决于来源证明、状态和有效期，采用不等于已经发布到群。</p>
+    <p>Bot 已经采用的兴趣话题，分为公共事实、研究评价和研究意图。</p>
     <v-form
       v-if="!selectedId"
       class="actions"
@@ -101,7 +101,7 @@ onBeforeUnmount(() => {
         </p>
         <p v-if="readAt">详情读取于 {{ fmtTime(readAt) }}</p>
         <v-alert :type="detail.public_sources_confirmed ? 'info' : 'warning'" variant="tonal">
-          {{ detail.public_sources_confirmed ? '来源链具有匿名公共资料证明。' : '来源链未全部确认，不能作为已验证公共资料使用。' }} 来源关联不代表后续调用已呈现正文或图像，也不单独证明结论正确。</v-alert>
+          {{ detail.public_sources_confirmed ? '来源都是公开资料。' : '有些来源没法确认是公开资料。' }}</v-alert>
         <ResourceViewer title="采用时的具体证据范围" :content="detail.evidence_spans" />
       </v-card>
       <h3>原始资料来源</h3>
@@ -117,7 +117,7 @@ onBeforeUnmount(() => {
         <ObservationDetails :observation="source.result" :scene-id="source.scene_id" />
       </v-card>
       <h3>逐群发布尝试与回执（最多 50 个行动）</h3>
-      <p>只列原发送账中的尝试／回执，不显示群内表达正文。候选被考虑、保持沉默或表达尚未尝试，都不能据此说已发布。</p>
+      <p>往群里发这个话题的记录。</p>
       <p v-if="detail.more_publications">还有更早行动，可进入相应群的运行记录查看。</p>
       <v-card
         v-for="publication in detail.publications || []"
@@ -131,7 +131,7 @@ onBeforeUnmount(() => {
           </span>
         </div>
         <code>{{ publication.action_id }}</code>
-        <p>终态回执时间 {{ fmtTime(publication.receipt_at) }}<span v-if="publication.status==='sent' && publication.message_id"> · 平台消息 ID {{ publication.message_id }}
+        <p>发送时间 {{ fmtTime(publication.receipt_at) }}<span v-if="publication.status==='sent' && publication.message_id"> · 平台消息 ID {{ publication.message_id }}
           </span>
         </p>
         <p v-if="publication.error" class="copy">{{ publication.error }}</p>
@@ -154,9 +154,9 @@ onBeforeUnmount(() => {
           />
         </div>
       </v-card>
-      <p v-if="!detail.publications?.length">没有已保存的发布尝试或回执；这不代表没有候选或没有被考虑过。</p>
+      <p v-if="!detail.publications?.length">还没有发到群里过。</p>
       <h3>最近修订（最多 50 条）</h3>
-      <p v-if="detail.more_changes">仍有更早修订，可按下列来源场景进入运行记录查看。</p>
+      <p v-if="detail.more_changes">还有更早的修改，可以到运行记录里看。</p>
       <v-card v-for="change in detail.changes" :key="change.id" class="pa-4">
         <EntityLink
           type="event"

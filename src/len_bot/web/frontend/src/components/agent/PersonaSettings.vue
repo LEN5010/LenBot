@@ -62,7 +62,7 @@ const { personaNeedsReadback, persona, exemplars, examplesLoading, examplesError
     </div>
     <v-card variant="tonal" class="pa-4 mb-5">
       <h3>从真实送达消息创建</h3>
-      <p class="muted my-2">只接受已确认真实发送的 Bot 消息；Shadow、草稿和 unknown 回执会被拒绝。</p>
+      <p class="muted my-2">只能选 Bot 真的发出去的消息。</p>
       <div class="form-grid">
         <v-text-field
           :disabled="!!busy"
@@ -86,7 +86,7 @@ const { personaNeedsReadback, persona, exemplars, examplesLoading, examplesError
         >创建并进入样例列表</v-btn>
       </div>
     </v-card>
-    <p v-if="!examplesReadAt&&!examplesLoading&&!examplesError" class="muted py-6">尚未取得样例列表，请刷新当前设置后核对，不能据此判断没有样例。</p>
+    <p v-if="!examplesReadAt&&!examplesLoading&&!examplesError" class="muted py-6">还没读到样例列表，刷新一下。</p>
     <p
       v-if="examplesReadAt&&!examplesLoading&&!examplesError&&!exemplars.length"
       class="muted py-6"

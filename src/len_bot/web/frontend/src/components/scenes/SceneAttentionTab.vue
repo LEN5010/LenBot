@@ -9,7 +9,7 @@ const focused = computed(() => Object.entries(detail.value?.session.focused_part
 <template>
   <h3>注意力扫描与待处理来源</h3>
   <p class="muted-copy">扫描到原始位置 {{ detail.session.attention_scanned_event_rowid }}；当前接收截点 {{ detail.session.last_observed_event_rowid }}。扫描位置与模型实际读取分别记录。</p>
-  <p>短时观察截止：{{ detail.session.observing_until ? fmtTime(detail.session.observing_until) : '未开启' }}；有新输入才执行，截止不表示正在调用模型。</p>
+  <p>短时观察截止：{{ detail.session.observing_until ? fmtTime(detail.session.observing_until) : '未开启' }}。</p>
   <p>待观察或待处理来源 {{ aux?.total ?? detail.session.pending_wake_count }} 项</p>
   <article
     v-for="wake in aux?.items || []"

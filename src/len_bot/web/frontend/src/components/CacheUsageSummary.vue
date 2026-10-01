@@ -19,7 +19,7 @@ const count = value => Number.isFinite(value) && value >= 0 ? value.toLocaleStri
       </dl>
       <p>命中率按输入 token 加权：{{ count(cache.cache_reported_tokens) }} 个缓存 token / {{ count(cache.cache_reported_input_tokens) }} 个有缓存报告的输入 token。当前筛选内已知输入共 {{ count(cache.known_input_tokens) }} token。</p>
       <p>缓存字段缺失 {{ count(cache.cache_missing_calls) }} 次；字段无法与有效输入量配对 {{ count(cache.cache_unusable_calls) }} 次；输入量缺失或无效 {{ count(cache.calls - cache.known_input_calls) }} 次。明确报告的零命中参与统计；分母为零时不显示命中率。</p>
-      <p>使用当前筛选的全部调用，不限本页。缺失字段不按零命中计算；覆盖率只描述已保存记录，不代表上游账单、价格或缓存保留时长。</p>
+      <p>按当前筛选的全部调用统计。</p>
     </template>
     <p v-else>未取得缓存覆盖统计。</p>
     <template v-if="phases?.length">

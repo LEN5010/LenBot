@@ -9,7 +9,7 @@ const props = defineProps({ data:Object, compact:Boolean })
 const route = useRoute()
 const items = computed(()=>props.data?.items || [])
 const lifecycle = value => ({enabled:'已装载',disabled:'未装载',unconfigured:'未配置',failed:'装载失败',error:'运行错误'}[value] || value)
-const requestStatus = value => ({callable:'请求资格通过，执行仍需当前工作与预算',unconfigured:'缺全局参数',plugin_disabled:'运行插件未启用',scene_not_enabled:'本群或发起者未开放',capability_denied:'缺当前授权'}[value] || value || '选择群后核对')
+const requestStatus = value => ({callable:'可以用',unconfigured:'缺全局参数',plugin_disabled:'运行插件未启用',scene_not_enabled:'本群或发起者未开放',capability_denied:'缺当前授权'}[value] || value || '先选一个群')
 </script>
 <template>
   <div class="capability-grid" :class="{compact}">
@@ -104,7 +104,7 @@ const requestStatus = value => ({callable:'请求资格通过，执行仍需当�
                 :copyable="false"
               />
               <br />
-              <span class="muted">这是当前场景范围最近的历史动作，不按所选请求者筛选，也不表示当前账号配置可用或 QQ 已送达。</span>
+              <span class="muted">这个群最近的操作记录。</span>
             </p>
             <p
               v-if="!item.recent_observation&&!item.recent_execution&&!item.recent_delivery&&!item.recent_platform_action"

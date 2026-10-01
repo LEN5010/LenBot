@@ -14,7 +14,7 @@ const unitName = value => ({ characters: '字符', records: '记录' }[value] ||
 <template>
   <details class="provided-reads">
     <summary>已确认提供的资料与工作结果</summary>
-    <p>这是本次提交保存的阅读范围，不等于全部用于每条答复，也不是资料内容正确性的证明。</p>
+    <p>这次回复前读过的资料范围。</p>
     <p v-if="turn.provided_result_ranges==null">旧提交未单独记录工具资料的提供范围。</p>
     <p v-else-if="!ranges.length">此提交没有工具资料提供范围。</p>
     <ul v-else>

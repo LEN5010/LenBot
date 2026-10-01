@@ -15,7 +15,7 @@ const jobActions = computed(() => (records.value?.actions || []).filter(action =
 <template>
   <v-card-text class="detail-body">
     <h3>外部执行与停止事实</h3>
-    <p class="muted-copy">工作取消不会替代容器停止回执。展开查看当次输入来源、错误与原事件；停止未知时需在执行服务核对，不在此重跑。</p>
+    <p class="muted-copy">展开可以看每次执行的输入、错误和过程。</p>
     <ExecutionDetails
       v-for="run in job.executions || []"
       :key="run.execution_id"
@@ -23,7 +23,7 @@ const jobActions = computed(() => (records.value?.actions || []).filter(action =
       :job-id="job.id"
       :scene-id="job.scene_id"
     />
-    <p v-if="!job.executions?.length">没有已记录的外部执行；宿主 worker 的输入和输出仍沿原工具观察查看，不补造 Gateway 身份。</p>
+    <p v-if="!job.executions?.length">没有外部执行记录。</p>
     <v-progress-linear v-if="recordsLoading" indeterminate />
     <v-alert v-if="recordsError" type="error" variant="tonal">{{ recordsError }}</v-alert>
     <template v-if="records">
@@ -62,7 +62,7 @@ const jobActions = computed(() => (records.value?.actions || []).filter(action =
             label="查看发送回执"
           />
         </div>
-        <p v-if="!action.receipt_event_ids.length" class="muted-copy">这条行动尚无已保存回执。</p>
+        <p v-if="!action.receipt_event_ids.length" class="muted-copy">还没有结果。</p>
         <EntityLink
           v-if="action.file_asset_id"
           type="file"

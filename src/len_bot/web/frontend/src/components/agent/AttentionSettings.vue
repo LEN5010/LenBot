@@ -35,7 +35,7 @@ const { attention, attentionDirty, saveAttention } = props.state
         min="1"
         step="1"
         label="短时观察期（秒）"
-        hint="真实搭话开启；模型可依据本次原话申请继续，沉默可保留，Bot 发言不自动续期"
+        hint="有人和 Bot 搭话后，它会继续留意一会儿"
         persistent-hint
         required
       />
@@ -45,7 +45,7 @@ const { attention, attentionDirty, saveAttention } = props.state
         min="0"
         step="10"
         label="每群每小时发言上限（0 为不限）"
-        hint="达到后闲聊与主动分享不再进入模型；日程命令与直播推送不受影响。沉默调用仍有成本"
+        hint="超过后不再闲聊和主动分享，日程命令和直播推送照常"
         persistent-hint
         required
       />
@@ -55,7 +55,7 @@ const { attention, attentionDirty, saveAttention } = props.state
         min="0"
         step="1"
         label="每人每小时回复上限（0 为不限）"
-        hint="达到后该成员的闲聊不再进入模型；额度状态在面板查看，不自动发群提示"
+        hint="超过后这个人的闲聊 Bot 先不理"
         persistent-hint
         required
       />

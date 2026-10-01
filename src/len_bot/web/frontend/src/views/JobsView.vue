@@ -93,8 +93,8 @@ const deliveryOptions = [
   { title: '处理中', value: 'processing' },
   { title: '结果待回应', value: 'result_ready' },
   { title: '等待送达', value: 'awaiting_delivery' },
-  { title: '任务已完成（交付另见回执）', value: 'completed' },
-  { title: '中断待核对', value: 'review_required' },
+  { title: '已完成', value: 'completed' },
+  { title: '中断了，需要你看看', value: 'review_required' },
   { title: '送达未知', value: 'delivery_unknown' },
   { title: '任务失败', value: 'failed' },
   { title: '仅观察', value: 'shadow_observed' },
@@ -306,7 +306,7 @@ function askAction(operation) {
     let parameters=null
     try {
       if (Object.keys(draft.value.parameters).length) {
-        if (!baseline.value.schema || changedWorkContract()) throw new Error('业务修订接口缺失或已改变，未忽略参数草稿。请先核对当前工作和修订接口。')
+        if (!baseline.value.schema || changedWorkContract()) throw new Error('这个工作的修改方式变了，请刷新后重新修改。')
         parameters=configValue(draft.value.parameters,baseline.value.schema)
       }
     }
@@ -345,7 +345,7 @@ function sameControl(value,attempt) {
 }
 function continueFromCurrent() {
   if(saving.value||detailLoading.value||detailError.value||!pendingControl.value||controlReadAt.value===null)return
-  if(!window.confirm('放弃原控制确认和修订草稿，按当前工作重新选择操作？这不重发、撤销或追认旧请求，也不补充预算。'))return
+  if(!window.confirm('放弃刚才的操作和修改，按工作现在的状态重新选？'))return
   pendingControl.value=null;
   controlReadAt.value=null;
   confirmation.value=null
@@ -353,14 +353,14 @@ function continueFromCurrent() {
   baseline.value=null;
   conflict.value=false;
   actionError.value=''
-  feedback.value='已结束原控制草稿，请按当前工作重新选择；原操作与外部停止／发送结果仍需分别核对。'
+  feedback.value='请按工作现在的状态重新选择操作。'
 }
 async function submitAction() {
   if (saving.value || pendingControl.value || detailLoading.value || detailError.value || !confirmation.value || !job.value) return
   const attempt=clone(confirmation.value)
   const { operation, id, scene, displayGoal, ...body } = attempt
   if (id !== job.value.id || scene !== job.value.scene_id || body.expected_revision !== job.value.revision) {
-    actionError.value = '确认期间工作已变化，未提交旧确认。请核对当前版本后重新选择操作。'
+    actionError.value = '工作刚刚变了，请重新选择操作。'
     if (operation === 'revise') conflict.value = true
     confirmation.value = null;
     return
@@ -378,10 +378,10 @@ async function submitAction() {
     submitted=true
     const result = await api(`/api/cockpit/jobs/${encodeURIComponent(id)}/${operation}`, { method: 'POST', body: payload })
     if (!fresh()) return
-    if(result.success!==true||!sameControl(result,attempt)||result.control_accepted!==true)throw new Error('控制响应缺少原操作的明确提交确认，结果待核对。')
+    if(result.success!==true||!sameControl(result,attempt)||result.control_accepted!==true)throw new Error('不确定操作有没有成功，请刷新看看。')
     accepted=true;
     controlReceipt.value=result
-    if (!result.job || result.job.id !== id || result.job.scene_id !== scene) throw new Error('工作控制已提交，但未返回同一工作的保存值；请读取当前工作，不重复提交。')
+    if (!result.job || result.job.id !== id || result.job.scene_id !== scene) throw new Error('操作已提交，刷新看看最新状态。')
     resetRelated();
     job.value = result.job;
     detailReadAt.value = Date.now() / 1000;
@@ -394,7 +394,7 @@ async function submitAction() {
     feedback.value = {
       revise: '要求已保存，工作版本已更新。',
       resume: '恢复请求已提交，预算和模型绑定保留。',
-      cancel: '取消请求已提交；实际执行停止状态和历史记录请继续核对。'
+      cancel: '已请求取消，稍后刷新看看有没有停下。'
     }[operation]
     await Promise.all([
       loadWorkspaceArtifacts(),
@@ -499,7 +499,7 @@ watch(() => route.query.resource, value => {
         @click="refresh"
       >刷新</v-btn>
     </PageHeader>
-    <p v-if="jobId" class="muted-copy">离开或切换工作只停止本页跟踪，不撤销已提交控制。取消请求、工作状态和外部执行是否停止分别核对，不能将提交成功当作全部执行已经终止。</p>
+    <p v-if="jobId" class="muted-copy">已经提交的操作，离开页面也会生效。</p>
     <template v-if="!jobId">
       <v-card class="filter-card">
         <v-card-text>
@@ -588,7 +588,7 @@ watch(() => route.query.resource, value => {
       <v-skeleton-loader v-if="detailLoading && !job" type="article, list-item-three-line" />
       <v-card v-if="editing&&!job" class="section-gap">
         <v-card-text>
-          <p>当前工作详情不可读取，原版本 {{ baseline.revision }} 的修订草稿仍保留，未套用到其他工作。</p>
+          <p>读不到这个工作的详情，你的修改还在。</p>
           <ResourceViewer title="未保存的工作修订" :content="draft" />
           <v-btn variant="text" :disabled="saving" @click="cancelEdit">放弃修订草稿</v-btn>
         </v-card-text>
@@ -601,8 +601,8 @@ watch(() => route.query.resource, value => {
       </v-alert>
       <v-alert v-if="pendingControl" type="warning" variant="tonal" class="section-gap">
         <p>
-          {{ pendingControl.accepted?'原控制已取得提交确认，当前工作仍需核对。':'原控制结果未知。' }}{{ pendingControl.operation }} · {{ pendingControl.id }} · 基于版本 {{ pendingControl.expected_revision }}。不能以再次修订、恢复或取消代替核对。</p>
-        <p v-if="controlReadAt!==null">当前工作已于 {{ fmtTime(controlReadAt) }} 读取；当前状态不是原请求回执。</p>
+          {{ pendingControl.accepted?'操作已提交，刷新看看最新状态。':'不确定操作有没有成功，刷新看看再决定。' }}</p>
+        <p v-if="controlReadAt!==null">下面是 {{ fmtTime(controlReadAt) }} 读到的状态。</p>
         <v-btn variant="text" :disabled="saving||detailLoading" @click="refresh">读取当前工作</v-btn>
         <v-btn
           variant="text"
@@ -670,7 +670,7 @@ watch(() => route.query.resource, value => {
                 variant="outlined"
                 @click="askAction('resume')"
               >
-                {{ job.execution_status==='partial'?'继续未完成部分':'核对后恢复' }}
+                {{ job.execution_status==='partial'?'继续未完成部分':'恢复' }}
               </v-btn>
               <v-btn
                 :disabled="!editable || saving || editing || detailLoading || !!detailError || !!pendingControl"
@@ -686,7 +686,7 @@ watch(() => route.query.resource, value => {
           <v-card-title>成果复用关系</v-card-title>
           <v-card-text>
             <template v-if="job.reused_work">
-              <p>本工作固定使用原成果版本 {{ job.reused_work.revision }}，后续原工作变化不会替换下方输入。新要求、申请者、额度及交付仍归本工作。</p>
+              <p>用的是原来工作的第 {{ job.reused_work.revision }} 版成果。</p>
               <div class="identity-line">
                 <EntityLink
                   type="job"
@@ -711,7 +711,7 @@ watch(() => route.query.resource, value => {
             </template>
             <template v-if="job.followup_work?.total">
               <h3 class="mt-4">复用此成果的后续工作</h3>
-              <p class="muted-copy">显示最近 {{ job.followup_work.items.length }} / {{ job.followup_work.total }} 项明确保存的复用关系；不会从目标文字或相同资料推断旧工作关系。</p>
+              <p class="muted-copy">显示最近 {{ job.followup_work.items.length }} / {{ job.followup_work.total }} 项复用了这个工作的后续工作。</p>
               <div v-for="item in job.followup_work.items" :key="item.id" class="identity-line">
                 <EntityLink type="job" :id="item.id" :scene-id="job.scene_id" :label="item.goal" />
                 <span>复用版本 {{ item.source_revision }} · 自身版本 {{ item.revision }}</span>
@@ -724,7 +724,7 @@ watch(() => route.query.resource, value => {
           <v-card-title>修改要求 · 基于版本 {{ baseline.revision }}</v-card-title>
           <v-card-text>
             <v-alert v-if="conflict" type="warning" variant="tonal" class="mb-4">
-              <p>修订被拒绝或读取到了新的版本／业务接口，草稿仍保留。以下是 {{ fmtTime(detailReadAt) }} 读到的版本 {{ job.revision }}，不是自动更新后的编辑基线。</p>
+              <p>修改没被接受，或者工作已经有了新版本。你的修改还在，下面是 {{ fmtTime(detailReadAt) }} 读到的第 {{ job.revision }} 版。</p>
               <p v-if="detailError" class="mt-2">本次刷新失败，尚不能据旧样本选择新基线，请先刷新工作。</p>
               <ResourceViewer title="本次读取的目标" :content="job.goal" class="mt-3" />
               <ResourceViewer title="本次读取的要求" :content="job.constraints" class="mt-3" />
@@ -734,7 +734,7 @@ watch(() => route.query.resource, value => {
                 <ResourceViewer title="本次读取的业务参数" :content="job.work_parameters" />
                 <ResourceViewer title="尚未提交的参数修改" :content="draft.parameters" />
               </details>
-              <p class="mt-3">保留只重建实际编辑的目标与要求增删，其他人的新增要求不会变成删除。参数修改仍交给原插件基于明确选择的新版本解释；选择本身不提交。</p>
+              <p class="mt-3">保留只留下你改过的目标和要求，别人新加的要求不会被删。选好后还要再提交。</p>
               <div class="action-row">
                 <v-btn
                   variant="outlined"
@@ -758,7 +758,7 @@ watch(() => route.query.resource, value => {
             />
             <template v-if="baseline.schema">
               <h4>修改插件业务参数</h4>
-              <p class="muted-copy">只填写需要改变的字段；未填写字段由所属插件保留。本表单仍使用开始编辑时的修订接口，范围和快照由所属插件处理。</p>
+              <p class="muted-copy">只填要改的项，没填的保持原样。</p>
               <PluginConfigFields
                 v-model="draft.parameters"
                 :schema="baseline.schema"
@@ -811,9 +811,9 @@ watch(() => route.query.resource, value => {
             type="warning"
             variant="tonal"
             class="my-3"
-          >当前工作已变化或读取失败，请返回核对。此确认仍是原版本的操作，不自动迁移。</v-alert>
-          <p v-if="confirmation.operation === 'cancel'">停止此工作。已经取得的资料与历史结果会保留；不会自动重新执行。</p>
-          <p v-else-if="confirmation.operation === 'resume'">继续原工作的未完成部分，保留工作ID、已有资料、已用预算与绑定模型。旧版结果和交付回执保留，新结果使用新版本；本次不会增加预算。</p>
+          >工作已经变了，或者读取失败，请返回重新看看。</v-alert>
+          <p v-if="confirmation.operation === 'cancel'">停止这个工作。已经得到的资料和结果会保留。</p>
+          <p v-else-if="confirmation.operation === 'resume'">继续做没完成的部分，已有资料和已用预算都保留，不会增加预算。</p>
           <template v-else>
             <p class="full-title">{{ confirmation.displayGoal }}</p>
             <ResourceViewer

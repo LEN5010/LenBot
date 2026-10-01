@@ -37,7 +37,7 @@ const gaps = {
     <h3>调用登记时的请求材料</h3>
     <p v-if="!record" class="request-note">未保存本次调用的独立材料记录。旧调用和未接入此记录的调用入口不回填，也不以轮次最终清单替代。</p>
     <template v-else-if="supported">
-      <p class="request-note">记录取自最终装配之后、进入客户端之前，与本次调用一同登记。登记不证明请求已经发出或材料已被模型接收；执行结果见调用状态与传输记录。</p>
+      <p class="request-note">这是发给模型前的完整请求。</p>
       <dl class="request-facts">
         <div><dt>消息位置</dt><dd>{{ messages.length }}</dd></div>
         <div><dt>省略标记</dt><dd>{{ omitted }}；{{ omissionUnknown }} 个位置未记录该标记</dd></div>
@@ -54,7 +54,7 @@ const gaps = {
       <p class="request-note">未留存：{{ record.not_retained.map(key => gaps[key] || key).join('、') }}。清单格式版本 {{ record.format_version }} 不是提示或插件版本；来源定位不能逐字还原请求。</p>
       <template v-if="[2, 3, 4, 5].includes(record.format_version)">
         <h4>固定提示组件</h4>
-        <p class="request-note">只保留下列已声明的固定片段；人格配置和插件动态指令等仍未留存。条件启用的表达偏好提示如已登记，会单独列出。组件修订号是声明版本，具体内容以本次快照为准。</p>
+        <p class="request-note">这次请求用到的固定提示词片段。</p>
         <p v-if="!components.length" class="request-note">本次没有单独登记的固定提示组件。</p>
         <details
           v-for="component in components"
@@ -67,7 +67,7 @@ const gaps = {
             <ResourceViewer title="本次固定提示片段" :content="component.snapshot_text" />
           </template>
         </details>
-        <p class="request-note">工具定义快照已留存 {{ retainedTools }} / {{ record.tools.length }}。未留存完整定义的工具不能用当前 Schema 还原；插件归属版本如有记录则单独列出，不等于完整定义版本。</p>
+        <p class="request-note">保存了 {{ retainedTools }} / {{ record.tools.length }} 个工具的完整定义。</p>
       </template>
       <details>
         <summary>当次工具顺序与定义</summary>
@@ -75,7 +75,7 @@ const gaps = {
           <li v-for="tool in record.tools" :key="tool.index">
             {{ tool.name || '未记录名称' }} · {{ tool.type }}
             <template v-if="[2, 3, 4, 5].includes(record.format_version)">
-              <p v-if="tool.definition.plugin" class="request-note">声明来源：{{ tool.definition.plugin.id }} · 插件 v{{ tool.definition.plugin.version }} · 接口世代 {{ tool.definition.plugin.api_version }}。仅定位所属插件，不证明 Schema 恒定或工具已执行。</p>
+              <p v-if="tool.definition.plugin" class="request-note">来自插件：{{ tool.definition.plugin.id }} · 插件 v{{ tool.definition.plugin.version }} · 接口世代 {{ tool.definition.plugin.api_version }}。</p>
               <details v-if="tool.definition.status === 'retained'">
                 <summary>
                   {{ tool.definition.component_id }} · 修订 {{ tool.definition.revision }} · 查看本次定义</summary>
@@ -83,17 +83,17 @@ const gaps = {
               </details>
               <p v-else-if="tool.definition.status === 'origin_recorded'" class="request-note">已登记插件归属，动态工具完整定义未留存。</p>
               <p v-else class="request-note">
-                {{ tool.definition.status === 'changed_after_declaration' ? '定义在声明后有变化，未将声明来源或快照作为本次完整定义依据。' : '未保存该工具的定义版本。' }}
+                {{ tool.definition.status === 'changed_after_declaration' ? '这个工具的定义后来改过。' : '没有保存这个工具的定义。' }}
               </p>
             </template>
           </li>
         </ol>
         <p v-if="!record.tools.length" class="request-note">该调用的工具列表为空。</p>
       </details>
-      <p class="request-note">资料页范围只说明该次最终请求保留了对应原文或宿主投影，不证明模型已经收到或已读。未匹配到资料页不等于工具未执行；原始结果和执行状态仍以所属记录为准。</p>
-      <p v-if="record.format_version >= 4" class="request-note">若有上段资料位置，只记录本次请求中保留的编号和目录装配时可用性；它不是正文阅读，也不证明资料现在仍可用。</p>
+      <p class="request-note">这次请求里带上的资料范围。</p>
+      <p v-if="record.format_version >= 4" class="request-note">这次请求里带上的资料编号。</p>
       <p v-if="record.format_version >= 5" class="request-note">历史摘要只登记本次最终保留的批次 ID、版本和覆盖范围，不复制摘要正文；来源后来可能失效，登记不授予精确原话已读资格。</p>
-      <p v-if="images.length" class="request-note">图像定位按消息和内容块展开，位置均从 1 开始显示。资产编号只表示本次请求记录中的关联，不证明模型看到像素、文件仍可用或平台已收到；展开不会加载图片。</p>
+      <p v-if="images.length" class="request-note">这次请求里带上的图片，位置从 1 开始数。</p>
       <div class="request-table-wrap">
         <table>
           <caption>消息顺序与来源定位（从第 1 个位置开始显示）</caption>
@@ -135,7 +135,7 @@ const gaps = {
                     </p>
                   </li>
                 </ul>
-                <p v-if="message.result_locator_status === 'changed_after_declaration'">旧资料目录在声明后有变化，编号未登记为本次保留位置。</p>
+                <p v-if="message.result_locator_status === 'changed_after_declaration'">资料目录后来变了。</p>
                 <ul
                   v-if="message.result_locator_status === 'retained' && message.result_locators?.length"
                 >
@@ -150,7 +150,7 @@ const gaps = {
                     <span v-else>装配时不可用</span>
                   </li>
                 </ul>
-                <p v-if="message.summary_ref_status === 'changed_after_declaration'">历史摘要消息在声明后变化，未把原批次清单登记为本次保留内容。</p>
+                <p v-if="message.summary_ref_status === 'changed_after_declaration'">历史摘要后来变了。</p>
                 <ul
                   v-if="message.summary_ref_status === 'retained' && message.summary_refs?.length"
                 >

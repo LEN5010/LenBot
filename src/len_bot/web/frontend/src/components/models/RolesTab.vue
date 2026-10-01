@@ -43,7 +43,7 @@ const { testConfirm, testResult, profile } = props.state
       </p>
     </v-card>
   </div>
-  <v-alert type="info" variant="tonal">浏览、刷新和选择模型不会发起模型请求。能力检查需要你主动确认；模型目录中的名称不代表已通过检查。</v-alert>
+  <v-alert type="info" variant="tonal">选模型不会产生费用。能力检查要你点了才会做。</v-alert>
   <v-card v-if="testResult" class="pa-5">
     <div class="role-title">
       <h2>{{ testResult.name }}能力检查</h2>

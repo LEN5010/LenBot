@@ -143,7 +143,7 @@ export function useAccessSettings({
       const values=formValues('access'),previous=editableAccess(baselines.value.access)
       const editedGrants=values.capability_grants.map((grant,index)=>{
         const revision=grants.value[index].revision
-        if(!Number.isInteger(revision)||revision<1)throw new Error(`第 ${index+1} 条授予缺少有效修订，请核对已保存值；没有按初始修订猜测。`)
+        if(!Number.isInteger(revision)||revision<1)throw new Error(`第 ${index+1} 条授权的数据不对，请刷新后再试。`)
         return {...grant,revision}
       })
       const result = await saveDraft('access','/api/settings/access',{

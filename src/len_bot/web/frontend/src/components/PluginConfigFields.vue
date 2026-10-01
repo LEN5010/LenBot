@@ -128,7 +128,7 @@ const toggleChoice=(field,value,choice)=>{
             {{ (fields.find(item=>item.key===key)?.schema.title) || key }}
           </v-btn>
         </v-btn-toggle>
-        <p v-if="!branch(group)" class="muted mt-2">尚未选择；未选中的分支不会写入配置。</p>
+        <p v-if="!branch(group)" class="muted mt-2">还没选。</p>
       </div>
     </template>
     <template v-for="field in fields" :key="field.key">
@@ -220,7 +220,7 @@ const toggleChoice=(field,value,choice)=>{
               @click="childValue(field,modelValue[field.key])"
               :disabled="disabled"
             >填写此分支</v-btn>
-            <span class="muted">尚未选择；不填写就不会写入配置。</span>
+            <span class="muted">还没选。</span>
           </div>
         </section>
         <section v-else-if="field.list" class="list-field">
@@ -237,7 +237,7 @@ const toggleChoice=(field,value,choice)=>{
               density="compact"
               @update:model-value="()=>toggleChoice(field,modelValue[field.key],choice)"
             />
-            <p class="muted">当前可选项来自插件声明；取消全部勾选即提交空列表。</p>
+            <p class="muted">全部不勾就是一个都不用。</p>
           </div>
           <template v-else>
             <div

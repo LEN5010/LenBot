@@ -54,7 +54,7 @@ export function useAccountSettings({
       await api('/api/settings/reset',{method:'POST'});
       if(!fresh())return;
       resetConfirm.value=false;
-      message.value='对话数据已按上面列出的范围清空；配置与运营资料保留，额度预占和执行记录仍待单独核对';
+      message.value='对话数据已清空，配置和资料都还在。';
       await load()
     }
     catch(e){

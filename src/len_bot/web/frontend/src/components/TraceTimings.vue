@@ -9,7 +9,7 @@ const publicationWaitStates = { acquired: '已取得锁', cancelled: '取得前�
 <template>
   <section class="trace-timings" aria-label="已保存的阶段耗时">
     <h4>已保存的阶段耗时</h4>
-    <p class="timing-note">按原轨迹逐段列出，缺失不按零计。嵌套调用、并行工具和装配中的压缩可能重叠，不相加为总延迟；模型计时不是首字延迟，发布也不等于平台送达。</p>
+    <p class="timing-note">每一段的用时。有些阶段会同时进行，不能直接相加。</p>
     <p v-if="timings?.elapsed_ms !== null && timings?.elapsed_ms !== undefined" class="timing-note">轨迹记录的外层耗时：{{ duration(timings.elapsed_ms) }}；不是这条消息的独占耗时，执行槽位等待另列，不据此相加为总延迟。</p>
     <p v-if="!timings?.runs?.length" class="timing-note">该轨迹没有可展示的分阶段计时。</p>
     <article v-for="run in timings?.runs || []" :key="run.index" class="timing-run">
@@ -17,15 +17,15 @@ const publicationWaitStates = { acquired: '已取得锁', cancelled: '取得前�
         {{ run.cognition_slot_wait_ms != null || run.cognition_slot_wait_state || run.work_slot_wait_ms != null || run.work_slot_wait_state || run.maintenance_slot_wait_ms != null || run.maintenance_slot_wait_state || run.agent_lock_wait_ms != null || run.agent_lock_wait_state ? '等待记录' : `执行段 ${run.index}` }}<span v-if="run.job_revision !== null"> · 目标版本 {{ run.job_revision }}</span>
       </h5>
       <p v-if="run.cognition_slot_wait_state" class="timing-note">
-        {{ slotStates[run.cognition_slot_wait_state] || run.cognition_slot_wait_state }}。只说明取得执行容量之前的等待；不代表模型或后续业务成功。</p>
+        {{ slotStates[run.cognition_slot_wait_state] || run.cognition_slot_wait_state }}。</p>
       <p v-if="run.work_slot_wait_state" class="timing-note">
-        {{ slotStates[run.work_slot_wait_state] || run.work_slot_wait_state }}。只说明工作执行槽位的取得结局，不代表原工作已被处理或完成。</p>
+        {{ slotStates[run.work_slot_wait_state] || run.work_slot_wait_state }}。</p>
       <p v-if="run.work_selection_ms != null" class="timing-note">工作目录读取与选择属于本群这次调度，不是所选工作的创建后总排队时间。</p>
       <p v-if="run.maintenance_slot_wait_state" class="timing-note">
         {{ slotStates[run.maintenance_slot_wait_state] || run.maintenance_slot_wait_state }}。只属于本场景方法维护调度，不归给尚未选定的候选或工作。</p>
       <p v-if="run.agent_lock_wait_state" class="timing-note">
-        {{ slotStates[run.agent_lock_wait_state] || run.agent_lock_wait_state }}。仅说明本次插件子调用等待原父执行的串行锁，不代表取得模型槽位或执行成功。</p>
-      <p v-if="run.publication_waits.length" class="timing-note">发布串行锁按本群提交身份逐次登记；从申请到取得或中断的时间包含调度开销，正值不证明发生争用。取得锁也不代表入队或送达。</p>
+        {{ slotStates[run.agent_lock_wait_state] || run.agent_lock_wait_state }}。</p>
+      <p v-if="run.publication_waits.length" class="timing-note">发送前排队等待的时间。</p>
       <p v-if="run.request_preparation_failure" class="timing-note">
         第 {{ run.request_preparation_failure.step + 1 }} 步请求准备{{ run.request_preparation_failure.state === 'cancelled' ? '被取消' : '失败' }}：{{ duration(run.request_preparation_failure.elapsed_ms) }} · {{ run.request_preparation_failure.error_type }}。
         未进入本步模型请求；准备可能包含压缩等嵌套调用，不能据此判断没有调用或费用。
@@ -73,7 +73,7 @@ const publicationWaitStates = { acquired: '已取得锁', cancelled: '取得前�
         <div><dt>本段提交累计</dt><dd>{{ duration(run.commit_ms) }}</dd></div>
         <div><dt>本段发布累计</dt><dd>{{ duration(run.publication_ms) }}</dd></div>
       </dl>
-      <p class="timing-note">提交与发布计时包含各自等待和失败前已耗时间，不能按耗时判断成功。工具执行计时不含全部回执保存与后续处理。</p>
+      <p class="timing-note">提交和发布的用时包括排队时间。</p>
       <details v-if="run.steps.length">
         <summary>逐请求与工具计时（{{ run.steps.length }} 步）</summary>
         <article v-for="(step, index) in run.steps" :key="index" class="timing-step">

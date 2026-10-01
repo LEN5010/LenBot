@@ -74,7 +74,7 @@ const truncated = computed(() => Object.entries(props.relations?.truncated || {}
   actions: '行动',
   tool_results: '工具资料',
   batches: '历史批次',
-  operation_receipts: '操作回执'
+  operation_receipts: '操作结果'
 }[key] || key)))
 const disposition = value => ({ SILENCE: 'silence', ACTION: 'expression' }[value] || value)
 function handledStatus(turn) {
@@ -124,7 +124,7 @@ function handledStatus(turn) {
           :content="event.payload.raw_text ?? event.payload.content ?? '此事件没有文字正文。'"
         />
         <section v-if="event.payload.file_asset_id" class="inspector-links my-4">
-          <h3>文件行动（不等于文字消息）</h3>
+          <h3>发文件</h3>
           <EntityLink
             v-if="event.payload.job_id"
             type="file"
@@ -182,7 +182,7 @@ function handledStatus(turn) {
             </v-chip>
           </template>
           <p v-else class="muted-copy">没有保存注意力判定。</p>
-          <p v-if="event.attention.attention_due_at">普通观察计划截止：{{ fmtTime(event.attention.attention_due_at) }}（仍受权限、睡眠和额度影响）</p>
+          <p v-if="event.attention.attention_due_at">普通观察计划截止：{{ fmtTime(event.attention.attention_due_at) }}</p>
           <p v-if="records.pending" class="inspector-badges">
             <StatusBadge domain="attention" status="pending" /> 这条来源仍在当前待处理唤醒中。</p>
           <article v-for="turn in readTurns" :key="turn.event_id" class="relation-record">
@@ -194,7 +194,7 @@ function handledStatus(turn) {
                 :status="handledStatus(turn)"
               />
             </div>
-            <p v-if="records.sourceId && !handledStatus(turn)" class="muted-copy">本次提交没有为这条来源记录处理结果；已提供观察不等于请求已完成。</p>
+            <p v-if="records.sourceId && !handledStatus(turn)" class="muted-copy">这一轮没有记下这条消息的处理结果。</p>
             <p class="preserve-lines">本轮整体决定：{{ turn.outcome?.decision_reason || '未记录' }}
               <StatusBadge
                 v-if="turn.outcome?.disposition"
@@ -267,7 +267,7 @@ function handledStatus(turn) {
                 label="待交付工作的请求原话"
               />
               <p v-else class="muted-copy">本条表达的独立来源未记录。</p>
-              <p v-if="!action.receipt_event_ids.length" class="muted-copy">尚无关联回执。</p>
+              <p v-if="!action.receipt_event_ids.length" class="muted-copy">还没有发送结果。</p>
               <div class="inspector-links">
                 <EntityLink
                   v-for="id in action.receipt_event_ids"

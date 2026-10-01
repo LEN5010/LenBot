@@ -60,13 +60,13 @@ const isDeferred = computed(() => detail.value?.payload?.kind === 'deferred_deli
 const deferredAction = computed(() => isDeferred.value ? detail.value.payload.action : null)
 const tabLabel = computed(() => ({ reminders: '提醒', waiting: '等待', system: '周期', deferred: '延期交付' }[tab.value]))
 const detailTitle = computed(() => tab.value === 'waiting' ? '等待详情' : isDeferred.value || tab.value === 'deferred' ? '延期交付详情' : isSystem.value || tab.value === 'system' ? '调度周期详情' : '提醒详情')
-const deferredPhases = { waiting: '等待重新入队', queued: '已入队，尚无尝试', attempted: '已有发送尝试', terminal: '此延期已结束，结果见回执' }
+const deferredPhases = { waiting: '等待重新入队', queued: '已入队，尚无尝试', attempted: '已有发送尝试', terminal: '已结束' }
 const editable = computed(() => detail.value && !isWork.value && !isSystem.value && !isDeferred.value && ['pending', 'claimed', 'processing', 'result_ready', 'review_required'].includes(detail.value.status))
 const dirty = computed(() => editing.value && baseline.value && (draft.value.description.trim() !== baseline.value.saved.description || draftDue.value !== baseline.value.saved.due_at))
 const { confirmLeave } = useUnsavedChanges(dirty)
 const pages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
-const taskStates = [{ title: '全部状态', value: '' }, { title: '待触发', value: 'pending' }, { title: '已认领', value: 'claimed' }, { title: '处理中', value: 'processing' }, { title: '待处理结果', value: 'result_ready' }, { title: '待回执', value: 'awaiting_delivery' }, { title: '任务完成', value: 'completed' }, { title: '已取消', value: 'cancelled' }, { title: '失败', value: 'failed' }, { title: '送达未知', value: 'delivery_unknown' }, { title: '待核对', value: 'review_required' }, { title: 'Shadow／模拟观察', value: 'shadow_observed' }]
-const waitingStates = [{ title: '全部状态', value: '' }, { title: '等待中', value: 'active' }, { title: '待核对', value: 'review_required' }, { title: '已结束', value: 'resolved' }, { title: '已过期', value: 'expired' }, { title: '已取消', value: 'cancelled' }]
+const taskStates = [{ title: '全部状态', value: '' }, { title: '待触发', value: 'pending' }, { title: '已认领', value: 'claimed' }, { title: '处理中', value: 'processing' }, { title: '待处理结果', value: 'result_ready' }, { title: '等待发送结果', value: 'awaiting_delivery' }, { title: '任务完成', value: 'completed' }, { title: '已取消', value: 'cancelled' }, { title: '失败', value: 'failed' }, { title: '送达未知', value: 'delivery_unknown' }, { title: '需要你看看', value: 'review_required' }, { title: 'Shadow／模拟观察', value: 'shadow_observed' }]
+const waitingStates = [{ title: '全部状态', value: '' }, { title: '等待中', value: 'active' }, { title: '需要你看看', value: 'review_required' }, { title: '已结束', value: 'resolved' }, { title: '已过期', value: 'expired' }, { title: '已取消', value: 'cancelled' }]
 const statusOptions = computed(() => tab.value === 'waiting' ? waitingStates : tab.value === 'system'
   ? taskStates.map(item => item.value === 'completed' ? { ...item, title: '本槽已结束' } : item) : taskStates)
 const draftDue = computed(() => timeAnchor.value && draft.value.time === timeAnchor.value.text ? timeAnchor.value.value : parseTime(draft.value.time))
@@ -191,7 +191,7 @@ function resolveConflict(keep) {
   conflict.value=false;
   actionError.value=''
   timeAnchor.value={text:next.time,value:nextDue}
-  feedback.value=keep?'已保留实际编辑的事项／时间，未改字段采用现值。请核对触发条件后另行保存，尚未提交。':'已采用本次读取的保存值，没有修改提醒。'
+  feedback.value=keep?'已保留你改过的事项和时间，其他用现在的值。看一下再保存。':'已换成现在保存的值。'
 }
 function askAction(operation) {
   if (saving.value || detailLoading.value || detailError.value || readbackPending.value || !detail.value) return
@@ -209,7 +209,7 @@ async function submitAction() {
   if (saving.value || detailLoading.value || detailError.value || readbackPending.value || !confirmation.value || !detail.value) return
   const value = confirmation.value
   if (hasConfigDraftChanges(value.baseline, selectedFacts(detail.value,value.tab==='waiting'))) {
-    actionError.value='确认期间对象已变化，未提交旧确认。请核对当前状态后重新选择操作。'
+    actionError.value='这条记录刚刚变了，请重新选择操作。'
     if (value.operation==='update')conflict.value=true
     confirmation.value=null;
     return
@@ -226,13 +226,13 @@ async function submitAction() {
         ...(value.operation==='update'?{description:value.description,due_at:value.due_at}:{})}) } : {}),
     })
     if (!fresh()) return
-    if (result.success !== true || (value.tab==='waiting'?result.loop_id:result.task_id) !== value.id) throw new Error('控制响应未确认同一对象；请沿原记录核对，未自动重复提交。')
+    if (result.success !== true || (value.tab==='waiting'?result.loop_id:result.task_id) !== value.id) throw new Error('返回的不是这条记录，请刷新后再看。')
     editing.value = false;
     baseline.value = null;
     confirmation.value = null;
     conflict.value = false;
     readbackPending.value=value.operation
-    feedback.value = { update: '提醒修改已提交，请核对下方的预定时间。', trigger_now: '立即触发请求已提交，执行与送达仍以实际记录为准。', cancel: '提醒取消已提交，历史记录保留。', resolve: '人工结束等待已提交，来源消息保留。' }[value.operation]
+    feedback.value = { update: '提醒已修改。', trigger_now: '提醒马上就会触发。', cancel: '提醒已取消。', resolve: '等待已结束。' }[value.operation]
     await loadDetail({accept:fresh})
   } catch (error) {
     if (fresh()) {
@@ -302,8 +302,8 @@ watch(() => [route.query.id, route.query.scene, route.query.tab, route.query.sta
         @click="refresh"
       >刷新</v-btn>
     </PageHeader>
-    <p v-if="id" class="auxiliary">切换对象或离页不撤销已经提交的控制。修改、立即触发和取消按原提醒核对；人工结束等待不代表对方已经回复。</p>
-    <v-alert v-if="readbackPending" type="warning" variant="tonal" class="section-gap">控制请求已取得成功回执，但尚未读回当前对象。请先刷新核对，暂不再次提交；旧状态不等于操作失败。<v-btn variant="text" :disabled="saving" :loading="detailLoading" @click="refresh">重读当前对象</v-btn>
+    <p v-if="id" class="auxiliary">已经提交的操作，离开页面也会生效。</p>
+    <v-alert v-if="readbackPending" type="warning" variant="tonal" class="section-gap">操作成功了，刷新一下看最新状态。<v-btn variant="text" :disabled="saving" :loading="detailLoading" @click="refresh">重读当前对象</v-btn>
     </v-alert>
     <v-tabs
       :model-value="tab"
@@ -339,7 +339,7 @@ watch(() => [route.query.id, route.query.scene, route.query.tab, route.query.sta
         <span>共 {{ total }} 项 · 每页 {{ pageSize }} 项</span>
         <span>读取于 {{ fmtTime(readAt) }}</span>
       </div>
-      <p v-if="tab === 'deferred'" class="work-guide section-gap">这里是已提交行动的延期，不是新提醒。等待释放、入队、发送尝试和真实回执分开保留；不能在此修改时间或重新触发。</p>
+      <p v-if="tab === 'deferred'" class="work-guide section-gap">这里是推迟发送的消息，不是提醒，不能改时间。</p>
       <div class="task-list">
         <v-card v-for="item in rows" :key="item.id" tag="article" class="task-row">
           <div class="task-main">
@@ -430,14 +430,14 @@ watch(() => [route.query.id, route.query.scene, route.query.tab, route.query.sta
                 :status="isWork && detail.delivery_required === false ? 'not_required' : tab === 'waiting' || isWork ? detail.status : taskStatus(detail)"
               />
             </div>
-            <p class="auxiliary">读取于 {{ fmtTime(detailReadAt) }}。任务状态不能代替平台送达证据，具体结果沿原回执核对。</p>
+            <p class="auxiliary">更新于 {{ fmtTime(detailReadAt) }}。</p>
             <template v-if="tab === 'waiting'">
               <dl class="fact-list">
                 <div><dt>等待对象</dt><dd>{{ detail.target_actor_id }}</dd></div>
                 <div><dt>开始时间</dt><dd>{{ fmtTime(detail.created_at) }}</dd></div>
                 <div><dt>到期时间</dt><dd>{{ fmtTime(detail.expires_at) }}</dd></div>
               </dl>
-              <v-alert v-if="detail.status==='review_required'" type="warning" variant="tonal">该挂起请求跨越了进程重启，保留原来源与预算供人工核对，不自动重发。</v-alert>
+              <v-alert v-if="detail.status==='review_required'" type="warning" variant="tonal">这个请求在重启前没做完，需要你看一下要不要重新发起。</v-alert>
               <ResourceViewer
                 v-if="detail.resume_state"
                 title="挂起请求与原预算"
@@ -458,7 +458,7 @@ watch(() => [route.query.id, route.query.scene, route.query.tab, route.query.sta
               <p class="mt-4">
                 {{ detail.payload.kind }} · 周期 {{ detail.payload.slot ?? '未记录' }} · 预定 {{ fmtTime(detail.due_at) }}
               </p>
-              <p>此记录由调度配置管理。周期完成仅表示本轮处理结束，研究结果和发送回执分别核对。</p>
+              <p>这条由定时设置管理。</p>
               <EntityLink
                 v-if="detail.payload.job_id"
                 type="job"
@@ -477,7 +477,7 @@ watch(() => [route.query.id, route.query.scene, route.query.tab, route.query.sta
               <ResourceViewer title="最近调度观察（最多 30 条）" :content="detail.scheduler_observations" />
             </template>
             <template v-else-if="isDeferred">
-              <v-alert type="info" variant="tonal" class="mt-4">原行动延期交付，只读查看；这不是新的提醒，不提供改时间、立即触发或重发按钮。控制原工作或提醒不会抹掉已有发送尝试。</v-alert>
+              <v-alert type="info" variant="tonal" class="mt-4">这是推迟发送的消息，只能查看。</v-alert>
               <dl class="fact-list">
                 <div><dt>原定时间</dt><dd>{{ fmtTime(detail.payload.original_due_at) }}</dd></div>
                 <div><dt>记录的下次释放时间</dt><dd>{{ fmtTime(detail.due_at) }}</dd></div>
@@ -529,9 +529,9 @@ watch(() => [route.query.id, route.query.scene, route.query.tab, route.query.sta
                   domain="delivery"
                   :status="detail.payload.delivery_status"
                 />
-                <span v-else class="auxiliary">尚无终态字段，不等于尚未尝试</span>
+                <span v-else class="auxiliary">还没有结果</span>
               </div>
-              <p class="auxiliary">attempted 且无可靠回执时保留未知；已过期的普通话题不会因醒来自动补发，已有工作成果也不重新计算。</p>
+              <p class="auxiliary">过期的话题不会补发。</p>
             </template>
             <template v-else-if="isWork">
               <v-alert type="info" variant="tonal" class="mt-4">这是信息工作对应的底层任务记录。工作要求、版本、资料和合法恢复在工作详情中管理。<div class="mt-3">
@@ -578,10 +578,10 @@ watch(() => [route.query.id, route.query.scene, route.query.tab, route.query.sta
           <v-card-title>修改当前提醒</v-card-title>
           <v-card-text>
             <v-alert v-if="conflict" type="warning" variant="tonal" class="mb-4">
-              <p>提醒已有变化或本次修改被拒绝，草稿保留。当前展示为 {{ fmtTime(detailReadAt) }} 的读取，不自动替换编辑基线。</p>
+              <p>提醒已经变了，或者这次修改没被接受。你的修改还在。</p>
               <p v-if="detailError" class="mt-2">当前重读失败，先刷新成功再选择，不能使用旧样本继续提交。</p>
               <ResourceViewer title="本次读取的提醒与触发条件" :content="selectedFacts(detail)" class="mt-3" />
-              <p class="mt-3">保留只重建自己改过的事项／时间，其他值采用现值。操作仍须另行确认保存，原事务会再次核对。</p>
+              <p class="mt-3">保留只留下你改过的事项和时间，其他用现在的值，之后还要再保存。</p>
               <div class="action-row">
                 <v-btn
                   variant="outlined"
@@ -612,7 +612,7 @@ watch(() => [route.query.id, route.query.scene, route.query.tab, route.query.sta
             <p v-if="!baseline.time" class="auxiliary">原绝对时间无法在日期控件表示；未编辑时保留原值，不按留空清除。</p>
             <p v-if="Number.isFinite(draftDue)" class="time-confirm">对应绝对时间：{{ absoluteTime(draftDue) }}
             </p>
-            <p v-else role="alert" class="text-error">请填写有效的本地日期与时间；无效日期或夏令时跳过的时间不会自动改成另一个时刻。</p>
+            <p v-else role="alert" class="text-error">请填写有效的日期和时间。</p>
             <div class="action-row">
               <v-btn
                 color="primary"
@@ -680,9 +680,9 @@ watch(() => [route.query.id, route.query.scene, route.query.tab, route.query.sta
           </details>
           <p v-if="confirmation.operation === 'update'">保存时间：{{ fmtTime(confirmation.due_at) }}（{{ zone }}）<span class="time-confirm">{{ absoluteTime(confirmation.due_at) }}</span>
           </p>
-          <p v-else-if="confirmation.operation === 'trigger_now'">将此提醒安排为立即触发，随后仍按既有判断与发送配置处理；本按钮不直接宣布履约。</p>
+          <p v-else-if="confirmation.operation === 'trigger_now'">马上触发这个提醒。</p>
           <p v-else-if="confirmation.operation === 'cancel'">取消此提醒，保留历史记录与已有结果。</p>
-          <p v-else>手动结束当前等待，不代表对方已经回复。</p>
+          <p v-else>手动结束等待。</p>
         </v-card-text>
         <v-card-actions class="dialog-actions">
           <v-btn variant="text" :disabled="saving" @click="confirmation = null">返回核对</v-btn>

@@ -88,7 +88,7 @@ function beginOperation(kind) {
 async function readSaved(result, kind, fresh) {
   if (!fresh()) return
   if(result?.success!==true||result?.config_saved!==true||typeof result.message!=='string')
-    throw new Error('模型配置响应缺少本次写入确认，结果待核对，未采用新基线。')
+    throw new Error('不确定有没有保存成功，请刷新看看。')
   message.value = result.message
   readbackPending.value = kind
   await load({ accept: fresh })
@@ -116,7 +116,7 @@ async function saveFailure(problem, kind, fresh, progress) {
 }
 function adoptUnknownOutcome() {
   if(busy.value||loading.value||!saveOutcome.value||outcomeReadAt.value===null)return
-  if(!window.confirm('放弃这次操作的原草稿（含未确认密钥替换或目录选择），采用当前读取值？这不重发保存或删除、不重试应用，也不追认原请求成功。'))return
+  if(!window.confirm('放弃没保存的修改，用现在保存的值继续？'))return
   const {kind}=saveOutcome.value
   if(kind==='provider'){
     providerOpen.value=false;
@@ -250,7 +250,7 @@ function resolveConflict(kind, keep) {
     }
     conflicts.clear(kind);
     error.value=''
-    message.value=keep?'已保留本项实际改动，其余采用现值；请核对后明确保存。':'已采用本次读取的保存值，没有提交保存。'
+    message.value=keep?'已保留你改过的项，其他用现在的值。看一下再保存。':'已换成现在保存的值。'
   } catch(problem) {
     error.value=problem.message
   }
@@ -397,10 +397,10 @@ watch(() => providerForm.value?.id.trim(), () => {
     <v-alert v-if="message" type="success" variant="tonal" closable @click:close="message=''">
       {{ message }}
     </v-alert>
-    <p class="muted">切换标签或离页只停止本页跟踪，不取消已提交操作；回到原配置刷新核对后再保存。</p>
+    <p class="muted">已经提交的操作，离开页面也会继续。</p>
     <v-alert v-if="saveOutcome" type="warning" variant="tonal" class="mb-4">
       <p>模型配置操作 {{ saveOutcome.kind }}<span v-if="saveOutcome.providerId"> · {{ saveOutcome.providerId }}</span> 结果未知：{{ saveOutcome.message }}不能直接重交原草稿或删除。</p>
-      <p v-if="outcomeReadAt!==null">当前保存与运行值已于 {{ fmtTime(outcomeReadAt) }} 读取；这不是旧操作回执。明确采用后关闭原编辑，重新进入当前对象。</p>
+      <p v-if="outcomeReadAt!==null">下面是 {{ fmtTime(outcomeReadAt) }} 读到的值。</p>
       <ResourceViewer v-if="outcomeReadAt!==null" title="当前保存与运行投影（不是原草稿）" :content="data" />
       <v-btn variant="text" :disabled="!!busy||loading" @click="refresh">读取当前保存值</v-btn>
       <v-btn
@@ -409,11 +409,11 @@ watch(() => providerForm.value?.id.trim(), () => {
         @click="adoptUnknownOutcome"
       >采用当前值继续操作</v-btn>
     </v-alert>
-    <v-alert v-if="readbackPending" type="warning" variant="tonal">配置已写入，但尚未读回保存值；暂不再次提交。请刷新核对保存与运行状态。</v-alert>
+    <v-alert v-if="readbackPending" type="warning" variant="tonal">已保存，刷新看看最新状态。</v-alert>
     <v-alert v-if="applicationPending" type="warning" variant="tonal">已保存配置与当前运行值存在差异。下面表单编辑已保存值；尚未应用的配置不能视为运行中可用。</v-alert>
     <v-alert v-for="[kind,conflict] in deleteConflicts" :key="kind" type="warning" variant="tonal">
       <p>删除供应商「{{ kind.slice(7) }}」发生冲突：{{ conflict.problem.message }}</p>
-      <p v-if="conflict.snapshot" class="mt-2">已重读保存值（{{ fmtTime(conflict.readAt) }}）。{{ conflict.snapshot.provider ? '核对后可回到该供应商再次点击删除，仍需确认；不会重试原删除。' : '该供应商当前已不存在，没有再次删除。' }}
+      <p v-if="conflict.snapshot" class="mt-2">已重读保存值（{{ fmtTime(conflict.readAt) }}）。{{ conflict.snapshot.provider ? '这个供应商还在，需要的话可以再删一次。' : '这个供应商已经删掉了。' }}
       </p>
       <p v-else class="mt-2">先重读当前供应商，再决定是否提出新的删除操作。</p>
       <p v-if="conflict.readError" role="alert">重读失败：{{ conflict.readError }}</p>
@@ -441,7 +441,7 @@ watch(() => providerForm.value?.id.trim(), () => {
           >编辑</v-btn>
         </div>
       </div>
-      <p class="muted">只在 Agent 主动查询认识时使用；索引失败不会回滚已提交认识。Embedding 与 rerank 请求单独计量。</p>
+      <p class="muted">Bot 查认识时用。向量和重排的调用单独计费。</p>
       <p v-if="data.retrieval?.embedding" class="auxiliary">Embedding：{{ data.retrieval.embedding.provider_id }} · {{ data.retrieval.embedding.model }}<span v-if="data.retrieval.embedding.dimension"> · {{ data.retrieval.embedding.dimension }} 维</span>
       </p>
       <p v-if="data.retrieval?.rerank" class="auxiliary">Rerank：{{ data.retrieval.rerank.provider_id }} · {{ data.retrieval.rerank.model }}
@@ -455,7 +455,7 @@ watch(() => providerForm.value?.id.trim(), () => {
           {{ reservations?.day_key || '未读取' }}
         </v-chip>
       </div>
-      <p class="muted">账务日 {{ reservations?.day_key || '未读取' }}{{ reservations?.timezone ? ` · ${reservations.timezone}` : '' }}。账户合计按全日预占与已结算用量聚合，含结果已提交但仍有在途调用的占用；下面明细最多列出最近 100 条，不能代替合计。本地估算与供应商 usage 分开统计。</p>
+      <p class="muted">账务日 {{ reservations?.day_key || '未读取' }}{{ reservations?.timezone ? ` · ${reservations.timezone}` : '' }}。合计包括今天已用和正在用的额度，下面最多列最近 100 条。</p>
       <v-alert v-if="reservationError" type="error" variant="tonal" class="my-3">读取失败：{{ reservationError }}
       </v-alert>
       <v-progress-linear v-if="reservationLoading" indeterminate />
@@ -560,7 +560,7 @@ watch(() => providerForm.value?.id.trim(), () => {
         <v-card-text>
           <v-alert v-if="saveOutcome" type="warning" variant="tonal" class="mb-4">
             <p>模型配置操作 {{ saveOutcome.kind }}<span v-if="saveOutcome.providerId"> · {{ saveOutcome.providerId }}</span> 结果未知：{{ saveOutcome.message }}不能直接重交原草稿或删除。</p>
-            <p v-if="outcomeReadAt!==null">当前保存与运行值已于 {{ fmtTime(outcomeReadAt) }} 读取；这不是旧操作回执。明确采用后关闭原编辑，重新进入当前对象。</p>
+            <p v-if="outcomeReadAt!==null">下面是 {{ fmtTime(outcomeReadAt) }} 读到的值。</p>
             <ResourceViewer v-if="outcomeReadAt!==null" title="当前保存与运行投影（不是原草稿）" :content="data" />
             <v-btn variant="text" :disabled="!!busy||loading" @click="refresh">读取当前保存值</v-btn>
             <v-btn

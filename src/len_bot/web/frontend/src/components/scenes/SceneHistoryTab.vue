@@ -16,7 +16,7 @@ const { retrySaving, askRetry } = props.state
   >
     {{ detail.maintenance?.reason }}
   </v-alert>
-  <p class="muted-copy">摘要按原始范围保存，未成功的区间保留原文。摘要提供定位，工作和认识仍须实际读取证据。</p>
+  <p class="muted-copy">聊天记录的摘要，没摘要成功的部分保留原文。</p>
   <p v-if="detail.history_status.initial_history_boundary" class="muted-copy">初始历史边界 {{ detail.history_status.initial_history_boundary }}，边界之前的原文未据此标为已总结。</p>
   <p>尚未成功覆盖 {{ detail.history_status.unsuccessful_count }} 个批次</p>
   <article
@@ -39,7 +39,7 @@ const { retrySaving, askRetry } = props.state
       type="warning"
       variant="tonal"
       class="my-3"
-    >本批次的原话来源不完整，或已不在原本群范围；摘要仅保留审计，不再进入新的摘要候选或请求。原完成状态不代表来源仍可读取。</v-alert>
+    >这批原话不完整或已经不在这个群了，摘要只留作记录，以后不会再用。</v-alert>
     <p v-if="batch.error_type" class="error-copy">
       {{ batch.failure_detail || batch.error_type }} · 此区间尚未成功覆盖</p>
     <p class="muted-copy">
@@ -49,14 +49,14 @@ const { retrySaving, askRetry } = props.state
       type="warning"
       variant="tonal"
       class="my-3"
-    >摘要已保存；{{ batch.candidate_review.candidates.length }} 条认识候选因相关认识变化未采用，需人工核对。不会自动重跑维护。<EntityLink
+    >摘要已保存；{{ batch.candidate_review.candidates.length }} 条认识候选因为相关认识变了没有采用，需要你看一下。<EntityLink
         type="event"
         :id="batch.candidate_review.event_id"
         :scene-id="sceneId"
         label="查看候选、原版本与提交时版本"
       />
     </v-alert>
-    <p v-else-if="batch.candidate_review?.status==='not_recorded'" class="muted-copy">此维护回执未单独记录候选冲突情况，不能据此认定全部采用。</p>
+    <p v-else-if="batch.candidate_review?.status==='not_recorded'" class="muted-copy">没有记录候选冲突的情况。</p>
     <p class="two-lines">{{ batch.summary || '尚无摘要正文。' }}</p>
     <v-btn
       v-if="['failed', 'pending'].includes(batch.status)"

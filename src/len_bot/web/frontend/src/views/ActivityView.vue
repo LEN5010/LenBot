@@ -53,7 +53,7 @@ const resourceRange=computed(()=>{
   const start=route.query.result_start,end=route.query.result_end,unit=route.query.result_unit
   if(start===undefined && end===undefined && unit===undefined)return {start:0,end:undefined,unit:'characters',bounded:false}
   const number=value=>typeof value==='string' && /^\d+$/.test(value) && Number.isSafeInteger(Number(value))
-  if(!number(start) || !number(end) || Number(end)<Number(start) || !['characters','records'].includes(unit))return {error:'资料链接的范围无效；需要完整的起止位置与 characters / records 坐标，不会自动改成正文偏移。'}
+  if(!number(start) || !number(end) || Number(end)<Number(start) || !['characters','records'].includes(unit))return {error:'资料链接的范围不对，请重新打开资料。'}
   return {start:Number(start),end:Number(end),unit,bounded:true}
 })
 const resourceKey=computed(()=>JSON.stringify([
@@ -69,7 +69,7 @@ const callStatuses=[
   ['completed','请求完成'],
   ['failed','请求失败'],
   ['cancelled','已取消'],
-  ['unconfirmed','未确认']
+  ['unconfirmed','不确定']
 ].map(([value,title])=>({value,title}))
 const knownUsage=computed(()=>data.value?.totals.reduce((sum,row)=>({
   prompt:sum.prompt+row.prompt_tokens,
@@ -347,7 +347,7 @@ onBeforeUnmount(()=>{
 </script>
 <template>
   <div class="page-stack activity-view">
-    <PageHeader title="运行记录" description="按持久来源查看请求、对话、事件与回执。阅读、筛选和翻页不会调用模型。">
+    <PageHeader title="运行记录" description="查看模型调用、对话、事件和发送记录。">
       <v-btn variant="outlined" :prepend-icon="mdiRefresh" :loading="loading" @click="load">刷新</v-btn>
     </PageHeader>
     <v-tabs :model-value="tab" color="primary" @update:model-value="changeTab">
@@ -420,11 +420,11 @@ onBeforeUnmount(()=>{
             </v-card-text>
           </v-card>
         </div>
-        <p class="muted usage-note">供应商已报告音频用量 {{ knownUsage.audio.toLocaleString() }} 秒（duration usage，与 token 不相加）。缓存和推理是各自子项，不重复相加。费用未核实：{{ data.cost.reason }}
+        <p class="muted usage-note">供应商已报告音频用量 {{ knownUsage.audio.toLocaleString() }} 秒。费用未知：{{ data.cost.reason }}
         </p>
       </template>
       <p v-if="tab==='logs'" class="muted range-note">本次进程最多保留最近 1,000 条日志；此页读取符合级别的最近 {{ data.length }} 条，最多 200 条。单条日志由服务端保留最多 500 字符，不是无限历史。</p>
-      <p v-else-if="tab==='events'" class="muted range-note">本页 {{ data.items.length }} 条，按首次读取截点向前翻页。事件保存在数据库，页面只读取当前范围。</p>
+      <p v-else-if="tab==='events'" class="muted range-note">本页 {{ data.items.length }} 条。</p>
       <p v-else class="muted range-note">共 {{ data.total }} 条 · 第 {{ page }} 页 · 每页 {{ data.page_size }} 条<span v-if="route.query.episode"> · 已定位关联轮次 {{ route.query.episode }}</span>
       </p>
       <v-card class="activity-list">
@@ -593,7 +593,7 @@ onBeforeUnmount(()=>{
                   </strong>
                 </div>
               </div>
-              <v-alert v-if="!selected.usage" variant="tonal" type="warning">供应商 usage 未知；取消或失败不证明没有计费。</v-alert>
+              <v-alert v-if="!selected.usage" variant="tonal" type="warning">用量未知，取消或失败的调用也可能收费。</v-alert>
               <ResourceViewer title="供应商返回的原始 usage" :content="selected.usage" />
               <ResourceViewer title="独立的本地输入估算" :content="selected.estimate" />
               <p v-if="selected.error_type" class="text-error">{{ selected.error_type }}</p>
@@ -615,13 +615,13 @@ onBeforeUnmount(()=>{
               </div>
             </template>
             <TraceDetails v-else-if="tab==='turns'" :trace="selected" />
-            <p v-if="tab==='calls'" class="muted">客户端请求至解析／中断：{{ formatDurationMs(selected.transport?.client_elapsed_ms) }}。包含客户端内部等待和多次尝试，不含调用登记与结算；不是首字延迟或供应商处理时长。旧记录及未接入入口不反推，取消不证明上游已停止或没有费用。</p>
+            <p v-if="tab==='calls'" class="muted">客户端请求至解析／中断：{{ formatDurationMs(selected.transport?.client_elapsed_ms) }}。</p>
             <RequestRecordDetails
               v-if="tab==='calls'"
               :record="selected.request_record"
               :scene-id="selected.scene_id"
             />
-            <v-alert v-if="relationError" type="error" variant="tonal">关联读取失败：{{ relationError }}<span v-if="relations">；关联仍为 {{ fmtTime(relationReadAt) }} 的旧采样。</span>
+            <v-alert v-if="relationError" type="error" variant="tonal">关联读取失败：{{ relationError }}<span v-if="relations">；下面是 {{ fmtTime(relationReadAt) }} 读到的内容。</span>
               <div class="mt-3">
                 <v-btn variant="outlined" size="small" :loading="detailLoading" @click="loadDetail">重新读取关联</v-btn>
               </div>
@@ -836,7 +836,7 @@ onBeforeUnmount(()=>{
                         label="读取回执"
                         :copyable="false"
                       />
-                      <span v-if="!item.receipt_event_ids.length" class="muted">尚无已保存回执</span>
+                      <span v-if="!item.receipt_event_ids.length" class="muted">还没有发送结果</span>
                       <EntityLink
                         v-if="item.file_asset_id && item.job_id"
                         type="file"
@@ -848,7 +848,7 @@ onBeforeUnmount(()=>{
                       <span v-if="item.file_id">平台文件 ID：{{ item.file_id }}</span>
                       <AnswerBasisDetails :basis="item.answer_basis" :scene-id="item.scene_id" />
                     </div>
-                    <p v-if="!relations.actions.length" class="muted">未关联行动或回执</p>
+                    <p v-if="!relations.actions.length" class="muted">没有相关操作</p>
                   </section>
                 </div>
               </template>
@@ -876,7 +876,7 @@ onBeforeUnmount(()=>{
           />
         </v-card-title>
         <v-card-text class="resource-body">
-          <p v-if="resourceRange.bounded" class="muted">请求范围 [{{ resourceRange.start }}, {{ resourceRange.end }}) · {{ resourceUnit(resourceRange.unit) }}。只读已保存资料，不重新执行工具、不增加模型已读范围；记录内容可能与当时提示中的投影格式不同。</p>
+          <p v-if="resourceRange.bounded" class="muted">请求范围 [{{ resourceRange.start }}, {{ resourceRange.end }}) · {{ resourceUnit(resourceRange.unit) }}。</p>
           <v-btn
             v-if="resourceRange.bounded || resourceRange.error"
             variant="text"
@@ -915,7 +915,7 @@ onBeforeUnmount(()=>{
           >
             {{ resourceRange.bounded?'继续读取引用范围':'继续读取已保存正文' }}
           </v-btn>
-          <p v-else-if="resource && resourceRange.bounded" class="muted">所选范围已读取完毕；不代表整份来源或未取得的附件已读。</p>
+          <p v-else-if="resource && resourceRange.bounded" class="muted">所选范围已经读完了。</p>
           <p v-if="resourceReadAt" class="sample-time">读取于 {{ fmtTime(resourceReadAt) }}</p>
         </v-card-text>
       </v-card>

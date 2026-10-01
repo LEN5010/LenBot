@@ -33,7 +33,7 @@ async function submit(){
       <v-card-text>
         <span class="login-mark">L</span>
         <h1>登录 LenBot</h1>
-        <p class="muted">{{ isolated?'进入当前测试实例；表达只模拟，不发送到 QQ。':multi?'进入当前独立宿主的观察与配置页面；消息出口以实例实际配置为准。':'查看运行事实，管理工作与资料。' }}</p>
+        <p class="muted">{{ isolated?'登录后和 Bot 试聊，回复不会发到 QQ。':multi?'登录后管理你的 Bot。':'查看运行情况，管理工作与资料。' }}</p>
         <v-alert v-if="error" type="error" variant="tonal" role="alert">{{ error }}</v-alert>
         <form @submit.prevent="submit">
           <v-text-field

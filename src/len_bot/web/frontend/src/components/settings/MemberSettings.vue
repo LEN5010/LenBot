@@ -15,7 +15,7 @@ const { members, membersRestart, membersDirty, addMember, saveMembers } = props.
       >添加对象</v-btn>
     </div>
     <p class="muted my-3">这里登记的是 B 站主播与订阅对象，不是群详情里的 QQ 参与者。名称与别名用于查询，B 站 UID 和直播间号确认实际对象。团体署名保持团体含义，不在这里自动展开。</p>
-    <v-alert v-if="membersRestart" type="info" variant="tonal" class="mb-4">系统另有已保存配置等待手动重启。本页编辑已保存的订阅对象，不能据全局重启标记断言当前采集已切换；各插件运行状态另行核对。</v-alert>
+    <v-alert v-if="membersRestart" type="info" variant="tonal" class="mb-4">有修改等待重启。</v-alert>
     <p v-if="!members.length" class="muted py-4">尚未填写主播与订阅对象；动态与开播插件保持未就绪。</p>
     <v-form :disabled="!!currentSaveOutcome||!!busy" @submit.prevent="saveMembers">
       <v-card v-for="(member,index) in members" :key="index" variant="outlined" class="pa-4 mb-4">

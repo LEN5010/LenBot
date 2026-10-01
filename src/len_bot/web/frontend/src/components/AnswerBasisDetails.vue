@@ -27,7 +27,7 @@ const work = computed(() => props.basis?.work_result)
     </div>
     <p v-if="!basis" class="basis-note">此表达未记录答复依据；不从来源原话或同轮工具调用补推。</p>
     <template v-else>
-      <p class="basis-note">这是保存的依据声明与来源关联，不代表结论已验证为真，也不代表已经送达。</p>
+      <p class="basis-note">Bot 回答时依据的来源。</p>
       <div v-if="basis.unresolved?.length" class="basis-gaps">
         <strong>尚未核实或完成</strong>
         <ul><li v-for="(gap,index) in basis.unresolved" :key="index">{{ gap }}</li></ul>
@@ -58,7 +58,7 @@ const work = computed(() => props.basis?.work_result)
             <span>[{{ span.start }}, {{ span.end }}) · {{ unit(span.coordinate_unit) }}</span>
           </li>
         </ul>
-        <p class="basis-note">区间不包含终点。链接按原坐标读取已保存资料，不重新调用工具，也不增加模型已读范围。</p>
+        <p class="basis-note">点链接可以看保存的资料。</p>
       </div>
       <div v-if="work" class="basis-section">
         <h4>采用的工作版本</h4>
@@ -67,7 +67,7 @@ const work = computed(() => props.basis?.work_result)
           <span>当时采用 v{{ work.revision }} · {{ work.status==='completed'?'完整结果':work.status==='partial'?'部分结果':work.status }}
           </span>
         </div>
-        <p class="basis-note">这是本条采用时的来源快照；工作详情可能已有新版本。工作结果不等于对话重读了全部原始材料。</p>
+        <p class="basis-note">这是回答时用到的工作结果，工作后来可能有更新。</p>
         <details v-if="work.result_ids?.length || work.evidence_spans?.length">
           <summary>工作成果保留的资料关联</summary>
           <div class="basis-links">

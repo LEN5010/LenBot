@@ -71,7 +71,7 @@ onMounted(()=>{
 })
 onUnmounted(()=>document.removeEventListener('visibilitychange',visible))
 async function exit(){
-  if(busy.value||!window.confirm('退出登录？当前页面未保存的修改和临时浏览位置会丢失；已提交操作不会被取消。'))return
+  if(busy.value||!window.confirm('退出登录？没保存的修改会丢失。'))return
   const fresh=logoutGuard();
   busy.value=true;
   error.value=''
@@ -149,7 +149,7 @@ async function exit(){
             <p>OneBot：{{ app.status.onebot.connected?'已连接':'未连接' }}</p>
             <p>发送方式：{{ app.status.shadow_mode?'Shadow · 仅记录候选':'按各群规则实际发送' }}</p>
             <p>业务时间：{{ app.status.business_timezone || '未填写' }}</p>
-            <p class="muted">采样于 {{ fmtTime(app.status.sampled_at) }}</p>
+            <p class="muted">更新于 {{ fmtTime(app.status.sampled_at) }}</p>
           </template>
           <p v-else class="muted">尚无状态样本</p>
         </v-card-text>

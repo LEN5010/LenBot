@@ -235,7 +235,7 @@ async function showApplyError(problem,operation,{submitted=false,config=false}={
 }
 function adoptOutcome() {
   if(busy.value||loading.value||!pendingOutcome.value||outcomeCurrent.value?.id!==pendingOutcome.value.pluginId)return
-  if(!window.confirm('放弃该插件旧参数草稿（含未确认的凭据替换），采用本次读取值继续操作？这不取消或重发旧请求，也不证明旧请求的执行结果。'))return
+  if(!window.confirm('放弃这个插件没保存的参数，用现在保存的值继续？'))return
   if(selected.value?.id===outcomeCurrent.value.id){
     selected.value=outcomeCurrent.value;
     setDraft(outcomeCurrent.value)
@@ -247,7 +247,7 @@ function adoptOutcome() {
   outcomeCurrent.value=null;
   outcomeReadAt.value=null
   error.value='';
-  message.value='已采用当前读取值；未重发、取消或追认旧操作，请核对运行状态后再决定新操作。'
+  message.value='已换成现在保存的值。'
 }
 async function close() {
   const openedFrom=selected.value?.id
@@ -269,8 +269,8 @@ async function toggle(plugin,enabled=!plugin.enabled) {
       body:JSON.stringify({plugin_id:plugin.id,enabled,baseline:plugin.enabled})
     })
     if (!isCurrent(operation)) return
-    if(receipt.success!==true||receipt.plugin_id!==plugin.id||receipt.enabled!==enabled)throw new Error('插件启停回执与本次请求不符，结果待核对。')
-    message.value='启停请求已取得保存与应用回执；当前装载情况见刷新后的运行时记录。'+(receipt.requires_restart?'另有配置等待手动重启。':'')
+    if(receipt.success!==true||receipt.plugin_id!==plugin.id||receipt.enabled!==enabled)throw new Error('不确定有没有成功，请刷新看看。')
+    message.value=(enabled?'已启用。':'已停用。')+(receipt.requires_restart?'有修改等待重启。':'')
     const refreshed=await load({accept:()=>isCurrent(operation)})
     if(isCurrent(operation)&&!refreshed)holdOutcome(operation,true)
   } catch(e) {
@@ -320,9 +320,9 @@ async function save() {
       body:JSON.stringify({plugin_id:selected.value.id,config,baseline:baseline.value})
     })
     if (!isCurrent(operation)) return
-    if(receipt.success!==true||receipt.plugin_id!==operation.pluginId)throw new Error('插件参数回执与本次请求不符，结果待核对。')
+    if(receipt.success!==true||receipt.plugin_id!==operation.pluginId)throw new Error('不确定有没有成功，请刷新看看。')
     readbackId.value=operation.selection
-    message.value='参数已取得保存与应用回执；当前是否加载、启用及来源状态见刷新后的记录。'+(receipt.requires_restart?'另有配置等待手动重启。':'')
+    message.value='参数已保存。'+(receipt.requires_restart?'有修改等待重启。':'')
     serverProblems.value=[]
     await load({accept:()=>isCurrent(operation)})
     if (isCurrent(operation)) {
@@ -358,7 +358,7 @@ function keepMine() {
     currentSaved.value=null;
     serverProblems.value=[];
     error.value=''
-    message.value='已保留实际改过的字段，未改字段采用当前保存值；请核对草稿后再保存插件参数。'
+    message.value='已保留你改过的项，其他用现在的值。看一下再保存。'
   }catch(e){
     error.value=e.message
   }
@@ -401,7 +401,7 @@ loadScopes()
   <div class="page-stack">
     <PageHeader
       title="能力与插件"
-      description="按用途查找，逐项确认“已配置、已保存、已加载、已开放群”。启用不代表来源可用，刷新页面不会抓取源数据或调用模型。"
+      description="按用途找插件，看它有没有配置、有没有加载、在哪些群开放。"
     >
       <v-btn variant="outlined" :loading="loading" :disabled="!!busy" @click="load">刷新</v-btn>
     </PageHeader>
@@ -419,7 +419,7 @@ loadScopes()
     </v-alert>
     <v-alert v-if="pendingOutcome&&!route.query.id" type="warning" variant="tonal" class="mb-4">
       <p>
-        {{ pendingOutcome.pluginId }}：{{ pendingOutcome.acknowledged?'已取得保存回执，后续状态尚待核对。':'本次保存或启停结果未知，不能直接再次提交。' }}读取当前值不等于取得旧操作回执。</p>
+        {{ pendingOutcome.pluginId }}：{{ pendingOutcome.acknowledged?'已保存，刷新看看最新状态。':'不确定刚才的操作有没有成功，刷新看看再决定。' }}</p>
       <p v-if="outcomeCurrent">
         {{ fmtTime(outcomeReadAt) }} 的读取值：{{ outcomeCurrent.enabled?'保存为启用':'保存为停用' }}；运行状态 {{ outcomeCurrent.state }}。凭据只显示是否已设置，不恢复替换草稿。</p>
       <v-btn variant="text" :disabled="!!busy||loading" @click="load">读取当前保存值</v-btn>
@@ -521,10 +521,10 @@ loadScopes()
           <v-alert v-if="message" type="success" variant="tonal" class="mb-4">
             {{ message }}
           </v-alert>
-          <v-alert v-if="loaded&&!selected&&!error" type="warning" variant="tonal">此插件不在当前声明目录中。</v-alert>
+          <v-alert v-if="loaded&&!selected&&!error" type="warning" variant="tonal">找不到这个插件。</v-alert>
           <v-alert v-if="pendingOutcome" type="warning" variant="tonal" class="mb-4">
             <p>
-              {{ pendingOutcome.pluginId }}：{{ pendingOutcome.acknowledged?'已取得保存回执，后续状态尚待核对。':'本次保存或启停结果未知，不能直接再次提交。' }}读取当前值不等于取得旧操作回执。</p>
+              {{ pendingOutcome.pluginId }}：{{ pendingOutcome.acknowledged?'已保存，刷新看看最新状态。':'不确定刚才的操作有没有成功，刷新看看再决定。' }}</p>
             <p v-if="outcomeCurrent">
               {{ fmtTime(outcomeReadAt) }} 的读取值：{{ outcomeCurrent.enabled?'保存为启用':'保存为停用' }}；运行状态 {{ outcomeCurrent.state }}。凭据只显示是否已设置，不恢复替换草稿。</p>
             <v-btn variant="text" :disabled="!!busy||loading" @click="load">读取当前保存值</v-btn>
@@ -572,13 +572,13 @@ loadScopes()
                 @take="takeCurrent"
                 @reload="load"
               />
-              <v-alert v-if="readbackId" type="warning" variant="tonal" class="my-4">参数已写入，当前保存值尚未读回；不会把旧草稿标成新基线或再次提交。<v-btn variant="text" :disabled="!!busy||loading" @click="load">重新读取保存值</v-btn>
+              <v-alert v-if="readbackId" type="warning" variant="tonal" class="my-4">已保存，刷新看看最新状态。<v-btn variant="text" :disabled="!!busy||loading" @click="load">重新读取保存值</v-btn>
               </v-alert>
               <p class="muted my-4">
                 {{ selected.config_apply==='restart_plugin'?'该插件保存后会重新装载：未提交的工作可能中断；其他插件继续运行。':'保存后由本插件原位应用新参数。' }}
               </p>
               <p class="muted my-4">切换对象或离开页面只停止采用旧响应，不取消服务器已经接受的保存或启停。</p>
-              <v-alert v-if="!selected.configured" type="info" variant="tonal" class="mb-4">尚未配置，当前不装载此插件或建立源连接。参数由运营实际填写后保存，保存不会自动启用。</v-alert>
+              <v-alert v-if="!selected.configured" type="info" variant="tonal" class="mb-4">还没配置。填好参数保存后，再启用它。</v-alert>
               <v-btn
                 v-if="!draft"
                 color="primary"
@@ -592,7 +592,7 @@ loadScopes()
                 @submit.prevent="save"
               >
                 <v-alert v-if="problems.length" type="error" variant="tonal" class="mb-4">
-                  <p class="mb-2">请先修正以下参数；修正前不会提交保存。</p>
+                  <p class="mb-2">请先改好下面这些参数。</p>
                   <ul class="error-summary">
                     <li v-for="item in problems" :key="item.key+item.message">
                       <button type="button" class="error-link" @click="focusField(item.key)">
@@ -659,7 +659,7 @@ loadScopes()
                 {{ selected.last_error }}
               </v-alert>
               <h3 class="mb-4">源状态</h3>
-              <p class="muted mb-4">此处只展示已经取得的状态。缓存到期刷新失败时，本次查询失败；旧快照不延长有效期。Python 计算类插件没有源，不因为没有“最近成功获取源”而算故障。</p>
+              <p class="muted mb-4">插件最近的运行状态。</p>
               <dl class="facts">
                 <dt>最近成功</dt>
                 <dd>{{ fmtTime(selected.source_status.last_success_at) }}</dd>
@@ -691,7 +691,7 @@ loadScopes()
               <section v-if="selected.source_status.support_matrix" class="mt-5">
                 <h3>Core 支持矩阵</h3>
                 <p class="muted my-3">{{ selected.source_status.verification }}</p>
-                <p>连接：{{ selected.source_status.connected ? '已连接' : '未连接' }} · Core 版本：{{ selected.source_status.core_version || '未确认' }} · OneBot 身份：{{ selected.source_status.identity_matches ? '一致' : '不一致，不能转发' }}
+                <p>连接：{{ selected.source_status.connected ? '已连接' : '未连接' }} · Core 版本：{{ selected.source_status.core_version || '未知' }} · OneBot 身份：{{ selected.source_status.identity_matches ? '一致' : '不一致，不能转发' }}
                 </p>
                 <div class="entry-list mt-3">
                   <div
@@ -732,7 +732,7 @@ loadScopes()
                   </p>
                   <p>来源 {{ handler.sources.join(' / ') }} · {{ handler.event_types.join(' / ') }}
                   </p>
-                  <p v-if="handler.refresh_deferred === true">已声明延期来源重核；替代事件保存不等于新行动已送达。</p>
+                  <p v-if="handler.refresh_deferred === true">稍后会重新检查来源。</p>
                   <ResourceViewer title="匹配规则" :content="handler.match" />
                 </div>
                 <div v-for="hook in selected.hooks" :key="'hook:'+hook.id" class="entry-row">
@@ -744,10 +744,10 @@ loadScopes()
                   class="muted"
                 >当前未装载入口。启用时按插件声明注册。</p>
               </div>
-              <p class="muted mt-3">这里展示注册声明，不是当前调用授权；执行仍复核场景、角色和能力。同一响应含有序调用或提案时整批串行，允许并行不保证同时执行。展示页长不等于原始资料总长。</p>
+              <p class="muted mt-3">插件提供的功能。</p>
               <ResourceViewer
                 v-if="selected.work"
-                title="已声明的长期工作"
+                title="长期工作"
                 :content="selected.work"
                 class="my-4"
               />
@@ -758,10 +758,10 @@ loadScopes()
                 class="my-4"
               />
               <v-expansion-panels class="mt-4">
-                <v-expansion-panel title="声明与配置结构">
+                <v-expansion-panel title="配置结构">
                   <v-expansion-panel-text>
                     <ResourceViewer
-                      title="声明与配置结构"
+                      title="配置结构"
                       :content="{id:selected.id,emitted_events:selected.emitted_events,registered_tools:selected.registered_tools,config_schema:selected.config_schema,scene_config_schema:selected.scene_config_schema}"
                     />
                   </v-expansion-panel-text>

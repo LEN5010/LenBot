@@ -6,7 +6,7 @@ const { sceneId, related, setTab, aux, auxError } = props.page
 </script>
 <template>
   <h3>{{ sceneId.startsWith('group:')?'本群':'本会话' }}记忆</h3>
-  <p class="muted-copy">认识保留来源与修订，不是原话本身。本页只列采样时仍有效且未到期的认识；已撤销、替代或到期的旧版本可从认识列表回查。</p>
+  <p class="muted-copy">Bot 对这个群记下的认识。旧版本可以在认识列表里查。</p>
   <div class="scene-quick-links">
     <v-btn
       variant="tonal"
@@ -52,7 +52,7 @@ const { sceneId, related, setTab, aux, auxError } = props.page
       <time>{{ fmtTime(memory.created_at) }}</time>
     </div>
   </article>
-  <p v-if="aux && !aux.items.length && !auxError" class="empty-copy">此范围没有当前有效的认识；历史原话与旧版本仍可回查。</p>
+  <p v-if="aux && !aux.items.length && !auxError" class="empty-copy">这里还没有认识。</p>
 </template>
 <style scoped>
 .detail-record:focus-visible{outline:2px solid rgb(var(--v-theme-primary));outline-offset:4px}
