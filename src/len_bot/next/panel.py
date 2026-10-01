@@ -85,7 +85,8 @@ class PanelSession:
             "voice_mode": self.config.voice_mode,
             "models": {"mind": self.config.models.roles.mind.model, "voice": self.config.models.roles.voice.model},
             "delivery": "simulated", "running": not self.closing and not self.task.done(), "error": self.error(),
-            "messages": [{"seq": seq, "rendered": self.chat.render(message), **asdict(message)}
+            "messages": [{"seq": seq, "rendered": self.chat.render(message), "text": self.chat.render_text(message),
+                          **asdict(message)}
                          for seq, message in self.store.recent_records(self.config.scene)],
             "turns": self.store.recent_turns(self.config.scene),
         }

@@ -10,7 +10,7 @@ import tempfile
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Response, UploadFile
-from pydantic import Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 import yaml
 
 from .chat import build_tools
@@ -18,7 +18,8 @@ from .config import STRICT, HostConfig, load_host_config
 from .learning_store import LearningStore
 from .network import NetworkRuntime
 from .skills import load_catalog, select_skills
-from .persona import Persona, PersonaTarget, load_persona, parse_persona_files, read_persona_files, require_persona_target
+from .persona import (Example, Persona, PersonaTarget, Style, load_persona, parse_persona_files,
+                      read_persona_files, require_persona_target)
 from .persona_knowledge import parse_knowledge_document
 from .persona_packages import MAX_UPLOAD_BYTES, export_package, import_package
 
@@ -29,6 +30,43 @@ PersonaFilename = Literal["persona.yaml", "voice.md", "boundaries.md", "examples
 class PersonaFileChange(PersonaTarget):
     model_config = STRICT
     content: str
+
+
+class PersonaProfile(BaseModel):
+    """The parts of a role package an operator edits in the panel form; id, tools and skills stay as saved."""
+
+    model_config = STRICT
+    name: str
+    brief: str
+    behavior: str
+    self_reference: list[str]
+    aliases: list[str]
+    styles: list[Style]
+    example_tags: list[str]
+    voice: str
+    boundaries: str
+    examples: list[Example]
+
+
+class PersonaProfileChange(PersonaTarget):
+    model_config = STRICT
+    profile: PersonaProfile
+
+
+PROFILE_METADATA = ('name', 'brief', 'behavior', 'self_reference', 'aliases', 'styles', 'example_tags')
+
+
+def profile_files(files: dict[str, str], profile: PersonaProfile) -> dict[str, str]:
+    """Rewrite the four role files from the form; other persona.yaml fields keep their saved values."""
+    metadata = yaml.safe_load(files['persona.yaml'])
+    if not isinstance(metadata, dict):
+        raise ValueError('persona.yaml 不是 YAML 对象')
+    values = profile.model_dump(exclude_none=True)
+    metadata.update({key: values[key] for key in PROFILE_METADATA})
+    examples = [{key: value for key, value in item.items() if key != 'tags' or value} for item in values['examples']]
+    dump = lambda value: yaml.safe_dump(value, allow_unicode=True, sort_keys=False)
+    return {'persona.yaml': dump(metadata), 'voice.md': profile.voice, 'boundaries.md': profile.boundaries,
+            'examples.yaml': dump(examples)}
 
 
 class ExpressionExample(PersonaTarget):
@@ -409,6 +447,71 @@ def register_host_persona(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
                                 headers={"Cache-Control": "no-store"})
         return Response(sticker.data, media_type=sticker.mime_type,
                         headers={"Cache-Control": "no-store"})
+
+    def profile_state(scene: str, change: PersonaProfileChange | None = None) -> dict:
+        config = load_host_config(root)
+        if scene not in config.scenes:
+            raise ValueError('此场景已从保存配置移除；当前运行角色保留到重启，不再编辑其文件')
+        path = config.scenes[scene].persona
+        files = read_persona_files(path)
+        if change is not None:
+            require_persona_target(path, change.directory)
+            files = profile_files(files, change.profile)
+            validate_dependencies(config, path, parse_persona_files(path, files))
+            for filename, content in files.items():
+                descriptor, name = tempfile.mkstemp(prefix='.persona-', dir=path)
+                temporary = Path(name)
+                try:
+                    with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+                        stream.write(content)
+                    temporary.replace(path / filename)
+                finally:
+                    temporary.unlink(missing_ok=True)
+        persona = parse_persona_files(path, files)
+        return {'directory': str(path), 'id': persona.id,
+                'profile': PersonaProfile.model_validate(persona.model_dump(include={*PROFILE_METADATA, 'voice', 'boundaries', 'examples'})).model_dump(),
+                'affected_scenes': [key for key, value in config.scenes.items() if value.persona == path]}
+
+    @app.get('/api/host/scenes/{scene}/persona-profile')
+    async def profile(scene: str, _: str = Depends(user)):
+        require_scene(scene)
+        try:
+            async with write_lock:
+                return await asyncio.to_thread(profile_state, scene)
+        except (ValueError, OSError) as error:
+            raise HTTPException(422 if isinstance(error, ValueError) else 500,
+                                f'{type(error).__name__}: {error}') from error
+
+    @app.put('/api/host/scenes/{scene}/persona-profile')
+    async def save_profile(scene: str, change: PersonaProfileChange, _: str = Depends(user)):
+        require_scene(scene)
+        try:
+            async with write_lock:
+                return await finish_role_write(profile_state, scene, change)
+        except (ValueError, OSError) as error:
+            raise HTTPException(422 if isinstance(error, ValueError) else 500,
+                                f'{type(error).__name__}: {error}') from error
+
+    def draft_files(scene: str, change: PersonaProfileChange) -> dict:
+        config = load_host_config(root)
+        if scene not in config.scenes:
+            raise ValueError('此场景已从保存配置移除，不能用它试聊角色草稿')
+        path = config.scenes[scene].persona
+        require_persona_target(path, change.directory)
+        files = profile_files(read_persona_files(path), change.profile)
+        parse_persona_files(path, files)
+        return {'directory': str(path), 'files': files}
+
+    @app.post('/api/host/scenes/{scene}/persona-profile/draft')
+    async def profile_draft(scene: str, change: PersonaProfileChange, _: str = Depends(user)):
+        """The four role files the form would write, for a draft test chat; nothing is saved."""
+        require_scene(scene)
+        try:
+            async with write_lock:
+                return await asyncio.to_thread(draft_files, scene, change)
+        except (ValueError, OSError) as error:
+            raise HTTPException(422 if isinstance(error, ValueError) else 500,
+                                f'{type(error).__name__}: {error}') from error
 
     @app.get("/api/host/scenes/{scene}/persona-files")
     async def files(scene: str, _: str = Depends(user)):
