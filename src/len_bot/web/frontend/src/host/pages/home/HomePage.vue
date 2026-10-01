@@ -34,7 +34,7 @@ const todo = computed(() => {
   if (!day.value) return items
   for (const [scene, total] of Object.entries(day.value.undelivered)) {
     items.push({ key: `send:${scene}`, text: `${sceneName(scene)} 今天有 ${total} 条消息没发出去`,
-      to: { name: 'host', query: { scene } }, action: '查看' })
+      to: { name: 'host-scenes', query: { scene } }, action: '查看' })
   }
   const failures = {}
   for (const turn of day.value.recent_errors) {
@@ -48,7 +48,7 @@ const todo = computed(() => {
     const parts = [['expressions', '条表达'], ['jargon', '个黑话'], ['stickers', '张表情']]
       .filter(([key]) => reviews[key]).map(([key, unit]) => `${reviews[key]} ${unit}`)
     items.push({ key: `review:${scene}`, text: `${sceneName(scene)} 新学到 ${parts.join('、')}，等你审核`,
-      to: { name: 'host-scene-learning', query: { scene } }, action: '去审核' })
+      to: { name: 'host-scenes', query: { scene, tab: 'learning' } }, action: '去审核' })
   }
   return items
 })
@@ -106,7 +106,7 @@ function refresh() {
     <section v-if="state" class="surface">
       <h2>群聊</h2>
       <div class="scene-grid">
-        <RouterLink v-for="item in state.scenes" :key="item.scene" :to="{ name: 'host', query: { scene: item.scene } }" class="scene-card">
+        <RouterLink v-for="item in state.scenes" :key="item.scene" :to="{ name: 'host-scenes', query: { scene: item.scene } }" class="scene-card">
           <strong>{{ sceneName(item.scene) }}</strong><span>{{ item.persona.name }}</span>
         </RouterLink>
       </div>

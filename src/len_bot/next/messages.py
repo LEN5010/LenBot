@@ -246,13 +246,20 @@ def render_message(message: ChatMessage, *, timezone: str, reply: ChatMessage | 
                    audio: dict[int, str] | None = None) -> str:
     """Render a single message with its actual sender, words, and known reply."""
     clock = datetime.fromtimestamp(message.time, ZoneInfo(timezone)).isoformat(sep=" ", timespec="seconds")
+    return (f"[{clock}] {'（已撤回）' if message.recalled else ''}{_speaker(message)}："
+            f"{render_text(message, reply=reply, audio=audio)}")
+
+
+def render_text(message: ChatMessage, *, reply: ChatMessage | None = None,
+                audio: dict[int, str] | None = None) -> str:
+    """The quoted reply and words of one message, without time or sender."""
     quote = ""
     if message.reply_to is not None:
         if reply is None:
             quote = f"（回复消息 {message.reply_to}）"
         else:
             quote = f"（回复 {'已撤回 · ' if reply.recalled else ''}{_speaker(reply)}：{_body(reply.segments)[:40]}）"
-    return f"[{clock}] {'（已撤回）' if message.recalled else ''}{_speaker(message)}：{quote}{_body(message.segments, audio)}"
+    return f"{quote}{_body(message.segments, audio)}"
 
 
 def parse_send_result(raw: dict) -> SendResult:

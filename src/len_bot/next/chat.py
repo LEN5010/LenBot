@@ -33,7 +33,7 @@ from .audio_store import AudioStore
 from .plugin import Content, Sent
 from .plugin_delivery import prepare_parts
 from .jargon_store import JargonStore
-from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, plain_text, render_message
+from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, plain_text, render_message, render_text
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .model_slots import ModelSlots
 from .limits import LimitReached, check_speech
@@ -392,6 +392,12 @@ class Chat:
                  self.store.find_message(message.scene, message.reply_to))
         return render_message(message, timezone=self.config.timezone, reply=quote,
                               audio=AudioStore(self.store).captions(message.scene, message.platform_message_id))
+
+    def render_text(self, message: ChatMessage) -> str:
+        quote = (None if message.reply_to is None else
+                 self.store.find_message(message.scene, message.reply_to))
+        return render_text(message, reply=quote,
+                           audio=AudioStore(self.store).captions(message.scene, message.platform_message_id))
 
     async def request(self, turn_id: str, role: Literal["mind", "voice", "recap", "vision"],
                       messages: list[dict], tools: list[dict], *,

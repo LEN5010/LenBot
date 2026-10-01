@@ -32,3 +32,18 @@ export const turnLabel = value => turns[value] || value
 export const runtimeLabel = value => runtime[value] || value
 export const sectionLabel = value => sections[value] || '其他配置'
 export const turnFailed = value => ['error', 'timeout', 'interrupted', 'step_limit'].includes(value)
+
+const tools = {
+  say: '发言', wait: '等待', recall_chat: '翻聊天记录', look: '看图', web_search: '搜索网页', web_read: '读网页',
+  schedule: '定提醒', schedule_list: '查看提醒', schedule_cancel: '取消提醒', tool_search: '查找工具',
+  memory: '记忆', delegate: '委托任务', task: '任务', send_file: '发送文件', react: '表情回应',
+  persona_knowledge: '查角色资料',
+}
+const callRoles = { mind: '大脑', voice: '表达器', recap: '整理回想', vision: '看图' }
+const notices = {
+  group_recall: '撤回了一条消息', friend_recall: '撤回了一条消息', group_increase: '加入了群聊', group_decrease: '离开了群聊',
+  group_ban: '禁言状态变化', group_card: '修改了群名片', notify: '平台通知', group_upload: '上传了群文件',
+}
+export const toolLabel = name => tools[name] || name
+export const callRoleLabel = role => callRoles[role] || role
+export const noticeLabel = kind => notices[kind] || kind

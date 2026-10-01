@@ -1,23 +1,15 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { api, sceneName } from '../api.js'
+import { api } from '../api.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 
-const props = defineProps({ scene: { type: String, required: true } })
-const emit = defineEmits(['dirty', 'scene-dirty', 'saving'])
-const snapshot = ref(null), workerDraft = ref(null), workerPrevious = ref(null), taskDraft = ref(null)
-const admins = ref([]), whitelist = ref([])
+const emit = defineEmits(['dirty', 'saving'])
+const snapshot = ref(null), workerDraft = ref(null), workerPrevious = ref(null)
 const loading = ref(false), saving = ref('')
-const readError = ref(''), workerError = ref(''), taskError = ref('')
-const workerNotice = ref(''), taskNotice = ref('')
+const readError = ref(''), workerError = ref('')
+const workerNotice = ref('')
 const beginRead = useRequestGuard()
 const beginWorkerSave = useRequestGuard()
-const beginTaskSave = useRequestGuard(() => props.scene)
-const roles = [
-  { title: '主人', value: 'owner' }, { title: '管理员', value: 'admin' },
-  { title: '群管理员', value: 'group_manager' }, { title: '白名单', value: 'whitelist' },
-  { title: '成员', value: 'member' },
-]
 const workerFields = {
   resources: [['cpus', 'CPU 数'], ['memory', '内存限制'], ['tmpfs_size', '容器临时文件上限'], ['pids_limit', '进程上限'],
     ['command_timeout_seconds', '容器命令超时（秒）'], ['max_running', '全局同时运行任务'],
@@ -55,11 +47,6 @@ function freshWorker() {
       connect_timeout_seconds: 30, header_timeout_seconds: 30 },
   }
 }
-function taskBody() {
-  if (!taskDraft.value) return null
-  return { ...copy(taskDraft.value), admins: admins.value.map(row => row.value),
-    whitelist: whitelist.value.map(row => row.value) }
-}
 function workerBody() {
   if (workerDraft.value === null) return null
   return { ...copy(workerDraft.value), max_cost: workerDraft.value.max_cost === '' ? null : workerDraft.value.max_cost,
@@ -67,44 +54,26 @@ function workerBody() {
 }
 const workerDirty = computed(() => snapshot.value !== null &&
   JSON.stringify(workerBody()) !== JSON.stringify(snapshot.value.saved.worker))
-const taskDirty = computed(() => snapshot.value !== null && taskDraft.value !== null &&
-  JSON.stringify(taskBody()) !== JSON.stringify(snapshot.value.saved.scenes[props.scene]?.tasks))
-const taskRestart = computed(() => snapshot.value !== null &&
-  JSON.stringify(snapshot.value.saved.scenes[props.scene]?.tasks) !==
-  JSON.stringify(snapshot.value.running.scenes[props.scene]?.tasks))
-const dirty = computed(() => workerDirty.value || taskDirty.value)
+const dirty = computed(() => workerDirty.value)
 watch(dirty, value => emit('dirty', value), { immediate: true })
-watch(taskDirty, value => emit('scene-dirty', value), { immediate: true })
 watch(saving, value => emit('saving', Boolean(value)), { immediate: true })
-onBeforeUnmount(() => { emit('dirty', false); emit('scene-dirty', false); emit('saving', false) })
+onBeforeUnmount(() => { emit('dirty', false); emit('saving', false) })
 
-function adoptTask(value, scene = props.scene) {
-  const item = value.saved.scenes[scene]
-  if (!item) { taskDraft.value = null; admins.value = []; whitelist.value = []; return }
-  taskDraft.value = copy(item.tasks)
-  admins.value = item.tasks.admins.map(value => ({ value }))
-  whitelist.value = item.tasks.whitelist.map(value => ({ value }))
-}
 function adoptAll(value) {
   snapshot.value = value
   workerDraft.value = copy(value.saved.worker)
   workerPrevious.value = null
-  adoptTask(value)
-  workerNotice.value = ''; taskNotice.value = ''
+  workerNotice.value = ''
 }
-watch(() => props.scene, scene => {
-  if (snapshot.value) adoptTask(snapshot.value, scene)
-  taskError.value = ''; taskNotice.value = ''
-})
 async function read(confirmDiscard = true) {
-  if (confirmDiscard && dirty.value && !window.confirm('放弃任务执行与当前场景的未保存草稿，重读根配置？')) return
+  if (confirmDiscard && dirty.value && !window.confirm('放弃任务执行环境的未保存修改，重新读取？')) return
   const fresh = beginRead()
   loading.value = true
   try {
     const value = await api('/api/host/settings')
     if (!fresh()) return
     adoptAll(value)
-    readError.value = ''; workerError.value = ''; taskError.value = ''
+    readError.value = ''; workerError.value = ''
   } catch (error) { if (fresh()) readError.value = error.message }
   finally { if (fresh()) loading.value = false }
 }
@@ -132,37 +101,16 @@ async function saveWorker() {
     }
   }
   const fresh = beginWorkerSave(), payload = { worker: workerBody() }
-  const preserveTask = taskDirty.value
   saving.value = 'worker'; workerError.value = ''; workerNotice.value = ''
   try {
     const value = await api('/api/host/settings/worker', { method: 'PUT', body: JSON.stringify(payload) })
     if (!fresh()) return
     snapshot.value = value
     workerDraft.value = copy(value.saved.worker)
-    if (!preserveTask) adoptTask(value)
     workerNotice.value = value.restart_required.worker
       ? '任务执行配置已写入根文件；当前运行设置不变，重启后生效。'
       : '任务执行配置已写入根文件；与当前运行值一致。'
   } catch (error) { if (fresh()) workerError.value = errorMessage(error) }
-  finally { if (fresh()) saving.value = '' }
-}
-async function saveTasks() {
-  if (!taskDirty.value || loading.value || saving.value || !props.scene) return
-  const target = props.scene, fresh = beginTaskSave(), payload = { tasks: taskBody() }
-  const preserveWorker = workerDirty.value
-  saving.value = 'tasks'; taskError.value = ''; taskNotice.value = ''
-  try {
-    const value = await api(`/api/host/settings/scenes/${encodeURIComponent(target)}/tasks`, {
-      method: 'PUT', body: JSON.stringify(payload),
-    })
-    if (!fresh()) return
-    snapshot.value = value
-    adoptTask(value, target)
-    if (!preserveWorker) workerDraft.value = copy(value.saved.worker)
-    taskNotice.value = taskRestart.value
-      ? '场景任务权限已写入根文件；当前运行权限不变，重启后生效。'
-      : '场景任务权限已写入根文件；与当前运行值一致。'
-  } catch (error) { if (fresh()) taskError.value = errorMessage(error) }
   finally { if (fresh()) saving.value = '' }
 }
 onMounted(() => read(false))
@@ -244,36 +192,6 @@ onMounted(() => read(false))
       </template>
     </section>
 
-    <section v-if="snapshot && taskDraft" class="surface" aria-labelledby="scene-tasks-title">
-      <header class="section-heading"><div><p class="eyebrow">{{ sceneName(scene) }} · 重启后生效</p><h2 id="scene-tasks-title">此场景的任务权限</h2></div>
-        <v-chip variant="tonal" :color="taskRestart?'warning':'info'">{{ taskRestart?'任务权限待重启':'任务权限与运行值一致' }}</v-chip></header>
-      <p class="muted">只保存此场景的 tasks 块，不覆盖上方参与、提醒或角色草稿。运行中状态：{{ snapshot.running.scenes[scene]?.tasks?.enabled?'已开放':'未开放' }}；当前保存值：{{ taskDraft.enabled?'计划开放':'不开放' }}。</p>
-      <v-alert v-if="taskError" type="error" variant="tonal" role="alert">{{ taskError }}</v-alert>
-      <v-alert v-if="taskNotice && !taskDirty" type="success" variant="tonal" role="status">{{ taskNotice }}</v-alert>
-      <v-alert v-if="taskDraft.enabled && (snapshot.saved.worker===null || snapshot.saved.models.roles.worker===null)" type="warning" variant="tonal">启用任务须先保存全局执行环境和 worker 模型绑定；此保存请求将由完整配置校验拒绝，不能自动借用大脑模型。</v-alert>
-      <form @submit.prevent="saveTasks"><fieldset :disabled="loading || Boolean(saving)">
-        <div class="form-grid"><v-switch v-model="taskDraft.enabled" label="启用此场景任务" :disabled="loading || Boolean(saving)" hide-details />
-          <v-text-field :model-value="taskDraft.owner ?? ''" label="本能力范围主人 QQ（留空不增加局部主人）" inputmode="numeric" hide-details="auto" @update:model-value="value=>taskDraft.owner=value===''?null:value" />
-          <v-text-field :model-value="taskDraft.max_running" type="number" step="1" label="此场景同时执行上限" hide-details="auto" @update:model-value="value=>taskDraft.max_running=numeric(value)" />
-          <v-text-field :model-value="taskDraft.max_daily_tasks" type="number" step="1" label="每人每日新任务上限" hide-details="auto" @update:model-value="value=>taskDraft.max_daily_tasks=numeric(value)" /></div>
-        <div class="list-block"><h3>管理员 QQ</h3><div v-for="(row,index) in admins" :key="index" class="list-row"><v-text-field v-model="row.value" :label="`管理员 QQ ${index+1}`" inputmode="numeric" hide-details="auto" /><v-btn variant="outlined" :aria-label="`删除管理员 QQ ${index+1}`" @click="admins.splice(index,1)">删除</v-btn></div><v-btn variant="outlined" @click="admins.push({value:''})">添加管理员</v-btn></div>
-        <div class="list-block"><h3>白名单 QQ</h3><div v-for="(row,index) in whitelist" :key="index" class="list-row"><v-text-field v-model="row.value" :label="`白名单 QQ ${index+1}`" inputmode="numeric" hide-details="auto" /><v-btn variant="outlined" :aria-label="`删除白名单 QQ ${index+1}`" @click="whitelist.splice(index,1)">删除</v-btn></div><v-btn variant="outlined" @click="whitelist.push({value:''})">添加白名单</v-btn></div>
-        <div class="form-grid"><v-select v-model="taskDraft.delegate_roles" label="允许委托任务的身份" :items="roles" :disabled="loading || Boolean(saving)" multiple chips closable-chips hide-details="auto" />
-          <v-select v-model="taskDraft.long_running_roles" label="允许超过 30 分钟任务的身份" :items="roles" :disabled="loading || Boolean(saving)" multiple chips closable-chips hide-details="auto" />
-          <v-select v-model="taskDraft.manage_roles" label="允许管理他人任务的身份" :items="roles" :disabled="loading || Boolean(saving)" multiple chips closable-chips hide-details="auto" /></div>
-        <h3>此场景公共联网限额覆盖</h3>
-        <p class="muted">三项留空表示沿用上方全局限额，不表示 0；不会自动增减或重试限制。</p>
-        <div class="form-grid">
-          <v-text-field v-for="[key,label] in [['egress_max_task_bytes','每任务字节上限覆盖'],['egress_max_daily_bytes','本场景每日字节上限覆盖'],['egress_bytes_per_second','每秒字节限速覆盖']]"
-            :key="key" :model-value="taskDraft[key] ?? ''" type="number" step="1" :label="label" hide-details="auto"
-            @update:model-value="value=>taskDraft[key]=value===''||value===null?null:numeric(value)" />
-        </div>
-      </fieldset>
-        <p v-if="taskDirty" class="dirty-note" role="status">此场景任务权限草稿尚未保存。</p>
-        <div class="form-actions"><v-btn type="submit" color="primary" :loading="saving==='tasks'" :disabled="!taskDirty || loading || Boolean(saving)">保存此场景任务权限</v-btn>
-          <span class="muted">仅保存当前场景 tasks 块，不能启动容器，也不会改写其他场景。</span></div>
-      </form>
-    </section>
   </div>
 </template>
 

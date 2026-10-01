@@ -72,7 +72,7 @@ onMounted(read)
           <div><dt>此前最后一条消息</dt><dd>{{ time(item.idle_since) }}</dd></div>
           <div><dt>首次确认发出</dt><dd>{{ item.spoke_at===null?'没有已确认发出的消息':time(item.spoke_at) }}</dd></div>
           <div v-if="item.closed_at!==null"><dt>结果记录于</dt><dd>{{ time(item.closed_at) }}</dd></div></dl>
-        <RouterLink :to="{name:'host', query:{scene, turn:item.turn_id}}">查看所属轮次</RouterLink>
+        <RouterLink :to="{name:'host-logs', query:{scene, turn:item.turn_id}}">查看所属轮次</RouterLink>
       </li></ul>
       <v-btn v-if="data.next_offset!==null" variant="outlined" :loading="loading" :disabled="loading" @click="read(true)">读取更多记录</v-btn>
     </template>
