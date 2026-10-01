@@ -8,7 +8,7 @@ import SettingSection from '../../components/SettingSection.vue'
 import ErrorNote from '../../components/ErrorNote.vue'
 import AllowList from '../../components/AllowList.vue'
 import DevOnly from '../../components/DevOnly.vue'
-import SkillInspector from '../../../components/SkillInspector.vue'
+import SkillInspector from '../../components/SkillInspector.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
