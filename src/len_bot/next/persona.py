@@ -14,9 +14,22 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .persona_knowledge import PersonaDocument, load_knowledge
 from .persona_stickers import PersonaSticker, load_stickers
+from .image_assets import OriginalImage
+from .persona_avatar import load_avatar
 
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+
+
+class PersonaTarget(BaseModel):
+    """The actual directory the operator read, not an arbitrary write destination."""
+    model_config = STRICT
+    directory: str = Field(min_length=1)
+
+
+def require_persona_target(path: Path, directory: str) -> None:
+    if str(path) != directory:
+        raise ValueError(f'保存角色包绑定已变化，本次未操作文件；原选择={directory!r}，当前={str(path)!r}。请重读后明确选择。')
 
 
 class Style(BaseModel):
@@ -60,6 +73,7 @@ class Persona(BaseModel):
     example_tags: list[str] = Field(default_factory=list)
     knowledge: dict[str, PersonaDocument] = Field(default_factory=dict, exclude=True, repr=False)
     stickers: dict[str, PersonaSticker] = Field(default_factory=dict, exclude=True, repr=False)
+    avatar: OriginalImage | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("name")
     @classmethod
@@ -131,14 +145,15 @@ def _parse_yaml(path: Path, content: str) -> object:
         raise ValueError(f"{path}: invalid YAML: {error}") from error
 
 
-def parse_persona_files(path: Path, files: dict[str, str]) -> Persona:
+def parse_persona_files(path: Path, files: dict[str, str], *,
+                        stickers: dict[str, PersonaSticker] | None = None) -> Persona:
     """Validate the same complete package for loading and an editor candidate."""
     path = path.resolve()
     metadata = _parse_yaml(path / "persona.yaml", files["persona.yaml"])
     if not isinstance(metadata, dict):
         raise ValueError(f"{path / 'persona.yaml'}: expected a YAML object")
-    if any(field in metadata for field in ("voice", "boundaries", "examples", "knowledge", "stickers")):
-        raise ValueError(f"{path / 'persona.yaml'}: voice, boundaries, examples, knowledge and stickers belong in separate files")
+    if any(field in metadata for field in ("voice", "boundaries", "examples", "knowledge", "stickers", 'avatar')):
+        raise ValueError(f"{path / 'persona.yaml'}: voice, boundaries, examples, knowledge, stickers and avatar belong in separate files")
 
     examples = _parse_yaml(path / "examples.yaml", files["examples.yaml"])
     if not isinstance(examples, list):
@@ -151,7 +166,8 @@ def parse_persona_files(path: Path, files: dict[str, str]) -> Persona:
             "examples": examples,
         })
         return persona.model_copy(update={"knowledge": load_knowledge(path),
-                                          "stickers": load_stickers(path)})
+                                          "stickers": load_stickers(path) if stickers is None else stickers,
+                                          'avatar': load_avatar(path)})
     except ValidationError as error:
         details = "; ".join(
             f"{'.'.join(map(str, item['loc']))}: {item['msg']}"

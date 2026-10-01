@@ -100,6 +100,7 @@ class HostPort(Protocol):
     async def send_parts(self, plugin: str, scene: str, parts: Sequence[Content], reply_to: str | None) -> Sent: ...
     def emit_event(self, plugin: str, scene: str, text: str) -> None: ...
     def recent_messages(self, scene: str, limit: int) -> list[ChatMessage]: ...
+    async def memory(self, plugin: str, scene: str, arguments: dict) -> str: ...
     def start_task(self, plugin: str, name: str, coroutine: Coroutine) -> asyncio.Task: ...
     def report_error(self, plugin: str, where: str, error: Exception) -> str: ...
     def require_owner(self, scene: str, requester_qq: str) -> None: ...
@@ -163,6 +164,10 @@ class PluginContext:
             raise ValueError("limit 必须在 1 到 100 之间")
         return self.host.recent_messages(self._scene(scene), limit)
 
+    async def memory(self, scene: str, arguments: dict) -> str:
+        """Use the scene's permitted memory service; public content remains read-only."""
+        return await self.host.memory(self.name, self._scene(scene), arguments)
+
 
 @dataclass(frozen=True)
 class Invocation:
@@ -202,6 +207,9 @@ class Invocation:
 
     def recent_messages(self, limit: int = 20) -> list[ChatMessage]:
         return self.plugin.recent_messages(self.scene, limit)
+
+    async def memory(self, arguments: dict) -> str:
+        return await self.plugin.memory(self.scene, arguments)
 
 
 class Plugin:

@@ -1,0 +1,22 @@
+[Unit]
+Description=LenBot current chat host
+After=network.target
+
+[Service]
+Type=simple
+User=lenbot
+Group=lenbot
+WorkingDirectory=/opt/lenbot/instance
+ExecStart=/opt/lenbot/source/.venv/bin/len-bot
+Restart=no
+KillSignal=SIGTERM
+TimeoutStopSec=180
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/lenbot/instance
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

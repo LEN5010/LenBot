@@ -5,9 +5,17 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const TASK_API_FILE = "/run/lenbot/task-api.json";
 const TASK_API_BASE = "http://127.0.0.1:18181";
-type DataToolName = "recall_chat" | "memory" | "transcribe" | "account_browser";
+type BuiltinDataToolName = "recall_chat" | "memory" | "transcribe" | "account_browser";
+type MCPToolName = `mcp__${string}`;
+type DataToolName = BuiltinDataToolName | MCPToolName;
 type DataTool = { name: DataToolName; description: string; parameters: Record<string, unknown> };
 type TaskApiSettings = { token: string; timeoutMs: number; tools: DataTool[] };
+const DATA_ROUTES = {recall_chat: "/task/recall-chat", memory: "/task/memory", transcribe: "/task/transcribe", account_browser: "/task/account-browser"} as const;
+const DATA_LABELS = {recall_chat: "Recall chat", memory: "Memory", transcribe: "Transcribe scene audio", account_browser: "Account browser"} as const;
+
+function isMCPName(value: string): value is MCPToolName {
+  return /^mcp__[a-zA-Z0-9_-]{1,59}$/.test(value);
+}
 
 function result(text: string, details?: unknown) {
   return { content: [{ type: "text" as const, text }], details };
@@ -34,8 +42,9 @@ async function taskApi(): Promise<TaskApiSettings> {
     }
     const tool = value as Record<string, unknown>;
     const name = tool.name;
-    if (name !== "recall_chat" && name !== "memory" && name !== "transcribe" && name !== "account_browser") {
-      throw new Error(`${TASK_API_FILE}: tools[${index}].name must be recall_chat, memory, transcribe or account_browser`);
+    if (name !== "recall_chat" && name !== "memory" && name !== "transcribe" && name !== "account_browser"
+      && !(typeof name === "string" && isMCPName(name))) {
+      throw new Error(`${TASK_API_FILE}: invalid tools[${index}].name: ${JSON.stringify(name)}`);
     }
     if (names.has(name)) throw new Error(`${TASK_API_FILE}: duplicate tool name ${name}`);
     if (typeof tool.description !== "string" || !tool.description.trim()) {
@@ -54,7 +63,7 @@ async function taskApi(): Promise<TaskApiSettings> {
 
 async function taskPost(
   settings: TaskApiSettings,
-  route: "/task/deliver-file" | "/task/network" | "/task/recall-chat" | "/task/memory" | "/task/transcribe" | "/task/account-browser",
+  route: "/task/deliver-file" | "/task/network" | "/task/recall-chat" | "/task/memory" | "/task/transcribe" | "/task/account-browser" | "/task/mcp",
   operation: "deliver_file" | "network_status" | DataToolName,
   body: Record<string, unknown>,
   signal?: AbortSignal,
@@ -170,15 +179,16 @@ export default async function lenbotExtension(pi: ExtensionAPI) {
   });
 
   for (const tool of settings.tools) {
-    const route = {recall_chat: "/task/recall-chat", memory: "/task/memory", transcribe: "/task/transcribe", account_browser: "/task/account-browser"}[tool.name] as "/task/recall-chat" | "/task/memory" | "/task/transcribe" | "/task/account-browser";
+    const route = isMCPName(tool.name) ? "/task/mcp" : DATA_ROUTES[tool.name];
     pi.registerTool({
       name: tool.name,
       executionMode: "sequential",
-      label: {recall_chat: "Recall chat", memory: "Memory", transcribe: "Transcribe scene audio", account_browser: "Account browser"}[tool.name],
+      label: isMCPName(tool.name) ? tool.name : DATA_LABELS[tool.name],
       description: tool.description,
       parameters: Type.Unsafe<Record<string, unknown>>(tool.parameters),
       async execute(_id, args, signal) {
-        const { raw, payload } = await taskPost(settings, route, tool.name, args, signal);
+        const body = isMCPName(tool.name) ? {name: tool.name, arguments: args} : args;
+        const { raw, payload } = await taskPost(settings, route, tool.name, body, signal);
         if (typeof payload.content !== "string") {
           throw new Error(`${tool.name} expected a string content; raw=${raw}`);
         }

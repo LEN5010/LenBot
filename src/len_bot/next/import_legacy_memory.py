@@ -15,7 +15,9 @@ import time
 from zoneinfo import ZoneInfo
 
 from .config import HostConfig, LabConfig, load_instance_config
+from .instance_lock import instance_lock
 from .memory import LEGACY_IMPORT, LocalMemoryConfig, open_memory
+from .memory_local import _atomic_replace
 from .store import Store, encode
 from .model_slots import ModelSlots
 from .limits import ModelBudget
@@ -154,6 +156,9 @@ async def import_legacy_memory(config: LabConfig | HostConfig) -> dict:
     if existing:
         raise FileExistsError(f"{LEGACY_IMPORT}/ already exists in memory partitions {existing}; nothing was written")
     written: list[dict] = []
+    report['written'] = written
+    _atomic_replace(report_path, encode(report), create_only=True)
+    original_error: BaseException | None = None
     try:
         with Store(config.database) as store:
             slots = ModelSlots(config.max_model_requests)
@@ -166,12 +171,16 @@ async def import_legacy_memory(config: LabConfig | HostConfig) -> dict:
                         change = await memory.backend.write(scene, path, content, REASON)
                         written.append({"scene": scene, "path": path, "chars": len(change.after)})
     except BaseException as error:
+        original_error = error
         report["error"] = f"{type(error).__name__}: {error}"
         raise
     finally:
-        report["written"] = written
-        with report_path.open("x", encoding="utf-8") as stream:
-            stream.write(encode(report))
+        try:
+            _atomic_replace(report_path, encode(report))
+        except Exception as report_error:
+            if original_error is None:
+                raise
+            original_error.add_note(f'Legacy memory report also failed: {type(report_error).__name__}: {report_error}')
     return {"report": str(report_path), "written": written, "skipped": report["skipped"],
             "quarantined": len(report["quarantined"]), "not_migrated": report["not_migrated"]}
 
@@ -179,7 +188,8 @@ async def import_legacy_memory(config: LabConfig | HostConfig) -> dict:
 def main() -> None:
     if len(sys.argv) != 1:
         raise SystemExit("Legacy memory import takes no arguments; stop the instance and run from its root")
-    print(encode(asyncio.run(import_legacy_memory(load_instance_config(Path.cwd())))))
+    with instance_lock(Path.cwd()):
+        print(encode(asyncio.run(import_legacy_memory(load_instance_config(Path.cwd())))))
 
 
 if __name__ == "__main__":

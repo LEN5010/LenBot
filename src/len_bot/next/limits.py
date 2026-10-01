@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .pricing import Rate
 from .usage import usage
+from .memory_jobs import processing_records
 
 
 class ResourceLimits(BaseModel):
@@ -105,21 +106,13 @@ class ModelBudget:
                 old = usage(store, selected, since, min(until, self.started_at), memory=memory, memory_db=memory_db)
                 result['settled_unknown_calls'] += old['unfinished_calls']
             return result
-        memory_path = self.config.database.with_name(self.config.database.name + '.memory.sqlite3')
-        if self.memory is None and memory_path.exists():
-            with closing(sqlite3.connect(memory_path.as_uri() + '?mode=ro', uri=True)) as db:
-                samples = [sample(self.store, memory_db=db)]
-        else:
-            samples = [sample(self.store, memory=self.memory)]
+        with processing_records(self.config.database, None if self.memory is None else self.memory.jobs) as records:
+            samples = [sample(self.store, memory=self.memory, memory_db=None if records is None else records.db)]
         if self.trials_root is not None:
             for path in self.trials_root.glob('*/state.db'):
                 with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
-                    memory_path = path.with_name(path.name + '.memory.sqlite3')
-                    if memory_path.exists():
-                        with closing(sqlite3.connect(memory_path.as_uri() + '?mode=ro', uri=True)) as mem:
-                            samples.append(sample(SimpleNamespace(db=db), memory_db=mem))
-                    else:
-                        samples.append(sample(SimpleNamespace(db=db)))
+                    with processing_records(path, None) as records:
+                        samples.append(sample(SimpleNamespace(db=db), memory_db=None if records is None else records.db))
         amounts = {}
         for sample in samples:
             for currency, amount in sample['known_amounts'].items():

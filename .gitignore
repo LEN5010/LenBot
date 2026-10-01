@@ -61,6 +61,7 @@ node_modules/
 .zcode/
 
 # Local trial state and recovery copies
+.lenbot-instance.lock
 /.backups/
 /.runtime/
 /lenbot.config.json

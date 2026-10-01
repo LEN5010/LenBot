@@ -330,6 +330,21 @@ class PluginHost:
             raise RuntimeError("插件宿主尚未接入运行中的场景")
         return self.runtime.store.recent(scene, limit)
 
+    async def memory(self, plugin: str, scene: str, arguments: dict) -> str:
+        record = self.plugins[plugin]
+        if scene not in record.scenes:
+            raise PermissionError(f"插件 {plugin} 未在场景 {scene} 启用")
+        if self.closing or record.status not in {"loaded", "running"}:
+            raise RuntimeError(f"插件 {plugin} 未处于可运行状态：{record.status}")
+        if self.runtime is None:
+            raise RuntimeError("插件宿主尚未接入运行中的场景")
+        chat = self.runtime.chats[scene]
+        if chat.memory is None:
+            raise ValueError(f"场景 {scene} 未配置长期记忆服务")
+        if "memory" not in chat.allowed_tool_names:
+            raise PermissionError(f"场景 {scene} 当前加载角色未允许 memory")
+        return await chat.memory.execute(scene, arguments)
+
     # Runtime entry points.
 
     def bind(self, runtime: NetworkRuntime) -> None:

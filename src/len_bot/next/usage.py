@@ -54,6 +54,9 @@ def usage(store, scenes: list[str] | None, since: float, until: float, *, memory
                            f"WHERE {condition} AND started>=? AND started<?", params))
         if memory is not None and memory.settings.backend == 'openviking':
             unmetered.append('OpenViking 服务内部调用（含抽取、摘要和向量）')
+        elif db.execute(f"SELECT 1 FROM memory_jobs WHERE {condition} AND backend='openviking' "
+                        "AND started>=? AND started<? LIMIT 1", params).fetchone() is not None:
+            unmetered.append('本窗口有历史 OpenViking 工作记录；服务内部费用未取得，不推断每项均已请求服务')
 
     all_costs = [c for values in grouped.values() for c in values]
     return {"since": since, "until": until, "calls": len(all_costs), "unfinished_calls": unfinished, "settled_unknown_calls": settled_unknown, "unverified_summary_attempts": unverified_summaries,

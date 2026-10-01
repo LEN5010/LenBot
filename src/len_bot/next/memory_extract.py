@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .context import ContextBudgetError, estimate_request
 from .memory_local import LocalMemory, LocalMemoryChange
+from .memory_role_paths import require_bot_path
 from .messages import ChatMessage, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .model_slots import ModelSlots
@@ -81,11 +82,14 @@ class ExtractResult:
     failed_tools: int
 
 
-def _source_messages(scene: str, source: list[ChatMessage], timezone: str) -> list[dict]:
+def _source_messages(scene: str, source: list[ChatMessage], timezone: str,
+                     persona_ids: list[str | None]) -> list[dict]:
     if not 1 <= len(source) <= 100:
         raise ValueError("memory extraction requires 1..100 original messages")
+    if len(persona_ids) != len(source):
+        raise ValueError('Memory source messages and captured persona IDs must have equal lengths')
     rows: list[dict] = []
-    for message in source:
+    for message, persona_id in zip(source, persona_ids, strict=True):
         if message.scene != scene:
             raise ValueError(f"memory extraction message {message.id} belongs to {message.scene!r}, not {scene!r}")
         if message.is_self:
@@ -93,17 +97,21 @@ def _source_messages(scene: str, source: list[ChatMessage], timezone: str) -> li
                 raise ValueError(f"memory extraction Bot message {message.id} was not actually sent")
         elif message.send_status != "received":
             raise ValueError(f"memory extraction original message {message.id} was not received")
+        if not message.is_self and persona_id is not None:
+            raise ValueError(f'Non-self original message {message.id} cannot carry a Bot persona ID: {persona_id!r}')
         rows.append({
             "record": message.id,
             "platform_message_id": message.platform_message_id,
             "sender_qq": message.sender.uid,
             "is_self": message.is_self,
+            'persona_id': persona_id,
             "text": render_message(message, timezone=timezone),
         })
     return rows
 
 
-async def _tool(scene: str, backend: LocalMemory, call: ToolCall) -> tuple[str, LocalMemoryChange | None]:
+async def _tool(scene: str, backend: LocalMemory, call: ToolCall,
+                known_persona_ids: set[str]) -> tuple[str, LocalMemoryChange | None]:
     if call.name == "memory_browse":
         arguments = BrowseArguments.model_validate(call.arguments)
         result = await backend.browse(scene, arguments.path, scope="scene",
@@ -119,6 +127,7 @@ async def _tool(scene: str, backend: LocalMemory, call: ToolCall) -> tuple[str, 
         return encode({"hits": [asdict(hit) for hit in hits]}), None
     if call.name == "memory_write":
         arguments = WriteArguments.model_validate(call.arguments)
+        require_bot_path(arguments.path, known_persona_ids)
         change = await backend.write(scene, arguments.path, arguments.content, arguments.reason)
         return encode({"action": change.action, "path": change.path,
                        "changed_at": change.changed_at,
@@ -133,6 +142,8 @@ async def extract_local(
     backend: LocalMemory,
     model: ChatModel,
     *,
+    persona_ids: list[str | None],
+    known_persona_ids: set[str],
     timezone: str,
     context_window_tokens: int,
     max_steps: int,
@@ -146,7 +157,7 @@ async def extract_local(
     """Run under the host-held scene write lock with its freshly selected input."""
     if max_steps <= 0 or context_window_tokens <= model.settings.max_output_tokens:
         raise ValueError("memory extraction needs positive steps and a window larger than output reservation")
-    source = _source_messages(scene, messages, timezone)
+    source = _source_messages(scene, messages, timezone, persona_ids)
     conversation = [
         {"role": "system", "content": Template(PROMPT.read_text()).substitute(scene=scene)},
         {"role": "user", "content": encode({"scene": scene, "messages": source})},
@@ -187,7 +198,7 @@ async def extract_local(
                                  failed_tools=failed_tools)
         for call in reply.tool_calls:
             try:
-                content, change = await _tool(scene, backend, call)
+                content, change = await _tool(scene, backend, call, known_persona_ids)
             except Exception as error:
                 original = f"{type(error).__name__}: {error}"
                 content = f"{call.name} 失败：{original}"

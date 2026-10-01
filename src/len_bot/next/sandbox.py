@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
 from .pi_rpc import PiRpc
+from .docker_mounts import require_task_mounts
 from .skills import Skill
 from .tasks_config import EgressSettings
 from .worker_egress import EgressTransport
@@ -209,6 +210,7 @@ class DockerSandbox:
 
     async def ensure(self, scene: str, task_id: str, *,
                      skills: tuple[Skill, ...] = (),
+                     input_names: tuple[str, ...] = (),
                      on_container: Callable[[str], None] | None = None) -> SandboxHandle:
         """Create a fresh container; never infer a usable network from Docker defaults."""
         if _SCENE.fullmatch(scene) is None or _TASK.fullmatch(task_id) is None:
@@ -229,6 +231,8 @@ class DockerSandbox:
         mounts = [*_mount(workspace, "/workspace"),
                   *_mount(home, "/home/agent"),
                   *_mount(control, "/run/lenbot", readonly=True)]
+        if input_names:
+            mounts.extend(_mount(runtime / 'inputs', '/inputs', readonly=True))
         for skill in skills:
             if skill.source != "task":
                 mounts.extend(_mount(skill.host_path, skill.container_path, readonly=True))
@@ -250,10 +254,15 @@ class DockerSandbox:
             container_id = await self._docker(*command)
             await self._docker("start", container_id)
             try:
-                await self._docker("exec", container_id, "python3", "-c", _WRITE_PROBE)
+                probe = _WRITE_PROBE
+                if input_names:
+                    probe += f"\nfor name in {list(input_names)!r}:\n    with open('/inputs/' + name, 'rb') as source:\n        source.read(1)\n"
+                await self._docker("exec", container_id, "python3", "-c", probe)
             except SandboxError as error:
                 paths = (workspace, workspace / "out", workspace / ".pi-sessions",
                          home, home / ".pi" / "agent", control)
+                if input_names:
+                    paths += (runtime / 'inputs', *(runtime / 'inputs' / name for name in input_names))
                 ownership = "; ".join(_ownership(path) for path in paths)
                 raise SandboxError(
                     f"Container uid:gid {self.settings.uid}:{self.settings.gid} bind-path write/read probe failed; "
@@ -261,7 +270,10 @@ class DockerSandbox:
                 ) from error
         except BaseException as error:
             try:
-                await self._docker("rm", "-f", container_id or name)
+                if container_id is not None:
+                    await self._docker("rm", "-f", container_id)
+                else:
+                    await self.stop_recorded(scene, task_id, name)
             except BaseException as cleanup_error:
                 error.add_note(f"Container cleanup also failed: {cleanup_error}")
             raise
@@ -403,10 +415,14 @@ class DockerSandbox:
 
     async def stop_recorded(self, scene: str, task_id: str, container: str) -> None:
         """Reconcile a stored task container after host interruption."""
+        workspace = self.settings.workspace_root.resolve() / scene / 'tasks' / task_id
+        runtime = self.settings.runtime_root.resolve() / scene / task_id
+        control = runtime / 'control'
         found = await self._docker("ps", "-aq", "--no-trunc", "--filter", f"name=^/{container}$")
         if found:
+            mounts = await self._docker('inspect', '--type', 'container', '--format', '{{json .Mounts}}', found)
+            require_task_mounts(mounts, workspace=workspace, home=runtime / 'home', control=control)
             await self._docker("rm", "-f", found)
-        control = self.settings.runtime_root / scene / task_id / "control"
         if control.exists():
             _clear_control(control)
 

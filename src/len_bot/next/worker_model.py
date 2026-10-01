@@ -23,6 +23,7 @@ from .model import ModelProtocolError, ModelSettings
 from .model_slots import ModelSlots
 from .pricing import ModelPrice, estimate_cost
 from .worker_stream import ChatCompletionStream
+from .operations import redact, redact_record
 
 
 class WorkerModelError(RuntimeError):
@@ -246,6 +247,15 @@ class WorkerModelProxy:
                 or not hmac.compare_digest(token.encode("utf-8"), self._token.encode("utf-8"))):
             raise WorkerModelError("worker model task token is invalid or expired")
 
+    def recorded(self, value: Any) -> Any:
+        """Project records, not executed requests, using credentials owned by this proxy."""
+        secrets = tuple(sorted((self._token, self.settings.api_key), key=len, reverse=True))
+        return redact_record(value, lambda text: redact(text, secrets))
+
+    def _finish_record(self, call_id: int, facts: dict[str, Any]) -> None:
+        recorded = {**facts, **{name: self.recorded(facts[name]) for name in ('error', 'error_body', 'usage')}}
+        self.finish_call(call_id, recorded)
+
     @asynccontextmanager
     async def open(self, token: str, payload_bytes: bytes) -> AsyncIterator[WorkerResponse]:
         self.authorize(token)
@@ -273,7 +283,7 @@ class WorkerModelProxy:
                     "provider": self.provider,
                     "model": self.settings.model,
                     "price": None if self.price is None else self.price.model_dump(mode="json"),
-                    "request": outgoing,
+                    "request": self.recorded(outgoing),
                     "request_bytes": len(wire),
                     "incoming_bytes": len(payload_bytes),
                     "text_request_estimate_tokens": text_estimate,
@@ -317,7 +327,7 @@ class WorkerModelProxy:
                             }
                             settled = True
                             try:
-                                self.finish_call(call_id, facts)
+                                self._finish_record(call_id, facts)
                             except BaseException:
                                 self._closed = True
                                 raise
@@ -374,7 +384,7 @@ class WorkerModelProxy:
                     if error_body else None,
                 }
                 try:
-                    self.finish_call(call_id, facts)
+                    self._finish_record(call_id, facts)
                 except BaseException as finish_error:
                     self._closed = True
                     error.add_note(f"model-call recording also failed: {finish_error}")

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import ExitStack, closing
 from pathlib import Path
 import json
 import sqlite3
 import sys
 
 from .config import load_instance_config
+from .instance_lock import instance_lock
 from .messages import plain_text
 from .store import FORMAT_VERSION, Store, encode
 
@@ -434,6 +435,10 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
             db.execute('ALTER TABLE schedules ADD COLUMN legacy_source TEXT')
             db.execute("CREATE UNIQUE INDEX schedules_legacy_identity ON schedules(scene,json_extract(legacy_source,'$.task.id')) "
                        "WHERE legacy_source IS NOT NULL")
+        elif version == 33:
+            db.execute('ALTER TABLE messages ADD COLUMN persona_id TEXT')
+        elif version == 34:
+            db.execute("ALTER TABLE tasks ADD COLUMN materials TEXT NOT NULL DEFAULT '[]'")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:
@@ -464,16 +469,23 @@ def migrate_database(path: Path) -> Path:
 def main() -> None:
     if len(sys.argv) != 1:
         raise SystemExit("Migration takes no arguments; run from the configured instance directory")
-    config = load_instance_config(Path.cwd())
-    paths = [config.database, *(Path.cwd() / '.runtime' / 'chat-tests').glob('*/state.db')]
-    for path in paths:
-        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
-            app, version = _format(db)
-        if app == APPLICATION_ID and version == FORMAT_VERSION:
-            print(f"Already current: {path}")
-            continue
-        backup = migrate_database(path)
-        print(f"Offline migration completed: {path}; input-format copy: {backup}")
+    root = Path.cwd()
+    with ExitStack() as locks:
+        locks.enter_context(instance_lock(root))
+        config = load_instance_config(root)
+        trials = sorted((root / '.runtime' / 'chat-tests').glob('*/state.db'))
+        for path in trials:
+            if path.is_symlink():
+                raise ValueError(f'Trial database must not be a symbolic link: {path}')
+            locks.enter_context(instance_lock(path.parent))
+        for path in [config.database, *trials]:
+            with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+                app, version = _format(db)
+            if app == APPLICATION_ID and version == FORMAT_VERSION:
+                print(f"Already current: {path}")
+                continue
+            backup = migrate_database(path)
+            print(f"Offline migration completed: {path}; input-format copy: {backup}")
 
 
 if __name__ == "__main__":

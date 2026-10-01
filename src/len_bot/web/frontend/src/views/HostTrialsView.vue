@@ -65,6 +65,8 @@ onMounted(read)
     </section>
     <section v-if="selected" class="surface">
       <h2>本次实际范围</h2><p>{{ selected.memory }}；大脑 {{ selected.models.mind }}，表达 {{ selected.models.voice }}。</p>
+      <p>角色来源：{{ selected.persona_source === 'draft' ? '角色页提交的四文件草稿；未保存到生产包' : '创建时的运行角色快照' }}。</p>
+      <details v-if="selected.draft_path"><summary>本次原四文件草稿</summary><code>{{ selected.draft_path }}</code></details>
       <p class="muted">未接入的生产工具：{{ selected.excluded_tools.join('、') || '无额外工具' }}。虚拟身份不能获得主人账号能力。</p>
       <details v-if="selected.context.length"><summary>已复制 {{ selected.context.length }} 条历史原文（只读背景）</summary><pre>{{ selected.context.join('\n\n') }}</pre></details>
       <details><summary>测试文件位置</summary><code>{{ selected.root }}</code></details>

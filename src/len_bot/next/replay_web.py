@@ -57,11 +57,10 @@ class RecordedWeb:
     def __init__(self, manifest: Path):
         self.manifest = manifest
         self.raw = manifest.read_bytes()
-        raw = self.raw.decode('utf-8')
         try:
-            self.data = WebRecordings.model_validate_json(raw)
+            self.data = WebRecordings.model_validate_json(self.raw)
         except ValidationError as error:
-            raise ValueError(f'{manifest}: invalid web recordings: {error}; raw={raw[:1000]!r}') from error
+            raise ValueError(f'{manifest}: invalid web recordings: {error}; raw={self.raw[:1000]!r}') from error
         self.searches = {item.query: item for item in self.data.searches}
         self.documents = {item.url: item for item in self.data.documents}
         self.payloads: dict[str, bytes] = {}

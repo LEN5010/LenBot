@@ -55,6 +55,11 @@ def _document(path: Path) -> PersonaDocument:
     except UnicodeDecodeError as error:
         snippet = data[max(0, error.start - 30):error.end + 30]
         raise ValueError(f"{path}: invalid UTF-8: {error}; raw={snippet!r}") from error
+    return parse_knowledge_document(path, content)
+
+
+def parse_knowledge_document(path: Path, content: str) -> PersonaDocument:
+    """The same frontmatter boundary for a disk source or an explicitly edited source."""
     return PersonaDocument(content=content, tags=_frontmatter(path, content))
 
 

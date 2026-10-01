@@ -61,6 +61,8 @@ def register_host_skills(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
             raise HTTPException(404, str(error)) from error
         if item.status not in TERMINAL or item.container is not None:
             raise HTTPException(409, '先结束任务并停止其容器，再读取或采用任务技能')
+        if records.workspace_discarded(scene, task_id):
+            raise HTTPException(409, '本任务环境已被明确放弃，不再从其旧工作区读取或采用技能')
         return item
 
     def task_workspace(scene: str, task_id: int) -> Path:

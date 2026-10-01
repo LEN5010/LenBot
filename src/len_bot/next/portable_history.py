@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from .chat import PROMPTS, build_system, build_tools
 from .config import HostConfig, load_host_config
+from .instance_lock import instance_lock
 from .context import complete_boundaries, estimate_request, project_history, recap_source
 from .discovery import DEFERRED_NAMES
 from .memory import LocalMemoryConfig
@@ -165,8 +166,9 @@ def convert(config: HostConfig) -> dict:
 def main() -> None:
     if len(sys.argv) != 1:
         raise SystemExit("Portable history conversion takes no arguments; run from the stopped host root")
-    config = load_host_config(Path.cwd())
-    print(encode(convert(config)), flush=True)
+    with instance_lock(Path.cwd()):
+        config = load_host_config(Path.cwd())
+        print(encode(convert(config)), flush=True)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""One OneBot connection for explicitly configured isolated chat scenes."""
+"""Shared scene execution behind one OneBot connection or explicit simulated stdin."""
 
 from __future__ import annotations
 
@@ -50,8 +50,6 @@ class NetworkRuntime:
                  plugins: PluginHost | None = None,
                  mcp: MCPHost | None = None,
                  on_update: Callable[[], None] | None = None):
-        if config.onebot is None:
-            raise ValueError("Network input requires OneBot configuration")
         self.config, self.store = config, store
         self.log_secrets = credentials(config)
         self.logs: deque[dict] = deque(maxlen=500)
@@ -92,8 +90,9 @@ class NetworkRuntime:
         self.retention = Retention(self)
         self.accepting = True
         self.storage_error: sqlite3.Error | None = None
-        self.platform = OneBot(config.onebot, bot_qq=config.bot_qq, on_event=self._receive,
-                               on_error=self._platform_error, on_connection_change=self._connection_changed)
+        self.platform = (None if config.onebot is None else OneBot(
+            config.onebot, bot_qq=config.bot_qq, on_event=self._receive,
+            on_error=self._platform_error, on_connection_change=self._connection_changed))
         self.audio = AudioService(store, {cfg.scene: cfg for cfg, _ in scene_configs},
                                   self.platform.call if config.delivery == "onebot" else None, slots,
                                   self.audio_updated)
@@ -170,6 +169,8 @@ class NetworkRuntime:
             self.notify()
 
     def _emit(self, result: dict) -> None:
+        if self.platform is None:
+            result = {**result, 'input_source': 'stdin'}
         def clean_value(text):
             if self.plugins is not None:
                 for name in self.plugins.plugins:
@@ -260,6 +261,8 @@ class NetworkRuntime:
         self._emit({"type": "receipt", **receipt, "scene": message.scene})
 
     async def _ready(self, wait: bool) -> bool:
+        if self.platform is None:
+            return not self.stopped.is_set()
         if self.platform.connected:
             return True
         if not wait:
@@ -277,6 +280,10 @@ class NetworkRuntime:
         return self.platform.connected
 
     async def run(self, *, manage_signals: bool = True) -> None:
+        if self.platform is None:
+            from .stdin_host import run_stdin
+            await run_stdin(self, manage_signals=manage_signals)
+            return
         if self.stopped.is_set():
             self._status("stopped")
             return

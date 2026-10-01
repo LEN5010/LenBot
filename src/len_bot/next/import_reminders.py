@@ -10,6 +10,7 @@ import sys
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .config import HostConfig, LabConfig, load_instance_config
+from .instance_lock import instance_lock
 from .import_history import _backup, EVENT_COLUMNS
 from .store import Store, encode
 
@@ -158,7 +159,8 @@ def import_reminders(config: HostConfig | LabConfig) -> dict:
 def main() -> None:
     if len(sys.argv) != 1:
         raise SystemExit('Import takes no overrides; configure reminder_import in the root lenbot.config.json')
-    print(encode(import_reminders(load_instance_config(Path.cwd()))))
+    with instance_lock(Path.cwd()):
+        print(encode(import_reminders(load_instance_config(Path.cwd()))))
 
 
 if __name__ == '__main__':

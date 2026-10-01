@@ -15,6 +15,8 @@ from len_bot.web.shell import mount_panel
 from .config import HostConfig
 from .host_capabilities import register_host_capabilities
 from .host_persona import register_host_persona
+from .host_persona_stickers import register_host_persona_stickers
+from .host_persona_avatar import register_host_persona_avatar
 from .host_plugins import register_host_plugins
 from .host_mcp import register_host_mcp
 from .host_audio import register_host_audio
@@ -25,6 +27,7 @@ from .host_settings import register_host_settings
 from .host_operations import register_host_operations
 from .host_memory import register_host_memory
 from .host_tasks import register_host_tasks
+from .host_materials import register_host_materials
 from .host_skills import register_host_skills
 from .host_schedules import register_host_schedules
 from .host_learning import register_host_learning
@@ -40,7 +43,8 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
         raise ValueError("Multi-scene host panel requires panel configuration in lenbot.config.json")
 
     runtime.budget.trials_root = root / ".runtime" / "chat-tests"
-    trials = HostTrials(config, runtime, root)
+    write_lock = asyncio.Lock()
+    trials = HostTrials(config, runtime, root, write_lock=write_lock)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -65,15 +69,17 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
     user = install_panel_auth(app, config.panel, on_logout=logged_out)
     register_host_operations(app, runtime=runtime, user=user)
     register_host_trials(app, trials, user)
-    write_lock = asyncio.Lock()
     register_host_browser(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_permissions(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_capabilities(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_settings(app, root=root, running=config, user=user,
                            write_lock=write_lock)
     register_host_persona(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
+    register_host_persona_stickers(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
+    register_host_persona_avatar(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_memory(app, runtime=runtime, user=user)
-    register_host_tasks(app, runtime=runtime, user=user, host_changes=listeners)
+    register_host_tasks(app, runtime=runtime, user=user, host_changes=listeners, write_lock=write_lock)
+    register_host_materials(app, runtime=runtime, user=user)
     register_host_skills(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_schedules(app, runtime=runtime, user=user)
     register_host_learning(app, runtime=runtime, user=user)

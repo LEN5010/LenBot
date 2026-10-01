@@ -20,6 +20,7 @@ from .memory_local import LocalMemory, LocalMemoryChange
 from .memory_openviking import OpenVikingMemory
 from .model import ChatModel
 from .model_slots import ModelSlots
+from .messages import ChatMessage
 from .store import Store
 
 if TYPE_CHECKING:
@@ -210,13 +211,15 @@ class MemoryIngestor:
         else:
             await self._submit_native(scene, job)
 
-    def _selected_input(self, scene: str, job: dict) -> list[tuple]:
+    def _selected_input(self, scene: str, job: dict) -> list[tuple[int, ChatMessage, float, str | None]]:
         """Read under the scene write lock, after any earlier forget has finished."""
         excluded = self.jobs.excluded_records(scene, after=job["first_seq"] - 1,
                                               through=job["through_seq"])
         rows = self.store.memory_messages(scene, job["first_seq"] - 1, limit=100,
                                           through=job["through_seq"], exclude_records=excluded)
-        job["details"].update(excluded_records=excluded, selected_message_count=len(rows))
+        job["details"].update(excluded_records=excluded, selected_message_count=len(rows),
+                              source_personas=[{'record': seq, 'message_id': message.id, 'persona_id': persona_id}
+                                               for seq, message, _, persona_id in rows])
         self.jobs.details(job)
         if not rows:
             if not excluded:
@@ -270,8 +273,10 @@ class MemoryIngestor:
                     if not rows:
                         return
                     result = await extract_local(
-                        scene, [message for _, message, _ in rows], self.memory.backend,
-                        self.model, timezone=self.config.scene_timezone(scene),
+                        scene, [message for _, message, _, _ in rows], self.memory.backend,
+                        self.model, persona_ids=[persona_id for _, _, _, persona_id in rows],
+                        known_persona_ids=self.memory.known_persona_ids(scene),
+                        timezone=self.config.scene_timezone(scene),
                         context_window_tokens=binding.context_window_tokens,
                         max_steps=self.settings.max_steps, start_call=start_call,
                         finish_call=finish_call, record_tool=record_tool,
@@ -309,7 +314,8 @@ class MemoryIngestor:
                 self.memory.pending_native_tasks[scene] = "submitting"
                 async with asyncio.timeout(self.settings.timeout_seconds):
                     receipt = await self.memory.backend.ingest(
-                        scene, [message for _, message, _ in rows])
+                        scene, [message for _, message, _, _ in rows],
+                        persona_ids=[persona_id for _, _, _, persona_id in rows])
         except asyncio.CancelledError:
             self.jobs.status(job, "failed", "Process stopped while OpenViking submission outcome was unknown")
             raise

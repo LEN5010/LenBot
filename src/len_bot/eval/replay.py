@@ -205,6 +205,8 @@ def snapshot_persona(persona: Persona, destination: Path) -> None:
     write_json(destination / "examples.yaml", [example.model_dump() for example in persona.examples])
     (destination / "voice.md").write_text(persona.voice, encoding="utf-8", newline="")
     (destination / "boundaries.md").write_text(persona.boundaries, encoding="utf-8", newline="")
+    if persona.avatar is not None:
+        (destination / 'avatar.png').write_bytes(persona.avatar.data)
     if persona.stickers:
         directory = destination / "stickers"
         directory.mkdir()
@@ -306,7 +308,7 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
                    web_materials: Path | None = None, image_materials: Path | None = None,
                    memory_materials: Path | None = None) -> dict:
     directory.mkdir(parents=True, mode=0o700)
-    effective = config.model_dump(mode="json", exclude={"evaluation", "panel", "history_import", "history_export", "reminder_import", "replay_clock"})
+    effective = config.model_dump(mode="json", exclude={"evaluation", "panel", "history_import", "history_export", "reminder_import", "reminder_export", "media_import", "media_archive", "task_archive", "memory_transfer", "persona_memory_export", "replay_clock"})
     effective.update(database="chat.sqlite3", persona="persona", voice_mode=voice_mode)
     if isinstance(config.memory, LocalMemoryConfig):
         effective["memory"]["local"]["directory"] = "memory"

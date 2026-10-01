@@ -1,7 +1,8 @@
 """OpenViking native memory view, partitioned by the existing QQ scene identity.
 
 This is an HTTP boundary, not the complete M11 MemoryBackend: it does not
-provide per-write history, public writes, or irreversible forgetting; snapshot history is native.
+provide per-write history or irreversible forgetting; snapshot history is native.
+Public writes are available only to explicit offline transfer, not runtime tools.
 """
 
 from __future__ import annotations
@@ -52,6 +53,33 @@ class SceneIdentity(BaseModel):
         return value
 
 
+class NativeMemoryTarget(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    enabled: bool
+
+
+class NativeMemoryPolicy(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True, serialize_by_alias=True)
+    self_target: NativeMemoryTarget = Field(alias='self')
+    peer: NativeMemoryTarget
+    working_memory: NativeMemoryTarget = Field(default_factory=lambda: NativeMemoryTarget(enabled=True))
+    memory_types: list[str] | None = None
+
+    @field_validator('memory_types')
+    @classmethod
+    def explicit_types(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None:
+            if any(not name.strip() for name in value) or len(value) != len(set(value)):
+                raise ValueError('memory_policy.memory_types must be distinct nonblank native category names')
+        return value
+
+    def wire(self) -> dict:
+        result = self.model_dump(mode='json', by_alias=True)
+        if self.memory_types is not None:
+            result['memory_types'] = sorted(self.memory_types)
+        return result
+
+
 class OpenVikingSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
 
@@ -60,6 +88,7 @@ class OpenVikingSettings(BaseModel):
     scenes: dict[str, SceneIdentity] = Field(min_length=1)
     timeout_seconds: float = Field(default=20, gt=0, allow_inf_nan=False)
     public_root: str | None = None
+    memory_policy: NativeMemoryPolicy | None = None
 
     @field_validator("base_url")
     @classmethod
@@ -128,6 +157,7 @@ class IngestReceipt:
     session_id: str
     task_id: str | None
     archive_uri: str | None
+    memory_policy: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -484,16 +514,18 @@ class OpenVikingMemory:
             raise ValueError(f"OpenViking snapshot diff returned another path; raw={raw[:500]!r}")
         return {**diff.model_dump(), "path": path}
 
-    async def write(self, scene: str, path: str, content: str) -> MemoryWrite:
+    async def write(self, scene: str, path: str, content: str, *,
+                    scope: Literal['scene', 'public'] = 'scene') -> MemoryWrite:
         identity = await self._identity(scene)
-        uri = self._uri(identity, path, "scene", file=True)
+        uri = self._uri(identity, path, scope, file=True)
         payload, raw = await self._request(identity, "POST", "/api/v1/content/write", body={
             "uri": uri, "content": content, "mode": "replace", "wait": True,
             "timeout": self.settings.timeout_seconds,
         })
         row = _as(_Write, payload["result"], raw)
-        if row.uri != uri or row.context_type != "memory" or not row.content_updated:
-            raise ValueError(f"OpenViking write did not confirm scene memory content update; raw={raw[:500]!r}")
+        expected = 'memory' if scope == 'scene' else 'resource'
+        if row.uri != uri or row.context_type != expected or not row.content_updated:
+            raise ValueError(f"OpenViking write did not confirm {scope} {expected} content update; raw={raw[:500]!r}")
         if row.vector_status not in {"complete", "skipped"} or row.semantic_status not in {"complete", "skipped"}:
             raise ValueError(f"OpenViking memory write refresh incomplete after wait=true; raw={raw[:1000]}")
         if row.overview_status not in {None, "complete", "skipped"}:
@@ -547,15 +579,17 @@ class OpenVikingMemory:
         return MemoryDelete(path=path, semantic_status=row.semantic_status,
                             estimated_deleted_count=row.estimated_deleted_count)
 
-    async def ingest(self, scene: str, messages: list[ChatMessage]) -> IngestReceipt:
+    async def ingest(self, scene: str, messages: list[ChatMessage], *, persona_ids: list[str | None]) -> IngestReceipt:
         if not 1 <= len(messages) <= 100:
             raise ValueError("ingest requires 1..100 original messages")
+        if len(persona_ids) != len(messages):
+            raise ValueError('Native source messages and captured persona IDs must have equal lengths')
         identity = await self._identity(scene)
         session_id = messages[0].id
         if _IDENTIFIER.fullmatch(session_id) is None:
             raise ValueError(f"original message id cannot be a session path segment: {session_id!r}")
         batch: list[dict[str, object]] = []
-        for message in messages:
+        for message, persona_id in zip(messages, persona_ids, strict=True):
             if message.scene != scene:
                 raise ValueError(f"ingest message {message.id} belongs to {message.scene!r}, not {scene!r}")
             if message.is_self:
@@ -566,18 +600,30 @@ class OpenVikingMemory:
                 if message.send_status != "received" or _QQ.fullmatch(message.sender.uid) is None:
                     raise ValueError(f"ingest sender/status invalid for original message {message.id}")
                 role, peer_id = "user", message.sender.uid
+                if persona_id is not None:
+                    raise ValueError(f'Non-self original {message.id} cannot carry a Bot persona ID: {persona_id!r}')
             batch.append({
                 "role": role, "peer_id": peer_id,
-                "content": render_message(message, timezone="UTC"),
+                "content": json.dumps({'message': render_message(message, timezone='UTC'), 'persona_id': persona_id},
+                                      ensure_ascii=False, allow_nan=False),
                 "created_at": datetime.fromtimestamp(message.time, timezone.utc).isoformat(),
                 "source_message_ids": [message.id],
             })
-        created_payload, created_raw = await self._request(identity, "POST", "/api/v1/sessions", body={
-            "session_id": session_id, "auto_commit_policy": None,
-        })
+        creation: dict[str, object] = {'session_id': session_id, 'auto_commit_policy': None}
+        if self.settings.memory_policy is not None:
+            creation['memory_policy'] = self.settings.memory_policy.wire()
+        created_payload, created_raw = await self._request(identity, "POST", "/api/v1/sessions", body=creation)
         created = created_payload["result"]
         if not isinstance(created, dict) or created.get("session_id") != session_id or created.get("auto_commit_policy") is not None:
             raise ValueError(f"OpenViking session creation did not disable automatic commit; raw={created_raw[:500]!r}")
+        if self.settings.memory_policy is not None:
+            saved, saved_raw = await self._request(identity, 'GET', f'/api/v1/sessions/{session_id}')
+            metadata = saved['result']
+            if not isinstance(metadata, dict) or metadata.get('session_id') != session_id:
+                raise ValueError(f'OpenViking memory policy read returned another session; raw={saved_raw[:1000]!r}')
+            policy = _as(NativeMemoryPolicy, metadata.get('memory_policy'), saved_raw)
+            if policy.wire() != self.settings.memory_policy.wire():
+                raise ValueError(f'OpenViking saved memory policy differs from requested policy; raw={saved_raw[:1000]!r}')
         added_payload, added_raw = await self._request(identity, "POST", f"/api/v1/sessions/{session_id}/messages/batch",
                                                        body={"messages": batch})
         added = added_payload["result"]
@@ -591,7 +637,9 @@ class OpenVikingMemory:
         if receipt.status == "accepted" and (not receipt.task_id or not receipt.archive_uri):
             raise ValueError(f"OpenViking accepted commit without task/archive reference; raw={commit_raw[:500]!r}")
         return IngestReceipt(status=receipt.status, session_id=session_id,
-                             task_id=receipt.task_id, archive_uri=receipt.archive_uri)
+                             task_id=receipt.task_id, archive_uri=receipt.archive_uri,
+                             memory_policy=None if self.settings.memory_policy is None
+                             else self.settings.memory_policy.wire())
 
     async def ingest_status(self, scene: str, task_id: str) -> IngestTask:
         if _IDENTIFIER.fullmatch(task_id) is None:

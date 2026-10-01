@@ -6,22 +6,38 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 import time
+from typing import Literal
 import yaml
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .chat import tool_catalog, tool_unavailable_reasons
-from .config import HostConfig, LabConfig
+from .config import HostConfig, LabConfig, load_host_config
+from .host_persona import finish_role_write
+from .instance_lock import InstanceBusyError, instance_lock
 from .memory import LocalMemoryConfig, open_memory
 from .model import ChatModel
 from .identity import IdentitySettings
 from .network import NetworkRuntime
 from .panel import PanelSession, TestMessage
 from .panel_auth import changes_socket, cookie_name
+from .persona import PERSONA_FILES, Persona, PersonaTarget, parse_persona_files, require_persona_target
 from .store import Store
 from len_bot.web.auth import session_user
+
+
+class PersonaDraft(PersonaTarget):
+    model_config = ConfigDict(strict=True, extra='forbid')
+    files: dict[str, str]
+
+    @field_validator('files')
+    @classmethod
+    def four_files(cls, value: dict[str, str]) -> dict[str, str]:
+        if set(value) != set(PERSONA_FILES):
+            raise ValueError(f'Role draft requires exactly {PERSONA_FILES!r}; got={list(value)!r}')
+        return value
 
 
 class TrialStart(BaseModel):
@@ -29,6 +45,7 @@ class TrialStart(BaseModel):
     scene: str
     acknowledge_model_cost: bool
     context_messages: int = Field(default=0, ge=0, le=100)
+    persona_draft: PersonaDraft | None = None
 
 
 @dataclass
@@ -42,6 +59,7 @@ class Trial:
     resources: AsyncExitStack
     excluded: list[str]
     context: list[str]
+    persona_source: Literal['running', 'draft'] = 'running'
     stopped: float | None = None
     final_state: dict | None = None
 
@@ -50,6 +68,8 @@ class Trial:
                 'context': self.context, 'active': self.stopped is None, 'root': str(self.root), 'excluded_tools': self.excluded,
                 'memory': '独立空白本地记忆' if self.config.memory is not None else '本次不装配记忆',
                 'persona': self.session.chat.persona.name,
+                'persona_source': self.persona_source,
+                'draft_path': str(self.root / 'persona-draft') if self.persona_source == 'draft' else None,
                 'models': {'mind': self.config.models.roles.mind.model, 'voice': self.config.models.roles.voice.model}}
 
     def snapshot(self) -> dict:
@@ -75,7 +95,7 @@ class Trial:
             raise
 
 
-def write_trial_files(config, persona) -> None:
+def write_trial_files(config: LabConfig, persona: Persona, draft: PersonaDraft | None = None) -> None:
     root = config.database.parent
     # Derived runtime parameters still live in this test root's sole config file, not env/CLI.
     config_path = root / 'lenbot.config.json'
@@ -85,11 +105,18 @@ def write_trial_files(config, persona) -> None:
     # The active session uses this in-memory snapshot; no editor receives the production role path.
     snapshot_dir = config.persona
     snapshot_dir.mkdir(mode=0o700)
+    if draft is not None:
+        draft_dir = root / 'persona-draft'
+        draft_dir.mkdir(mode=0o700)
+        for filename, content in draft.files.items():
+            (draft_dir / filename).write_bytes(content.encode('utf-8'))
     metadata = persona.model_dump(exclude={'voice','boundaries','examples'})
     (snapshot_dir / 'persona.yaml').write_text(yaml.safe_dump(metadata, allow_unicode=True), encoding='utf-8')
     (snapshot_dir / 'voice.md').write_text(persona.voice, encoding='utf-8')
     (snapshot_dir / 'boundaries.md').write_text(persona.boundaries, encoding='utf-8')
     (snapshot_dir / 'examples.yaml').write_text(yaml.safe_dump([example.model_dump() for example in persona.examples], allow_unicode=True), encoding='utf-8')
+    if persona.avatar is not None:
+        (snapshot_dir / 'avatar.png').write_bytes(persona.avatar.data)
     for filename, document in persona.knowledge.items():
         path = snapshot_dir / 'knowledge' / filename
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -105,11 +132,20 @@ def write_trial_files(config, persona) -> None:
         (snapshot_dir / 'stickers' / 'index.yaml').write_text(yaml.safe_dump(entries, allow_unicode=True), encoding='utf-8')
 
 
+def load_draft_persona(root: Path, scene: str, draft: PersonaDraft) -> Persona:
+    saved = load_host_config(root)
+    if scene not in saved.scenes:
+        raise ValueError('场景已从保存配置移除，不能读取其角色资料用于新草稿试聊')
+    require_persona_target(saved.scenes[scene].persona, draft.directory)
+    return parse_persona_files(saved.scenes[scene].persona, draft.files)
+
+
 class HostTrials:
-    def __init__(self, config: HostConfig, runtime: NetworkRuntime, root: Path):
+    def __init__(self, config: HostConfig, runtime: NetworkRuntime, root: Path, *, write_lock: asyncio.Lock):
         self.config, self.runtime, self.root = config, runtime, root
         self.records: dict[str, Trial] = {}
         self.lock = asyncio.Lock()
+        self.write_lock = write_lock
         self.closing = False
 
     def notify(self):
@@ -121,7 +157,8 @@ class HostTrials:
             raise HTTPException(404, '本次宿主启动中没有这个试聊；不会自动恢复旧试聊')
         return self.records[trial_id]
 
-    async def start(self, scene: str, context_messages: int = 0) -> Trial:
+    async def start(self, scene: str, context_messages: int = 0,
+                    persona_draft: PersonaDraft | None = None) -> Trial:
         async with self.lock:
             if self.closing:
                 raise HTTPException(503, '宿主正在停止，不再新建试聊')
@@ -129,33 +166,45 @@ class HostTrials:
                 raise HTTPException(404, '未配置此场景')
             if any(trial.stopped is None for trial in self.records.values()):
                 raise HTTPException(409, '已有活动试聊，请先停止；切换页面不会自动停止或重开')
+            if persona_draft is None:
+                persona = self.runtime.chats[scene].persona.model_copy(deep=True)
+            else:
+                async with self.write_lock:
+                    persona = await asyncio.to_thread(load_draft_persona, self.root, scene, persona_draft)
             root = self.root / '.runtime' / 'chat-tests' / str(uuid4())
+            if root.resolve(strict=False) != root:
+                raise ValueError(f'试聊根不能通过符号链接创建到其他目录：{root}')
             root.mkdir(parents=True, mode=0o700)
-            source_chat = self.runtime.chats[scene]
-            context = [source_chat.render(message) for message in
-                       self.runtime.store.recent(scene, context_messages)] if context_messages else []
-            source = self.config.scene_config(scene)
-            memory = None
-            if isinstance(source.memory, LocalMemoryConfig):
-                memory = source.memory.model_copy(update={
-                    'local': source.memory.local.model_copy(update={'directory': root / 'memory'}),
-                    'ingest': None, 'summaries': False})
-            candidate = source.model_copy(update={'mode':'isolated', 'onebot':None, 'delivery':'simulated',
-                'database':root / 'state.db', 'persona':root / 'persona-snapshot', 'owner_qq':None,
-                'permissions': IdentitySettings(), 'panel':None, 'plugins':[], 'worker':None, 'tasks':source.tasks.model_copy(update={'enabled':False}),
-                'learning':None, 'proactive':None, 'transcribe_audio':False, 'memory':memory,
-                'web_read':None, 'web_search':None})
-            config = LabConfig.model_validate_json(candidate.model_dump_json())
-            persona = self.runtime.chats[scene].persona.model_copy(deep=True)
-            original = self.runtime.chats[scene].allowed_tool_names
-            allowed = [item['function']['name'] for item in tool_catalog(platform=False)
-                       if item['function']['name'] in original
-                       and not tool_unavailable_reasons(config, persona, item['function']['name'])]
-            excluded = sorted(original - set(allowed))
-            persona = persona.model_copy(update={'tools':allowed, 'skills':[]})
-            await asyncio.to_thread(write_trial_files, config, persona)
             stack = AsyncExitStack()
             try:
+                stack.enter_context(instance_lock(root))
+                source_chat = self.runtime.chats[scene]
+                context = [source_chat.render(message) for message in
+                           self.runtime.store.recent(scene, context_messages)] if context_messages else []
+                source = self.config.scene_config(scene)
+                memory = None
+                if isinstance(source.memory, LocalMemoryConfig):
+                    memory = source.memory.model_copy(update={
+                        'local': source.memory.local.model_copy(update={'directory': root / 'memory'}),
+                        'ingest': None, 'summaries': False})
+                candidate = source.model_copy(update={'mode':'isolated', 'onebot':None, 'delivery':'simulated',
+                    'database':root / 'state.db', 'persona':root / 'persona-snapshot', 'owner_qq':None,
+                    'permissions': IdentitySettings(), 'panel':None, 'plugins':[], 'worker':None, 'tasks':source.tasks.model_copy(update={'enabled':False}),
+                    'learning':None, 'proactive':None, 'transcribe_audio':False, 'memory':memory,
+                    'web_read':None, 'web_search':None})
+                config = LabConfig.model_validate_json(candidate.model_dump_json())
+                if persona_draft is None:
+                    original = self.runtime.chats[scene].allowed_tool_names
+                elif persona.tools == 'all':
+                    original = {item['function']['name'] for item in tool_catalog(platform=False)}
+                else:
+                    original = set(persona.tools)
+                allowed = [item['function']['name'] for item in tool_catalog(platform=False)
+                           if item['function']['name'] in original
+                           and not tool_unavailable_reasons(config, persona, item['function']['name'])]
+                excluded = sorted(original - set(allowed))
+                persona = persona.model_copy(update={'tools':allowed, 'skills':[]})
+                await finish_role_write(write_trial_files, config, persona, persona_draft)
                 store = stack.enter_context(Store(config.database))
                 if context:
                     intro = (Path(__file__).resolve().parents[1] / 'prompts' / 'next_trial_context.md').read_text()
@@ -164,14 +213,19 @@ class HostTrials:
                 voice = await stack.enter_async_context(ChatModel(config.model_settings('voice')))
                 vision = (None if config.models.roles.vision is None else
                           await stack.enter_async_context(ChatModel(config.model_settings('vision'))))
-                local_memory = await stack.enter_async_context(open_memory(config, store, slots=self.runtime.chats[scene].slots))
+                local_memory = await stack.enter_async_context(open_memory(config, store,
+                    active_personas={scene: persona.id}, slots=self.runtime.chats[scene].slots))
                 session = PanelSession(config, store, mind, voice, vision=vision, memory=local_memory,
                                        persona=persona, slots=self.runtime.chats[scene].slots)
-                trial = Trial(root.name, scene, root, time.time(), config, session, stack, excluded, context)
+                trial = Trial(root.name, scene, root, time.time(), config, session, stack, excluded, context,
+                              persona_source='running' if persona_draft is None else 'draft')
                 self.records[trial.id] = trial
                 return trial
-            except BaseException:
-                await stack.aclose()
+            except BaseException as error:
+                try:
+                    await stack.aclose()
+                except BaseException as cleanup_error:
+                    error.add_note(f'Trial resource cleanup also failed: {type(cleanup_error).__name__}: {cleanup_error}')
                 raise
 
     async def close(self):
@@ -191,7 +245,9 @@ def register_host_trials(app: FastAPI, trials: HostTrials, user):
         if not item.acknowledge_model_cost:
             raise HTTPException(422, '开始前需明确知道模型请求仍会计费；平台发送始终模拟')
         try:
-            return (await trials.start(item.scene, item.context_messages)).info()
+            return (await trials.start(item.scene, item.context_messages, item.persona_draft)).info()
+        except InstanceBusyError as error:
+            raise HTTPException(409, str(error)) from error
         except (ValueError, OSError) as error:
             raise HTTPException(422, f'{type(error).__name__}: {error}') from error
 

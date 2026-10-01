@@ -96,6 +96,7 @@ function serviceLabel(name, enabled) {
     : name === 'skills' ? (enabled ? '当前配置了技能目录' : '当前未配置技能目录')
     : name === 'account_browser' ? (enabled ? '账号浏览已配置（仅主人新任务）' : '账号浏览未绑定')
     : name === 'public_browser' ? (enabled ? '公共浏览已配置' : '公共浏览未配置')
+    : name === 'worker_mcp' ? (enabled ? '允许任务通过宿主调用 MCP（不代表服务连通）' : '任务 MCP 未启用')
     : (enabled ? '当前已配置' : '当前未配置')
 }
 async function save() {

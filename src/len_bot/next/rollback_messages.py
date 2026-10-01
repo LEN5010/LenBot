@@ -59,8 +59,9 @@ def _raw_text(message: ChatMessage, raw: dict | None) -> str:
     return _projection(message.segments)
 
 
-def _outgoing_segments(message: ChatMessage) -> list[dict]:
+def _outgoing_segments(message: ChatMessage, image_assets: dict[int, str] | None) -> list[dict]:
     parts: list[dict] = []
+    image_index = 0
     for position, segment in enumerate(message.segments):
         if segment.type == "text":
             value = segment.data["text"]
@@ -77,13 +78,16 @@ def _outgoing_segments(message: ChatMessage) -> list[dict]:
             ident = segment.data["id"]
             if message.reply_to is None or str(ident) != message.reply_to:
                 raise ValueError(f"segments[{position}] reply differs from message.reply_to")
+        elif segment.type == 'image' and image_assets is not None:
+            image_index += 1
+            parts.append({'type': 'image', 'asset_id': image_assets[image_index]})
         else:
             raise ValueError(f"unsupported outgoing segment type {segment.type!r} at {position}")
     return parts
 
 
 def convert_next_message(message: ChatMessage, raw: dict | None, *, bot_qq: str,
-                         reply_is_self: bool) -> ArchivedEvent:
+                         reply_is_self: bool, image_assets: dict[int, str] | None = None) -> ArchivedEvent:
     """Convert one saved message; the caller owns source rows and destination transactions."""
     try:
         if not isinstance(message.id, str) or not message.id:
@@ -131,7 +135,7 @@ def convert_next_message(message: ChatMessage, raw: dict | None, *, bot_qq: str,
             raise ValueError("confirmed self message requires a platform message ID")
         if message.send_status == "simulated" and platform_id is not None:
             raise ValueError("simulated expression cannot claim a platform message ID")
-        segments = _outgoing_segments(message)
+        segments = _outgoing_segments(message, image_assets)
         if message.send_status in {"received", "sent", "simulated"}:
             simulated = message.send_status == "simulated"
             return ArchivedEvent(

@@ -81,7 +81,7 @@ def check_memory(source: InitialMemory, config: LabConfig, history: Path) -> Non
     with closing(offline_database(source.jobs, 0x4C424D4A, FORMAT_VERSION)) as jobs:
         scopes = {row[0] for row in jobs.execute(' UNION '.join(
             f'SELECT scene FROM {name}' for name in ('memory_cursors', 'memory_jobs', 'memory_exclusions',
-                                                     'memory_summary_runs', 'memory_embedding_calls')))}
+                                                     'memory_summary_runs', 'memory_embedding_calls', 'memory_personas')))}
         scopes.update(row[0] for row in jobs.execute('SELECT scope FROM memory_summary_runs'))
         if scopes - allowed:
             raise ValueError(f'Memory processing seed contains other scenes: {sorted(scopes - allowed)}')

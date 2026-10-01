@@ -19,6 +19,7 @@ from len_bot.web.shell import mount_panel
 from .attention import SceneRunner
 from .chat import Chat
 from .config import LabConfig, ScenePersona, STRICT, load_config, read_scene_persona, save_scene_persona
+from .instance_lock import instance_lock
 from .model import ChatModel
 from .memory import MemoryService, open_memory
 from .memory_ingest import MemoryIngestor, open_memory_ingestor
@@ -128,6 +129,7 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        persona = load_persona(config.persona)
         with Store(config.database) as store:
             slots = ModelSlots(config.max_model_requests)
             budget = ModelBudget(config, store, None, root=config._instance_root)
@@ -137,11 +139,12 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
                 ChatModel(config.model_settings("voice")) as voice,
                 (ChatModel(config.model_settings("vision")) if config.models.roles.vision is not None
                  else nullcontext(None)) as vision,
-                open_memory(config, store, slots=slots) as memory,
+                open_memory(config, store, active_personas={config.scene: persona.id}, slots=slots) as memory,
                 open_memory_ingestor(config, store, memory, [config.scene], slots=slots) as ingestor,
             ):
                 budget.memory = memory
-                session = PanelSession(config, store, mind, voice, vision=vision, memory=memory, ingestor=ingestor, slots=slots)
+                session = PanelSession(config, store, mind, voice, vision=vision, memory=memory, ingestor=ingestor, slots=slots,
+                                       persona=persona)
                 app.state.session = session
                 try:
                     yield
@@ -229,9 +232,10 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
 
 def main() -> None:
     root = Path.cwd().resolve()
-    config = load_config(root)
-    app = create_app(config, root=root)
-    uvicorn.run(app, host=config.panel.host, port=config.panel.port)
+    with instance_lock(root):
+        config = load_config(root)
+        app = create_app(config, root=root)
+        uvicorn.run(app, host=config.panel.host, port=config.panel.port)
 
 
 if __name__ == "__main__":

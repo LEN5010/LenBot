@@ -33,6 +33,14 @@ COPY src/len_bot/next/worker_egress_bridge.py /opt/lenbot/worker_egress_bridge.p
 COPY docker/next-worker/lenbot-extension.ts /opt/lenbot/lenbot-extension.ts
 COPY --chmod=755 docker/next-worker/lenbot-browser.cjs /usr/local/bin/lenbot-browser
 
+COPY scripts/collect_python_licenses.py /opt/lenbot/collect_python_licenses.py
+COPY scripts/collect_frontend_licenses.cjs /opt/lenbot/collect_node_licenses.cjs
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /usr/share/lenbot/licenses/project/
+COPY licenses/ /usr/share/lenbot/licenses/project/third-party/
+RUN /opt/uv/bin/python /opt/lenbot/collect_python_licenses.py /usr/share/lenbot/licenses/python \
+    && node /opt/lenbot/collect_node_licenses.cjs "$(npm root --global)" /usr/share/lenbot/licenses/node-global \
+    && node /opt/lenbot/collect_node_licenses.cjs /opt/lenbot/browser/node_modules /usr/share/lenbot/licenses/browser
+
 ENV PATH="/opt/uv/bin:${PATH}" HOME=/home/agent
 WORKDIR /workspace
 USER 10000:10000

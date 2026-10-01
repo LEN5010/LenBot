@@ -20,6 +20,7 @@ from .images import image_url, prepare_pixels
 from .messages import plain_text
 from .model import ChatModel, ModelProtocolError, ModelReply
 from .model_slots import ModelSlots
+from .replay_images import RecordedImages
 from .pricing import estimate_cost
 from .image_assets import MAX_IMAGE_BYTES, inspect_image
 from .sticker_store import StickerStore
@@ -70,11 +71,13 @@ class StickerCollector:
     """Per-scene queued candidates; failed work is never silently replayed."""
 
     def __init__(self, config: HostConfig, store: Store, vision: ChatModel, *,
+                 recording: Callable[[str], RecordedImages | None],
                  slots: ModelSlots | None = None, on_update: Callable[[], None] | None = None):
         self.config = config
         self.store = store
         self.vision = vision
         self.slots = slots
+        self.recording = recording
         self.on_update = on_update
         self.records = StickerStore(store)
         self.scenes = tuple(scene for scene, settings in config.scenes.items()
@@ -169,15 +172,24 @@ class StickerCollector:
                 raise ValueError(f"sticker source message {candidate['source_message_seq']} has only "
                                  f"{len(pictures)} images, not image {image_index}")
             original = self.records.original(scene, id)
+            pixels_source, recorded_fetched_at = 'saved_candidate_original', None
             deadline = asyncio.timeout(self.config.images.timeout_seconds)
             try:
                 async with deadline:
                     if original is None:
-                        url = image_url(pictures[image_index - 1].data)
-                        _, _, data = await fetch_public(
-                            url, self.config.images.timeout_seconds,
-                            lambda _type, _prefix: MAX_IMAGE_BYTES,
-                        )
+                        recording = self.recording(scene)
+                        if recording is not None:
+                            if message.platform_message_id is None:
+                                raise ValueError(f'Frozen sticker original requires an actual platform message ID: scene={scene}, record={candidate["source_message_seq"]}')
+                            data, recorded_fetched_at = recording.image(message.platform_message_id, image_index)
+                            pixels_source = 'frozen_original'
+                        else:
+                            url = image_url(pictures[image_index - 1].data)
+                            _, _, data = await fetch_public(
+                                url, self.config.images.timeout_seconds,
+                                lambda _type, _prefix: MAX_IMAGE_BYTES,
+                            )
+                            pixels_source = 'public_url'
                         mime_type, width, height, animated = await asyncio.to_thread(inspect_image, data)
                         self.records.save_original(scene, id, data=data, mime_type=mime_type,
                                                    width=width, height=height, animated=animated)
@@ -192,6 +204,7 @@ class StickerCollector:
 
             timezone = ZoneInfo(self.config.scene_timezone(scene))
             source = {"scene": scene, "source_message_seq": candidate["source_message_seq"],
+                      'pixels_source': pixels_source, 'recorded_fetched_at': recorded_fetched_at,
                       "image_index": image_index, "qq": message.sender.uid,
                       "display_name": message.sender.card or message.sender.nickname,
                       "platform_message_id": message.platform_message_id,

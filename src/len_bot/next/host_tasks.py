@@ -6,15 +6,28 @@ from dataclasses import asdict
 import os
 from pathlib import Path
 import stat
+import time
+import traceback
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field
 
+from .config import STRICT
 from .network import NetworkRuntime
 from .tasks import file_info
 from .tasks_store import TERMINAL, TaskStore
 from .tasks_tools import DelegateArguments, TaskArguments, perform_task_action
+from .task_storage import storage_usage
+
+
+class WorkspaceDiscard(BaseModel):
+    model_config = STRICT
+    requester: str = Field(pattern=r'^[1-9][0-9]*$')
+    workspace: str = Field(min_length=1)
+    runtime: str = Field(min_length=1)
+    confirmed: bool
 
 
 class _SessionDownload(StreamingResponse):
@@ -46,7 +59,7 @@ class _SessionDownload(StreamingResponse):
 
 
 def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
-                        user: Callable[[Request], str], host_changes: set[asyncio.Event]) -> None:
+                        user: Callable[[Request], str], host_changes: set[asyncio.Event], write_lock: asyncio.Lock) -> None:
     records = TaskStore(runtime.store)
 
     def scene_exists(scene: str) -> None:
@@ -86,7 +99,8 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
         try:
             item = records.get(scene, id)
             events = records.event_previews(scene, id, after=after, limit=limit)
-            return {"task": {**asdict(item), "active_timeout_seconds": None if runtime.tasks is None else runtime.tasks.active_timeout(item)}, "events": events,
+            return {"task": {**asdict(item), "workspace_discard_requested": records.workspace_discarded(scene, id),
+                            "active_timeout_seconds": None if runtime.tasks is None else runtime.tasks.active_timeout(item)}, "events": events,
                     "network": None if runtime.tasks is None else runtime.tasks.egress.status(scene, id),
                     "next_after": events[-1]["id"] if events else after,
                     "files": [file_info(file, records) for file in records.list_files(scene, id)]}
@@ -100,6 +114,48 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
             return records.event(scene, id, event_id)
         except ValueError as error:
             raise HTTPException(404, str(error)) from error
+
+    @app.get('/api/host/tasks/{id}/storage')
+    async def storage(id: int, scene: str, request: Request, _: str = Depends(user)):
+        scene_exists(scene)
+        try:
+            before = records.get(scene, id)
+        except ValueError as error:
+            raise HTTPException(404, str(error)) from error
+        worker = runtime.config.worker
+        if worker is None:
+            raise HTTPException(409, '当前根配置没有 worker，无法定位原任务存储')
+        started = time.time()
+        try:
+            roots = await run_in_threadpool(storage_usage, worker, scene, id)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+        user(request)
+        after = records.get(scene, id)
+        return {'scene': scene, 'task_id': id, 'started_at': started, 'ended_at': time.time(),
+                'status_at_start': before.status, 'status_at_end': after.status,
+                'container_at_start': before.container, 'container_at_end': after.container,
+                'roots': roots, 'hard_disk_quota': None,
+                'notice': '本次目录元数据读取不是原子快照。逻辑大小按普通文件目录项计；分配字节按各树实际 '
+                          'dev/inode 去重、计文件系统报告的512字节块，不代表文件独占或底层设备去重后的占用。'
+                          '不跟随链接、不读正文、不删除文件。硬磁盘配额未实现，用量不是配额或剩余额度。'}
+
+    @app.post('/api/host/tasks/{id}/workspace-discard')
+    async def discard(id: int, scene: str, body: WorkspaceDiscard, request: Request, _: str = Depends(user)):
+        scene_exists(scene)
+        if runtime.tasks is None:
+            raise HTTPException(409, '当前没有任务执行器，无法按当前worker定位/管理工作环境')
+        async with write_lock:
+            try:
+                result = await runtime.tasks.discard_workspace(scene, id, **body.model_dump())
+                user(request)
+                return result
+            except PermissionError as error:
+                raise HTTPException(403, ''.join(traceback.format_exception_only(error)).strip()) from error
+            except (ValueError, RuntimeError) as error:
+                raise HTTPException(409, ''.join(traceback.format_exception_only(error)).strip()) from error
+            except OSError as error:
+                raise HTTPException(500, ''.join(traceback.format_exception_only(error)).strip()) from error
 
     @app.get("/api/host/tasks/{id}/files/{file_id}")
     async def download(id: int, file_id: int, scene: str, _: str = Depends(user)):
@@ -203,9 +259,11 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
         try:
             return await runtime.tasks.delegate(scene, **body.model_dump())
         except PermissionError as error:
-            raise HTTPException(403, str(error)) from error
+            raise HTTPException(403, ''.join(traceback.format_exception_only(error)).strip()) from error
         except (ValueError, RuntimeError) as error:
-            raise HTTPException(409, str(error)) from error
+            raise HTTPException(409, ''.join(traceback.format_exception_only(error)).strip()) from error
+        except OSError as error:
+            raise HTTPException(500, ''.join(traceback.format_exception_only(error)).strip()) from error
 
     @app.post("/api/host/tasks/action")
     async def action(scene: str, body: TaskArguments, _: str = Depends(user)):

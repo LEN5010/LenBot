@@ -1,11 +1,15 @@
 <script setup>
 import { developerDetails } from '../composables/useDeveloperMode.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { api, sceneName } from '../api.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import TaskSkillCandidates from '../components/TaskSkillCandidates.vue'
+import TaskStorageUsage from '../components/TaskStorageUsage.vue'
+import TaskSharedMaterials from '../components/TaskSharedMaterials.vue'
+import TaskMaterialSelection from '../components/TaskMaterialSelection.vue'
+import TaskWorkspaceDiscard from '../components/TaskWorkspaceDiscard.vue'
 
 const route = useRoute(), router = useRouter()
 const state = ref(null), items = ref([]), nextOffset = ref(null), detail = ref(null)
@@ -18,7 +22,9 @@ const createResult = ref(null), actionResult = ref(null), listStale = ref(false)
 const socketState = ref('connecting'), socketError = ref(''), newData = ref(false), refreshing = ref(false), refreshError = ref('')
 const liveSnapshot = ref(null), liveState = ref('idle'), liveError = ref(''), liveStale = ref(false)
 const questionChanged = ref(false)
-const createForm = ref({ requester: '', goal: '', deliverable: '', context: '', account_browser: false })
+const materialsDirty = ref(false), materialsBusy = ref(false)
+const discardDirty = ref(false), discardBusy = ref(false)
+const createForm = ref({ requester: '', goal: '', deliverable: '', context: '', account_browser: false, materials: [] })
 const operator = ref(''), appendText = ref(''), continueText = ref(''), answerText = ref(''), selectedAnswer = ref(null)
 const detailHeading = ref(null)
 const statusOptions = [
@@ -36,15 +42,19 @@ const canDownloadSession = computed(() => Boolean(state.value?.configured && tas
 const sessionHref = computed(() => `/api/host/tasks/${encodeURIComponent(selectedId.value)}/session?${new URLSearchParams({ scene:selectedScene.value })}`)
 const acceptingScene = computed(() => state.value?.configured && state.value.accepting && sceneSettings.value?.enabled)
 const canAppend = computed(() => state.value?.accepting && ['running','waiting_input'].includes(task.value?.status))
-const canContinue = computed(() => !task.value?.account_browser && acceptingScene.value && ['done','failed','cancelled'].includes(task.value?.status))
+const canContinue = computed(() => !task.value?.account_browser && !task.value?.workspace_discard_requested
+  && !discardBusy.value && acceptingScene.value && ['done','failed','cancelled'].includes(task.value?.status))
 const canAnswer = computed(() => task.value?.question?.method !== 'request_help' && state.value?.accepting && task.value?.status === 'waiting_input' && task.value.question)
 const canCancel = computed(() => state.value?.configured && ['queued','running','waiting_input'].includes(task.value?.status)
   && (state.value.accepting || task.value.status === 'queued'))
-const dirty = computed(() => Object.values(createForm.value).some(value => value !== '' && value !== false) || operator.value !== ''
-  || appendText.value !== '' || continueText.value !== '' || answerText.value !== '' || selectedAnswer.value !== null)
+const dirty = computed(() => createForm.value.requester !== '' || createForm.value.goal !== '' || createForm.value.deliverable !== ''
+  || createForm.value.context !== '' || createForm.value.account_browser || createForm.value.materials.length > 0 || operator.value !== ''
+  || appendText.value !== '' || continueText.value !== '' || answerText.value !== '' || selectedAnswer.value !== null || materialsDirty.value || discardDirty.value)
+onBeforeRouteLeave(() => !materialsBusy.value && !discardBusy.value)
 useUnsavedChanges(dirty)
 onBeforeRouteUpdate(to => {
   const changed = to.query.scene !== route.query.scene || to.query.status !== route.query.status || to.query.id !== route.query.id
+  if (changed && (materialsBusy.value || discardBusy.value)) return false
   return !changed || !dirty.value || window.confirm('有未提交的任务或操作草稿。放弃这些内容并切换？')
 })
 const beginState = useRequestGuard()
@@ -86,6 +96,8 @@ function discardOldAnswer() {
   answerText.value = ''; selectedAnswer.value = null; questionChanged.value = false; actionError.value = ''
 }
 function resetDetail() {
+  materialsDirty.value = false; materialsBusy.value = false
+  discardDirty.value = false; discardBusy.value = false
   ++eventEpoch
   detail.value = null; events.value = []; nextAfter.value = 0; moreEvents.value = false; fullEvents.value = {}
   detailLoading.value = false; eventReading.value = null; fileReading.value = null
@@ -95,7 +107,7 @@ function resetDetail() {
 function resetList() {
   items.value = []; nextOffset.value = null; listLoading.value = false; listError.value = ''; listStale.value = false
   resetDetail()
-  createForm.value = { requester: '', goal: '', deliverable: '', context: '', account_browser: false }
+  createForm.value = { requester: '', goal: '', deliverable: '', context: '', account_browser: false, materials: [] }
   createError.value = ''; createResult.value = null; creating.value = false
 }
 async function readState() {
@@ -291,6 +303,15 @@ function eventContent(record) {
   const body = record.body
   const fields = ['text', 'title', 'message', 'value', 'note']
   const plain = fields.filter(key => typeof body[key] === 'string').map(key => body[key])
+  if (record.kind === 'workspace_discard') {
+    plain.push(`实际操作者 QQ ${body.requester} 明确放弃任务环境，不再续接；此项不是物理删除成功回执。\n拟处理工作区：${body.workspace}\n拟处理运行目录：${body.runtime}`)
+  }
+  if (record.kind === 'workspace_discard_result') {
+    plain.push(`目录操作${body.complete?'已返回完成':'未全部完成'}；交付副本与执行记录保留。\n已移除：${body.removed.join('、') || '没有'}\n读取时不存在：${body.absent.join('、') || '没有'}${body.active_root === null ? '' : `\n中断所在目录：${body.active_root}`}`)
+  }
+  if (record.kind === 'material_inputs') {
+    plain.push(`任务私有输入目录：${body.directory}\n${body.files.map(file=>`${file.container_path} · ${file.size} 字节，源 ${file.source_path}`).join('\n')}\n文件发布不代表 Pi 已读取或使用。`)
+  }
   if (Array.isArray(body.options)) plain.push(`可选项：${body.options.join('、')}`)
   if (typeof body.confirmed === 'boolean') plain.push(body.confirmed ? '已确认' : '已拒绝')
   if (body.cancelled === true) plain.push('已取消回答')
@@ -305,7 +326,8 @@ function eventLabel(event) {
     message_start:'开始生成', message_end:'生成结束', agent_start:'开始执行', agent_end:'本次执行结束',
     extension_ui_request:'等待补充或确认', finished:'任务结束', progress:'任务进度', answer_timeout:'等待回答超时', input:'新增要求',
     question:'向请求人提问', answer:'收到回答', browser_started:'专用浏览器会话已建立',
-    browser_stopped:'专用浏览器会话已关闭', browser_released:'残留会话已清理'}
+    browser_stopped:'专用浏览器会话已关闭', browser_released:'残留会话已清理',
+    workspace_discard:'明确放弃任务环境', workspace_discard_result:'环境目录清理结果', material_inputs:'私有输入原件已发布'}
   return labels[event.event_type] || '任务记录'
 }
 async function readEvent(event) {
@@ -330,8 +352,12 @@ async function createTask() {
     const result = await api(`/api/host/tasks/delegate?${new URLSearchParams({scene:name})}`, { method:'POST', body:JSON.stringify(payload) })
     if (!fresh()) return
     createResult.value = result; listStale.value = true
-    createForm.value = { requester:'', goal:'', deliverable:'', context:'', account_browser:false }
-  } catch (error) { if (fresh()) createError.value = errorMessage(error, '新建任务') }
+    createForm.value = { requester:'', goal:'', deliverable:'', context:'', account_browser:false, materials:[] }
+  } catch (error) {
+    if (fresh()) createError.value = payload.materials.length
+      ? `${error.message} 新建任务没有成功回执，可能已登记或发布输入；草稿保留，请先手动重读任务列表核对，不要直接重复提交。`
+      : errorMessage(error, '新建任务')
+  }
   finally { if (fresh()) creating.value = false }
 }
 async function submitAction(action, confirmed) {
@@ -443,6 +469,8 @@ onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); cl
         <v-textarea v-model="createForm.goal" label="任务原目标" rows="3" auto-grow hide-details="auto" />
         <v-textarea v-model="createForm.deliverable" label="期望交付物" rows="3" auto-grow hide-details="auto" />
         <v-textarea v-model="createForm.context" label="补充上下文（可空）" rows="3" auto-grow hide-details="auto" />
+        <TaskMaterialSelection :key="`new-inputs:${selectedScene}`" v-model="createForm.materials" :scene="selectedScene"
+          :configured="Boolean(state?.configured)" :disabled="creating || !acceptingScene" />
         <v-checkbox v-model="createForm.account_browser" label="主人已明确同意此次专用账号浏览任务（独立工作区，不续接）" hide-details /></fieldset>
         <div class="form-actions"><v-btn type="submit" color="primary" :loading="creating" :disabled="!acceptingScene || !createForm.requester || !createForm.goal.trim() || !createForm.deliverable.trim()">登记并排队</v-btn>
           <span class="muted">创建成功仅说明真实任务已排队，不表示模型已运行。</span></div></form>
@@ -481,6 +509,7 @@ onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); cl
           <div><dt>创建 / 开始 / 结束</dt><dd>{{ localTime(task.created) }} / {{ localTime(task.started) }} / {{ localTime(task.ended) }}</dd></div>
           <div><dt>期望交付物</dt><dd class="original-text">{{ task.deliverable }}</dd></div>
           <div><dt>补充上下文</dt><dd class="original-text">{{ task.context || '未填写' }}</dd></div>
+          <div><dt>明确选择的只读输入</dt><dd class="original-text">{{ task.materials.length ? task.materials.map(name=>`/inputs/${name}`).join('、') : '空选集，未挂入共享目录' }}</dd></div>
           <div v-if="task.summary!==null"><dt>执行总结</dt><dd class="original-text">{{ task.summary }}</dd></div></dl>
         <div class="session-download"><a v-if="canDownloadSession" :href="sessionHref" target="_blank" rel="noopener noreferrer" class="session-link">下载原生 Pi 会话</a>
           <p v-else class="muted">运行中不可下载；仅已结束、容器已停止且配置了 worker 的任务可读取原生会话。</p>
@@ -553,6 +582,14 @@ onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); cl
               <pre>{{ JSON.stringify(fullEvents[event.id].record,null,2) }}</pre></details></li></ol>
           <v-btn v-if="moreEvents" variant="outlined" :loading="detailLoading" :disabled="dirty || detailLoading || refreshing" @click="readDetail(true)">读取更多事件预览</v-btn>
         </section>
+        <TaskSharedMaterials :key="`materials:${selectedScene}:${task.id}`" :scene="selectedScene" :task-id="task.id"
+          :files="detail.files" :configured="Boolean(state?.configured)" @dirty="materialsDirty=$event" @busy="materialsBusy=$event" />
+        <TaskStorageUsage v-if="sceneSettings" :key="`storage:${selectedScene}:${task.id}`" :scene="selectedScene" :task-id="task.id"
+          :status="task.status" :container="task.container" :configured="Boolean(state?.configured)" :timezone="sceneSettings.timezone" />
+        <TaskWorkspaceDiscard :key="`discard:${selectedScene}:${task.id}`" :scene="selectedScene" :task-id="task.id"
+          :status="task.status" :container="task.container" :browser-active="task.browser_active"
+          :discarded="task.workspace_discard_requested" :configured="Boolean(state?.configured)"
+          @dirty="discardDirty=$event" @busy="discardBusy=$event" @invalidated="detailStale=true;listStale=true" />
         <TaskSkillCandidates v-if="['done','failed','cancelled'].includes(task.status)" :key="`${selectedScene}:${task.id}`" :scene="selectedScene" :task-id="task.id"
           :status="task.status" :container="task.container" :configured="Boolean(state?.configured)" />
       </template>

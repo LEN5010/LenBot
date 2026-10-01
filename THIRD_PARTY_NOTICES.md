@@ -8,6 +8,7 @@ LenBot 原创代码采用 AGPL-3.0-only。第三方依赖和独立服务保留�
 - 前端清单来自 npm ci 的实际 node_modules，包含可能只参与构建而未打入面板的包；清单不是逐模块打包归属证明。
 - 元数据没有许可证或许可文件时明确记录缺项，不把空值解释为公共领域或自动补许可证。发布者需核对这些缺项与实际分发内容。
 - 基础镜像、操作系统包、浏览器、容器镜像内的独立工具还有各自说明，不声称以下资料已经覆盖整台机器的所有软件。
+- 当前 `docker/next-worker` 配方也保留项目声明、实际安装的 Python 分发、全局 npm 工具和独立浏览器包元数据/许可文件；浏览器发行物、系统包及未取得的声明不由这些清单替代。构建配方已经接线不代表镜像已经构建或来源全部核对完毕。
 
 ## 设计参考与独立服务
 
@@ -21,9 +22,17 @@ LenBot 原创代码采用 AGPL-3.0-only。第三方依赖和独立服务保留�
 
 源码引用、独立服务使用和直接复制代码不是同一件事。这里没有把研究仓库的整个 LICENSE 当成已完成全部来源核对；实际复制片段、图标/字体与旧核心遗留来源仍需发布前逐项确认。用户个人角色、知识、聊天及插件内容不随通用框架默认发布，也不因根许可证自动获得再分发许可。
 
+## 面板实际随包的资料
+
+- 面板使用锁定的 `@mdi/js` 7.4.47 SVG 图标及 Vuetify 的 `mdi-svg` 图标集，不安装或分发 `@mdi/font` 字体。保留该包原 `LICENSE`（Pictogrammers Free License，分别说明图标的 Apache 2.0 和代码的 MIT 许可），不将整个图标包改称 MIT 或 AGPL。
+- `npm run build` 从本次实际 `node_modules` 收集包元数据与原许可/版权文件，放入面板 `assets/licenses/frontend/`，随源码包与 wheel 原字节分发。已部署面板可在 `/assets/licenses/frontend/index.json` 查清单，再按清单相对路径查看原文。包含构建期包不表示它们都被打进运行 JavaScript，缺项仍明确保留。
+- 当前 CSS 的 Inter、系统中文字体等是本机字体族选择，不含远程字体下载或打包字体文件；不能把 CSS 中出现字体名视作字体再分发。旧插件的真实 TTF 与前端字体选择分别处理。
+
 ## 当前仍随源码留存的移植内容
 
-旧核心 `src/len_bot/plugins/builtin/asoul_calendar` 保留自己的 LICENSE 和 SOURCE.md，后者指向 `LEN5010/astrbot_plugin_asoul` 并说明移植范围。日历资料来自外部 ICS，不因插件代码许可而自动获得相同许可。其 `resources/font.ttf` 的来源与再分发许可仍需确认；在个人插件迁移和旧核心清理完成前，不把该字体或整份旧插件认作已完成发布来源核对。
+旧核心 `src/len_bot/plugins/builtin/asoul_calendar` 保留自己的 LICENSE 和 SOURCE.md，后者指向 `LEN5010/astrbot_plugin_asoul` 并说明移植范围。日历资料来自外部 ICS，不因插件代码许可而自动获得相同许可。
+
+其 `resources/font.ttf` 内部元数据明确标识 Sarasa Mono SC Light 1.0.39；对应字体作者版本的 SIL Open Font License 1.1 原文、版权与来源说明保存在 [字体许可目录](licenses/sarasa-gothic-1.0.39/SOURCE.md)，同时保留在 wheel 的独立许可资料中。冻结旧插件和字体原件仍在工作树及源码包，当前核心 wheel 不安装它们；wheel 内附相关许可不表示它也携带字体。字体原字节未修改，不作为项目 AGPL 代码重新许可。本次没有下载官方发行字体逐字节比较，不称现有文件与官方二进制完全一致；冻结的旧插件及其原说明未改，整个旧核心的来源核对与清理也未据此全部完成。
 
 ## 源码与许可证获取
 

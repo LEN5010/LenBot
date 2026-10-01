@@ -13,6 +13,8 @@ import time
 from .legacy_archive import ArchivedEvent, ArchivedSession, new_session, project_message_facts
 
 from .config import HostConfig, LabConfig, load_instance_config
+from .instance_lock import instance_lock
+from .export_media import MediaExport
 from .messages import ChatMessage, Segment, Sender
 from .rollback_messages import convert_next_message
 from .store import FORMAT_VERSION, encode
@@ -38,8 +40,11 @@ def _backup(db: sqlite3.Connection, path: Path) -> None:
     try:
         with closing(sqlite3.connect(path)) as backup:
             db.backup(backup)
-    except BaseException:
-        path.unlink()
+    except BaseException as error:
+        try:
+            path.unlink()
+        except OSError as cleanup_error:
+            error.add_note(f'Incomplete rollback backup cleanup also failed at {path}: {cleanup_error}')
         raise
 
 
@@ -91,7 +96,8 @@ def _message(row: sqlite3.Row) -> tuple[ChatMessage, dict]:
                              "segments": [Segment(**part) for part in body["segments"]]})
     if message.scene != row["scene"] or message.platform_message_id != row["platform_id"]:
         raise ValueError("New message body does not match its scene/platform identity columns")
-    return message, {"seq": row["seq"], "body": body, "raw": raw, "received_at": row["received_at"]}
+    return message, {"seq": row["seq"], "body": body, "raw": raw, "received_at": row["received_at"],
+                     'persona_id': row['persona_id']}
 
 
 def _originals_present(db: sqlite3.Connection, packet: dict) -> bool:
@@ -161,6 +167,8 @@ def export_history(config: LabConfig | HostConfig) -> dict:
                 raise ValueError(f"Legacy target lacks tables {sorted(required - tables)}")
             _sessions(old, settings.scenes, config.bot_qq)
             _backup(old, backup)
+            media = (None if settings.media_directory is None else
+                     MediaExport(new, old, settings.media_directory, (source, target, backup)))
             with old:
                 old.execute("BEGIN EXCLUSIVE")
                 sessions = _sessions(old, settings.scenes, config.bot_qq)
@@ -177,8 +185,11 @@ def export_history(config: LabConfig | HostConfig) -> dict:
                             (message.scene, message.reply_to),
                         ).fetchone()
                         event = convert_next_message(message, packet["raw"], bot_qq=config.bot_qq,
-                                                     reply_is_self=reply is not None and reply[0] == 1)
+                                                     reply_is_self=reply is not None and reply[0] == 1,
+                                                     image_assets=None if media is None else media.outgoing_assets(message))
                         event.metadata["next_message"] = packet
+                        if media is not None:
+                            media.append(message, row['seq'], event)
                         rowid = _append_event(old, event)
                         if rowid is None:
                             report["already_exported"] += 1
@@ -188,7 +199,7 @@ def export_history(config: LabConfig | HostConfig) -> dict:
                         session = project_message_facts(sessions[message.scene], event, f"user:{config.bot_qq}")
                         session.last_observed_event_rowid = session.attention_scanned_event_rowid = rowid
                         sessions[message.scene] = session
-                    except (ValueError, TypeError, KeyError, sqlite3.Error) as error:
+                    except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as error:
                         raise ValueError(
                             f"Next message at seq {row['seq']}: {error}; body={row['body'][:500]}; "
                             f"raw={repr(row['raw'])[:300]}"
@@ -218,13 +229,18 @@ def export_history(config: LabConfig | HostConfig) -> dict:
                         "AND status IN ('pending','claimed','processing','review_required') GROUP BY status", (scene,),
                     ))
     return {"source": str(source), "target": str(target), "backup": str(backup), "scenes": reports,
-            "not_restored": ["mind history and model calls", "schedules", "media assets and image cache", "web documents", "work tasks and copied deliverables", "background ownership"]}
+            'media': None if media is None else media.report,
+            "not_restored": ["mind history and model calls", "schedules",
+                             'media assets' if media is None else 'unlinked media assets and unavailable incoming originals',
+                             'image cache and vision model calls', 'audio/video files', "web documents",
+                             "work tasks and copied deliverables", "background ownership"]}
 
 
 def main() -> None:
     if len(sys.argv) != 1:
         raise SystemExit("History export takes no arguments; use the instance's lenbot.config.json")
-    print(encode(export_history(load_instance_config(Path.cwd()))))
+    with instance_lock(Path.cwd()):
+        print(encode(export_history(load_instance_config(Path.cwd()))))
 
 
 if __name__ == "__main__":
