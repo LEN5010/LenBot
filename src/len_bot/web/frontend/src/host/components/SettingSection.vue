@@ -8,6 +8,8 @@ defineProps({
   saving: { type: Boolean, default: false },
   error: { type: [Object, String], default: null },
   saveLabel: { type: String, default: '保存' },
+  // Why the draft cannot be saved yet; shown instead of the save hint.
+  problem: { type: String, default: '' },
 })
 defineEmits(['save'])
 </script>
@@ -18,12 +20,14 @@ defineEmits(['save'])
     <fieldset :disabled="saving"><slot /></fieldset>
     <ErrorNote v-if="error" title="没有保存成功" :error="error" class="mt-4" />
     <div class="setting-actions">
-      <v-btn type="submit" color="primary" :loading="saving" :disabled="!dirty">{{ saveLabel }}</v-btn>
-      <span v-if="dirty" class="muted">有未保存的修改</span>
+      <v-btn type="submit" color="primary" :loading="saving" :disabled="!dirty || Boolean(problem)">{{ saveLabel }}</v-btn>
+      <span v-if="dirty && problem" class="problem">{{ problem }}</span>
+      <span v-else-if="dirty" class="muted">有未保存的修改</span>
     </div>
   </form>
 </template>
 <style scoped>
 .setting-section fieldset{border:0;padding:8px 0 0;margin:0;min-width:0;display:grid;gap:16px}
 .setting-actions{display:flex;align-items:center;gap:12px;margin-top:20px;flex-wrap:wrap}
+.setting-actions .problem{color:var(--error-text)}
 </style>

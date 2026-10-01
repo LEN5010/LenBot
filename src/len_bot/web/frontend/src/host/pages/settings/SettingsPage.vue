@@ -11,12 +11,11 @@ import ErrorNote from '../../components/ErrorNote.vue'
 import ConnectionSection from './ConnectionSection.vue'
 import AccountSection from './AccountSection.vue'
 import PermissionsSection from './PermissionsSection.vue'
-import LimitsSection from './LimitsSection.vue'
 import RetentionSection from './RetentionSection.vue'
 import ProcessingSection from './ProcessingSection.vue'
 
 const route = useRoute(), router = useRouter()
-const tabs = [['connection', '连接'], ['account', '面板账号'], ['permissions', '权限'], ['limits', '花费上限'], ['retention', '数据保留'], ['advanced', '高级']]
+const tabs = [['connection', '连接'], ['account', '面板账号'], ['permissions', '权限'], ['retention', '数据保留'], ['advanced', '高级']]
 const tab = computed({
   get: () => tabs.some(([key]) => key === route.query.tab) ? route.query.tab : 'connection',
   set: value => router.replace({ query: { ...route.query, tab: value } }),
@@ -46,7 +45,6 @@ function saved(value) {
         <PermissionsSection :scene="scene" @saved="saved" @dirty="value => dirty.permissions = value"
           @scene="value => router.replace({ query: { ...route.query, scene: value } })" />
       </v-window-item>
-      <v-window-item value="limits"><LimitsSection :snapshot="settings.data.value" @saved="saved" @dirty="value => dirty.limits = value" /></v-window-item>
       <v-window-item value="retention"><RetentionSection :snapshot="settings.data.value" @saved="saved" @dirty="value => dirty.retention = value" /></v-window-item>
       <v-window-item value="advanced">
         <div class="page-stack">

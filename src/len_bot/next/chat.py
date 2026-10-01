@@ -129,39 +129,39 @@ def tool_catalog(*, platform: bool) -> list[dict]:
 def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> list[str]:
     reasons = []
     if persona.tools != "all" and name not in persona.tools:
-        reasons.append("当前角色未允许此工具")
+        reasons.append("角色没有允许这个工具")
     if (name == "react" and not persona.stickers
             and not (config.learning is not None and config.learning.collect_stickers)):
-        reasons.append("角色包没有 stickers/ 素材，且未启用本群收集表情")
+        reasons.append("角色没有表情素材，本群也没有开启收集表情")
     if name == "web_read" and config.web_read is None:
-        reasons.append("尚未配置网页读取")
+        reasons.append("还没有开启读网页")
     if name == "web_search" and config.web_search is None:
-        reasons.append("尚未配置搜索服务")
+        reasons.append("还没有开启搜索网页")
     if name == "memory" and config.memory is None:
-        reasons.append("尚未配置长期记忆后端")
+        reasons.append("还没有设置记忆")
     if name == "look" and config.models.roles.vision is None:
-        reasons.append("尚未配置视觉模型")
+        reasons.append("还没有设置看图模型")
     if name == "transcribe" and config.models.roles.asr is None:
-        reasons.append("尚未配置语音转写模型")
+        reasons.append("还没有设置语音转写模型")
     if name == "schedule" and not config.schedules.enabled:
-        reasons.append("当前场景未开启安排")
+        reasons.append("本群没有开启提醒")
     if name in {"delegate", "task"} and config.worker is None:
-        reasons.append("尚未配置任务容器与 worker 模型")
+        reasons.append("还没有启用独立任务")
     if name == "delegate" and not config.tasks.enabled:
-        reasons.append("当前场景未开放委托任务")
+        reasons.append("本群没有开启任务")
     if name == "send_file":
         if config.worker is None:
-            reasons.append("尚未配置任务交付副本目录")
+            reasons.append("还没有启用独立任务")
         if config.onebot is None or config.onebot.upload_visible_root is None:
-            reasons.append("尚未配置交付副本在 NapCat 一侧的可见目录")
+            reasons.append("还没有设置 NapCat 能看到的文件目录")
         if config.delivery != "onebot":
-            reasons.append("当前为模拟出口，不执行或伪造文件上传")
+            reasons.append("模拟发送时不能发文件")
     if name == "persona_knowledge" and not persona.knowledge:
-        reasons.append("角色包没有 knowledge/ 资料")
+        reasons.append("角色没有资料文件")
     if name in {"open_forward", "member_info", "transcribe"} and config.delivery != "onebot":
-        reasons.append("当前为模拟出口，没有可实时查询的平台")
+        reasons.append("模拟发送时用不了")
     if name == "member_info" and not config.scene.startswith("group:"):
-        reasons.append("只在群场景可用")
+        reasons.append("只能在群里用")
     return reasons
 
 

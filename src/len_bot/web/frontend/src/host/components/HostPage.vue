@@ -18,4 +18,6 @@ defineProps({ title: { type: String, required: true }, description: { type: Stri
 .host-page-actions{display:flex;gap:8px;flex-wrap:wrap}
 .host-page :deep(.surface h2){font-size:17px;margin:0 0 4px}
 .host-page :deep(.surface > .muted){margin-bottom:16px}
+/* Fields with and without a hint sit in the same row; keep them at their own height. */
+.host-page :deep(.form-grid){align-items:start}
 </style>

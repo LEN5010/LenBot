@@ -108,7 +108,7 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                 "name": tool.name, "description": tool.description, "source": tool.source,
                 "allowed": allowed, "registered": tool.name in chat.allowed_tool_names,
                 "discovered": tool.name in chat.discovered_tools, "deferred": True,
-                "reasons": [] if allowed else ["当前角色未允许此工具"],
+                "reasons": [] if allowed else ["角色没有允许这个工具"],
             })
         return {
             "scene": scene,

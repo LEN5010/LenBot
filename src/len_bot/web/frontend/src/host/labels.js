@@ -37,7 +37,7 @@ const tools = {
   say: '发言', wait: '等待', recall_chat: '翻聊天记录', look: '看图', web_search: '搜索网页', web_read: '读网页',
   schedule: '定提醒', schedule_list: '查看提醒', schedule_cancel: '取消提醒', tool_search: '查找工具',
   memory: '记忆', delegate: '委托任务', task: '任务', send_file: '发送文件', react: '表情回应',
-  persona_knowledge: '查角色资料',
+  persona_knowledge: '查角色资料', scene_control: '让 Bot 暂时安静', open_forward: '看合并转发', member_info: '查群成员', transcribe: '转写语音',
 }
 const callRoles = { mind: '大脑', voice: '表达器', recap: '整理回想', vision: '看图' }
 const notices = {
