@@ -27,20 +27,15 @@ const router = createRouter({
     {
       path:'/host/tasks',
       name:'host-tasks',
-      component:()=>import('../views/HostTasksView.vue'),
-      meta:{title:'独立任务'}
+      component:()=>import('../host/pages/tasks/TasksPage.vue'),
+      meta:{title:'任务'}
     },
-    {
-      path:'/host/schedules',
-      name:'host-schedules',
-      component:()=>import('../views/HostSchedulesView.vue'),
-      meta:{title:'场景安排'}
-    },
+    { path:'/host/schedules', name:'host-schedules', redirect:to=>({name:'host-tasks',query:{...to.query,tab:'schedules'}}) },
     {
       path:'/host/memory',
       name:'host-memory',
-      component:()=>import('../views/HostMemoryView.vue'),
-      meta:{title:'宿主认识与记忆'}
+      component:()=>import('../host/pages/memory/MemoryPage.vue'),
+      meta:{title:'记忆'}
     },
     { path:'/host/learning', name:'host-learning', redirect:to=>({name:'host-scenes',query:{...to.query,tab:'learning'}}) },
     {

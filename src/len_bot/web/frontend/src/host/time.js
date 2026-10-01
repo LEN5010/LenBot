@@ -1,9 +1,11 @@
 // Times come from the backend as epoch seconds and are shown in the host's
 // business timezone (or a scene's own timezone when it has one).
+import { host } from './store.js'
+
 export function formatTime(seconds, timeZone, { date = true } = {}) {
   if (seconds === null || seconds === undefined) return '—'
   return new Date(seconds * 1000).toLocaleString('zh-CN', {
-    timeZone, hour12: false,
+    timeZone: timeZone || host.state?.timezone || undefined, hour12: false,
     ...(date ? { month: 'numeric', day: 'numeric' } : {}),
     hour: '2-digit', minute: '2-digit',
   })
