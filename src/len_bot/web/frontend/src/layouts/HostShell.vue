@@ -80,10 +80,6 @@ async function exit() {
         这些修改已保存，重启 LenBot 后生效：{{ restartItems.join('、') }}
       </v-alert>
       <ErrorNote v-if="host.restart?.error" title="无法确认哪些修改需要重启" :error="host.restart.error" class="mb-4" />
-      <nav v-if="area?.subnav" class="host-subnav" aria-label="当前区域">
-        <v-btn v-for="[label, name] in area.subnav" :key="name" :to="hostTarget(name, route)" size="small"
-          :variant="route.name === name ? 'tonal' : 'text'" :aria-current="route.name === name ? 'page' : undefined">{{ label }}</v-btn>
-      </nav>
       <slot />
     </main>
   </v-main>
@@ -106,5 +102,4 @@ async function exit() {
 .host-status{display:inline-flex;align-items:center;gap:6px;margin-right:20px;font-size:13px;color:var(--muted)}
 .host-status .dot{width:8px;height:8px;border-radius:50%;background:var(--status-warning)}
 .host-status.ok .dot{background:var(--success)}
-.host-subnav{display:flex;gap:6px;flex-wrap:wrap;max-width:1080px;margin:0 auto 20px;padding-bottom:10px;border-bottom:1px solid var(--line)}
 </style>

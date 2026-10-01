@@ -27,12 +27,12 @@ export async function api(path, options = {}, responseFormat = 'json') {
   }
   catch (problem) {
     const format = responseFormat === 'blob' && res.ok ? '二进制文件' : 'JSON'
-    const error = new Error(`HTTP ${res.status}：接口未返回可读取的 ${format}：${problem.message}。本次请求结果需核对；没有自动重试。`)
+    const error = new Error(`HTTP ${res.status}：返回的内容不是 ${format}：${problem.message}`)
     error.status = res.status
     throw error
   }
   if (session !== sessionGeneration) {
-    const error = new Error('请求所属登录状态已变化，未采用旧响应；已提交操作是否完成须回到原对象核对。')
+    const error = new Error('登录状态变了，请刷新页面。')
     error.status = res.status
     throw error
   }

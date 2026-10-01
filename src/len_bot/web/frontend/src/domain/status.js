@@ -13,7 +13,7 @@ const states = {
     cancelled:['本槽已取消','default'],
     failed:['本槽失败','error'],
     delivery_unknown:['结果未知','warning'],
-    review_required:['待核对','warning'],
+    review_required:['需要你看看','warning'],
     shadow_observed:['隔离观察','default'],
     simulated:['模拟观察','default']
   },
@@ -25,7 +25,7 @@ const states = {
     failed:['执行失败','error'],
     cancel_requested:['已请求停止','warning'],
     termination_confirmed:['停止已确认','default'],
-    termination_unconfirmed:['停止未确认','warning']
+    termination_unconfirmed:['不确定有没有停下','warning']
   },
   job_execution: {
     completed:['执行完成','success'],
@@ -43,9 +43,9 @@ const states = {
     pending:['待执行','default'],
     claimed:['已认领','info'],
     processing:['处理中','info'],
-    review_required:['待核对','warning'],
+    review_required:['需要你看看','warning'],
     result_ready:['待回应','info'],
-    awaiting_delivery:['待回执','warning'],
+    awaiting_delivery:['等待发送结果','warning'],
     completed:['已交付','success'],
     cancelled:['已停止','default'],
     failed:['未送达','error'],
@@ -57,17 +57,17 @@ const states = {
     claimed:['已认领','info'],
     processing:['处理中','info'],
     result_ready:['待处理结果','info'],
-    awaiting_delivery:['待回执','warning'],
+    awaiting_delivery:['等待发送结果','warning'],
     completed:['任务完成','success'],
     cancelled:['已取消','default'],
     failed:['失败','error'],
     delivery_unknown:['送达未知','warning'],
-    review_required:['待核对','warning'],
+    review_required:['需要你看看','warning'],
     shadow_observed:['Shadow','default'],
     simulated:['模拟观察','default']
   },
   waiting: {
-    review_required:['待核对','warning'],
+    review_required:['需要你看看','warning'],
     active:['等待中','info'],
     resolved:['已结束','success'],
     expired:['已过期','default'],
@@ -103,25 +103,25 @@ const states = {
     rejected:['被拒绝','error'],
     unknown:['送达未知','warning'],
     shadow:['Shadow','default'],
-    simulated:['模拟回执','default'],
-    pending:['待回执','warning']
+    simulated:['模拟发送','default'],
+    pending:['等待发送结果','warning']
   },
   file_upload: {
     prepared:['资产已登记','default'],
     submitted:['已提交，尚无尝试','info'],
-    uploaded:['已有真实上传回执','success'],
+    uploaded:['已上传','success'],
     failed:['未上传或被拒绝','error'],
     not_sent:['未上传','error'],
     rejected:['上传被拒绝','error'],
     unknown:['上传结局未知','warning'],
     shadow:['Shadow 观察','default'],
-    simulated:['模拟回执','default']
+    simulated:['模拟发送','default']
   },
   call: {
     completed:['请求完成','success'],
     failed:['请求失败','error'],
     cancelled:['已取消','warning'],
-    unconfirmed:['未确认','warning']
+    unconfirmed:['不确定','warning']
   },
   skill_candidate: {
     pending:['候选待整理','default'],

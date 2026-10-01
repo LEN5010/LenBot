@@ -18,7 +18,7 @@ const purposes={
 const events={
   CORE_BRIDGE_ATTEMPTED:'Core 桥接尝试',
   PLATFORM_ACTION_ATTEMPTED:'平台写入已尝试',
-  PLATFORM_ACTION_RESULT:'平台动作回执',
+  PLATFORM_ACTION_RESULT:'平台操作结果',
   FILE_UPLOADED:'文件已上传',
   FILE_UPLOAD_FAILED:'文件上传未成功',
   DELIVERY_ATTEMPTED:'发送已尝试',
@@ -28,12 +28,12 @@ const events={
   PUBLIC_INTEREST_CHANGED:'公共兴趣修订',
   GROUP_MESSAGE_RECEIVED:'群聊原话',
   PRIVATE_MESSAGE_RECEIVED:'私聊原话',
-  MESSAGE_SENT:'发送回执',
+  MESSAGE_SENT:'发送结果',
   MESSAGE_SEND_FAILED:'发送未成功',
   ACTION_SHADOWED:'Shadow 候选',
   CONVERSATION_COMMITTED:'对话已提交',
   TASK_DUE:'提醒到期',
-  TASK_REVIEW:'任务待核对',
+  TASK_REVIEW:'任务需要你看看',
   AGENT_JOB_CONTROL:'工作变更',
   AGENT_JOB_PROGRESS:'工作进展',
   AGENT_JOB_FINISHED:'工作执行结束',
@@ -65,7 +65,7 @@ const traces={
   conversation_error:'对话失败',
   plugin_run:'插件运行',
   plugin_work_delivery:'插件工作交付',
-  plugin_hook:'插件回执钩子',
+  plugin_hook:'插件钩子',
   plugin_lifecycle:'插件起停',
   calendar_command:'旧日程命令',
   live_announcement:'旧开播邀请',
@@ -96,12 +96,12 @@ export function traceRuns(payload){
   return collect(payload.conversation || payload.cognition || payload)
 }
 export function publicationActionLabel(value){
-  return {not_enqueued:'尚未入队',enqueued:'已入队，送达见回执',enqueue_unknown:'入队结果未确认'}[value] || '入队结果未记录'
+  return {not_enqueued:'还没排队',enqueued:'已排队',enqueue_unknown:'不确定有没有排上'}[value] || '没有记录'
 }
 export function interactionReason(value){
   return {
     plugin_consumed:'插件已认领并消费，执行结果见关联记录',
-    prepared_work_delivery:'已生成的插件成品沿工作关系交付，回执另行记录',
+    prepared_work_delivery:'交付插件做好的成品',
     plugin_work_unavailable:'插件工作当前不可执行，原记录保留',
     scene_entry_closed:'当前入口未开放',
     group_disabled:'本群停用，只保存原话',
