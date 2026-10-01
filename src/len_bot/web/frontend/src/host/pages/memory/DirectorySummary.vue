@@ -58,7 +58,8 @@ async function regenerate() {
     </template>
     <template v-else-if="data">
       <p v-if="data.freshness?.pending_child_changes" class="muted">目录里的记忆改过，概览可能不是最新的。</p>
-      <p class="body">{{ data.content }}</p>
+      <p v-if="data.available === false" class="muted">概览尚未生成；记忆正文仍可浏览、读取和检索。</p>
+      <p v-else class="body">{{ data.content }}</p>
       <DevOnly label="新鲜度"><pre>{{ JSON.stringify(data.freshness, null, 2) }}</pre></DevOnly>
     </template>
   </section>

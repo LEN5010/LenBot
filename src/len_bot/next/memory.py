@@ -204,16 +204,18 @@ class MemoryService:
                 freshness = current.freshness
                 if (freshness is None or freshness.pending_child_changes or freshness.unsampled_entries
                         or freshness.missing_summary_entries):
-                    omitted.append(encode({"path": current.path, "freshness":
+                    omitted.append(encode({"path": current.path, "overview_available": current.content is not None,
+                                          "freshness":
                                           None if freshness is None else freshness.model_dump()}))
                     continue
                 included.append(section.substitute(path=current.path, overview=current.content,
                     missing="未报告" if freshness.missing_summary_entries is None
                     else freshness.missing_summary_entries))
-            if not included:
+            if not included and not omitted:
                 return None
             return Template((prompt_root / "next_native_memory_overview.md").read_text()).substitute(
-                included="\n\n".join(included), omitted="\n".join(omitted) if omitted else "无")
+                included="\n\n".join(included) if included else "本轮没有纳入概览正文。",
+                omitted="\n".join(omitted) if omitted else "无")
         if self.summarizer is None:
             return None
         summary = await self.backend.summary(scene)

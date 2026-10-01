@@ -165,7 +165,8 @@ class IngestTask:
     task_id: str
     status: Literal["pending", "running", "cancelling", "completed", "failed", "cancelled"]
     error: str | None
-    memories_extracted: int | None
+    memories_extracted: dict[str, int] | None
+    memories_extracted_total: int | None
     result: dict[str, Any] | None
 
 
@@ -264,6 +265,27 @@ def _as(model: type[BaseModel], value: object, raw: str) -> Any:
         return model.model_validate(value)
     except ValidationError as error:
         raise ValueError(f"OpenViking invalid {model.__name__} response: {error}; raw={raw[:500]!r}") from error
+
+
+def parse_ingest_task(value: object, *, task_id: str, raw: str) -> IngestTask:
+    """Parse the native session-commit result, whose extraction counts are per category."""
+    task = _as(_Task, value, raw)
+    if task.task_id != task_id or task.task_type != "session_commit":
+        raise ValueError(f"OpenViking task is not the requested session commit; raw={raw[:500]!r}")
+    if task.status == "failed" and not task.error:
+        raise ValueError(f"OpenViking failed task has no original error; raw={raw[:500]!r}")
+    counts: dict[str, int] | None = None
+    if task.status == "completed" and task.result is not None and "memories_extracted" in task.result:
+        counts = task.result["memories_extracted"]
+        if not isinstance(counts, dict) or any(
+            not isinstance(category, str) or type(count) is not int or count < 0
+            for category, count in counts.items()
+        ):
+            raise ValueError(f"OpenViking completed task has invalid extraction counts; raw={raw[:500]!r}")
+    return IngestTask(task_id=task_id, status=task.status, error=task.error,
+                      memories_extracted=counts,
+                      memories_extracted_total=None if counts is None else sum(counts.values()),
+                      result=task.result)
 
 
 class _SnapshotEntry(BaseModel):
@@ -395,25 +417,20 @@ class OpenVikingMemory:
         _segments(path)
         return path
 
-    async def browse(self, scene: str, path: str, *, scope: Literal["scene", "public"] = "scene",
-                     offset: int = 0, limit: int = 20) -> MemoryPage:
-        if offset < 0 or not 1 <= limit <= 100:
-            raise ValueError("browse requires offset >= 0 and limit 1..100")
-        identity = await self._identity(scene)
-        scene_root = f"viking://user/{identity.user_id}"
-        uri = scene_root if scope == "scene" and not path else self._uri(identity, path, scope)
-        payload, raw = await self._request(identity, "GET", "/api/v1/fs/ls", params={
+    async def _list_directory(self, identity: SceneIdentity, uri: str, *, offset: int,
+                              limit: int, show_hidden: bool = False) -> tuple[list[_Node], bool]:
+        params = {
             "uri": uri, "output": "original", "offset": offset, "limit": limit, "sort_by": "name",
-        })
+        }
+        if show_hidden:
+            params["show_all_hidden"] = True
+        payload, raw = await self._request(identity, "GET", "/api/v1/fs/ls", params=params)
         result = payload["result"]
         if not isinstance(result, list):
             raise ValueError(f"OpenViking ls expected list; raw={raw[:500]!r}")
         if type(payload.get("has_more")) is not bool:
             raise ValueError(f"OpenViking ls missing has_more; raw={raw[:500]!r}")
-        nodes: list[MemoryNode] = []
-        restricted_children = ({"memories", "peers"} if scope == "scene" and not path
-                               else {"memories"} if scope == "scene" and
-                               re.fullmatch(r"peers/[1-9][0-9]*", path) is not None else None)
+        nodes: list[_Node] = []
         for entry in result:
             row = _as(_Node, entry, raw)
             prefix = uri.rstrip("/") + "/"
@@ -422,14 +439,30 @@ class OpenVikingMemory:
             child = row.uri[len(prefix):].rstrip("/")
             if not child or "/" in child or child != row.name:
                 raise ValueError(f"OpenViking ls returned invalid direct child; raw={raw[:500]!r}")
+            nodes.append(row)
+        return nodes, payload["has_more"]
+
+    async def browse(self, scene: str, path: str, *, scope: Literal["scene", "public"] = "scene",
+                     offset: int = 0, limit: int = 20) -> MemoryPage:
+        if offset < 0 or not 1 <= limit <= 100:
+            raise ValueError("browse requires offset >= 0 and limit 1..100")
+        identity = await self._identity(scene)
+        scene_root = f"viking://user/{identity.user_id}"
+        uri = scene_root if scope == "scene" and not path else self._uri(identity, path, scope)
+        entries, has_more = await self._list_directory(identity, uri, offset=offset, limit=limit)
+        nodes: list[MemoryNode] = []
+        restricted_children = ({"memories", "peers"} if scope == "scene" and not path
+                               else {"memories"} if scope == "scene" and
+                               re.fullmatch(r"peers/[1-9][0-9]*", path) is not None else None)
+        for row in entries:
             if restricted_children is not None:
-                if child not in restricted_children:
+                if row.name not in restricted_children:
                     continue
                 if not row.isDir:
-                    raise ValueError(f"OpenViking memory root child is not a directory; raw={raw[:500]!r}")
+                    raise ValueError(f"OpenViking memory root child is not a directory; entry={row.model_dump()!r}")
             nodes.append(MemoryNode(path=self._path_from_uri(identity, row.uri, scope),
                                     name=row.name, is_dir=row.isDir, access=row.access))
-        return MemoryPage(nodes=tuple(nodes), has_more=payload["has_more"])
+        return MemoryPage(nodes=tuple(nodes), has_more=has_more)
 
     async def memory_directories(self, scene: str) -> tuple[str, ...]:
         """Discover existing scene and peer memory roots, including every listing page."""
@@ -478,6 +511,18 @@ class OpenVikingMemory:
     async def overview(self, scene: str, path: str = "memories") -> NativeOverview:
         identity = await self._identity(scene)
         uri = self._overview_uri(identity, path)
+        offset = 0
+        while True:
+            entries, has_more = await self._list_directory(identity, uri, offset=offset,
+                                                         limit=100, show_hidden=True)
+            overview = next((entry for entry in entries if entry.name == ".overview.md"), None)
+            if overview is not None:
+                if overview.isDir:
+                    raise ValueError(f"OpenViking overview is not a file; entry={overview.model_dump()!r}")
+                break
+            if not has_more:
+                return NativeOverview(path, None, None)
+            offset += 100
         payload, raw = await self._request(identity, "GET", "/api/v1/content/read",
                                            params={"uri": uri + "/.overview.md", "raw": "true"})
         if not isinstance(payload["result"], str):
@@ -646,15 +691,4 @@ class OpenVikingMemory:
             raise ValueError("task_id must be an OpenViking task path segment")
         identity = await self._identity(scene)
         result, raw = await self._request(identity, "GET", f"/api/v1/tasks/{task_id}")
-        task = _as(_Task, result["result"], raw)
-        if task.task_id != task_id or task.task_type != "session_commit":
-            raise ValueError(f"OpenViking task is not the requested session commit; raw={raw[:500]!r}")
-        if task.status == "failed" and not task.error:
-            raise ValueError(f"OpenViking failed task has no original error; raw={raw[:500]!r}")
-        memories_extracted: int | None = None
-        if task.status == "completed" and task.result is not None and "memories_extracted" in task.result:
-            if type(task.result["memories_extracted"]) is not int:
-                raise ValueError(f"OpenViking completed task has invalid extraction count; raw={raw[:500]!r}")
-            memories_extracted = task.result["memories_extracted"]
-        return IngestTask(task_id=task_id, status=task.status, error=task.error,
-                          memories_extracted=memories_extracted, result=task.result)
+        return parse_ingest_task(result["result"], task_id=task_id, raw=raw)

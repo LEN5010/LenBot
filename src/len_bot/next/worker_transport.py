@@ -147,13 +147,17 @@ class WorkerTransport:
                                 await self._write_frame(b"D", chunk[offset:offset + CHUNK_BYTES])
                     await self._write_frame(b"E")
                 except Exception as error:
-                    # One model/tool call boundary: return the original failure
-                    # and end only this response, without retrying a mutation.
+                    # Pi loses the cause when a started model stream is cut off.
+                    # Its owner already waits on this failure channel.
+                    if request["path"] == "/v1/chat/completions":
+                        self._fail(error)
                     detail = f"{type(error).__name__}: {error}".encode("utf-8")
                     if len(detail) > CHUNK_BYTES:
                         detail = detail[:CHUNK_BYTES - 64].decode(
                             "utf-8", errors="ignore").encode("utf-8") + b"\n[error text truncated at pipe frame limit]"
                     await self._write_frame(b"X", detail)
+                    if request["path"] == "/v1/chat/completions":
+                        return
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -164,6 +168,11 @@ class WorkerTransport:
     async def wait_failure(self) -> None:
         """Task owner waits alongside Pi; model bridge exit ends the task."""
         raise await asyncio.shield(self._failure)
+
+    def raise_if_failed(self) -> None:
+        """Read an already reported failure before accepting Pi's final result."""
+        if self._failure.done():
+            raise self._failure.result()
 
     async def close(self) -> None:
         self._closing = True

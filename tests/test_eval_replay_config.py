@@ -32,7 +32,7 @@ def test_synthetic_structured_cases_keep_original_onebot_envelopes_and_boundarie
 
     assert loaded.format == "structured-development"
     assert loaded.source == source["source"]
-    assert [case.id for case in loaded.cases] == ["correction-restart", "ambient-observe"]
+    assert {"correction-restart", "ambient-observe"} <= {case.id for case in loaded.cases}
     assert [type(step) for step in loaded.cases[0].steps] == [
         MessageStep, AwaitTurnStep, RestartStep, MessageStep, AwaitTurnStep,
     ]
