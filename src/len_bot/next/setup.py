@@ -89,7 +89,7 @@ def initialize(root: Path, item: FirstSetup) -> dict:
         temporary.unlink(missing_ok=True)
     return {'saved': True, 'config': str(config_path), 'persona': str(role_path),
             'panel_url': f'http://127.0.0.1:{item.panel_port}', 'delivery': item.delivery,
-            'next': '现在重新执行 uv run len-bot，然后登录面板，先到对话测试里聊几句。'}
+            'next': '现在从此实例目录重新执行刚才的启动命令，然后登录面板，先到对话测试里聊几句。'}
 
 
 def create_setup_app(root: Path, token: str, completed: asyncio.Event) -> FastAPI:
@@ -141,7 +141,7 @@ async def run_setup(root: Path) -> None:
         app = create_setup_app(root, token, completed)
         server = uvicorn.Server(uvicorn.Config(app, log_level='warning', access_log=False))
         print(f'尚无根配置。请打开 http://127.0.0.1:{port}/#token={token}\n'
-              '这里只保存首次配置，不连接 QQ、不调用模型；保存后重新执行 uv run len-bot。', flush=True)
+              '这里只保存首次配置，不连接 QQ、不调用模型；保存后从此实例目录重新执行刚才的启动命令。', flush=True)
         serving = asyncio.create_task(server.serve(sockets=[listener]))
         saving = asyncio.create_task(completed.wait())
         try:
