@@ -215,7 +215,7 @@ def _body(segments: list[Segment], audio: dict[int, str] | None = None) -> str:
             parts.append(segment.data["text"])
         elif segment.type == "at":
             qq = segment.data["qq"]
-            parts.append("@全体成员" if qq == "all" else f"@QQ {qq}")
+            parts.append("[提及全体成员]" if qq == "all" else f"[提及 QQ {qq}]")
         elif segment.type == "image":
             image_index += 1
             summary = segment.data.get("summary")
