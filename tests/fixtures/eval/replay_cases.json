@@ -429,6 +429,123 @@
           "count": 1
         }
       ]
+    },
+    {
+      "id": "direct-outlet-continuity",
+      "set": "coherence",
+      "source": "基于空白历史连续试聊中六轮普通文本均未调用 say 的实际观察，合成原始输入。",
+      "expect": [
+        "使用 direct 表达模式，从空白会话经真实消息入口执行。",
+        "决定回应时实际调用 say，返回的表达必须是出口记录；普通 assistant 文本不是已发送台词。",
+        "明确表示想聊两句时能继续对话，不能仅在内部生成台词后把没有表达的 settled 当成功。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "19006001",
+            "time": 1791158460,
+            "sender": {
+              "nickname": "小齐",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "刚醒，好困"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "19006002",
+            "time": 1791158520,
+            "sender": {
+              "nickname": "小齐",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "早饭想吃什么"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 2
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "19006003",
+            "time": 1791158580,
+            "sender": {
+              "nickname": "小齐",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "我其实就是想找你说两句，不是想让你帮我安排早饭"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 3
+        }
+      ]
     }
   ]
 }
