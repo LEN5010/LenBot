@@ -20,7 +20,7 @@ from .discovery import DEFERRED_NAMES
 from .network import NetworkRuntime
 from .persona import load_persona, select_examples
 from .skills import Skill, select_skills
-from .plugin_host import scene_skill_catalog
+from .plugin_manifest import scene_skill_catalog
 
 
 logger = logging.getLogger(__name__)

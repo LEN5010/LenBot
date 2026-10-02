@@ -132,10 +132,8 @@ def select_skills(catalog: tuple[Skill, ...], allowed: Literal["all"] | list[str
     if len(allowed) != len(set(allowed)):
         raise ValueError(f"Role skill names must not repeat: {allowed!r}")
     available = {skill.name: skill for skill in catalog}
-    unknown = [name for name in allowed if name not in available]
-    if unknown:
-        raise ValueError(f"Role skills are not in this scene's catalog: {unknown!r}")
-    return tuple(available[name] for name in allowed)
+    # Permission is an allowlist, not a requirement to keep a plugin installed.
+    return tuple(available[name] for name in allowed if name in available)
 
 
 def load_plugin_skills(directory: Path, plugin: str) -> tuple[Skill, ...]:

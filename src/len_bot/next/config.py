@@ -462,20 +462,24 @@ class LearningSettings(BaseModel):
 
 
 PLUGIN_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")
-PLUGIN_RESERVED = frozenset({"paths", "data_directory"})
+PLUGIN_RESERVED = frozenset({"paths", "data_directory", "disabled"})
 
 
 class PluginSettings(BaseModel):
-    """``paths`` and ``data_directory`` are settings; every other key is one loaded plugin's values."""
+    """Paths, data directory and disabled names are settings; extra keys are plugin values."""
     model_config = ConfigDict(extra="allow", strict=True, hide_input_in_errors=True)
 
     paths: list[Path] = Field(default_factory=list)
     data_directory: Path
+    disabled: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def plugin_entries(self) -> PluginSettings:
         if len(set(self.paths)) != len(self.paths):
             raise ValueError("plugins.paths must not repeat a directory")
+        if len(set(self.disabled)) != len(self.disabled) or any(name not in self.configured for name in self.disabled):
+            raise ValueError("plugins.disabled 必须是不重复的已配置插件名")
+        self.disabled.sort()
         for name, values in (self.model_extra or {}).items():
             if PLUGIN_NAME.fullmatch(name) is None:
                 raise ValueError(f"plugins.{name}: plugin names use lowercase letters, digits and underscores")

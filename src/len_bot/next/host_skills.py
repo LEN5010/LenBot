@@ -17,7 +17,7 @@ from .network import NetworkRuntime
 from .persona import load_persona
 from .skill_files import delete_skill, list_files, move_skill, read_file
 from .skills import BUILTIN_DIRECTORY, load_skill, load_task_skills, select_skills
-from .plugin_host import scene_skill_catalog
+from .plugin_manifest import scene_skill_catalog
 from .tasks_store import TERMINAL, Task, TaskStore
 
 
