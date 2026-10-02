@@ -2,15 +2,29 @@
 
 唯一宿主入口为 `len-bot`，运行参数只来自实例根 `lenbot.config.json`。安装、迁移、启动分开执行；服务模板不自动重启。角色管理与离线转换见[使用与维护](operations.md)。
 
-## macOS 安装与日常启动
+## 安装成品（macOS／Linux）
 
-需要 Python 3.13、uv、Node.js 22；使用容器服务或独立任务时还需 Docker Desktop。源码根首次安装：
+取得 `len_bot-0.1.0-py3-none-any.whl` 后，在一个新目录按根 [README](../../README.md#开始使用) 安装。wheel 已带面板，不运行 npm，不复制维护者的 `personas/`、配置或业务库。uv 可准备 Python 3.13；普通聊天不安装 Docker、OpenViking 或 ASR。
+
+从实例目录执行 `.venv/bin/len-bot`，打开终端打印的首次配置链接。填实际模型地址、名称、上下文窗口及凭据；向导创建新的角色包，不依赖私人角色。建议先选模拟发送。尚未准备 OneBot 时可选反向 WebSocket，只在本机等待连接，再到面板试聊；它不会自己登录 QQ。
+
+### 最小演示
+
+1. 创建角色“群聊伙伴”：身份填“和大家一起聊天、记事和做事的群聊伙伴”，表达填“自然白话，按问题说清楚；闲聊说到点上就停”。保存后重新执行同一启动命令，登录面板的对话测试，发“你好，介绍一下自己”。创建试聊本身不调用模型，发送后才调用。
+2. 在能力 → 插件启用内置 clock，并选定场景。真实 OneBot 接入后发送 `/时间`，由插件直接回复，不唤醒聊天模型；随后再问一句与时间有关的话，主脑上下文可见插件处理和回复。
+3. 需要文件工作时，再按下文配置独立任务环境、模型和账号权限；启用 group_digest，发送 `/群工作 请把周六九点读书会、周日下午两点手工课整理成 CSV`。任务页看到完成后下载登记文件。生成、登记与 QQ 上传是不同结果，未启用任务时此项不属于普通聊天承诺。
+
+### 源码开发安装
+
+仅从源码构建时需要 Node.js 22：
 
 ```sh
 ./scripts/install.sh
-# 仅在需要独立任务时构建，根 worker.image 要与所选标签一致
+# 仅需要独立任务时构建，根 worker.image 与标签一致
 docker build -t lenbot-worker:local -f docker/next-worker/Dockerfile .
 ```
+
+## 日常启动与可选服务
 
 已安装下述服务的本地实例，日常按顺序启动，不重新安装或迁移：
 
@@ -18,7 +32,7 @@ docker build -t lenbot-worker:local -f docker/next-worker/Dockerfile .
 docker compose -f deploy/current/services.compose.yaml up -d
 ./deploy/current/start-asr.sh   # 单独终端；已有 ASR 进程时不重复启动
 # 另一个终端，从实例根启动 Bot
-uv run --no-sync len-bot
+.venv/bin/len-bot
 ```
 
 只用聊天不要求 Docker、OpenViking 或 ASR；只启动根配置实际采用的服务。停止时先 Ctrl-C 停 Bot、再停 ASR，最后 `docker compose -f deploy/current/services.compose.yaml stop`，不删除服务卷。
@@ -97,6 +111,10 @@ sudo journalctl -u lenbot -n 100 --no-pager
 ```
 
 用 `sudo systemctl stop lenbot` 停止，不与手工进程并行运行。真实发送配置下，启动会连接 OneBot 并恢复已有安排／后台工作，不是纯面板启动。
+
+## 升级成品
+
+停止实例和试聊，按[离线维护](operations.md#升级与文件锁)备份。用 `uv pip install --python .venv/bin/python /path/to/新版本.whl` 替换程序，再从同一实例目录用 `.venv/bin/python -m len_bot.next.migrate` 和 `-m len_bot.next.migrate_memory_jobs` 执行该版本要求的离线转换，最后 `.venv/bin/len-bot` 启动。安装不改根配置与角色；任务镜像单独升级，不自动迁移或重启。
 
 ## 分发
 

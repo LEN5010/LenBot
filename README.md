@@ -4,12 +4,18 @@
 
 ## 开始使用
 
-需要 Python 3.13、uv、Node.js 22，以及一个 OneBot v11 实现。在源码根目录执行：
+普通使用选择**带面板的 wheel 安装包**，只需要 uv（Python 3.13 可由 uv 安装），不用 Node.js。拿到构建产物后：
 
 ```sh
-./scripts/install.sh       # 安装依赖、构建面板，不启动或迁移数据
-uv run --no-sync len-bot   # 唯一宿主入口；无配置时进入首次配置向导
+mkdir lenbot-instance && cd lenbot-instance
+uv venv --python 3.13
+uv pip install --python .venv/bin/python /path/to/len_bot-0.1.0-py3-none-any.whl
+.venv/bin/len-bot          # 无配置时打开首次向导；保存后重新执行此命令
 ```
+
+当前安装包由[打包命令](CONTRIBUTING.md#构建与提交)生成，尚未上传公共包仓库。需要修改源码时再安装 Node.js 22，在源码根执行 `./scripts/install.sh`；它安装依赖并构建面板，不启动或迁移数据。
+
+QQ 聊天还需一个 OneBot v11 服务；可先在面板试聊。Docker、OpenViking 和 ASR 均为可选能力。完整步骤和一个最小演示见[部署说明](deploy/current/README.md)。
 
 `lenbot.config.json` 是唯一运行配置，包含凭据，不进 Git。运行中从面板保存，提示重启的修改由用户明确重启生效；手工修改前先停机。`delivery: "onebot"` 会真实发送到 QQ，`"simulated"` 仅模拟发送，模型仍可能计费。
 
