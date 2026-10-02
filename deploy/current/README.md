@@ -80,6 +80,8 @@ Ollama首次拉取须等待其服务就绪。OpenViking服务密钥与每场景�
 
 根配置必须同时给出实际 `worker`、`models.roles.worker`、场景 `tasks.enabled`、主人或授权账号，以及角色允许的 `delegate/task/tool_search`。采用内置技能还需实际技能目录。
 
+技能目录存在不等于角色已允许使用：角色的 `skills` 也要包含对应名称（如 `html-document`），或明确选择全部。任务环境的 `skills` 列表才是本次实际装配的技能；空列表时不会读取新建的技能文件。修改后在新任务或明确续接中使用，不会改写已经结束的会话。
+
 - `worker.docker_binary` 用 Docker CLI 绝对路径，`docker_host` 用 `docker context inspect` 得到的本机 Unix socket；运行身份必须有访问权限。
 - `workspace_root`、`runtime_root`、交付根分开，均为 Docker 主机可见的实际路径。容器 `uid/gid` 必须能读写这些目录；Mac 常用 `id -u`／`id -g`，不照抄 Linux 镜像账号。
 - SnowLuma 在容器中时，将交付根只读挂入，例如 `file_assets` → `/lenbot-files`，并设置 `onebot.upload_visible_root` 为容器内路径。文件登记、本地可读、QQ 上传成功是不同结果。

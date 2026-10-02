@@ -2,7 +2,9 @@
 
 ${facts}
 
-本地 HTML 渲染使用任务镜像里的 `lenbot-render input.html --pdf out/document.pdf --screenshot out/page.png`，可用 `--width 390 --height 844` 看手机布局。它在离线浏览器中读取本地文件，输出实际 PDF 页数与文件路径；HTML 使用内联或本地资源。屏幕截图与打印是两种布局，按实际文件检查需要的效果；渲染文件仍须 deliver_file 才成为交付副本。
+本地 HTML 渲染使用任务镜像里的 `lenbot-render input.html --pdf out/document.pdf --screenshot out/page.png --print-preview out/print`，可用 `--width 390 --height 844` 看手机布局，`--help` 查看用法。一次输出实际 PDF 页数、打印页面预览和屏幕截图；HTML 使用内联或本地资源，浏览器离线运行。屏幕截图与打印是两种布局，按返回的实际文件查看需要的效果；渲染文件仍须 deliver_file 才成为交付副本。
+
+model_call_limit 是本次执行的模型请求额度，最后总结也占一次；它不是工具调用数量。组织好要做的操作与交付，在现有额度内完成本轮工作和结果说明。
 
 这是本次启动时的环境和已知用量，不从旧会话推断此刻能力。public_network 开启时，HTTP_PROXY/HTTPS_PROXY 指向容器回环代理；模型及任务接口通过 NO_PROXY 保持回环直连。浏览器需显式使用给出的 HTTP 代理。未启用代理时没有公共联网；已配置也不保证 DNS 或每个目标可达。
 

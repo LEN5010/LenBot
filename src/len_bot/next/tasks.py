@@ -729,6 +729,7 @@ class WorkTasks:
                 "task_traffic": self.egress.status(item.scene, item.id),
                 "scene_today_traffic": self.egress.status(item.scene),
                 "active_timeout_seconds": current.active_limit,
+                "model_call_limit": self.settings.max_calls,
                 "data_tools": [tool["name"] for tool in self.data_tools[item.scene]] + (["account_browser"] if item.account_browser else [])
                               + list(current.mcp_tools),
                 "public_browser": None if session.browser_cli_version is None else {
