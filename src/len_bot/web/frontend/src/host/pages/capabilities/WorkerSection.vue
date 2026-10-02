@@ -29,7 +29,7 @@ const advanced = [
   ['cpus', 'CPU 核数'], ['memory', '内存上限', '例如 2g'], ['tmpfs_size', '临时文件空间', '例如 256m'], ['pids_limit', '进程数上限'],
   ['command_timeout_seconds', '单条命令超时（秒）'], ['max_running', '同时运行的任务数'],
   ['max_containers', '任务容器总数上限'], ['max_scene_containers', '每个群的任务容器上限'],
-  ['max_calls', '每个任务最多调用模型几次'], ['max_request_bytes', '单次模型请求大小上限（字节）'],
+  ['max_calls', '每次执行最多调用模型几次'], ['max_request_bytes', '单次模型请求大小上限（字节）'],
   ['max_response_bytes', '单次模型回复大小上限（字节）'], ['active_timeout_seconds', '任务运行超时（秒）'],
   ['input_timeout_seconds', '等待回答追问的时限（秒）'], ['max_file_bytes', '单个交付文件大小上限（字节）'],
   ['compaction_reserve_tokens', '上下文压缩预留 token'], ['compaction_keep_recent_tokens', '压缩时保留的近期 token'],
@@ -82,7 +82,7 @@ async function submit() {
         <v-select v-model="draft.model_reasoning" label="任务模型支持推理吗" :items="[{ title: '支持', value: true }, { title: '不支持', value: false }]"
           hint="按模型服务商的说明选择" persistent-hint />
         <v-select v-model="draft.input_support" label="任务模型能看图吗" :items="[{ title: '只看文字', value: 'text' }, { title: '能看图片', value: 'text-image' }]" />
-        <v-text-field :model-value="draft.max_cost ?? ''" label="每个任务最多花费" inputmode="decimal"
+        <v-text-field :model-value="draft.max_cost ?? ''" label="整个任务累计最多花费" inputmode="decimal"
           hint="留空不限制；需要先在模型页给任务模型填价格" persistent-hint
           @update:model-value="value => draft.max_cost = value === '' ? null : value" />
       </div>

@@ -48,7 +48,7 @@ class WorkerSettings(BaseModel):
     max_running: int = Field(default=4, gt=0, strict=True)
     max_containers: int = Field(default=8, gt=0, strict=True)
     max_scene_containers: int = Field(default=4, gt=0, strict=True)
-    max_calls: int = Field(default=40, gt=0, strict=True)
+    max_calls: int = Field(default=40, gt=0, strict=True, description="每次执行的模型调用上限；明确续接开始新一次执行，费用仍按任务累计。")
     max_request_bytes: int = Field(default=8 * 1024 * 1024, gt=0, strict=True)
     max_response_bytes: int = Field(default=64 * 1024 * 1024, gt=0, strict=True)
     max_cost: Rate | None = None
