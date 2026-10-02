@@ -42,23 +42,25 @@ uv run --no-sync len-bot
 - 面板默认回环监听，远端用 SSH 转发；自建 HTTPS 入口按实际代理和 cookie 配置，不因失败放宽监听或会话限制。
 - `react` 需要角色 `stickers/index.yaml` 和真实原件；知识工具需要实际文档。插件／MCP／账号浏览同样必须有实际代码或服务，不能只开空开关。
 
-## 首次安装 OpenViking 与向量服务
+## 可选外部服务
 
-固定使用 OpenViking 提交 `a09a9d20a8e07d08973aee177802d00e08df29e6` 与 Ollama `0.35.0`。将该提交的官方源码导出到干净目录后构建，避免把服务依赖安装进 LenBot 环境：
+普通聊天不要求Docker、记忆或ASR服务。按需要选择：
+
+- 本地记忆直接使用宿主文件后端；OpenViking使用独立服务与场景用户，VLM／embedding在服务自己的配置中设置，分类见[记忆模板](memory-templates.md)。
+- 向量服务通过配置的embeddings接口接入；当前Compose示例使用Ollama与bge-m3，不由宿主安装或自动换模型。
+- 本地语音转写安装只见[ASR说明](asr.md)。
+- 外部服务使用自身配置，不能覆盖LenBot根运行参数。示例Compose不会自动重启服务；用户自行选择是否启用。
+
+首次构建原生记忆镜像时，把固定提交 `a09a9d20a8e07d08973aee177802d00e08df29e6` 的OpenViking源码放入独立目录：
 
 ```sh
 docker build -f "$PWD/deploy/current/Dockerfile.openviking" \
-  -t lenbot-openviking:a09a9d2 /path/to/openviking-source-archive
+  -t lenbot-openviking:a09a9d2 /path/to/openviking-source
 docker compose -f deploy/current/services.compose.yaml up -d embeddings
-# Ollama 启动后，明确安装指定模型
 docker exec lenbot-embeddings ollama pull bge-m3:567m
 ```
 
-按[该版本配置契约](https://github.com/volcengine/OpenViking/blob/a09a9d20a8e07d08973aee177802d00e08df29e6/docs/en/guides/01-configuration.md)填写私有 `ov.conf` 中的 VLM、embedding 和 root key，装配[记忆模板](memory-templates.md)，再启动 OpenViking。Compose 的 `user: '501:20'` 是本机身份，换机器时须匹配实际数据属主；容器访问宿主模型服务使用 `host.docker.internal`，不是容器自己的 `localhost`。
-
-每个 QQ 场景使用独立普通 user key，填入根 `memory.openviking.scenes`；root key 只留服务管理端。OpenViking 的整理模型在服务配置里，宿主 `models.roles.memory` 仅供本地记忆后端；学习、向量与 ASR 均有独立绑定。
-
-服务配置将 VLM／embedding provider 重试明确设为 0，不设备用模型；上游抽取器仍有格式修复生成逻辑。若代理 DNS 返回 `198.18.0.0/15` 假地址导致 Ollama 拒绝下载，应修网络，不能关闭检查或换模型冒充安装成功。
+Ollama首次拉取须等待其服务就绪。OpenViking服务密钥与每场景用户填写在对应配置，创建模板后再启动，不把服务启动当作聊天召回效果。
 
 ## 独立任务与浏览器
 
@@ -96,8 +98,6 @@ sudo journalctl -u lenbot -n 100 --no-pager
 
 用 `sudo systemctl stop lenbot` 停止，不与手工进程并行运行。真实发送配置下，启动会连接 OneBot 并恢复已有安排／后台工作，不是纯面板启动。
 
-## 分发与未确认项
+## 分发
 
-宿主镜像可用 `docker build -f deploy/current/Dockerfile -t lenbot-current:local .` 构建；默认不含任务 Docker CLI/socket。镜像许可材料位于 `/usr/share/lenbot/licenses`；前端实际依赖的原许可和清单位于 `/assets/licenses/frontend/`，包括构建期依赖，不能据此推断全部进入运行包，详见[第三方材料](../../THIRD_PARTY_NOTICES.md)。
-
-已有本机安装、容器与文件任务记录；干净环境安装、真实浏览器扩展、QQ 表情／提醒／文件送达、ASR 转写质量、OpenViking 抽取语义及完整遗忘仍未完成验收。隔离试聊不是 QQ 实发，构建和服务启动不代表发布完成。
+宿主镜像可用 `docker build -f deploy/current/Dockerfile -t lenbot-current:local .` 构建。独立任务还需匹配的任务镜像与Docker连接；普通聊天不用装任务环境。打包步骤只见[开发指南](../../CONTRIBUTING.md#构建与提交)，发行能力限制只见根[README](../../README.md#限制与验收)。

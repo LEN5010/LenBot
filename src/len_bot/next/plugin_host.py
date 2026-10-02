@@ -25,7 +25,8 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, Valid
 from .config import PLUGIN_NAME, PLUGIN_RESERVED, HostConfig
 from .external_tools import ExternalTool
 from .messages import parse_notice, ChatMessage
-from .plugin import INTERFACE, MARK, Content, Text, Invocation, Notice, Plugin, PluginContext, Sent
+from .plugin import INTERFACE, MARK, Content, Image, Text, Invocation, Notice, Plugin, PluginContext, Sent
+from .plugin_kv import PluginKV
 from .store import encode
 
 if TYPE_CHECKING:
@@ -153,11 +154,29 @@ class Loaded:
     instance: Plugin | None = None
     context: PluginContext | None = None
     commands: dict[str, tuple[str, str]] = field(default_factory=dict)     # name -> (description, method)
+    fullmatches: dict[str, tuple[str, str]] = field(default_factory=dict)
+    patterns: list[Pattern] = field(default_factory=list)
     notices: dict[str, str] = field(default_factory=dict)                   # type -> method
     tools: dict[str, tuple[str, type[BaseModel], str]] = field(default_factory=dict)
     backgrounds: list[Background] = field(default_factory=list)
     errors: deque = field(default_factory=lambda: deque(maxlen=ERROR_LIMIT))
     ready: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+@dataclass(frozen=True)
+class Pattern:
+    expression: re.Pattern[str]
+    description: str
+    method: str
+    priority: int
+
+
+@dataclass(frozen=True)
+class Matched:
+    record: Loaded
+    label: str
+    method: str
+    arguments: tuple = ()
 
 
 def _arguments(tool: str, function: Callable) -> type[BaseModel]:
@@ -186,6 +205,8 @@ class PluginHost:
         self.available: dict[str, list[dict]] = {}
         self.discovery_errors: list[str] = []
         self.commands: dict[str, str] = {}
+        self.fullmatches: dict[str, str] = {}
+        self.patterns: dict[str, str] = {}
         self.tool_owner: dict[str, str] = {}
         self.tasks: dict[asyncio.Task, str] = {}
         self.closing = False
@@ -251,6 +272,15 @@ class PluginHost:
                 if mark[1] in self.commands or mark[1] in record.commands:
                     raise ValueError(f"命令 /{mark[1]} 已由插件 {self.commands.get(mark[1], record.name)} 注册")
                 record.commands[mark[1]] = (mark[2], attribute)
+            elif mark[0] == "fullmatch":
+                if mark[1] in self.fullmatches or mark[1] in record.fullmatches:
+                    raise ValueError(f"全文规则 {mark[1]!r} 已注册")
+                record.fullmatches[mark[1]] = (mark[2], attribute)
+            elif mark[0] == "regex":
+                if mark[1].pattern in self.patterns or any(
+                        item.expression.pattern == mark[1].pattern for item in record.patterns):
+                    raise ValueError(f"正则规则 {mark[1].pattern!r} 已注册")
+                record.patterns.append(Pattern(mark[1], mark[2], attribute, mark[3]))
             elif mark[0] == "notice":
                 if mark[1] in record.notices:
                     raise ValueError(f"通知 {mark[1]} 在本插件重复登记")
@@ -267,12 +297,20 @@ class PluginHost:
         record.instance = cls(record.context)
         record.status = "loaded"
         self.commands.update(dict.fromkeys(record.commands, record.name))
+        self.fullmatches.update(dict.fromkeys(record.fullmatches, record.name))
+        self.patterns.update(dict.fromkeys((item.expression.pattern for item in record.patterns), record.name))
         self.tool_owner.update(dict.fromkeys(record.tools, record.name))
 
     def _remove_entries(self, record: Loaded) -> None:
         for name in record.commands:
             if self.commands.get(name) == record.name:
                 del self.commands[name]
+        for text in record.fullmatches:
+            if self.fullmatches.get(text) == record.name:
+                del self.fullmatches[text]
+        for item in record.patterns:
+            if self.patterns.get(item.expression.pattern) == record.name:
+                del self.patterns[item.expression.pattern]
         for name in record.tools:
             if self.tool_owner.get(name) == record.name:
                 del self.tool_owner[name]
@@ -307,35 +345,54 @@ class PluginHost:
     def scene_timezone(self, scene: str) -> str:
         return self.config.scene_timezone(scene)
 
+    def _active(self, plugin: str, scene: str | None = None) -> Loaded:
+        record = self.plugins[plugin]
+        if scene is not None and scene not in record.scenes:
+            raise PermissionError(f"插件 {plugin} 未在场景 {scene} 启用")
+        if self.closing or record.status not in {"loaded", "running"}:
+            raise RuntimeError(f"插件 {plugin} 未处于可运行状态：{record.status}")
+        return record
+
+    async def get_kv(self, plugin: str, key: str, default: JsonValue) -> JsonValue:
+        return PluginKV(self._active(plugin).context.data_dir).get(key, default)
+
+    async def set_kv(self, plugin: str, key: str, value: JsonValue) -> None:
+        PluginKV(self._active(plugin).context.data_dir).set(key, value)
+
+    async def delete_kv(self, plugin: str, key: str) -> bool:
+        return PluginKV(self._active(plugin).context.data_dir).delete(key)
+
     async def send_text(self, plugin: str, scene: str, text: str, reply_to: str | None) -> Sent:
         return await self.send_parts(plugin, scene, [Text(text)], reply_to)
 
     async def send_parts(self, plugin: str, scene: str, parts: Sequence[Content], reply_to: str | None) -> Sent:
+        self._active(plugin, scene)
         if self.runtime is None:
             raise RuntimeError("插件宿主尚未接入运行中的场景")
-        return await self.runtime.chats[scene].send_plugin_content(plugin, parts, reply_to=reply_to)
+        safe_parts = [Text(self.redact(plugin, part.text)) if isinstance(part, Text)
+                      else Image(part.data, self.redact(plugin, part.description)) if isinstance(part, Image)
+                      else part for part in parts]
+        return await self.runtime.chats[scene].send_plugin_content(plugin, safe_parts, reply_to=reply_to)
 
     def emit_event(self, plugin: str, scene: str, text: str) -> None:
+        self._active(plugin, scene)
         if self.runtime is None:
             raise RuntimeError("插件宿主尚未接入运行中的场景")
         now = datetime.fromtimestamp(self.now(), ZoneInfo(self.scene_timezone(scene)))
         content = Template((PROMPTS / "next_plugin_event.md").read_text(encoding="utf-8")).substitute(
-            plugin=plugin, time=now.isoformat(timespec="seconds"), text=text.strip()).strip()
+            plugin=plugin, time=now.isoformat(timespec="seconds"), text=self.redact(plugin, text.strip())).strip()
         self.runtime.store.add_plugin_event(scene, plugin, "event", content)
         self.runtime.runners[scene].changed.set()
         self._notify()
 
-    def recent_messages(self, scene: str, limit: int) -> list[ChatMessage]:
+    def recent_messages(self, plugin: str, scene: str, limit: int) -> list[ChatMessage]:
+        self._active(plugin, scene)
         if self.runtime is None:
             raise RuntimeError("插件宿主尚未接入运行中的场景")
         return self.runtime.store.recent(scene, limit)
 
     async def memory(self, plugin: str, scene: str, arguments: dict) -> str:
-        record = self.plugins[plugin]
-        if scene not in record.scenes:
-            raise PermissionError(f"插件 {plugin} 未在场景 {scene} 启用")
-        if self.closing or record.status not in {"loaded", "running"}:
-            raise RuntimeError(f"插件 {plugin} 未处于可运行状态：{record.status}")
+        self._active(plugin, scene)
         if self.runtime is None:
             raise RuntimeError("插件宿主尚未接入运行中的场景")
         chat = self.runtime.chats[scene]
@@ -394,6 +451,7 @@ class PluginHost:
                    ) -> Callable[[str, dict], Awaitable[str]]:
         async def call(scene: str, arguments: dict) -> str:
             try:
+                self._active(record.name, scene)
                 if record.status != "running":
                     raise RuntimeError(f"插件 {record.name} 未运行：{record.status}；{record.error or '尚未启动或已经停止'}")
                 parsed = model.model_validate(arguments)
@@ -409,22 +467,68 @@ class PluginHost:
             return self.redact(record.name, result)
         return call
 
-    def match_command(self, message: ChatMessage, other_bots: tuple[str, ...]) -> tuple[Loaded, str, str] | None:
-        if message.is_self or message.sender.uid in other_bots:
+    def match_message(self, message: ChatMessage, other_bots: tuple[str, ...]) -> Matched | None:
+        if (self.closing or message.is_self or message.sender.uid in other_bots
+                or message.sender.uid in self.config.scene_config(message.scene).permissions.blacklist):
             return None
-        text = "".join(segment.data["text"] for segment in message.segments if segment.type == "text").strip()
+        # Only transport prefixes may precede text. Media/other mentions are not invisible glue.
+        pieces = []
+        started = False
+        for segment in message.segments:
+            if segment.type == "text":
+                pieces.append(segment.data["text"])
+                started = started or bool(segment.data["text"].strip())
+            elif not started and (segment.type == "reply" or
+                                  (segment.type == "at" and str(segment.data["qq"]) == self.bot_qq)):
+                continue
+            else:
+                return None
+        text = "".join(pieces).strip()
+        eligible = {name: item for name, item in self.plugins.items()
+                    if item.status in {"loaded", "running"} and message.scene in item.scenes}
         match = re.fullmatch(r"/(\S+)(?:\s+(.*))?", text, re.DOTALL)
-        if match is None or match[1] not in self.commands:
-            return None
-        record = self.plugins[self.commands[match[1]]]
-        if record.status not in {"loaded", "running"} or message.scene not in record.scenes:
-            return None
-        return record, match[1], (match[2] or "").strip()
+        if match is not None and (record := eligible.get(self.commands.get(match[1]))) is not None:
+            return Matched(record, f"命令 /{match[1]}", record.commands[match[1]][1], ((match[2] or "").strip(),))
+        if (record := eligible.get(self.fullmatches.get(text))) is not None:
+            return Matched(record, f"全文 {text!r}", record.fullmatches[text][1])
+        patterns = sorted(((record, item) for record in eligible.values() for item in record.patterns),
+                          key=lambda pair: (-pair[1].priority, pair[0].name, pair[1].method))
+        for record, item in patterns:
+            if (match := item.expression.fullmatch(text)) is not None:
+                return Matched(record, f"正则 {item.expression.pattern!r}", item.method, (match,))
+        return None
 
-    def dispatch_command(self, message: ChatMessage, matched: tuple[Loaded, str, str]) -> None:
-        record, name, args = matched
-        method = getattr(record.instance, record.commands[name][1])
-        self._dispatch(record, f"命令 /{name}", method, Invocation(record.context, message.scene, message), args)
+    def message_report(self, message: ChatMessage, matched: Matched, result: str) -> str:
+        now = datetime.fromtimestamp(self.now(), ZoneInfo(self.scene_timezone(message.scene)))
+        return Template((PROMPTS / "next_plugin_handled.md").read_text(encoding="utf-8")).substitute(
+            plugin=matched.record.name, time=now.isoformat(timespec="seconds"),
+            message_id=message.platform_message_id, qq=message.sender.uid,
+            rule=self.redact(matched.record.name, matched.label),
+            result=self.redact(matched.record.name, result)).strip()
+
+    def dispatch_message(self, message: ChatMessage, matched: Matched) -> None:
+        record = matched.record
+
+        async def invoke() -> None:
+            result = "处理被中断；未确认完成。"
+            try:
+                await record.ready.wait()
+                self._active(record.name, message.scene)
+                response = await getattr(record.instance, matched.method)(
+                    Invocation(record.context, message.scene, message), *matched.arguments)
+                if response is not None and not isinstance(response, str):
+                    raise TypeError(f"插件消息处理器须返回说明文本或 None，实际 {type(response).__name__}")
+                result = "处理结束。" + ("未提供额外结果说明。" if response is None else response)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                result = "处理失败：" + self._record(record, matched.label, error)
+            finally:
+                self.runtime.store.add_plugin_event(
+                    message.scene, record.name, "reply", self.message_report(message, matched, result))
+                self._notify()
+
+        self._spawn(record, matched.label, invoke())
 
     def _dispatch(self, record: Loaded, where: str, method: Callable, *arguments: object) -> None:
         async def invoke() -> None:
@@ -515,6 +619,11 @@ class PluginHost:
                 "scenes": list(record.scenes),
                 "commands": [{"name": name, "description": description}
                              for name, (description, _) in record.commands.items()],
+                "rules": ([{"kind": "fullmatch", "pattern": text, "description": description}
+                           for text, (description, _) in record.fullmatches.items()]
+                          + [{"kind": "regex", "pattern": item.expression.pattern,
+                              "description": item.description, "priority": item.priority}
+                             for item in record.patterns]),
                 "notices": sorted(record.notices),
                 "tools": [{"name": name, "description": description}
                           for name, (description, _, _) in record.tools.items()],

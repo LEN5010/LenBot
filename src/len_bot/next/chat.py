@@ -493,7 +493,7 @@ class Chat:
         if not terms:
             return None
         return Template((PROMPTS / "next_jargon_context.md").read_text()).substitute(
-            jargon=encode([{"词": item["term"], "含义": item["meaning"]} for item in terms]),
+            jargon=encode([{"词": item["term"], "含义": item["meaning"], "来源": item["source"]} for item in terms]),
         )
 
     async def compact_now(self) -> dict:

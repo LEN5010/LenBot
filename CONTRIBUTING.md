@@ -22,7 +22,7 @@
 - 沿真实消息路径定位问题；新增表、状态或层级前说明现有结构不足。不写兜底、静默降级或未经批准的重试。
 - 测试范围遵循 AGENTS.md；构建、实际执行、文件生成与平台送达分开记录。缺陷和变更分别使用[缺陷模板](.github/ISSUE_TEMPLATE/bug.md)、[PR 模板](.github/PULL_REQUEST_TEMPLATE.md)。
 - 首页只放概览；操作集中在 [deploy/current](deploy/current/README.md)。移动说明时同步链接，不重复复制长命令。
-- 本机设计在 `docs/roadmap/`，阶段状态只在 M21；当前观察、原错与未确认项写 `docs/iteration.md`，历史移入 `docs/archive/`。外部安装必需的信息不能只放本机文档。
+- 本机设计在 `docs/roadmap/`，未完成项只在 M21，近期观察写 `docs/iteration.md`。已完成内容简述，过时计划与重复操作说明删除；外部安装必需的信息不能只放本机文档。
 - `docs/`、个人角色、真实配置、数据库、凭据和构建产物不进 Git。提交、推送、合并、发布与部署分别服从维护者授权。
 
 ## 构建与提交

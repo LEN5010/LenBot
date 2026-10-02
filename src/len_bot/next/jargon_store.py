@@ -239,6 +239,8 @@ class JargonStore:
         ).fetchone())
 
     def update(self, scene: str, id: int, meaning: str | None, status: str) -> dict | None:
+        if status == "pending":
+            meaning = None
         if status == "adopted" and (meaning is None or not meaning.strip()):
             raise ValueError("Adopted jargon requires a nonblank effective meaning")
         if meaning is not None and not meaning.strip():
@@ -257,11 +259,12 @@ class JargonStore:
 
     def matches(self, scene: str, texts: list[str], limit: int = 10) -> list[dict]:
         rows = self.db.execute(
-            "SELECT term,meaning FROM jargon WHERE scene=? AND status='adopted' "
-            "AND meaning IS NOT NULL AND meaning!=''", (scene,),
+            "SELECT term,CASE WHEN status='adopted' THEN meaning ELSE latest_meaning END AS meaning,"
+            "CASE WHEN status='adopted' THEN '人工修订' ELSE '自动推断' END AS source "
+            "FROM jargon WHERE scene=? AND status!='rejected'", (scene,),
         )
-        found = [{"term": row["term"], "meaning": row["meaning"]} for row in rows
-                 if any(row["term"] in text for text in texts)]
+        found = [dict(row) for row in rows if row["meaning"]
+                 and any(row["term"] in text for text in texts)]
         return sorted(found, key=lambda item: (-len(item["term"]), item["term"]))[:limit]
 
     def context(self, scene: str, sample_seq: int,

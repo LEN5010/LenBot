@@ -291,6 +291,98 @@
           "count": 2
         }
       ]
+    },
+    {
+      "id": "plugin-direct-result-not-new-request",
+      "set": "coherence",
+      "expect": [
+        "联调前提：配置无模型的全文插件，群友发送今日直播后保存接管、直接发送回执和处理结束；再发本例追问。现有隔离回放不加载插件，单独跑本例不证明此覆盖。",
+        "触发插件的原消息不新开模型轮；即使在进行中轮次被读取，也明确已有插件接管，不重复替插件查询或代发。",
+        "后续准确解释真实结果；sent、failed、unconfirmed、无回复结束和执行异常分别观察，不把处理结束说成平台收到。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "synthetic-plugin-direct-result-not-new-request",
+            "time": 1790001400,
+            "sender": {
+              "nickname": "合成甲",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "刚才今日直播这个命令发生了什么，发出来了吗？"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "jargon-automatic-with-human-correction",
+      "set": "coherence",
+      "expect": [
+        "联调前提：黑话候选pending且latest_meaning为本群早退，尚无人审核；本例原话应命中并供给自动推断。再分别设置人工固定解释和禁用，对比实际上下文。现有隔离回放不会初始化这些候选。",
+        "自动词义不称为已被群友确认的事实；当前用户明确纠正优先于自动推断。",
+        "人工固定解释优先，不被新推断改写；禁用条目不进入上下文；无推断的自动条目也不供给。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "synthetic-jargon-automatic-with-human-correction",
+            "time": 1790001400,
+            "sender": {
+              "nickname": "合成甲",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "我们这儿“早鸟”是说提早到场的人，不是提前离开。你刚才理解反了。"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        }
+      ]
     }
   ]
 }

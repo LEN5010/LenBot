@@ -24,14 +24,11 @@ labels: []
 2.
 3.
 
-## 脱敏日志与来源 ID
+## 脱敏日志
 
 只贴必要片段。**不要贴密钥、完整群历史或无关个人信息。**
 
-- event_id / episode_id：
-- call_id / tool_call_id：
-- job_id / revision：
-- action_id / receipt：
+附错误原文和相关消息／任务即可，不要求填写内部编号清单。
 
 ## 已知范围与未确认
 
