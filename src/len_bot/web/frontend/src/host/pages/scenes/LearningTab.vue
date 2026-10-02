@@ -34,6 +34,8 @@ async function submitConfig() {
 
 // Review lists.
 const filter = ref('pending')
+const jargonFilter = ref('pending')
+const selectedFilter = kind => kind === 'jargon' ? jargonFilter.value : filter.value
 const kinds = {
   expressions: { title: '说话方式', path: `${root}/learning/expressions`, key: 'status' },
   jargon: { title: '黑话', path: `${root}/learning/jargon/terms`, key: 'status' },
@@ -42,7 +44,7 @@ const kinds = {
 const lists = {}
 for (const [kind, item] of Object.entries(kinds)) {
   lists[kind] = useResource(async (offset = 0, discardEdits = false) => ({
-    ...(await api(`${item.path}?${new URLSearchParams({ [item.key]: filter.value, offset, limit: 20,
+    ...(await api(`${item.path}?${new URLSearchParams({ [item.key]: selectedFilter(kind), offset, limit: 20,
       ...(kind === 'stickers' && filter.value === 'pending' ? { status: 'complete' } : {}) })}`)), discardEdits,
   }))
 }
@@ -71,10 +73,16 @@ function changePage(kind, offset) {
   if (reviewDirty(kind) && !window.confirm('放弃这一页没保存的修改？')) return
   lists[kind].reload(offset, true)
 }
+function changeJargonFilter(value) {
+  if (value === jargonFilter.value) return
+  if (reviewDirty('jargon') && !window.confirm('放弃黑话中没保存的修改？')) return
+  jargonFilter.value = value
+  lists.jargon.reload(0, true)
+}
 async function decide(kind, item, decision) {
   const edit = editOf(kind, item)
   const body = kind === 'expressions' ? { ...edit, status: decision }
-    : kind === 'jargon' ? { meaning: edit.meaning || null, status: decision }
+    : kind === 'jargon' ? { meaning: decision === 'pending' ? null : edit.meaning || null, status: decision }
     : { description: edit.description || null, text: edit.text || null, emotions: edit.emotions, tags: edit.tags, review: decision }
   const done = await review.run(() => api(`${kinds[kind].path}/${item.id}`, { method: 'PUT', body: JSON.stringify(body) }))
   if (done) {
@@ -114,7 +122,7 @@ async function learnNow() {
 <template>
   <div class="page-stack">
     <ErrorNote v-if="config.error.value" title="读取学习设置失败" :error="config.error.value" />
-    <SettingSection v-if="config.data.value" title="学习" description="Bot 从群聊里学说话方式、黑话和表情，学到的内容经你审核后使用。"
+    <SettingSection v-if="config.data.value" title="学习" description="黑话推断后自动使用，可随时纠正或禁用。说话方式按自动采用开关生效，收集的表情仍需人工采用。"
       :dirty="configDirty" :saving="saveConfig.busy.value" :error="saveConfig.error.value" @save="submitConfig">
       <v-switch :model-value="draft !== null" label="开启学习" @update:model-value="toggleLearning" />
       <v-alert v-if="draft && noLearner" type="warning" variant="tonal">
@@ -123,7 +131,7 @@ async function learnNow() {
         <div class="form-grid">
           <v-switch v-model="draft.extract" label="学说话方式" />
           <v-switch v-model="draft.jargon_extract" label="学黑话" />
-          <v-switch v-model="draft.collect_stickers" label="收集表情" />
+          <v-switch v-model="draft.collect_stickers" label="学习群聊表情包" hint="关闭后不再采集或使用群聊候选；角色自带表情仍可发送。保存后重启生效。" persistent-hint />
           <v-switch v-model="draft.reply_effects" label="观察群友对 Bot 发言的反应" hint="主动开话题需要打开这一项" persistent-hint />
         </div>
         <v-switch v-model="draft.auto_adopt" label="学到的说话方式不经审核直接使用" />
@@ -140,13 +148,19 @@ async function learnNow() {
       <div class="review-head">
         <h2>学到的内容</h2>
         <v-btn-toggle :model-value="filter" @update:model-value="changeFilter" mandatory density="compact" color="primary">
-          <v-btn value="pending">待审核</v-btn><v-btn value="adopted">已采用</v-btn><v-btn value="rejected">不要的</v-btn></v-btn-toggle>
+          <v-btn value="pending">表达／表情待审核</v-btn><v-btn value="adopted">已采用</v-btn><v-btn value="rejected">不要的</v-btn></v-btn-toggle>
         <v-btn v-if="learner.data.value?.enabled" variant="text" :loading="run.busy.value" @click="learnNow">现在学一次</v-btn>
       </div>
       <ErrorNote v-if="review.error.value" title="没有保存成功" :error="review.error.value" />
       <ErrorNote v-if="run.error.value" title="没有开始学习" :error="run.error.value" />
       <div v-for="(item, kind) in kinds" :key="kind" class="review-group">
         <h3>{{ item.title }}</h3>
+        <template v-if="kind === 'jargon'">
+          <p class="muted">有推断词义即自动用于上下文，无需审核；尚无词义的继续积累用例。人工固定后不被后续推断覆盖。</p>
+          <v-btn-toggle :model-value="jargonFilter" @update:model-value="changeJargonFilter" mandatory density="compact" color="primary">
+            <v-btn value="pending">自动学习</v-btn><v-btn value="adopted">人工固定</v-btn><v-btn value="rejected">已禁用</v-btn>
+          </v-btn-toggle>
+        </template>
         <ErrorNote v-if="lists[kind].error.value" :title="`读取${item.title}失败`" :error="lists[kind].error.value" />
         <p v-if="lists[kind].data.value && !lists[kind].data.value.items.length" class="muted">没有内容</p>
         <article v-for="entry in lists[kind].data.value?.items || []" :key="entry.id" class="review-card">
@@ -158,7 +172,8 @@ async function learnNow() {
           </template>
           <template v-else-if="kind === 'jargon'">
             <p><strong>{{ entry.term }}</strong> <span class="muted">出现 {{ entry.count }} 次</span></p>
-            <v-text-field v-model="editOf(kind, entry).meaning" label="意思" />
+            <p class="muted">最新推断：{{ entry.latest_meaning || '尚未推断，继续积累用例' }}</p>
+            <v-text-field v-model="editOf(kind, entry).meaning" label="修订词义（保存后人工固定）" />
           </template>
           <template v-else>
             <div class="sticker">
@@ -171,10 +186,10 @@ async function learnNow() {
             </div>
           </template>
           <div class="review-actions">
-            <v-btn v-if="filter !== 'adopted'" color="primary" variant="tonal" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'adopted')">采用</v-btn>
-            <v-btn v-if="filter === 'adopted'" variant="tonal" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'adopted')">保存修改</v-btn>
-            <v-btn v-if="filter !== 'rejected'" variant="text" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'rejected')">不要</v-btn>
-            <v-btn v-if="filter !== 'pending'" variant="text" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'pending')">放回待审核</v-btn>
+            <v-btn v-if="selectedFilter(kind) !== 'adopted'" color="primary" variant="tonal" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'adopted')">{{ kind === 'jargon' ? '保存并固定词义' : '采用' }}</v-btn>
+            <v-btn v-if="selectedFilter(kind) === 'adopted'" variant="tonal" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'adopted')">保存修改</v-btn>
+            <v-btn v-if="selectedFilter(kind) !== 'rejected'" variant="text" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'rejected')">{{ kind === 'jargon' ? '禁用' : '不要' }}</v-btn>
+            <v-btn v-if="selectedFilter(kind) !== 'pending'" variant="text" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'pending')">{{ kind === 'jargon' ? '恢复自动词义' : '放回待审核' }}</v-btn>
             <v-btn v-if="kind === 'expressions' && filter === 'adopted'" variant="text" size="small" @click="openExample(entry)">加到角色样例</v-btn>
           </div>
           <DevOnly label="原始数据"><pre>{{ JSON.stringify(entry, null, 2) }}</pre></DevOnly>

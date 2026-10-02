@@ -14,6 +14,8 @@ from pathlib import Path
 import re
 from typing import Literal, Protocol
 
+from pydantic import JsonValue
+
 from .messages import ChatMessage, Notice
 
 
@@ -26,6 +28,18 @@ def command(name: str, description: str):
     if not re.fullmatch(r"[^\s/]{1,32}", name):
         raise ValueError(f"命令名必须是 1–32 个非空白字符且不含 /：{name!r}")
     return _mark(("command", name, description))
+
+
+def fullmatch(text: str, description: str):
+    """Plain-text exact match after outer whitespace; handler ``(self, ctx)``."""
+    if not text or text.strip() != text:
+        raise ValueError("全文匹配须为非空且不带首尾空白的文本")
+    return _mark(("fullmatch", text, description))
+
+
+def regex(pattern: str, description: str, *, priority: int = 0):
+    """Full regex match; handler ``(self, ctx, match: re.Match[str])``."""
+    return _mark(("regex", re.compile(pattern), description, priority))
 
 
 def on_notice(notice: str):
@@ -99,7 +113,10 @@ class HostPort(Protocol):
     async def send_text(self, plugin: str, scene: str, text: str, reply_to: str | None) -> Sent: ...
     async def send_parts(self, plugin: str, scene: str, parts: Sequence[Content], reply_to: str | None) -> Sent: ...
     def emit_event(self, plugin: str, scene: str, text: str) -> None: ...
-    def recent_messages(self, scene: str, limit: int) -> list[ChatMessage]: ...
+    def recent_messages(self, plugin: str, scene: str, limit: int) -> list[ChatMessage]: ...
+    async def get_kv(self, plugin: str, key: str, default: JsonValue) -> JsonValue: ...
+    async def set_kv(self, plugin: str, key: str, value: JsonValue) -> None: ...
+    async def delete_kv(self, plugin: str, key: str) -> bool: ...
     async def memory(self, plugin: str, scene: str, arguments: dict) -> str: ...
     def start_task(self, plugin: str, name: str, coroutine: Coroutine) -> asyncio.Task: ...
     def report_error(self, plugin: str, where: str, error: Exception) -> str: ...
@@ -162,7 +179,17 @@ class PluginContext:
     def recent_messages(self, scene: str, limit: int = 20) -> list[ChatMessage]:
         if not 1 <= limit <= 100:
             raise ValueError("limit 必须在 1 到 100 之间")
-        return self.host.recent_messages(self._scene(scene), limit)
+        return self.host.recent_messages(self.name, self._scene(scene), limit)
+
+    async def get_kv(self, key: str, default: JsonValue = None) -> JsonValue:
+        """Read plugin-local business state, never runtime configuration."""
+        return await self.host.get_kv(self.name, key, default)
+
+    async def set_kv(self, key: str, value: JsonValue) -> None:
+        await self.host.set_kv(self.name, key, value)
+
+    async def delete_kv(self, key: str) -> bool:
+        return await self.host.delete_kv(self.name, key)
 
     async def memory(self, scene: str, arguments: dict) -> str:
         """Use the scene's permitted memory service; public content remains read-only."""
@@ -189,6 +216,18 @@ class Invocation:
 
     def now(self) -> float:
         return self.plugin.now()
+
+    async def get_kv(self, key: str, default: JsonValue = None) -> JsonValue:
+        self.plugin._scene(self.scene)
+        return await self.plugin.get_kv(key, default)
+
+    async def set_kv(self, key: str, value: JsonValue) -> None:
+        self.plugin._scene(self.scene)
+        await self.plugin.set_kv(key, value)
+
+    async def delete_kv(self, key: str) -> bool:
+        self.plugin._scene(self.scene)
+        return await self.plugin.delete_kv(key)
 
     async def reply(self, text: str) -> Sent:
         """Send in this scene; a command reply quotes the command message."""

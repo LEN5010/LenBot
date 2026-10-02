@@ -253,7 +253,7 @@ class SceneRunner:
         return self.receive_message(message, raw, ignore_other_scenes=ignore_other_scenes)
 
     def receive_message(self, message: ChatMessage, raw: dict, *, ignore_other_scenes: bool = False,
-                        wake: bool = True) -> dict:
+                        wake: bool = True, plugin_claim: tuple[str, str] | None = None) -> dict:
         """Accept an already parsed message; own replies remain scoped to this scene.
 
         ``wake=False`` stores a plugin command without offering a wake; it still
@@ -300,6 +300,7 @@ class SceneRunner:
         snapshot = asdict(state) if state != self.state else None
         self.store.enqueue(
             message, raw, now, attention_state=snapshot,
+            plugin_claim=plugin_claim,
             collect_stickers=(not blocked and self.config.learning is not None and self.config.learning.collect_stickers
                               and not message.is_self and message.sender.uid != self.config.bot_qq
                               and message.sender.uid not in self.settings.other_bot_qqs),
@@ -561,10 +562,11 @@ class SceneRunner:
         if self.quiet_period(self.now()) is None:
             if self.audio_ready():
                 self.chat.turn_channels.add("audio")
-            events = self.store.pending_plugin_events(self.config.scene)
-            if events:
-                self.chat.turn_channels.add("plugin")
-                self.store.append_plugin_events(self.config.scene, events, turn_id=turn_id)
+        events = self.store.pending_plugin_events(
+            self.config.scene, include_events=self.quiet_period(self.now()) is None)
+        if events:
+            self.chat.turn_channels.add("plugin")
+            self.store.append_plugin_events(self.config.scene, events, turn_id=turn_id)
         self.state = state
         return True
 
@@ -688,7 +690,9 @@ class SceneRunner:
         ).strip()
         pending = self.store.pending_messages(self.config.scene)
         batch = self.batch(pending, "[安静前未触发唤醒的消息]") if pending else None
-        await self.turn("proactive", batch=batch, channels={"proactive"},
+        events = self.store.pending_plugin_events(self.config.scene)
+        await self.turn("proactive", batch=batch, channels={"proactive", "plugin"} if events else {"proactive"},
+                        plugin_events=events or None,
                         proactive=(text, local.date().isoformat(), idle_since))
 
     async def run(self) -> None:
@@ -708,7 +712,7 @@ class SceneRunner:
                 quiet = self.quiet_period(self.now()) is not None
                 notices = (self.chat.tasks.records.pending_notices(self.config.scene)
                            if self.chat.tasks is not None and not quiet else [])
-                events = [] if quiet else self.store.pending_plugin_events(self.config.scene)
+                events = self.store.pending_plugin_events(self.config.scene, include_events=not quiet)
                 audio = not quiet and self.audio_ready()
                 channel = ("system" if scheduled or notices or events or audio
                            else self.state.pending.channel if self.state.pending else "resume")

@@ -241,10 +241,12 @@ class NetworkRuntime:
                         "platform_message_id": message.platform_message_id})
             return
         blocked = message.sender.uid in runner.config.permissions.blacklist
-        command = (None if self.plugins is None or blocked else
-                   self.plugins.match_command(message, tuple(runner.settings.other_bot_qqs)))
+        matched = (None if self.plugins is None or blocked else
+                   self.plugins.match_message(message, tuple(runner.settings.other_bot_qqs)))
+        claim = (None if matched is None else
+                 (matched.record.name, self.plugins.message_report(message, matched, "已接管，处理尚未结束。")))
         try:
-            receipt = runner.receive_message(message, raw, wake=command is None)
+            receipt = runner.receive_message(message, raw, wake=matched is None, plugin_claim=claim)
         except sqlite3.Error as error:
             self.storage_error = error
             self.stop()
@@ -256,9 +258,9 @@ class NetworkRuntime:
                 and receipt["status"] != "duplicate" and not message.is_self and not blocked
                 and any(segment.type == "image" for segment in message.segments)):
             self.sticker_collection.request(message.scene)
-        if command is not None and receipt["status"] != "duplicate":
-            self.plugins.dispatch_command(message, command)
-            receipt["plugin_command"] = f"{command[0].name} /{command[1]}"
+        if matched is not None and receipt["status"] != "duplicate":
+            self.plugins.dispatch_message(message, matched)
+            receipt["plugin_handler"] = f"{matched.record.name} {matched.label}"
         if receipt["status"] != "duplicate":
             self.audio.request(message.scene)
         self._emit({"type": "receipt", **receipt, "scene": message.scene})

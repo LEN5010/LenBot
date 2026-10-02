@@ -635,7 +635,6 @@ class Store:
         reviews = {}
         for kind, query in (
             ("expressions", "SELECT scene,COUNT(*) FROM expressions WHERE status='pending'"),
-            ("jargon", "SELECT scene,COUNT(*) FROM jargon WHERE status='pending'"),
             ("stickers", "SELECT scene,COUNT(*) FROM sticker_candidates "
                          "WHERE review='pending' AND status='complete'"),
         ):
@@ -733,10 +732,17 @@ class Store:
 
     def enqueue(self, message: ChatMessage, raw: dict, received_at: float,
                 *, attention_state: dict | None = None,
-                collect_stickers: bool = False, transcribe_audio: bool = False) -> int:
+                collect_stickers: bool = False, transcribe_audio: bool = False,
+                plugin_claim: tuple[str, str] | None = None) -> int:
         """Store one received platform message without adding it to the mind yet."""
         with self.db:
             seq = self._save_message(message, raw, received_at)
+            if plugin_claim is not None:
+                plugin, content = plugin_claim
+                self.db.execute(
+                    "INSERT INTO plugin_events(scene,plugin,kind,content,created) VALUES (?,?,'reply',?,?)",
+                    (message.scene, plugin, content, received_at),
+                )
             if transcribe_audio:
                 for index, _ in enumerate((part for part in message.segments if part.type == "record"), 1):
                     self.db.execute("INSERT INTO audio_cache(scene,platform_id,audio_index,status,created,updated) "
@@ -1397,9 +1403,10 @@ class Store:
                 (scene, plugin, kind, content, self.now()),
             ).lastrowid
 
-    def pending_plugin_events(self, scene: str) -> list[tuple[int, str]]:
+    def pending_plugin_events(self, scene: str, *, include_events: bool = True) -> list[tuple[int, str]]:
         return [(row[0], row[1]) for row in self.db.execute(
-            "SELECT id,content FROM plugin_events WHERE scene=? AND delivered_at IS NULL ORDER BY id", (scene,))]
+            "SELECT id,content FROM plugin_events WHERE scene=? AND delivered_at IS NULL "
+            "AND (? OR kind='reply') ORDER BY id", (scene, include_events))]
 
     def plugin_wake_pending(self, scene: str) -> bool:
         """Only ``event`` rows wake the mind; ``reply`` rows wait for the next turn."""

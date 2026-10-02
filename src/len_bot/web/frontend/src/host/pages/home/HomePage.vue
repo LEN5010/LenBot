@@ -59,7 +59,7 @@ const todo = computed(() => {
       to: { name: 'host-logs', query: { scene } }, action: '查看' })
   }
   for (const [scene, reviews] of Object.entries(day.value.pending_reviews)) {
-    const parts = [['expressions', '条表达'], ['jargon', '个黑话'], ['stickers', '张表情']]
+    const parts = [['expressions', '条表达'], ['stickers', '张表情']]
       .filter(([key]) => reviews[key]).map(([key, unit]) => `${reviews[key]} ${unit}`)
     items.push({ key: `review:${scene}`, text: `${sceneName(scene)} 新学到 ${parts.join('、')}，等你审核`,
       to: { name: 'host-scenes', query: { scene, tab: 'learning' } }, action: '去审核' })

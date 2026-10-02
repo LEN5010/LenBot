@@ -116,7 +116,7 @@ const errorOf = part => active.value === part ? save.error.value : null
   <template v-if="snapshot && sceneDraft !== null">
     <ErrorNote v-for="error in [...snapshot.discovery_errors, ...snapshot.running.discovery_errors]" :key="error" title="有插件目录读不了" :error="error" />
 
-    <SettingSection :title="`${sceneName(scene)} 用哪些插件`" description="插件提供以 / 开头的命令，比如 /时间。先在下面加载插件，再在这里为本群打开。"
+    <SettingSection :title="`${sceneName(scene)} 用哪些插件`" description="插件可提供命令、全文／正则匹配、自动播报和模型工具。先在下面加载插件，再在这里为本群打开。"
       :dirty="sceneDirty" :saving="save.busy.value && active === 'scene'" :error="errorOf('scene')" @save="saveScene">
       <p v-if="!loaded.length" class="muted">还没有加载任何插件。</p>
       <div class="choice">
@@ -139,6 +139,11 @@ const errorOf = part => active.value === part ? save.error.value : null
         有多个目录提供了同名插件，需要删掉多余的一份才能加载。</v-alert>
       <ul v-if="running[name]?.commands.length" class="commands">
         <li v-for="item in running[name].commands" :key="item.name"><code>/{{ item.name }}</code> {{ item.description }}</li>
+      </ul>
+      <ul v-if="running[name]?.rules.length" class="commands">
+        <li v-for="item in running[name].rules" :key="`${item.kind}:${item.pattern}`">
+          {{ item.kind === 'fullmatch' ? '全文' : '正则' }} <code>{{ item.pattern }}</code> {{ item.description }}（直接处理，不调用模型）
+        </li>
       </ul>
       <details v-if="running[name]?.errors.length" class="recent-errors">
         <summary>最近报错 {{ running[name].errors.length }} 次</summary>

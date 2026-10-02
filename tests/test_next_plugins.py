@@ -147,6 +147,59 @@ def test_manifest_name_must_match_directory(tmp_path):
         read_manifest(directory)
 
 
+@pytest.mark.parametrize("decorator", ['fullmatch("今日直播", "日历")', 'regex(r"查看 (?P<name>.+)", "查询")'])
+def test_duplicate_message_rules_fail_plugin_configuration(tmp_path, decorator):
+    extra = tmp_path / "personal"
+    extra.mkdir()
+    for name in ("first", "duplicate"):
+        directory = _copy_clock(extra, name)
+        (directory / "__init__.py").write_text(
+            'from len_bot.next.plugin import Plugin, fullmatch, regex\n'
+            f'class Rules(Plugin):\n    @{decorator}\n'
+            '    async def handle(self, ctx, *args):\n        pass\n', encoding="utf-8")
+    root = _root(tmp_path, {"paths": [str(extra)], "first": {}, "duplicate": {}}, ["first", "duplicate"])
+    host = PluginHost(load_host_config(root), core_tools=CORE)
+    assert host.plugins["first"].status == "loaded"
+    assert host.plugins["duplicate"].status == "failed"
+    assert "已注册" in host.plugins["duplicate"].error
+
+
+@pytest.mark.asyncio
+async def test_stopped_plugin_context_loses_host_capabilities(tmp_path):
+    root = _root(tmp_path, {"clock": {}}, ["clock"])
+    host = PluginHost(load_host_config(root), core_tools=CORE)
+    ctx = host.plugins["clock"].context
+    await host.close()
+    for call in (lambda: ctx.get_kv("counter"), lambda: ctx.set_kv("counter", 1),
+                 lambda: ctx.delete_kv("counter"), lambda: ctx.send("group:80001", "text"),
+                 lambda: ctx.emit_event("group:80001", "event"),
+                 lambda: ctx.memory("group:80001", {"action": "search", "query": "text"})):
+        with pytest.raises(RuntimeError, match="未处于可运行状态"):
+            await call()
+    with pytest.raises(RuntimeError, match="未处于可运行状态"):
+        ctx.recent_messages("group:80001")
+
+
+@pytest.mark.asyncio
+async def test_tool_reference_cannot_execute_in_disabled_scene(tmp_path):
+    extra = tmp_path / "personal"
+    extra.mkdir()
+    directory = _copy_clock(extra, "scoped")
+    (directory / "__init__.py").write_text(
+        'from len_bot.next.plugin import Plugin, tool\n'
+        'class Scoped(Plugin):\n    @tool("scoped_read", "读取")\n'
+        '    async def read(self, ctx) -> str:\n        return "local"\n', encoding="utf-8")
+    root = _root(tmp_path, {"paths": [str(extra)], "scoped": {}}, ["scoped"])
+    host = PluginHost(load_host_config(root), core_tools=CORE)
+    await host.start()
+    reference = host.tools_for("group:80001")[0]
+    try:
+        with pytest.raises(PermissionError, match="未在场景"):
+            await reference.call("private:80002", {})
+    finally:
+        await host.close()
+
+
 @pytest.mark.parametrize(("plugins", "scene_plugins", "message"), [
     (None, ["clock"], "not configured under root plugins"),
     ({"clock": {}}, ["clock", "clock"], "must not repeat"),

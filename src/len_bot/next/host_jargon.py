@@ -26,7 +26,7 @@ class JargonChange(BaseModel):
     @model_validator(mode="after")
     def adopted_meaning(self) -> "JargonChange":
         if self.status == "adopted" and self.meaning is None:
-            raise ValueError("采用黑话前须明确填写有效解释")
+            raise ValueError("人工固定黑话词义时须填写有效解释")
         return self
 
 
