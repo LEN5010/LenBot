@@ -383,6 +383,52 @@
           "count": 1
         }
       ]
+    },
+    {
+      "id": "task-artifact-no-invented-arrangements",
+      "set": "coherence",
+      "expect": [
+        "任务联调前提：在真实容器任务中生成 CSV 与 HTML 并读取交付原件；现有 stdin 回放不执行任务。本例依据成品样例中实际出现的虚构签到规则、材料配发、发布单位保留。",
+        "时间、地点、负责人和人数按原要求及明确更正保留；版式美化不凭空添加主办方、签到时间、设备或材料安排。",
+        "用户指出文件多了未提供事实时沿原任务修改，不新建同目标任务；重新登记更新文件，聊天区分旧版本与新交付。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "task-facts-1",
+            "time": 1790968200,
+            "sender": {
+              "nickname": "活动负责人",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "请把周末活动做成CSV和一页HTML：10月3日9点读书会，社区二楼，小林，12人；10月4日15:30手工课，社区一楼，小陈，10人。按时间排序，手机能看。"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        }
+      ]
     }
   ]
 }

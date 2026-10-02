@@ -445,9 +445,6 @@ class WorkTasks:
 
     def _limits(self, item: Task) -> Limits:
         costs = self.records.call_costs(item.scene, item.id)
-        calls = self.settings.max_calls - len(costs)
-        if calls <= 0:
-            raise ValueError("任务累计模型调用次数已达上限")
         budget = self.settings.max_cost
         if budget is not None:
             binding = self.config.models.roles.worker
@@ -457,7 +454,8 @@ class WorkTasks:
             budget -= sum((Decimal(cost["amount"]) for cost in costs), Decimal(0))
             if budget <= 0:
                 raise ValueError("任务累计模型费用已达上限")
-        return Limits(calls, self.settings.max_request_bytes, self.settings.max_response_bytes, budget)
+        # One proxy belongs to one explicitly started execution; monetary cost stays cumulative.
+        return Limits(self.settings.max_calls, self.settings.max_request_bytes, self.settings.max_response_bytes, budget)
 
     async def recover(self) -> None:
         """Clean interrupted work even when the platform cannot connect."""
