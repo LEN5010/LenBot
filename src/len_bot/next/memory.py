@@ -229,10 +229,7 @@ class MemoryService:
 
     @property
     def actions(self) -> list[str]:
-        common = ["browse", "read", "search", "write", "delete", "history"]
-        if isinstance(self.backend, LocalMemory):
-            common.append("forget")
-        return common
+        return ["browse", "read", "search", "write", "delete", "history", "forget"]
 
     async def search(self, scene: str, query: str, limit: int, *, automatic: bool = False) -> list[dict]:
         if isinstance(self.backend, LocalMemory):
@@ -269,22 +266,25 @@ class MemoryService:
         async with self.write_lock(scene):
             if scene in self.pending_native_tasks:
                 raise ValueError(f"OpenViking 抽取仍在处理：{self.pending_native_tasks[scene]}")
-            if isinstance(self.backend, LocalMemory):
-                if forget:
-                    selected = sorted(set(exclude_records))
-                    self.store.check_message_records(scene, selected)
-                    added = self.jobs.exclude_records(scene, selected)
-                    try:
+            if forget:
+                selected = sorted(set(exclude_records))
+                self.store.check_message_records(scene, selected)
+                added = self.jobs.exclude_records(scene, selected)
+                try:
+                    if isinstance(self.backend, LocalMemory):
                         result = await self.backend.forget(scene, path)
-                    except Exception as error:
-                        raise RuntimeError(
-                            f"已保存 {len(selected)} 条原话的抽取排除；记忆删除失败：{type(error).__name__}: {error}"
-                        ) from error
-                    return {**asdict(result), "excluded_records": selected, "new_exclusions": added}
+                    else:
+                        result = await self.backend.forget(scene, path, [
+                            self.store.read_message(scene, record).id for record in selected
+                        ])
+                except Exception as error:
+                    raise RuntimeError(
+                        f"已保存 {len(selected)} 条原话的抽取排除；记忆遗忘未完成：{type(error).__name__}: {error}"
+                    ) from error
+                return {**asdict(result), "excluded_records": selected, "new_exclusions": added}
+            if isinstance(self.backend, LocalMemory):
                 result = await self.backend.delete(scene, path, reason)
             else:
-                if forget:
-                    raise ValueError("当前 OpenViking 接口未实现可访问历史和派生内容的完整遗忘")
                 result = await self.backend.delete(scene, path)
             return asdict(result)
 

@@ -21,6 +21,7 @@ REQUIRED_SOURCE = (
     'deploy/current/lenbot.service', 'deploy/current/Dockerfile', 'deploy/current/memory-templates.md',
     'deploy/current/services.compose.yaml', 'deploy/current/Dockerfile.openviking',
     'deploy/current/start-asr.sh', 'deploy/current/asr.md',
+    'deploy/current/memory-forget.md', 'deploy/current/openviking-forget.patch',
     'deploy/README.md', 'deploy/current/operations.md', 'CONTRIBUTING.md',
     'docker/next-worker/Dockerfile', 'docker/next-worker/lenbot-extension.ts',
     'docker/next-worker/lenbot-browser.cjs', 'docker/next-worker/Dockerfile.dockerignore',
