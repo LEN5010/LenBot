@@ -55,8 +55,9 @@ class Retention:
         latest = {row[0] for row in db.execute(
             "SELECT MAX(c.id) FROM model_calls c JOIN turns t ON t.id=c.turn_id WHERE c.role='mind' GROUP BY t.scene")}
         rows = [row for row in db.execute(
-            "SELECT c.id,c.request FROM model_calls c JOIN turns t ON t.id=c.turn_id "
-            "WHERE c.ended<? AND t.ended IS NOT NULL AND json_extract(c.request,'$.snapshot_expired_at') IS NULL "
+            "SELECT c.id,c.request FROM model_calls c LEFT JOIN turns t ON t.id=c.turn_id "
+            "WHERE c.ended<? AND (c.turn_id IS NULL OR t.ended IS NOT NULL) "
+            "AND json_extract(c.request,'$.snapshot_expired_at') IS NULL "
             "AND c.id NOT IN (SELECT MAX(c2.id) FROM model_calls c2 JOIN turns t2 ON t2.id=c2.turn_id "
             "WHERE c2.role='mind' GROUP BY t2.scene) ORDER BY c.ended LIMIT 100", (cutoff,))]
         auxiliary = {}
@@ -74,12 +75,15 @@ class Retention:
             "ORDER BY e.id LIMIT 100", (cutoff,)).fetchall()
         old_turns = db.execute(
             "SELECT id FROM turns WHERE ended<? AND id NOT IN "
-            "(SELECT turn_id FROM model_calls WHERE id IN (SELECT MAX(id) FROM model_calls UNION "
+            "(SELECT turn_id FROM model_calls WHERE turn_id IS NOT NULL AND id IN (SELECT MAX(id) FROM model_calls UNION "
             "SELECT MAX(c.id) FROM model_calls c JOIN turns t ON t.id=c.turn_id WHERE c.role='mind' GROUP BY t.scene)) "
             "AND NOT EXISTS(SELECT 1 FROM reply_effects r WHERE r.turn_id=turns.id) "
             "AND NOT EXISTS(SELECT 1 FROM proactive_wakes p WHERE p.turn_id=turns.id) "
             "AND NOT EXISTS(SELECT 1 FROM expression_embedding_calls e WHERE e.turn_id=turns.id) "
             "ORDER BY ended LIMIT 100", (timeline,)).fetchall()
+        old_plugin_calls = db.execute(
+            'SELECT id FROM model_calls WHERE plugin IS NOT NULL AND ended<? ORDER BY ended LIMIT 100',
+            (timeline,)).fetchall()
         selected_messages = []
         selected_notices = []
         for scene, days in settings.message_days.items():
@@ -143,7 +147,8 @@ class Retention:
                 (cutoff,)).fetchall()
         result = {'preview': preview, 'at': now, 'model_snapshots': len(rows),
                   'auxiliary_snapshots': sum(map(len,auxiliary.values())), 'task_snapshots':len(task_calls),
-                  'turns':len(old_turns), 'messages':len(selected_messages), 'notices':len(selected_notices),
+                  'turns':len(old_turns), 'plugin_calls':len(old_plugin_calls),
+                  'messages':len(selected_messages), 'notices':len(selected_notices),
                   'protected_latest_mind_requests':len(latest),
                   'memory_snapshots':sum(map(len,memory_calls.values())), 'extraction_jobs':len(extraction_jobs),
                   'scope':'本批数量；原话仅在无活动上下文时清理；保留未处理输入、显式素材来源和仍被引用的轮次。不等于遗忘记忆或删除备份。'}
@@ -165,6 +170,8 @@ class Retention:
             for (id,) in old_turns:
                 db.execute('DELETE FROM model_calls WHERE turn_id=?',(id,))
                 db.execute('DELETE FROM turns WHERE id=?',(id,))
+            for (id,) in old_plugin_calls:
+                db.execute('DELETE FROM model_calls WHERE id=?', (id,))
             for seq, scene, platform_id in selected_messages:
                 db.execute('DELETE FROM image_cache WHERE scene=? AND platform_id=?',(scene,platform_id))
                 db.execute('DELETE FROM audio_cache WHERE scene=? AND platform_id=?',(scene,platform_id))

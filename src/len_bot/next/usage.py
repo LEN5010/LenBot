@@ -18,8 +18,9 @@ def usage(store, scenes: list[str] | None, since: float, until: float, *, memory
     condition = '1=1' if scenes is None else f'scene IN ({names})'
     params = (since, until) if scenes is None else (*scenes, since, until)
     collect(store.db.execute(
-        "SELECT t.scene,c.role,c.ended,c.cost FROM model_calls c JOIN turns t ON t.id=c.turn_id "
-        f"WHERE {condition if scenes is None else 't.'+condition} AND c.started>=? AND c.started<?", params))
+        "SELECT c.scene,CASE WHEN c.plugin IS NULL THEN c.role ELSE 'plugin:' || c.plugin END,c.ended,c.cost "
+        "FROM model_calls c "
+        f"WHERE {condition if scenes is None else 'c.'+condition} AND c.started>=? AND c.started<?", params))
     for table, role, start, cost in (
         ('audio_calls', 'asr', 'started', 'cost'),
         ('learning_batches', 'learning', 'model_started', 'cost'),

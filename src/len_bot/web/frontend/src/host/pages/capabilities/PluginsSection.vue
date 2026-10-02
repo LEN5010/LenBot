@@ -4,7 +4,9 @@ import { api, sceneName } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify, readPendingRestart } from '../../store.js'
 import { formatTime } from '../../time.js'
-import { clone, same } from '../../forms.js'
+import { same } from '../../forms.js'
+import { initialField, configValue } from '../../pluginConfig.js'
+import PluginField from '../../components/PluginField.vue'
 import SettingSection from '../../components/SettingSection.vue'
 import ErrorNote from '../../components/ErrorNote.vue'
 import AdvancedFields from '../../components/AdvancedFields.vue'
@@ -28,19 +30,12 @@ function manifest(name) {
   const entries = snapshot.value.available[name] || []
   return entries.length === 1 && !entries[0].error ? entries[0] : null
 }
-function shown(field, value) {
-  if (field.type === 'object_list') return JSON.stringify(value, null, 2)
-  return field.type === 'string_list' ? value.join('\n') : value
-}
 function initial(name) {
   const saved = snapshot.value.saved.plugins[name]
   const values = {}
   for (const field of manifest(name)?.fields || []) {
     const item = saved?.[field.key]
-    values[field.key] = field.type === 'secret' ? ''
-      : item && 'value' in item ? shown(field, item.value)
-      : field.default == null ? (field.type === 'boolean' ? false : '')
-      : shown(field, field.default)
+    values[field.key] = initialField(field, item && 'value' in item ? item.value : field.default)
   }
   return { enabled: Boolean(saved), values }
 }
@@ -71,18 +66,10 @@ function configBody(name) {
     if (field.type === 'secret') {
       if (value !== '') config[field.key] = value
       else if (snapshot.value.saved.plugins[name]?.[field.key]?.configured) config[field.key] = null
-    } else if (field.type === 'object_list') {
-      let items
-      try { items = JSON.parse(value) } catch (error) { throw new Error(`${field.key} 不是合法的 JSON：${error.message}`) }
-      if (!Array.isArray(items) || items.some(item => item === null || typeof item !== 'object' || Array.isArray(item))) {
-        throw new Error(`${field.key} 必须是 JSON 对象列表，例如 [{"room_id": 123}]`)
-      }
-      config[field.key] = items
-    } else if (field.type === 'string_list') {
-      config[field.key] = value.split('\n').map(item => item.trim()).filter(Boolean)
-    } else if (field.type === 'integer' || field.type === 'number') {
-      if (value !== '' && value !== null) config[field.key] = Number(value)
-    } else config[field.key] = value
+    } else {
+      const parsed = configValue(field, value)
+      if (parsed !== undefined) config[field.key] = parsed
+    }
   }
   return config
 }
@@ -107,7 +94,6 @@ function toggleScene(name, on) {
 }
 const statusLabel = { running: '运行中', loaded: '已加载', failed: '没有启动成功', stopped: '已停止' }
 const statusColor = { running: 'success', failed: 'error' }
-const fieldType = field => field.type === 'secret' ? 'password' : ['integer', 'number'].includes(field.type) ? 'number' : 'text'
 const errorOf = part => active.value === part ? save.error.value : null
 </script>
 
@@ -131,6 +117,8 @@ const errorOf = part => active.value === part ? save.error.value : null
         <v-chip size="small" variant="tonal" :color="statusColor[running[name]?.status]">
           {{ running[name] ? statusLabel[running[name].status] || running[name].status : snapshot.saved.plugins[name] ? '重启后加载' : '未加载' }}</v-chip>
         <span v-if="running[name]?.scenes.length" class="muted">在 {{ running[name].scenes.map(sceneName).join('、') }} 使用</span>
+        <a v-if="manifest(name)?.repository" :href="manifest(name).repository" target="_blank" rel="noopener noreferrer">源码仓库</a>
+        <a v-if="manifest(name)?.homepage" :href="manifest(name).homepage" target="_blank" rel="noopener noreferrer">使用说明</a>
       </div>
       <ErrorNote v-if="running[name]?.error" title="插件没有启动成功" :error="running[name].error" />
       <ErrorNote v-for="entry in (snapshot.available[name] || []).filter(item => item.error)" :key="entry.directory"
@@ -150,21 +138,29 @@ const errorOf = part => active.value === part ? save.error.value : null
         <div v-for="(item, index) in running[name].errors" :key="index">
           <span class="muted">{{ formatTime(item.at) }}</span><pre>{{ item.error }}</pre></div>
       </details>
+      <details v-if="running[name]?.crons.length" class="recent-errors">
+        <summary>定点播报 {{ running[name].crons.length }} 项</summary>
+        <div v-for="job in running[name].crons" :key="`${job.scene}:${job.name}`">
+          <strong>{{ job.name }} · {{ sceneName(job.scene) }}</strong>
+          <p>{{ job.expression }} · {{ job.timezone }} · 下次 {{ formatTime(job.next_run) }}</p>
+          <ErrorNote v-if="job.last_error" title="本次播报失败" :error="job.last_error" />
+        </div>
+      </details>
+      <details v-if="running[name]?.model_calls.length" class="recent-errors">
+        <summary>最近单次生成 {{ running[name].model_calls.length }} 次</summary>
+        <div v-for="call in running[name].model_calls" :key="call.id">
+          <p>{{ formatTime(call.started) }} · {{ sceneName(call.scene) }} · {{ call.role }} · {{ call.ended === null ? '进行中' : call.error ? '失败' : '已返回' }}</p>
+          <ErrorNote v-if="call.error" title="生成失败" :error="call.error" />
+          <DevOnly label="用量与估算费用"><pre>{{ JSON.stringify({ usage: call.usage, cost: call.cost }, null, 2) }}</pre></DevOnly>
+        </div>
+      </details>
+      <p v-if="running[name]?.skills.length" class="muted">附带只读技能：{{ running[name].skills.join('、') }}</p>
 
       <template v-if="manifest(name) && drafts[name]">
         <v-switch v-model="drafts[name].enabled" color="primary" hide-details label="加载这个插件" />
         <template v-if="drafts[name].enabled">
-          <template v-for="field in manifest(name).fields" :key="field.key">
-            <v-switch v-if="field.type === 'boolean'" v-model="drafts[name].values[field.key]" color="primary"
-              :label="field.description" hide-details />
-            <v-textarea v-else-if="field.type === 'string_list'" v-model="drafts[name].values[field.key]" rows="2" auto-grow
-              :label="field.key" :hint="`${field.description} 每行一项。`" persistent-hint />
-            <v-textarea v-else-if="field.type === 'object_list'" v-model="drafts[name].values[field.key]" rows="5" auto-grow
-              class="mono" :label="field.key" :hint="field.description" persistent-hint />
-            <v-text-field v-else v-model="drafts[name].values[field.key]" :type="fieldType(field)" :label="field.key"
-              :autocomplete="field.type === 'secret' ? 'off' : undefined" persistent-hint
-              :hint="field.type === 'secret' && snapshot.saved.plugins[name]?.[field.key]?.configured ? `${field.description} 已保存，留空不修改。` : field.description" />
-          </template>
+          <PluginField v-for="field in manifest(name).fields" :key="field.key" :field="field"
+            v-model="drafts[name].values[field.key]" :configured="snapshot.saved.plugins[name]?.[field.key]?.configured" />
         </template>
       </template>
       <DevOnly label="插件详情"><pre>{{ JSON.stringify({ available: snapshot.available[name], running: running[name] }, null, 2) }}</pre></DevOnly>

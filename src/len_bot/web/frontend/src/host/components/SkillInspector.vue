@@ -25,7 +25,7 @@ async function read(file, more = false) {
 }
 watch(() => listing.data.value, value => { if (value?.files.some(file => file.path === 'SKILL.md')) read('SKILL.md') })
 
-const labels = { builtin: '内置', shared: '共享', scene: '本群', task: '任务自己写的' }
+const labels = { builtin: '内置', plugin: '插件附带', shared: '共享', scene: '本群', task: '任务自己写的' }
 const canMove = computed(() => ['task', 'scene'].includes(props.source))
 const canDelete = computed(() => ['shared', 'scene'].includes(props.source))
 async function move(target) {

@@ -98,13 +98,17 @@ async def run() -> None:
                 for path in dict.fromkeys(settings.persona for settings in config.scenes.values())}
     scenes = [(config.scene_config(scene), personas[settings.persona])
               for scene, settings in config.scenes.items()]
+    plugins = (None if config.plugins is None else PluginHost(
+        config, core_tools={tool["function"]["name"] for tool in tool_catalog(platform=True)}))
     skills = {settings.scene: (
-        select_skills(load_catalog(config.worker.skills_directory, settings.scene,
-                                   public_browser=config.worker.public_browser), persona.skills)
-        if config.worker is not None and config.worker.skills_directory is not None else ()
+        select_skills((*load_catalog(config.worker.skills_directory, settings.scene,
+                                     public_browser=config.worker.public_browser),
+                       *(() if plugins is None else plugins.skills_for(settings.scene))), persona.skills)
+        if config.worker is not None else ()
     ) for settings, persona in scenes}
     slots = ModelSlots(config.max_model_requests)
     with host_logging(config.logging, credentials(config)), Store(config.database) as store:
+        store.recover_plugin_calls()
         if config.onebot is None and (TaskStore(store).containers() or TaskStore(store).browser_in_use()):
             raise ValueError('stdin模拟宿主不能清理原库中残留的容器或账号浏览会话；先在所属原实例明确处理，不使用导入的定位访问外部实例')
         budget = ModelBudget(config, store, None, root=config._instance_root)
@@ -178,8 +182,6 @@ async def run() -> None:
                 settings.learning is not None and settings.learning.reply_effects
                 for settings in config.scenes.values()) else
                 ReplyEffectTracker(config, store, learner_model, slots=slots))
-            plugins = (None if config.plugins is None else PluginHost(
-                config, core_tools={tool["function"]["name"] for tool in tool_catalog(platform=True)}))
             mcp = MCPHost(config.mcp, reserved_tools={tool["function"]["name"] for tool in tool_catalog(platform=True)}
                           | (set() if plugins is None else set(plugins.tool_owner)))
             try:

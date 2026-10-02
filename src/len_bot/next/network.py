@@ -59,6 +59,7 @@ class NetworkRuntime:
             raise ValueError("配置模型金额预算时必须装配共享ModelSlots")
         if slots is not None:
             slots.admit = self.budget.check
+        self.slots = slots
         self.ingestor = ingestor
         self.learning = learning
         self.jargon = jargon

@@ -101,6 +101,7 @@ class Mention:
 
 
 Content = Text | Image | Mention
+GenerationRole = Literal["mind", "voice", "learner"]
 
 
 
@@ -118,6 +119,12 @@ class HostPort(Protocol):
     async def set_kv(self, plugin: str, key: str, value: JsonValue) -> None: ...
     async def delete_kv(self, plugin: str, key: str) -> bool: ...
     async def memory(self, plugin: str, scene: str, arguments: dict) -> str: ...
+    async def generate(self, plugin: str, scene: str, prompt: str, role: GenerationRole,
+                       system: str | None) -> str: ...
+    async def delegate(self, plugin: str, scene: str, requester: str, goal: str, deliverable: str,
+                       context: str, materials: Sequence[str]) -> dict: ...
+    def cron(self, plugin: str, name: str, scene: str, expression: str, timezone: str,
+             handler: Callable[[Invocation], Awaitable[None]]) -> asyncio.Task: ...
     def start_task(self, plugin: str, name: str, coroutine: Coroutine) -> asyncio.Task: ...
     def report_error(self, plugin: str, where: str, error: Exception) -> str: ...
     def require_owner(self, scene: str, requester_qq: str) -> None: ...
@@ -139,6 +146,16 @@ class PluginContext:
 
     def start_task(self, name: str, coroutine: Coroutine) -> asyncio.Task:
         return self.host.start_task(self.name, name, coroutine)
+
+    def cron(self, name: str, expression: str, handler: Callable[[Invocation], Awaitable[None]], *,
+             scene: str, timezone: str) -> asyncio.Task:
+        """Register a five-field cron at start; no missed-run replay after restart."""
+        return self.host.cron(self.name, name, self._scene(scene), expression, timezone, handler)
+
+    async def generate(self, scene: str, prompt: str, *, role: GenerationRole = "mind",
+                       system: str | None = None) -> str:
+        """One explicit model call, without tools, chat wake or automatic sending."""
+        return await self.host.generate(self.name, self._scene(scene), prompt, role, system)
 
     def report_error(self, where: str, error: Exception) -> str:
         return self.host.report_error(self.name, where, error)
@@ -233,6 +250,17 @@ class Invocation:
         """Send in this scene; a command reply quotes the command message."""
         reply_to = None if self.message is None else self.message.platform_message_id
         return await self.plugin.send(self.scene, text, reply_to=reply_to)
+
+    async def generate(self, prompt: str, *, role: GenerationRole = "mind", system: str | None = None) -> str:
+        return await self.plugin.generate(self.scene, prompt, role=role, system=system)
+
+    async def delegate(self, goal: str, deliverable: str, *, context: str = "",
+                       materials: Sequence[str] = ()) -> dict:
+        """Queue work for this command's actual sender; no synthetic background requester."""
+        if self.message is None or self.message.is_self:
+            raise ValueError("插件委派需要真实触发消息；后台和无发送者的工具调用不能伪造请求人")
+        return await self.plugin.host.delegate(self.plugin.name, self.scene, self.message.sender.uid,
+                                               goal, deliverable, context, materials)
 
     async def reply_parts(self, parts: Sequence[Content]) -> Sent:
         reply_to = None if self.message is None else self.message.platform_message_id

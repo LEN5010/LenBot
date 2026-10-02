@@ -27,7 +27,7 @@ uv run --no-sync python -m len_bot.next.migrate
 uv run --no-sync python -m len_bot.next.migrate_memory_jobs
 ```
 
-当前业务格式35、记忆处理格式5；已有当前格式不重复转换。运行与维护共用 `.lenbot-instance.lock`，占用就停止本次操作；不要删锁文件解锁。启动不会自动迁移数据。
+当前业务格式36、记忆处理格式5；已有当前格式不重复转换。35→36 让插件单次生成记录真实场景和插件来源，不再伪造聊天轮，旧调用从原 turn 回填场景并保留原始内容。运行与维护共用 `.lenbot-instance.lock`，占用就停止本次操作；不要删锁文件解锁。启动不会自动迁移数据。
 
 历史格式只由 `import_history`、`import_reminders`、`import_media`、`import_legacy_memory` 等显式离线命令读取；当前后端移交用 `transfer_memory`，角色记忆模板见[专门说明](memory-templates.md)。仅在实际需要移交时按模块入口与根配置准备参数，不恢复旧运行时或反写旧库。
 

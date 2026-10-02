@@ -17,7 +17,8 @@ from .chat import build_tools
 from .config import STRICT, HostConfig, load_host_config
 from .learning_store import LearningStore
 from .network import NetworkRuntime
-from .skills import load_catalog, select_skills
+from .skills import select_skills
+from .plugin_host import scene_skill_catalog
 from .persona import (Example, Persona, PersonaTarget, Style, load_persona, parse_persona_files,
                       read_persona_files, require_persona_target)
 from .persona_knowledge import parse_knowledge_document
@@ -149,9 +150,8 @@ def validate_dependencies(config: HostConfig, path: Path, candidate: Persona) ->
     affected = [key for key, value in config.scenes.items() if value.persona == path]
     for key in affected:
         build_tools(config.scene_config(key), candidate, platform=config.delivery == 'onebot')
-        if config.worker is not None and config.worker.skills_directory is not None:
-            select_skills(load_catalog(config.worker.skills_directory, key,
-                                       public_browser=config.worker.public_browser), candidate.skills)
+        if config.worker is not None:
+            select_skills(scene_skill_catalog(config, key), candidate.skills)
     return affected
 
 

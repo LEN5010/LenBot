@@ -20,7 +20,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_cron, parse_cron
 
 
-FORMAT_VERSION = 35
+FORMAT_VERSION = 36
 
 
 def encode(value: object) -> str:
@@ -134,9 +134,10 @@ class Store:
                         wake_received_at REAL, first_expression_at REAL, first_expression_delivery TEXT
                     );
                     CREATE TABLE model_calls (
-                        id INTEGER PRIMARY KEY, turn_id TEXT NOT NULL, role TEXT NOT NULL,
+                        id INTEGER PRIMARY KEY, turn_id TEXT, role TEXT NOT NULL,
                         started REAL NOT NULL, ended REAL, request TEXT NOT NULL,
-                        response TEXT, usage TEXT, error TEXT, mind_entry_seq INTEGER, cost TEXT
+                        response TEXT, usage TEXT, error TEXT, mind_entry_seq INTEGER, cost TEXT,
+                        scene TEXT NOT NULL, plugin TEXT
                     );
                     CREATE INDEX turn_calls ON model_calls(turn_id, id);
                     CREATE TABLE schedules (
@@ -577,8 +578,7 @@ class Store:
         ))
         calls = self.db.execute(
             "SELECT model_calls.ended,model_calls.cost FROM model_calls "
-            "JOIN turns ON turns.id=model_calls.turn_id "
-            f"WHERE turns.scene IN ({placeholders}) AND model_calls.started>=? AND model_calls.started<?",
+            f"WHERE model_calls.scene IN ({placeholders}) AND model_calls.started>=? AND model_calls.started<?",
             (*scenes, since, until),
         ).fetchall()
         calls.extend(self.db.execute(
@@ -1477,15 +1477,35 @@ class Store:
     def start_call(self, turn_id: str, role: str, request: dict) -> int:
         with self.db:
             updated = self.db.execute(
-                "UPDATE turns SET status='running' WHERE id=? AND ended IS NULL", (turn_id,)
-            )
-            if updated.rowcount != 1:
+                "UPDATE turns SET status='running' WHERE id=? AND ended IS NULL RETURNING scene", (turn_id,)
+            ).fetchone()
+            if updated is None:
                 raise ValueError(f"No active turn {turn_id}")
             cursor = self.db.execute(
-                "INSERT INTO model_calls(turn_id,role,started,request) VALUES (?,?,?,?)",
-                (turn_id, role, self.now(), encode(request)),
+                "INSERT INTO model_calls(turn_id,role,started,request,scene) VALUES (?,?,?,?,?)",
+                (turn_id, role, self.now(), encode(request), updated[0]),
             )
         return cursor.lastrowid
+
+    def start_plugin_call(self, scene: str, plugin: str, role: str, request: dict) -> int:
+        with self.db:
+            cursor = self.db.execute(
+                "INSERT INTO model_calls(scene,plugin,role,started,request) VALUES (?,?,?,?,?)",
+                (scene, plugin, role, self.now(), encode(request)),
+            )
+        return cursor.lastrowid
+
+    def plugin_calls(self, plugin: str, limit: int = 20) -> list[dict]:
+        return [{**dict(row), "usage": None if row["usage"] is None else json.loads(row["usage"]),
+                 "cost": None if row["cost"] is None else json.loads(row["cost"])}
+                for row in self.db.execute(
+                    "SELECT id,scene,role,started,ended,usage,cost,error FROM model_calls "
+                    "WHERE plugin=? ORDER BY id DESC LIMIT ?", (plugin, limit))]
+
+    def recover_plugin_calls(self) -> None:
+        with self.db:
+            self.db.execute("UPDATE model_calls SET ended=?,error=? WHERE plugin IS NOT NULL AND ended IS NULL",
+                            (self.now(), "宿主在插件模型请求完成前结束；未重发。"))
 
     def end_call(self, call_id: int, response: dict | None, usage: dict | None,
                  error: str | None = None, *, cost: dict | None = None, append_to_scene: str | None = None,
