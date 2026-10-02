@@ -566,6 +566,56 @@
       "facts": "",
       "observed_reply": null,
       "source": "合成反事实对照：沿 care-correction 的脱敏真实上下文，追加生病者本人明确表达需要陪聊的消息；不是原群实际记录。"
+    },
+    {
+      "id": "task-notice-not-detail-table",
+      "bot_qq": "90001",
+      "source_call": 15,
+      "source": "独立合成工作场景的真实结束通知；state/experiments/task-first-with-skill 中原任务已完成。此用例只评表达，不重新执行任务或平台动作。",
+      "expect": [
+        "接住原请求，告知已有三种格式可在面板下载，保留未上传 QQ 的事实；无需重述后台操作、文件字节数和完整登记表。",
+        "如果用户明确要求校对细节，再按其范围给足内容；不是统一截断、限制字数或删除数字。"
+      ],
+      "history": [
+        {
+          "role": "user",
+          "content": "[2026-10-03 05:58:37+08:00] 活动负责人(QQ 70001)：文件布局就这样。请沿原任务继续，把现有CSV、HTML和PDF登记到面板并说明结果，不用重新制作或继续调整排版，也不用上传QQ。"
+        }
+      ],
+      "reply_to": "[2026-10-03 05:58:37+08:00] 活动负责人(QQ 70001)：文件布局就这样。请沿原任务继续，把现有CSV、HTML和PDF登记到面板并说明结果，不用重新制作或继续调整排版，也不用上传QQ。",
+      "facts": {
+        "task_status": "done",
+        "files": [
+          {
+            "id": 1,
+            "task_id": 1,
+            "name": "activity_schedule.csv",
+            "size": 161,
+            "note": "按时间排序的活动安排 CSV 文件（包含日期、时间、活动名称、地点、负责人、人数）",
+            "status": "registered",
+            "upload": null
+          },
+          {
+            "id": 2,
+            "task_id": 1,
+            "name": "activity_schedule.html",
+            "size": 9199,
+            "note": "一页适配手机浏览与 A4 打印排版的活动安排 HTML 文档",
+            "status": "registered",
+            "upload": null
+          },
+          {
+            "id": 3,
+            "task_id": 1,
+            "name": "activity_schedule.pdf",
+            "size": 155706,
+            "note": "一页 A4 打印排版的活动安排 PDF 文件（由离线渲染器生成，严格单页无溢出）",
+            "status": "registered",
+            "upload": null
+          }
+        ]
+      },
+      "observed_reply": "任务 #1 已顺利完成，现有的三个文件均已登记到面板供下载：\n\n- activity_schedule.csv (161 B)：按时间排序的活动安排。\n- activity_schedule.html (9.0 KB)：一页自适应 HTML（适配手机端浏览与 A4 打印）。\n- activity_schedule.pdf (152.1 KB)：一页 A4 打印排版 PDF。\n\n按照要求，文件仅在面板提供下载，未上传至 QQ。"
     }
   ]
 }
