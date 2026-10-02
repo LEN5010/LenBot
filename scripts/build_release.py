@@ -25,6 +25,7 @@ REQUIRED_SOURCE = (
     'deploy/README.md', 'deploy/current/operations.md', 'CONTRIBUTING.md',
     'docker/next-worker/Dockerfile', 'docker/next-worker/lenbot-extension.ts',
     'docker/next-worker/lenbot-browser.cjs', 'docker/next-worker/Dockerfile.dockerignore',
+    'docker/next-worker/lenbot-render.cjs',
 )
 FORBIDDEN_SOURCE = ('docs/', 'runtime/', '.runtime/', '.backups/', '.venv/', 'state/', 'personas/', 'file_assets/')
 

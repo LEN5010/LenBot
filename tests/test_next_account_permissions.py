@@ -8,6 +8,7 @@ import pytest
 from len_bot.next.config import HostConfig
 from len_bot.next.store import Store
 from len_bot.next.tasks import WorkTasks
+from len_bot.next.tasks_tools import execute_tasks
 
 
 def test_account_task_requires_root_owner_and_new_workspace(tmp_path: Path):
@@ -40,6 +41,30 @@ def test_account_task_requires_root_owner_and_new_workspace(tmp_path: Path):
             ordinary = {**kwargs, 'account_browser':False}
             admin = await service.delegate('group:80001',requester='70003',**ordinary)
             assert admin['active_timeout_seconds'] == 1800
+            out = cfg.worker.workspace_root / 'group:80001' / 'tasks' / str(admin['id']) / 'out'
+            out.mkdir(parents=True)
+            (out / 'schedule.csv').write_text('活动,人数\n读书会,12\n')
+            (out / 'nested').mkdir()
+            (out / 'nested' / 'draft.html').write_text('<p>实际草稿</p>')
+            outside = tmp_path / 'private-files'
+            outside.mkdir()
+            (outside / 'secret.txt').write_text('outside task')
+            (out / 'linked').symlink_to(outside, target_is_directory=True)
+            args = {'action':'outputs', 'id':admin['id'], 'requester':'70003'}
+            outputs = await execute_tasks(service, 'group:80001', 'task', args)
+            assert outputs['registered_files'] == []
+            assert [(e['path'], e['kind']) for e in outputs['entries']] == [
+                ('linked', 'symlink'), ('nested', 'directory'), ('schedule.csv', 'file')]
+            nested = await execute_tasks(service, 'group:80001', 'task', {**args, 'path':'nested'})
+            assert nested['entries'][0]['path'] == 'nested/draft.html'
+            with pytest.raises(PermissionError):
+                await execute_tasks(service, 'group:80001', 'task', {**args, 'requester':'70006'})
+            with pytest.raises(PermissionError, match='根主人'):
+                await execute_tasks(service, 'group:80001', 'task', {**args, 'id':task['id']})
+            with pytest.raises(OSError):
+                await execute_tasks(service, 'group:80001', 'task', {**args, 'path':'linked'})
+            with pytest.raises(ValueError, match='relative directory'):
+                await execute_tasks(service, 'group:80001', 'task', {**args, 'path':'../private-files'})
             white = await service.delegate('group:80001',requester='70005',**ordinary)
             assert white['active_timeout_seconds'] == 3600
             with pytest.raises(PermissionError, match='黑名单'):
