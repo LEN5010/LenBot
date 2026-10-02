@@ -12,6 +12,37 @@ from .tasks_config import WorkerSettings
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
+def output_entries(root: Path, path: str, offset: int, limit: int) -> dict:
+    """List one actual output directory without opening file contents or links."""
+    if root.resolve(strict=False) != root:
+        raise ValueError(f'Task output root must not traverse a symbolic link: {root}')
+    try:
+        descriptor = os.open(root, DIRECTORY_FLAGS)
+    except FileNotFoundError:
+        return {'exists': False, 'entries': [], 'next_offset': None}
+    try:
+        if path:
+            for part in path.split('/'):
+                nested = os.open(part, DIRECTORY_FLAGS, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = nested
+        with os.scandir(descriptor) as children:
+            names = sorted(child.name for child in children)
+        entries = []
+        for name in names[offset:offset + limit]:
+            info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            kind = ('file' if stat.S_ISREG(info.st_mode) else
+                    'directory' if stat.S_ISDIR(info.st_mode) else
+                    'symlink' if stat.S_ISLNK(info.st_mode) else 'other')
+            entries.append({'path': f'{path}/{name}' if path else name, 'kind': kind,
+                            'size': info.st_size if kind == 'file' else None,
+                            'modified': info.st_mtime})
+        return {'exists': True, 'entries': entries,
+                'next_offset': offset + limit if offset + limit < len(names) else None}
+    finally:
+        os.close(descriptor)
+
+
 @dataclass
 class TreeUsage:
     file_bytes: int = 0

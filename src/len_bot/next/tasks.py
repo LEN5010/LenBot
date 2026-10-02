@@ -36,7 +36,7 @@ from .worker_model import Limits, WorkerModelProxy
 from .worker_session import WorkerSession, worker_session
 from .task_materials import MaterialName, finish_file_operation
 from .task_inputs import copy_inputs, create_stage, publish_inputs, remove_stage, require_inputs
-from .task_storage import discard_task_trees
+from .task_storage import discard_task_trees, output_entries
 from .operations import credentials, diagnostic_value, redact, redact_record
 
 if TYPE_CHECKING:
@@ -206,6 +206,15 @@ class WorkTasks:
         secrets = credentials(self.config)
         value = redact_record(value, lambda text: redact(text, secrets))
         return json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2)
+
+    async def outputs(self, scene: str, id: int, *, requester: str,
+                      path: str, offset: int, limit: int) -> dict:
+        item = self._inspect_task(scene, id, requester)
+        root = self.settings.workspace_root / scene / 'tasks' / str(id) / 'out'
+        entries = await asyncio.to_thread(output_entries, root, path, offset, limit)
+        return {'task_id': item.id, 'root': 'out', 'path': path, **entries,
+                'registered_files': [file_info(file, self.records) for file in self.records.list_files(scene, id)],
+                'notice': 'entries 是当前磁盘元数据，不是内容验证；registered_files 才是可下载交付，上传状态另列。'}
 
     def _event_result(self, item: Task, value: dict) -> dict:
         content = Template((PROMPTS / 'next_task_history.md').read_text()).substitute(

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
-TaskAction = Literal["list", "status", "events", "read_event", "append", "continue", "answer", "cancel"]
+TaskAction = Literal["list", "status", "outputs", "events", "read_event", "append", "continue", "answer", "cancel"]
 TaskStatus = Literal["active", "all", "queued", "running", "waiting_input", "done", "failed", "cancelled"]
 
 
@@ -45,6 +45,7 @@ class TaskArguments(BaseModel):
     action: TaskAction
     id: int | None = Field(default=None, gt=0, strict=True)
     requester: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
+    path: str = Field(default="", description="outputs 的 out 内相对目录；空字符串列根目录，下一层使用返回的目录 path。")
     text: str | None = Field(default=None,
         description="append/continue 必填非空补充原文；continue 沿用原任务会话与未被更正的要求。answer 的文字答复与 confirmed 二选一。")
     confirmed: bool | None = None
@@ -55,11 +56,19 @@ class TaskArguments(BaseModel):
     snapshot: int | None = Field(default=None, ge=0, strict=True)
     event: int | None = Field(default=None, gt=0, strict=True)
 
+    @field_validator('path')
+    @classmethod
+    def output_directory(cls, value: str) -> str:
+        if value and (any(part in {'', '.', '..'} for part in value.split('/')) or '\x00' in value):
+            raise ValueError('outputs path must be a relative directory inside out, without empty, . or .. components')
+        return value
+
     @model_validator(mode="after")
     def action_fields(self) -> TaskArguments:
         allowed = {
             "list": {"action", "status", "offset", "limit"},
             "status": {"action", "id"},
+            "outputs": {"action", "id", "requester", "path", "offset", "limit"},
             "events": {"action", "id", "requester", "offset", "snapshot"},
             "read_event": {"action", "id", "requester", "event", "offset"},
             "append": {"action", "id", "requester", "text"},
@@ -72,7 +81,7 @@ class TaskArguments(BaseModel):
             raise ValueError(f"task action {self.action!r} does not accept fields {sorted(unexpected)!r}")
         if self.action != "list" and self.id is None:
             raise ValueError(f"task action {self.action!r} requires id")
-        if self.action in {"events", "read_event", "append", "continue", "answer", "cancel"} and self.requester is None:
+        if self.action in {"outputs", "events", "read_event", "append", "continue", "answer", "cancel"} and self.requester is None:
             raise ValueError(f"task action {self.action!r} requires requester")
         if self.action == 'read_event' and self.event is None:
             raise ValueError('task read_event requires the actual event ID from events')
@@ -104,7 +113,8 @@ DELEGATE_TOOL = {"type": "function", "function": {
 
 TASK_TOOL = {"type": "function", "function": {
     "name": "task",
-    "description": "查询或管理当前场景的真实任务：list/status 查看状态，append 追加运行中要求，"
+    "description": "查询或管理当前场景的真实任务：list/status 查看状态（不填 requester），append 追加运行中要求，"
+    "outputs 按实际 requester 权限直接列出 out 中的文件和大小，同时列已登记交付；查产物状态优先用它，path为空列根目录。"
     "events按真实requester权限读最近过程（每页5条、续页带snapshot），read_event按原event ID和字符offset读文本投影；"
     "continue 按请求人明确要求续接已结束任务；append/continue 必填非空 text。answer 回答待输入，cancel 取消。执行结束不等于目标完成；"
     "answer 的 question_id 使用当前 question.id，避免答复到已变化的另一个问题；"
@@ -133,6 +143,9 @@ async def perform_task_action(service: WorkTasks, scene: str, parsed: TaskArgume
         return service.list(scene, status=parsed.status, offset=parsed.offset, limit=parsed.limit)
     if parsed.action == "status":
         return service.status(scene, parsed.id)
+    if parsed.action == 'outputs':
+        return await service.outputs(scene, parsed.id, requester=parsed.requester,
+                                     path=parsed.path, offset=parsed.offset, limit=parsed.limit)
     if parsed.action == 'events':
         return service.events(scene, parsed.id, requester=parsed.requester, offset=parsed.offset, snapshot=parsed.snapshot)
     if parsed.action == 'read_event':

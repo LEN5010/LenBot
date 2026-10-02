@@ -6,7 +6,7 @@ FROM node:24-bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates curl ffmpeg fonts-noto-cjk git jq \
-       pandoc python3 python3-venv python3-pip \
+       pandoc poppler-utils python3 python3-venv python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/uv \
@@ -32,6 +32,7 @@ COPY src/len_bot/next/egress_wire.py /opt/lenbot/egress_wire.py
 COPY src/len_bot/next/worker_egress_bridge.py /opt/lenbot/worker_egress_bridge.py
 COPY docker/next-worker/lenbot-extension.ts /opt/lenbot/lenbot-extension.ts
 COPY --chmod=755 docker/next-worker/lenbot-browser.cjs /usr/local/bin/lenbot-browser
+COPY --chmod=755 docker/next-worker/lenbot-render.cjs /usr/local/bin/lenbot-render
 
 COPY scripts/collect_python_licenses.py /opt/lenbot/collect_python_licenses.py
 COPY scripts/collect_frontend_licenses.cjs /opt/lenbot/collect_node_licenses.cjs
