@@ -35,6 +35,10 @@ uv run --no-sync python -m len_bot.next.migrate_memory_jobs
 
 历史格式只由 `import_history`、`import_reminders`、`import_media`、`import_legacy_memory` 等显式离线命令读取；当前后端移交用 `transfer_memory`，角色记忆模板见[专门说明](memory-templates.md)。仅在实际需要移交时按模块入口与根配置准备参数，不恢复旧运行时或反写旧库。
 
+## 记忆删除的范围
+
+普通删除不等于完整遗忘。本地后端的 forget 清除正文、索引、旧版本和派生摘要，并可排除指定原话再次抽取；原聊天与历史模型请求仍保留。OpenViking 当前只有普通删除，旧快照与服务归档仍可能保留正文，不能承诺内容已不可恢复；其 MCP 中名为 forget 的工具也不是历史清除接口。
+
 ## 无QQ的开发输入
 
 独立实例配置 `onebot:null`、`delivery:"simulated"`、`panel:null`，使用同一 `len-bot` 入口，stdin逐行输入原生OneBot JSON。模型和显式开放的任务出网仍可能真实执行；不是全环境离线沙箱。
