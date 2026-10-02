@@ -1,7 +1,7 @@
 """OpenViking native memory view, partitioned by the existing QQ scene identity.
 
-This is an HTTP boundary, not the complete M11 MemoryBackend: it does not
-provide per-write history or irreversible forgetting; snapshot history is native.
+This is an HTTP boundary. History is native snapshots, not a per-write log;
+forgetting requires the service's explicit content/forget operation.
 Public writes are available only to explicit offline transfer, not runtime tools.
 """
 
@@ -152,6 +152,17 @@ class MemoryDelete:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryForget:
+    path: str
+    cleared_uris: list[str]
+    rewritten_archives: list[str]
+    snapshots: dict[str, int]
+    source_message_ids: list[str]
+    matched_source_message_ids: list[str]
+    notice: str
+
+
+@dataclass(frozen=True, slots=True)
 class IngestReceipt:
     status: Literal["accepted", "skipped"]
     session_id: str
@@ -210,6 +221,24 @@ class _Delete(BaseModel):
     uri: str
     semantic_status: str | None = None
     estimated_deleted_count: int | None = None
+
+
+class _SnapshotForget(BaseModel):
+    model_config = ConfigDict(strict=True, extra="ignore")
+    commits_rewritten: int = Field(ge=0)
+    refs_updated: int = Field(ge=0)
+    objects_removed: int = Field(ge=0)
+
+
+class _Forget(BaseModel):
+    model_config = ConfigDict(strict=True, extra="ignore")
+    uri: str
+    cleared_uris: list[str]
+    rewritten_archives: list[str]
+    snapshots: _SnapshotForget
+    source_message_ids: list[str]
+    matched_source_message_ids: list[str]
+    notice: str
 
 
 class _Commit(BaseModel):
@@ -623,6 +652,22 @@ class OpenVikingMemory:
             raise ValueError(f"OpenViking ordinary delete not fully confirmed; raw={raw[:1000]}")
         return MemoryDelete(path=path, semantic_status=row.semantic_status,
                             estimated_deleted_count=row.estimated_deleted_count)
+
+    async def forget(self, scene: str, path: str, source_message_ids: list[str]) -> MemoryForget:
+        identity = await self._identity(scene)
+        uri = self._uri(identity, path, "scene", file=True)
+        payload, raw = await self._request(identity, "POST", "/api/v1/content/forget", body={
+            "uri": uri, "source_message_ids": source_message_ids,
+        })
+        result = _as(_Forget, payload["result"], raw)
+        if result.uri != uri or set(result.source_message_ids) != set(source_message_ids):
+            raise ValueError(f"OpenViking forgetting returned another memory or source selection; raw={raw[:1000]}")
+        return MemoryForget(path=path, cleared_uris=result.cleared_uris,
+                            rewritten_archives=result.rewritten_archives,
+                            snapshots=result.snapshots.model_dump(),
+                            source_message_ids=result.source_message_ids,
+                            matched_source_message_ids=result.matched_source_message_ids,
+                            notice=result.notice)
 
     async def ingest(self, scene: str, messages: list[ChatMessage], *, persona_ids: list[str | None]) -> IngestReceipt:
         if not 1 <= len(messages) <= 100:

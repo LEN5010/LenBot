@@ -1,0 +1,819 @@
+diff --git a/crates/ragfs-python/src/lib.rs b/crates/ragfs-python/src/lib.rs
+index be31d2a..f5f227b 100644
+--- a/crates/ragfs-python/src/lib.rs
++++ b/crates/ragfs-python/src/lib.rs
+@@ -1705,6 +1705,39 @@ impl RAGFSBindingClient {
+         git::commit_response_to_pydict(py, resp)
+     }
+ 
++    /// Remove explicit account-relative paths from every stored snapshot.
++    fn git_forget(&self, py: Python<'_>, account: String, paths: Vec<String>,
++                  replacements: Vec<(String, String, Vec<u8>)>) -> PyResult<Py<PyAny>> {
++        let svc = self.git_service.clone().ok_or_else(|| {
++            git::new_py_err_pub(py, "AGFSNotSupportedError", "git feature disabled".into())
++        })?;
++        let result = py_detach_blocking(py, move || self.rt.block_on(svc.forget_paths(account, paths, replacements)))
++            .map_err(|error| git::map_git_error(py, error))?;
++        let response = PyDict::new(py);
++        response.set_item("commits_rewritten", result.commits_rewritten)?;
++        response.set_item("refs_updated", result.refs_updated)?;
++        response.set_item("objects_removed", result.objects_removed)?;
++        Ok(response.into_any().unbind())
++    }
++
++    fn git_history_files(&self, py: Python<'_>, account: String, prefix: String,
++                         names: Vec<String>) -> PyResult<Py<PyAny>> {
++        let svc = self.git_service.clone().ok_or_else(|| {
++            git::new_py_err_pub(py, "AGFSNotSupportedError", "git feature disabled".into())
++        })?;
++        let files = py_detach_blocking(py, move || self.rt.block_on(svc.history_files(account, prefix, names)))
++            .map_err(|error| git::map_git_error(py, error))?;
++        let result = pyo3::types::PyList::empty(py);
++        for file in files {
++            let item = PyDict::new(py);
++            item.set_item("path", file.path)?;
++            item.set_item("oid", file.oid.to_hex().to_string())?;
++            item.set_item("content", pyo3::types::PyBytes::new(py, &file.content))?;
++            result.append(item)?;
++        }
++        Ok(result.into_any().unbind())
++    }
++
+     /// Restore a project_dir subtree to the state at source_commit.
+     #[pyo3(signature = (**kwargs))]
+     fn git_restore(
+diff --git a/crates/ragfs/src/git/backends/local.rs b/crates/ragfs/src/git/backends/local.rs
+index bb82e25..fc715ad 100644
+--- a/crates/ragfs/src/git/backends/local.rs
++++ b/crates/ragfs/src/git/backends/local.rs
+@@ -52,6 +52,31 @@ impl LocalObjectStore {
+ 
+ #[async_trait]
+ impl ObjectStore for LocalObjectStore {
++    async fn list(&self, account: &str) -> Result<Vec<ObjectId>, ObjectStoreError> {
++        let root = self.base_dir.join(account).join("objects");
++        let mut prefixes = match tokio::fs::read_dir(root).await {
++            Ok(entries) => entries,
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
++            Err(error) => return Err(error.into()),
++        };
++        let mut result = Vec::new();
++        while let Some(prefix) = prefixes.next_entry().await? {
++            let mut entries = tokio::fs::read_dir(prefix.path()).await?;
++            while let Some(entry) = entries.next_entry().await? {
++                let name = format!("{}{}", prefix.file_name().to_string_lossy(), entry.file_name().to_string_lossy());
++                let oid = ObjectId::from_hex(name.as_bytes())
++                    .map_err(|error| ObjectStoreError::Backend(format!("invalid object filename {name:?}: {error}")))?;
++                result.push(oid);
++            }
++        }
++        Ok(result)
++    }
++
++    async fn remove(&self, account: &str, oid: &ObjectId) -> Result<(), ObjectStoreError> {
++        tokio::fs::remove_file(self.object_path(account, oid)).await?;
++        Ok(())
++    }
++
+     async fn put(
+         &self,
+         account: &str,
+diff --git a/crates/ragfs/src/git/backends/s3.rs b/crates/ragfs/src/git/backends/s3.rs
+index e088106..49a6c87 100644
+--- a/crates/ragfs/src/git/backends/s3.rs
++++ b/crates/ragfs/src/git/backends/s3.rs
+@@ -115,6 +115,35 @@ impl S3ObjectStore {
+ 
+ #[async_trait]
+ impl ObjectStore for S3ObjectStore {
++    async fn list(&self, account: &str) -> Result<Vec<ObjectId>, ObjectStoreError> {
++        let object = self.object_key(account, &ObjectId::null(gix_hash::Kind::Sha1));
++        let prefix = &object[..object.len() - 41];
++        let mut continuation = None;
++        let mut result = Vec::new();
++        loop {
++            let page = self.client.list_objects_v2().bucket(&self.bucket).prefix(prefix)
++                .set_continuation_token(continuation).send().await
++                .map_err(|error| ObjectStoreError::Backend(format!("S3 object list: {error}")))?;
++            for object in page.contents() {
++                let key = object.key().ok_or_else(|| ObjectStoreError::Backend("S3 object has no key".into()))?;
++                let suffix = key.strip_prefix(prefix)
++                    .ok_or_else(|| ObjectStoreError::Backend(format!("S3 returned another object prefix: {key}")))?;
++                let name = suffix.replace('/', "");
++                result.push(ObjectId::from_hex(name.as_bytes())
++                    .map_err(|error| ObjectStoreError::Backend(format!("invalid object key {key:?}: {error}")))?);
++            }
++            continuation = page.next_continuation_token().map(str::to_owned);
++            if continuation.is_none() { break; }
++        }
++        Ok(result)
++    }
++
++    async fn remove(&self, account: &str, oid: &ObjectId) -> Result<(), ObjectStoreError> {
++        self.client.delete_object().bucket(&self.bucket).key(self.object_key(account, oid))
++            .send().await.map_err(|error| ObjectStoreError::Backend(format!("S3 object delete: {error}")))?;
++        Ok(())
++    }
++
+     async fn put(
+         &self,
+         account: &str,
+diff --git a/crates/ragfs/src/git/forget.rs b/crates/ragfs/src/git/forget.rs
+new file mode 100644
+index 0000000..7c078b4
+--- /dev/null
++++ b/crates/ragfs/src/git/forget.rs
+@@ -0,0 +1,212 @@
++//! Remove selected paths from every stored snapshot, including detached history.
++
++use std::collections::{HashMap, HashSet};
++
++use gix_hash::ObjectId;
++use gix_object::Kind;
++
++use super::error::GitError;
++use super::index_store::CommitIndex;
++use super::service::GitService;
++use super::tree_builder::{flatten, lookup, TreeEditor};
++use super::util::{parse_object_header, read_object, write_object};
++
++#[derive(Debug)]
++pub struct ForgetResponse {
++    pub commits_rewritten: usize,
++    pub refs_updated: usize,
++    pub objects_removed: usize,
++}
++
++pub struct HistoricalFile {
++    pub path: String,
++    pub oid: ObjectId,
++    pub content: Vec<u8>,
++}
++
++pub(super) async fn history_files(service: &GitService, account: &str, prefix: &str,
++                                 names: &[String]) -> Result<Vec<HistoricalFile>, GitError> {
++    let store = service.object_store.as_ref();
++    let mut roots = HashSet::new();
++    for oid in store.list(account).await? {
++        let raw = read_object(store, account, &oid).await?;
++        let (kind, _, header) = parse_object_header(&raw)?;
++        if kind == Kind::Commit {
++            let commit = gix_object::CommitRef::from_bytes(&raw[header..])
++                .map_err(|error| GitError::Other(format!("commit {oid}: {error}")))?;
++            roots.insert(commit.tree());
++        }
++    }
++    let mut entries = HashSet::new();
++    for root in roots {
++        for (path, oid) in flatten(store, account, root, &Some(vec![format!("{prefix}/")])).await? {
++            if names.iter().any(|name| path.ends_with(&format!("/{name}"))) {
++                entries.insert((path, oid));
++            }
++        }
++    }
++    let mut result = Vec::new();
++    for (path, oid) in entries {
++        let raw = read_object(store, account, &oid).await?;
++        let (kind, _, header) = parse_object_header(&raw)?;
++        if kind != Kind::Blob {
++            return Err(GitError::Other(format!("snapshot file {path} is {kind:?}")));
++        }
++        result.push(HistoricalFile {path, oid, content: raw[header..].to_vec()});
++    }
++    Ok(result)
++}
++
++struct Commit {
++    body: Vec<u8>,
++    tree: ObjectId,
++    parents: Vec<ObjectId>,
++}
++
++/// The caller holds the account's snapshot-write lock for this entire operation.
++pub(super) async fn forget_paths(
++    service: &GitService,
++    account: &str,
++    paths: &[String],
++    replacements: &HashMap<(String, ObjectId), Vec<u8>>,
++) -> Result<ForgetResponse, GitError> {
++    let store = service.object_store.as_ref();
++    let original_objects = store.list(account).await?;
++    let refs = service.ref_store.list(account, "refs").await?;
++    let mut commits = HashMap::new();
++    for oid in &original_objects {
++        let raw = read_object(store, account, oid).await?;
++        let (kind, _, header) = parse_object_header(&raw)?;
++        match kind {
++            Kind::Commit => {
++                let parsed = gix_object::CommitRef::from_bytes(&raw[header..])
++                    .map_err(|error| GitError::Other(format!("commit {oid}: {error}")))?;
++                commits.insert(*oid, Commit {
++                    body: raw[header..].to_vec(),
++                    tree: parsed.tree(),
++                    parents: parsed.parents().collect(),
++                });
++            }
++            Kind::Blob | Kind::Tree => {}
++            Kind::Tag => return Err(GitError::Other(
++                "snapshot forgetting does not support annotated tag objects".into())),
++        }
++    }
++
++    let mut rewritten = HashMap::new();
++    let mut trees = HashMap::new();
++    let mut pending: HashSet<ObjectId> = commits.keys().copied().collect();
++    while !pending.is_empty() {
++        let ready: Vec<ObjectId> = pending.iter().copied().filter(|oid|
++            commits[oid].parents.iter().all(|parent| rewritten.contains_key(parent))
++        ).collect();
++        if ready.is_empty() {
++            return Err(GitError::Other(format!(
++                "snapshot history has missing or cyclic parents: {pending:?}")));
++        }
++        for oid in ready {
++            let old = &commits[&oid];
++            let tree = if let Some(tree) = trees.get(&old.tree) {
++                *tree
++            } else {
++                let mut editor = TreeEditor::from_tree(store, account, old.tree).await?;
++                for path in paths {
++                    editor.remove(store, account, path).await?;
++                }
++                for ((path, old_blob), content) in replacements {
++                    if let Some((blob, _)) = lookup(store, account, old.tree, path).await? {
++                        if blob == *old_blob {
++                            let new_blob = write_object(store, account, Kind::Blob, content).await?;
++                            editor.upsert(store, account, path, new_blob).await?;
++                        }
++                    }
++                }
++                let tree = editor.write(store, account).await?;
++                trees.insert(old.tree, tree);
++                tree
++            };
++            let parents: Vec<ObjectId> = old.parents.iter().map(|parent| rewritten[parent]).collect();
++            let new_oid = if tree == old.tree && parents == old.parents {
++                oid
++            } else {
++                let body = rewrite_commit(&old.body, tree, &parents)?;
++                write_object(store, account, Kind::Commit, &body).await?
++            };
++            rewritten.insert(oid, new_oid);
++            pending.remove(&oid);
++        }
++    }
++
++    // Retain unrelated detached snapshots as well as history named by refs.
++    // A blob shared by another surviving path still belongs to that path.
++    let mut retained = HashSet::new();
++    let mut stack: Vec<ObjectId> = rewritten.values().copied().collect();
++    while let Some(oid) = stack.pop() {
++        if !retained.insert(oid) || oid == ObjectId::empty_tree(gix_hash::Kind::Sha1) {
++            continue;
++        }
++        let raw = read_object(store, account, &oid).await?;
++        let (kind, _, header) = parse_object_header(&raw)?;
++        match kind {
++            Kind::Commit => {
++                let commit = gix_object::CommitRef::from_bytes(&raw[header..])
++                    .map_err(|error| GitError::Other(format!("commit {oid}: {error}")))?;
++                stack.push(commit.tree());
++                stack.extend(commit.parents());
++            }
++            Kind::Tree => {
++                let tree = gix_object::TreeRef::from_bytes(&raw[header..])
++                    .map_err(|error| GitError::Other(format!("tree {oid}: {error}")))?;
++                stack.extend(tree.entries.iter().filter(|entry|
++                    entry.mode.kind() != gix_object::tree::EntryKind::Commit
++                ).map(|entry| entry.oid.to_owned()));
++            }
++            Kind::Blob => {}
++            Kind::Tag => unreachable!("annotated tags rejected before snapshot mutation"),
++        }
++    }
++
++    let mut refs_updated = 0;
++    for (name, old) in &refs {
++        let new = rewritten.get(old).ok_or_else(||
++            GitError::Other(format!("snapshot ref {name} does not name a stored commit: {old}")))?;
++        if new != old {
++            service.ref_store.cas_update(account, name, Some(*old), *new).await?;
++            refs_updated += 1;
++        }
++        if let (Some(index), Some(branch)) = (&service.index_store, name.strip_prefix("refs/heads/")) {
++            index.save(account, branch, &CommitIndex {
++                parent_oid: *new, entries: HashMap::new(), saved_at_ns: None,
++            }).await.map_err(|error| GitError::Other(format!("clear snapshot index: {error}")))?;
++        }
++    }
++    let mut objects_removed = 0;
++    for oid in original_objects {
++        if !retained.contains(&oid) {
++            store.remove(account, &oid).await?;
++            objects_removed += 1;
++        }
++    }
++    Ok(ForgetResponse {
++        commits_rewritten: rewritten.iter().filter(|(old, new)| old != new).count(),
++        refs_updated,
++        objects_removed,
++    })
++}
++
++fn rewrite_commit(body: &[u8], tree: ObjectId, parents: &[ObjectId]) -> Result<Vec<u8>, GitError> {
++    let header_end = body.windows(2).position(|bytes| bytes == b"\n\n")
++        .ok_or_else(|| GitError::Other("commit has no header boundary".into()))?;
++    let mut result = format!("tree {}\n", tree.to_hex()).into_bytes();
++    for parent in parents {
++        result.extend_from_slice(format!("parent {}\n", parent.to_hex()).as_bytes());
++    }
++    for line in body[..header_end].split(|byte| *byte == b'\n') {
++        if !line.starts_with(b"tree ") && !line.starts_with(b"parent ") {
++            result.extend_from_slice(line);
++            result.push(b'\n');
++        }
++    }
++    result.extend_from_slice(&body[header_end + 1..]);
++    Ok(result)
++}
+diff --git a/crates/ragfs/src/git/mod.rs b/crates/ragfs/src/git/mod.rs
+index ff9db95..981d534 100644
+--- a/crates/ragfs/src/git/mod.rs
++++ b/crates/ragfs/src/git/mod.rs
+@@ -34,6 +34,7 @@ pub mod error;
+ pub mod ignore;
+ pub mod index_store;
+ pub mod object_store;
++pub mod forget;
+ pub mod ref_store;
+ pub mod service;
+ pub mod tree_builder;
+diff --git a/crates/ragfs/src/git/object_store.rs b/crates/ragfs/src/git/object_store.rs
+index 2977de2..5a9ec23 100644
+--- a/crates/ragfs/src/git/object_store.rs
++++ b/crates/ragfs/src/git/object_store.rs
+@@ -16,6 +16,12 @@ use crate::git::error::ObjectStoreError;
+ /// has the same effect as writing it once.
+ #[async_trait]
+ pub trait ObjectStore: Send + Sync + 'static {
++    /// Enumerate every stored object, including objects no longer named by a ref.
++    async fn list(&self, account: &str) -> Result<Vec<ObjectId>, ObjectStoreError>;
++
++    /// Remove a stored object after its remaining references have been accounted for.
++    async fn remove(&self, account: &str, oid: &ObjectId) -> Result<(), ObjectStoreError>;
++
+     /// Write a zlib-compressed loose object.
+     ///
+     /// The `zlib_body` must be a valid zlib-compressed Git loose object,
+diff --git a/crates/ragfs/src/git/service.rs b/crates/ragfs/src/git/service.rs
+index 4777765..eb00431 100644
+--- a/crates/ragfs/src/git/service.rs
++++ b/crates/ragfs/src/git/service.rs
+@@ -44,6 +44,8 @@ const MAX_LOG_PATH_DEPTH: usize = 64;
+ /// `commit()` skip read+SHA-1 for files whose `(size, mtime_ns)` are
+ /// unchanged since the last commit.
+ pub struct GitService {
++    // Commit, restore and forgetting mutate one shared account history.
++    snapshot_writers: dashmap::DashMap<String, Arc<tokio::sync::RwLock<()>>>,
+     /// Working-tree filesystem rooted at `/local/{account}`.
+     pub vfs: Arc<dyn FileSystem>,
+     /// Backing object store (loose Git objects, content-addressed).
+@@ -60,6 +62,39 @@ pub struct GitService {
+ }
+ 
+ impl GitService {
++    /// Permanently remove paths from snapshots; working-tree removal is separate.
++    pub async fn forget_paths(&self, account: String, paths: Vec<String>,
++                              replacements: Vec<(String, String, Vec<u8>)>)
++        -> Result<crate::git::forget::ForgetResponse, GitError>
++    {
++        validate_account_id(&account)?;
++        if paths.is_empty() {
++            return Err(GitError::InvalidPath("forget requires explicit paths".into()));
++        }
++        for path in &paths { validate_relative_path(path)?; }
++        let mut edits = HashMap::new();
++        for (path, oid, content) in replacements {
++            validate_relative_path(&path)?;
++            let oid = ObjectId::from_hex(oid.as_bytes())
++                .map_err(|error| GitError::Other(format!("replacement blob ID: {error}")))?;
++            edits.insert((path, oid), content);
++        }
++        let writer = self.snapshot_writers.entry(account.clone()).or_default().clone();
++        let _write = writer.write().await;
++        crate::git::forget::forget_paths(self, &account, &paths, &edits).await
++    }
++
++    /// Stored file versions in the selected subtree, including detached commits.
++    pub async fn history_files(&self, account: String, prefix: String, names: Vec<String>)
++        -> Result<Vec<crate::git::forget::HistoricalFile>, GitError>
++    {
++        validate_account_id(&account)?;
++        validate_relative_path(&prefix)?;
++        let writer = self.snapshot_writers.entry(account.clone()).or_default().clone();
++        let _write = writer.read().await;
++        crate::git::forget::history_files(self, &account, &prefix, &names).await
++    }
++
+     /// Build a service without Fast Path 1. Equivalent to
+     /// [`GitService::with_index`] passing `None`.
+     pub fn new(
+@@ -68,6 +103,7 @@ impl GitService {
+         ref_store: Arc<dyn RefStore>,
+     ) -> Self {
+         Self {
++            snapshot_writers: dashmap::DashMap::new(),
+             vfs,
+             object_store,
+             ref_store,
+@@ -86,6 +122,7 @@ impl GitService {
+         index_store: Option<Arc<dyn IndexStore>>,
+     ) -> Self {
+         Self {
++            snapshot_writers: dashmap::DashMap::new(),
+             vfs,
+             object_store,
+             ref_store,
+@@ -129,6 +166,8 @@ impl GitService {
+     /// index can never produce an incorrect commit.
+     pub async fn commit(&self, req: CommitRequest) -> Result<CommitResponse, GitError> {
+         validate_account_id(&req.account)?;
++        let writer = self.snapshot_writers.entry(req.account.clone()).or_default().clone();
++        let _write = writer.read().await;
+         if let Some(paths) = &req.paths {
+             for path in paths {
+                 validate_relative_path(path)?;
+@@ -969,6 +1008,8 @@ impl GitService {
+     ///   and the CAS swap.
+     pub async fn restore(&self, req: RestoreRequest) -> Result<RestoreResponse, GitError> {
+         validate_account_id(&req.account)?;
++        let writer = self.snapshot_writers.entry(req.account.clone()).or_default().clone();
++        let _write = writer.read().await;
+         if let Some(project_dir) = &req.project_dir {
+             validate_project_dir(project_dir)?;
+         }
+@@ -5312,6 +5353,13 @@ mod tests {
+ 
+     #[async_trait]
+     impl ObjectStore for CountingObjectStore {
++        async fn list(&self, account: &str) -> Result<Vec<gix_hash::ObjectId>, crate::git::error::ObjectStoreError> {
++            self.inner.list(account).await
++        }
++        async fn remove(&self, account: &str, oid: &gix_hash::ObjectId) -> Result<(), crate::git::error::ObjectStoreError> {
++            self.inner.remove(account, oid).await
++        }
++
+         async fn put(
+             &self,
+             account: &str,
+@@ -5459,6 +5507,13 @@ mod tests {
+ 
+     #[async_trait]
+     impl ObjectStore for GetSpyObjectStore {
++        async fn list(&self, account: &str) -> Result<Vec<gix_hash::ObjectId>, crate::git::error::ObjectStoreError> {
++            self.inner.list(account).await
++        }
++        async fn remove(&self, account: &str, oid: &gix_hash::ObjectId) -> Result<(), crate::git::error::ObjectStoreError> {
++            self.inner.remove(account, oid).await
++        }
++
+         async fn put(
+             &self,
+             account: &str,
+diff --git a/crates/ragfs/src/git/tree_builder.rs b/crates/ragfs/src/git/tree_builder.rs
+index 34e66b8..e31bd54 100644
+--- a/crates/ragfs/src/git/tree_builder.rs
++++ b/crates/ragfs/src/git/tree_builder.rs
+@@ -1260,6 +1260,13 @@ mod tests {
+ 
+     #[async_trait::async_trait]
+     impl ObjectStore for SpyObjectStore {
++        async fn list(&self, account: &str) -> Result<Vec<gix_hash::ObjectId>, crate::git::error::ObjectStoreError> {
++            self.inner.list(account).await
++        }
++        async fn remove(&self, account: &str, oid: &gix_hash::ObjectId) -> Result<(), crate::git::error::ObjectStoreError> {
++            self.inner.remove(account, oid).await
++        }
++
+         async fn put(
+             &self,
+             account: &str,
+diff --git a/crates/ragfs/src/git/util.rs b/crates/ragfs/src/git/util.rs
+index a393c17..b0e33a8 100644
+--- a/crates/ragfs/src/git/util.rs
++++ b/crates/ragfs/src/git/util.rs
+@@ -293,6 +293,13 @@ mod tests {
+ 
+         #[async_trait::async_trait]
+         impl ObjectStore for CountingStore {
++        async fn list(&self, account: &str) -> Result<Vec<gix_hash::ObjectId>, crate::git::error::ObjectStoreError> {
++            self.inner.list(account).await
++        }
++        async fn remove(&self, account: &str, oid: &gix_hash::ObjectId) -> Result<(), crate::git::error::ObjectStoreError> {
++            self.inner.remove(account, oid).await
++        }
++
+             async fn put(
+                 &self,
+                 account: &str,
+diff --git a/openviking/server/routers/content.py b/openviking/server/routers/content.py
+index d9089a2..67b0c83 100644
+--- a/openviking/server/routers/content.py
++++ b/openviking/server/routers/content.py
+@@ -2,12 +2,12 @@
+ # SPDX-License-Identifier: AGPL-3.0
+ """Content endpoints for OpenViking HTTP Server."""
+ 
+-from typing import Literal
++from typing import Annotated, Literal
+ from urllib.parse import quote
+ 
+ from fastapi import APIRouter, Body, Depends, Query
+ from fastapi.responses import Response as FastAPIResponse
+-from pydantic import BaseModel, ConfigDict, model_validator
++from pydantic import BaseModel, ConfigDict, Field, model_validator
+ 
+ from openviking.core.namespace import (
+     is_hidden_by_actor_peer_view,
+@@ -105,6 +105,20 @@ class ReindexRequest(BaseModel):
+ router = APIRouter(prefix="/api/v1/content", tags=["content"])
+ 
+ 
++class ForgetMemoryRequest(BaseModel):
++    model_config = ConfigDict(strict=True, extra="forbid")
++    uri: str = Field(min_length=1)
++    source_message_ids: list[Annotated[str, Field(min_length=1)]]
++
++
++@router.post("/forget")
++async def forget_memory(request: ForgetMemoryRequest, _ctx: RequestContext = Depends(get_request_context)):
++    """Forget one owned memory path and explicitly selected archived source messages."""
++    uri = validate_request_viking_uri(request.uri, _ctx)
++    result = await get_service().fs.forget_memory(uri, request.source_message_ids, _ctx)
++    return Response(status="ok", result=result)
++
++
+ def _authorize_reindex_uri(uri: str, ctx: RequestContext) -> str:
+     """Allow users to reindex only their own private namespace."""
+     if ctx.role != Role.USER:
+diff --git a/openviking/service/fs_service.py b/openviking/service/fs_service.py
+index 1b9580e..ad56de9 100644
+--- a/openviking/service/fs_service.py
++++ b/openviking/service/fs_service.py
+@@ -430,6 +430,12 @@ class FSService:
+         directory_uri = VikingURI(abstract_uri).parent.uri
+         return directory_uri, abstract_uri
+ 
++    async def forget_memory(self, uri: str, source_message_ids: List[str],
++                            ctx: RequestContext) -> Dict[str, Any]:
++        from openviking.service.memory_forget import forget_memory
++
++        return await forget_memory(self._ensure_initialized(), uri, source_message_ids, ctx)
++
+     async def rm(
+         self,
+         uri: str,
+diff --git a/openviking/service/memory_forget.py b/openviking/service/memory_forget.py
+new file mode 100644
+index 0000000..166e2b6
+--- /dev/null
++++ b/openviking/service/memory_forget.py
+@@ -0,0 +1,192 @@
++"""Path-scoped forgetting of native memory and its stored derivatives."""
++
++from __future__ import annotations
++
++from typing import TypeVar
++
++from pydantic import BaseModel, ConfigDict, ValidationError
++
++from openviking.core.namespace import classify_uri, resolve_uri
++from openviking.server.identity import RequestContext
++from openviking.service.task_tracker import TaskStatus, get_task_tracker
++from openviking.storage.acl import AclAction
++from openviking.storage.errors import ResourceBusyError
++from openviking.storage.viking_fs import VikingFS
++from openviking_cli.exceptions import InvalidArgumentError, OpenVikingError, PermissionDeniedError
++
++
++class ArchiveMessage(BaseModel):
++    model_config = ConfigDict(strict=True, extra="allow")
++    id: str
++    source_message_ids: list[str] | None = None
++
++
++class DiffEntry(BaseModel):
++    model_config = ConfigDict(strict=True, extra="allow")
++    uri: str
++
++
++class SkippedEntry(BaseModel):
++    model_config = ConfigDict(strict=True, extra="allow")
++    uri: str | None = None
++
++
++class DiffOperations(BaseModel):
++    model_config = ConfigDict(strict=True, extra="forbid")
++    adds: list[DiffEntry]
++    updates: list[DiffEntry]
++    deletes: list[DiffEntry]
++
++
++class MemoryDiff(BaseModel):
++    model_config = ConfigDict(strict=True, extra="allow")
++    archive_uri: str
++    operations: DiffOperations
++    skipped_operations: list[SkippedEntry]
++    summary: dict[str, int]
++
++
++Model = TypeVar("Model", bound=BaseModel)
++
++
++def _decode(model: type[Model], raw: str, uri: str) -> Model:
++    try:
++        return model.model_validate_json(raw)
++    except ValidationError as error:
++        raise InvalidArgumentError(f"Cannot read forgetting source {uri}: {error}; raw={raw[:500]!r}") from error
++
++
++def _rewrite_archive(raw: str, path: str, uri: str, sources: set[str]) -> tuple[str | None, set[str]]:
++    matched = set()
++    if path.endswith("/memory_diff.json"):
++        diff = _decode(MemoryDiff, raw, path)
++        changed = False
++        for name in ("adds", "updates", "deletes"):
++            old = getattr(diff.operations, name)
++            kept = [entry for entry in old if entry.uri != uri]
++            changed |= len(kept) != len(old)
++            setattr(diff.operations, name, kept)
++            diff.summary["total_" + name] = len(kept)
++        kept_skips = [entry for entry in diff.skipped_operations if entry.uri != uri]
++        changed |= len(kept_skips) != len(diff.skipped_operations)
++        diff.skipped_operations = kept_skips
++        diff.summary["total_skipped"] = len(kept_skips)
++        if changed:
++            return diff.model_dump_json(indent=2, exclude_unset=True) + "\n", matched
++    elif sources and path.endswith("/messages.jsonl"):
++        kept_lines = []
++        for line in raw.splitlines():
++            message = _decode(ArchiveMessage, line, path)
++            selected = (set() if message.source_message_ids is None
++                        else sources.intersection(message.source_message_ids))
++            if selected:
++                matched.update(selected)
++            else:
++                kept_lines.append(line)
++        if matched:
++            return "".join(line + "\n" for line in kept_lines), matched
++    return None, matched
++
++
++def _parents(uri: str, user_root: str) -> list[str]:
++    result = []
++    parent = uri.rsplit("/", 1)[0]
++    while parent.startswith(user_root):
++        result.append(parent)
++        if parent == user_root:
++            break
++        parent = parent.rsplit("/", 1)[0]
++    return result
++
++
++async def forget_memory(vfs: VikingFS, uri: str, source_message_ids: list[str],
++                        ctx: RequestContext) -> dict:
++    target = resolve_uri(uri)
++    if target.scope != "user" or target.owner_user_id != ctx.user.user_id:
++        raise PermissionDeniedError("Memory forgetting is limited to the calling user's namespace", resource=uri)
++    if (not classify_uri(uri).is_memory or not uri.endswith(".md")
++            or uri.rsplit("/", 1)[-1].startswith(".")):
++        raise InvalidArgumentError("forget requires one explicit memory Markdown file")
++    await vfs._ensure_access(uri, ctx, action=AclAction.WRITE)
++
++    user_root = f"viking://user/{ctx.user.user_id}"
++    session_root = user_root + "/sessions"
++    lease = await vfs._async_agfs.pathlock_acquire_tree(vfs._uri_to_path(user_root, ctx=ctx))
++    completed: dict = {"uri": uri, "rewritten_archives": [], "cleared_uris": []}
++    try:
++        tasks = await get_task_tracker().list_tasks(
++            account_id=ctx.account_id, user_id=ctx.user.user_id, limit=None)
++        active = [task.task_id for task in tasks if task.status in {
++            TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLING}]
++        if active:
++            raise ResourceBusyError(f"User tasks are still active: {active}", uri=uri)
++
++        entries = await vfs.tree(session_root, output="original", show_all_hidden=True,
++                                 node_limit=None, level_limit=None, ctx=ctx)
++        files = {item["uri"] for item in entries if not item["isDir"]}
++        sources = set(source_message_ids)
++        matched_sources: set[str] = set()
++        writes: dict[str, str] = {}
++        affected_sessions: set[str] = set()
++
++        def affect(path: str) -> None:
++            session_id = path[len(session_root) + 1:].split("/", 1)[0]
++            affected_sessions.add(session_root + "/" + session_id)
++
++        for path in sorted(files):
++            if path.endswith("/memory_diff.json") or (sources and path.endswith("/messages.jsonl")):
++                raw = await vfs.read_file(path, ctx=ctx)
++                content, matched = _rewrite_archive(raw, path, uri, sources)
++                matched_sources.update(matched)
++                if content is not None:
++                    writes[path] = content
++                    affect(path)
++
++        try:
++            for path, content in writes.items():
++                await vfs.write_file(path, content, ctx=ctx, lease_ref=lease)
++                completed["rewritten_archives"].append(path)
++            # Enumerate after source copies are scrubbed: a new snapshot can now
++            # only capture clean current archives. Older versions are edited too,
++            # even if their archive file no longer exists in the working tree.
++            historical = await vfs.snapshot_files_for_forgetting(session_root, ctx=ctx)
++            replacements = []
++            archived_paths = set(writes)
++            for entry in historical:
++                path = entry["uri"]
++                content, matched = _rewrite_archive(entry["content"].decode("utf-8"), path, uri, sources)
++                matched_sources.update(matched)
++                if content is not None:
++                    replacements.append((path, entry["oid"], content.encode("utf-8")))
++                    archived_paths.add(path)
++                    affect(path)
++            parents = set(_parents(uri, user_root))
++            for path in archived_paths:
++                parents.update(_parents(path, user_root))
++            summary_candidates = files | {entry["uri"] for entry in historical}
++            # Later archive overviews can incorporate earlier archives in this session.
++            summaries = {path for path in summary_candidates
++                         if path.endswith(("/.abstract.md", "/.overview.md"))
++                         and any(path.startswith(session + "/") for session in affected_sessions)}
++            parents.update(path.rsplit("/", 1)[0] for path in summaries)
++            summaries.update(parent + "/" + name for parent in parents
++                             for name in (".abstract.md", ".overview.md"))
++            history_paths = sorted({uri, *summaries})
++            await vfs._ensure_access_many(history_paths + list(archived_paths), ctx, action=AclAction.WRITE)
++            # Directory vectors contain abstracts/overviews, not sibling file vectors.
++            await vfs._delete_from_vector_store(sorted(parents), ctx=ctx)
++            for path in [uri, *sorted(summaries)]:
++                await vfs.rm(path, ctx=ctx, lease_ref=lease)
++                completed["cleared_uris"].append(path)
++            completed["snapshots"] = await vfs.forget_snapshot_paths(history_paths, replacements, ctx=ctx)
++        except Exception as error:
++            raise OpenVikingError(
++                f"Memory forgetting stopped: {type(error).__name__}: {error}",
++                code="FORGET_PARTIAL", details=completed,
++            ) from error
++        return {**completed, "source_message_ids": sorted(sources),
++                "matched_source_message_ids": sorted(matched_sources),
++                "notice": "Only selected memory and source copies are removed; other explicit memories, "
++                          "caller chat logs, model requests and external backups are unchanged."}
++    finally:
++        await vfs._async_agfs.pathlock_release(lease)
+diff --git a/openviking/storage/viking_fs/_snapshot.py b/openviking/storage/viking_fs/_snapshot.py
+index 92dc4df..a7408ca 100644
+--- a/openviking/storage/viking_fs/_snapshot.py
++++ b/openviking/storage/viking_fs/_snapshot.py
+@@ -35,6 +35,28 @@ def _pkg():
+ class _SnapshotMixin:
+     """Snapshot/git-like version control (commit/restore/show/diff/log)."""
+ 
++    async def snapshot_files_for_forgetting(self, root: str, *, ctx: RequestContext) -> List[Dict[str, Any]]:
++        await self._ensure_access(root, ctx, action=AclAction.WRITE)
++        entries = await self._async_agfs.run(
++            "git_history_files", account=ctx.account_id,
++            prefix=self._uri_to_tree_path(root, ctx=ctx),
++            names=["memory_diff.json", "messages.jsonl", ".abstract.md", ".overview.md"],
++        )
++        result = [{**entry, "uri": self._tree_path_to_uri(entry["path"])} for entry in entries]
++        await self._ensure_access_many([entry["uri"] for entry in result], ctx, action=AclAction.WRITE)
++        return result
++
++    async def forget_snapshot_paths(self, paths: List[str], replacements: List[tuple[str, str, bytes]],
++                                    *, ctx: RequestContext) -> Dict[str, Any]:
++        """Erase selected paths from stored snapshots, not merely from the next commit."""
++        await self._ensure_access_many(paths, ctx, action=AclAction.WRITE)
++        return await self._async_agfs.run(
++            "git_forget", account=ctx.account_id,
++            paths=[self._uri_to_tree_path(path, ctx=ctx) for path in paths],
++            replacements=[(self._uri_to_tree_path(path, ctx=ctx), oid, content)
++                          for path, oid, content in replacements],
++        )
++
+     def _ensure_snapshot_admin(self, ctx: RequestContext) -> None:
+         if ctx.role not in {Role.ROOT, Role.ADMIN}:
+             raise PermissionDeniedError(
+diff --git a/openviking/storage/viking_vector_index_backend.py b/openviking/storage/viking_vector_index_backend.py
+index 0dc884a..248cc27 100644
+--- a/openviking/storage/viking_vector_index_backend.py
++++ b/openviking/storage/viking_vector_index_backend.py
+@@ -2321,7 +2321,7 @@ class VikingVectorIndexBackend:
+         for uri in uris:
+             conds: List[FilterExpr] = [
+                 Eq("account_id", ctx.account_id),
+-                Or([Eq("uri", uri), In("uri", [f"{uri}/"])]),
++                Or([Eq("uri", uri), Eq("uri", f"{uri}/")]),
+             ]
+ 
+             backend = await self._get_backend_for_context(ctx)
