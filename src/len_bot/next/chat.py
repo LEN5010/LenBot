@@ -63,9 +63,10 @@ from .replay_images import RecordedImages
 class SayArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     content: str = Field(min_length=1)
-    reply_to: str | None = None
-    mention: str | None = Field(default=None, pattern=r"^[0-9]+$")
-    length: Literal["短", "正常", "长"] = "正常"
+    reply_to: str | None = Field(default=None, description="需要引用时填本场景已有平台消息 ID；直接接话可省略。")
+    mention: str | None = Field(default=None, pattern=r"^[0-9]+$",
+        description="需要提醒特定对象时填实际 QQ；连续对话中对象清楚时可省略。")
+    length: Literal["短", "正常", "长"] = Field(default="正常", description="本次表达的详略意向，所需事实仍完整保留。")
 
 
 class ReactArguments(BaseModel):
@@ -548,19 +549,9 @@ class Chat:
         else:
             messages = [{"role": "system", "content": voice_prompt(self.persona, platform=self.config.delivery == "onebot")}]
             recent = self.store.recent_context_messages(self.config.scene)
-            for message in recent:
-                if message.is_self and message.send_status in {"received", "sent", "simulated"}:
-                    text = "".join(segment.data["text"] for segment in message.segments if segment.type == "text")
-                    messages.append({"role": "assistant", "content": (
-                        self.render(message) if any(segment.type == "image" for segment in message.segments)
-                        else text)})
-                else:
-                    rendered = self.render(message)
-                    if messages[-1]["role"] == "user":
-                        messages[-1]["content"] += "\n" + rendered
-                    else:
-                        messages.append({"role": "user", "content": rendered})
-            task = {"要表达": arguments.content, "长度": arguments.length,
+            messages.append({"role": "user", "content": "<群聊对话稿>\n"
+                             + "\n".join(self.render(message) for message in recent) + "\n</群聊对话稿>"})
+            task = {"表达意图": arguments.content, "长度": arguments.length,
                     "回复对象": None if quote is None else self.render(quote), "平台已负责提及的QQ": arguments.mention}
             if expression_style is not None:
                 messages.append({"role": "user", "content": expression_style})
