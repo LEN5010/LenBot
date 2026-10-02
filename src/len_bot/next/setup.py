@@ -33,6 +33,7 @@ class FirstSetup(BaseModel):
     provider: Provider
     mind: Binding
     voice: Binding
+    voice_mode: Literal['voice', 'direct'] = 'voice'
     scene: str
     persona_id: str = Field(pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$', max_length=64)
     persona_name: str = Field(min_length=1)
@@ -63,7 +64,8 @@ def initialize(root: Path, item: FirstSetup) -> dict:
                    'roles': {'mind': item.mind.model_dump(mode='json'), 'voice': item.voice.model_dump(mode='json')}},
         'panel': {'host': '127.0.0.1', 'port': item.panel_port, 'username': item.username,
                   'password_hash': hash_password(item.password)},
-        'scenes': {item.scene: {'persona': f'personas/{item.persona_id}', 'attention': {'only_direct': True}}},
+        'scenes': {item.scene: {'persona': f'personas/{item.persona_id}', 'voice_mode': item.voice_mode,
+                                'attention': {'only_direct': True}}},
     }
     # Validate all cross-field requirements before creating any role/config files.
     HostConfig.model_validate_json(json.dumps(source))
@@ -89,6 +91,7 @@ def initialize(root: Path, item: FirstSetup) -> dict:
         temporary.unlink(missing_ok=True)
     return {'saved': True, 'config': str(config_path), 'persona': str(role_path),
             'panel_url': f'http://127.0.0.1:{item.panel_port}', 'delivery': item.delivery,
+            'voice_mode': item.voice_mode,
             'next': '现在从此实例目录重新执行刚才的启动命令，然后登录面板，先到对话测试里聊几句。'}
 
 
