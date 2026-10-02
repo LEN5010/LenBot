@@ -439,6 +439,22 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
             db.execute('ALTER TABLE messages ADD COLUMN persona_id TEXT')
         elif version == 34:
             db.execute("ALTER TABLE tasks ADD COLUMN materials TEXT NOT NULL DEFAULT '[]'")
+        elif version == 35:
+            db.execute("CREATE TABLE model_calls_next ("
+                       "id INTEGER PRIMARY KEY, turn_id TEXT, role TEXT NOT NULL,"
+                       "started REAL NOT NULL, ended REAL, request TEXT NOT NULL,"
+                       "response TEXT, usage TEXT, error TEXT, mind_entry_seq INTEGER, cost TEXT,"
+                       "scene TEXT NOT NULL, plugin TEXT)")
+            # A missing source turn must fail this copy, not silently drop a call or invent its scene.
+            db.execute("INSERT INTO model_calls_next "
+                       "SELECT c.id,c.turn_id,c.role,c.started,c.ended,c.request,c.response,c.usage,"
+                       "c.error,c.mind_entry_seq,c.cost,t.scene,NULL FROM model_calls c "
+                       "LEFT JOIN turns t ON t.id=c.turn_id")
+            db.execute("DROP TABLE model_calls")
+            db.execute("ALTER TABLE model_calls_next RENAME TO model_calls")
+            db.execute("CREATE INDEX turn_calls ON model_calls(turn_id,id)")
+            db.execute("CREATE INDEX model_call_usage ON model_calls(started,turn_id)")
+            db.execute("CREATE INDEX model_call_expiry ON model_calls(ended,id)")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

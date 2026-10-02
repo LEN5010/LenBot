@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from random import choice
@@ -19,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from len_bot.media.images import image_block
 from .config import LabConfig
 from .context import (
-    CompactionPlan, ContextBudgetError, estimate_content, estimate_request, estimate_text_request,
+    CompactionPlan, ContextBudgetError, estimate_content, estimate_request,
     plan_compaction, project_history,
 )
 from .discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, search_tools
@@ -34,7 +33,7 @@ from .plugin import Content, Sent
 from .plugin_delivery import prepare_parts
 from .jargon_store import JargonStore
 from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, plain_text, render_message, render_text
-from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
+from .model import ChatModel, ModelReply, ToolCall
 from .model_slots import ModelSlots
 from .limits import LimitReached, check_speech
 from .memory import MEMORY_TOOL, MemoryService
@@ -45,7 +44,7 @@ from .sticker_store import StickerStore
 from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
 from .platform_tools import (MEMBER_INFO_TOOL, OPEN_FORWARD_TOOL, MemberInfoArguments, OpenForwardArguments,
                              PlatformCall, member_info, open_forward)
-from .pricing import estimate_cost
+from .model_request import request_model
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .reply_effect_store import ReplyEffectStore
 from .scene_control import SCENE_CONTROL_TOOL, SceneControlArguments
@@ -406,63 +405,26 @@ class Chat:
                       expression_ids: list[int] | None = None) -> ModelReply:
         model_role = "mind" if role == "recap" else role
         model = getattr(self, model_role)
-        binding = getattr(self.config.models.roles, model_role)
-        output_tokens = self.config.compaction.max_output_tokens if role == "recap" else binding.max_output_tokens
-        estimate = estimate_text_request if role == "vision" else estimate_request
-        estimated = estimate(messages, tools, output_tokens)
-        if estimated > binding.context_window_tokens:
-            scope = "文本部分" if role == "vision" else "请求"
-            raise ContextBudgetError(
-                f"{role} {scope}含预留输出估算 {estimated} token，超过配置窗口 {binding.context_window_tokens}；未调用模型")
-        settings = model.settings.model_dump(exclude={"api_key"})
-        settings["max_output_tokens"] = output_tokens
-        price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
-        async with (self.slots.slot(direct=self.direct_request, scene=self.config.scene) if self.slots is not None else nullcontext()):
-            call_id = self.store.start_call(turn_id, role, {
-                "settings": settings, "messages": messages, "tools": tools,
-                "provider": binding.provider,
-                **({"expression_ids": expression_ids} if expression_ids is not None else {}),
-                "price": None if price is None else price.model_dump(mode="json"),
-                **({"estimated_text_tokens": estimated, "estimated_total_tokens": None} if role == "vision"
-                   else {"estimated_total_tokens": estimated}),
-                "context_window_tokens": binding.context_window_tokens,
-            })
-            self.notify()
-            reply = None
-            try:
-                if role == "recap":
-                    reply = await model.complete(messages, tools, max_output_tokens=output_tokens)
-                else:
-                    reply = await model.complete(messages, tools)
-                if role == "voice" and (reply.tool_calls or not reply.text.strip()):
-                    raise ValueError(f"表达器未返回完整台词：{encode(reply.message)}")
-                if role == "vision" and (reply.tool_calls or not reply.text.strip()):
-                    raise ValueError(f"视觉模型未返回完整描述：{encode(reply.message)}")
-                if recap_target is not None:
-                    if reply.tool_calls or not reply.text.strip():
-                        raise ValueError(f"压缩模型未返回完整回想：{encode(reply.message)}")
-                    content_tokens = estimate_content(reply.text)
-                    if content_tokens > recap_target.summary_budget_tokens:
-                        raise ContextBudgetError(
-                            f"新回想正文估算 {content_tokens} token，超过本步回想预算 "
-                            f"{recap_target.summary_budget_tokens}；未切换起点")
-            except BaseException as error:
-                response = None if reply is None else {"message": reply.message, "finish_reason": reply.finish_reason}
-                usage = None if reply is None else reply.usage
-                token_usage = None if reply is None else reply.token_usage
-                if isinstance(error, ModelProtocolError):
-                    response, usage = error.response, error.usage
-                    token_usage = error.token_usage
-                self.store.end_call(call_id, response, usage, f"{type(error).__name__}: {error}",
-                                    cost=estimate_cost(price, token_usage))
-                self.notify()
-                raise
-            self.store.end_call(call_id, {"message": reply.message, "finish_reason": reply.finish_reason}, reply.usage,
-                                cost=estimate_cost(price, reply.token_usage),
-                                append_to_scene=self.config.scene if role == "mind" else None,
-                                recap_for=None if recap_target is None else (self.config.scene, recap_target.through))
-            self.notify()
-            return reply
+        def validate(reply: ModelReply) -> None:
+            if role in {"voice", "vision"} and (reply.tool_calls or not reply.text.strip()):
+                label = "表达器未返回完整台词" if role == "voice" else "视觉模型未返回完整描述"
+                raise ValueError(f"{label}：{encode(reply.message)}")
+            if recap_target is not None:
+                if reply.tool_calls or not reply.text.strip():
+                    raise ValueError(f"压缩模型未返回完整回想：{encode(reply.message)}")
+                content_tokens = estimate_content(reply.text)
+                if content_tokens > recap_target.summary_budget_tokens:
+                    raise ContextBudgetError(
+                        f"新回想正文估算 {content_tokens} token，超过本步回想预算 "
+                        f"{recap_target.summary_budget_tokens}；未切换起点")
+
+        return await request_model(
+            self.config, self.store, model, messages, tools, scene=self.config.scene, role=role,
+            turn_id=turn_id, slots=self.slots, direct=self.direct_request,
+            output_tokens=self.config.compaction.max_output_tokens if role == "recap" else None,
+            validate=validate, append_to_scene=role == "mind",
+            recap_for=None if recap_target is None else (self.config.scene, recap_target.through),
+            expression_ids=expression_ids, notify=self.notify)
 
     async def describe_image(self, turn_id: str, asset: ImageAsset) -> str:
         messages = [

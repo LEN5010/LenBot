@@ -20,7 +20,7 @@ const sorted = value => value === 'all' ? value : [...value].sort()
 const dirty = computed(() => Boolean(skills.data.value) && !same(sorted(draft.value), sorted(skills.data.value.role_skills.saved)))
 watch(dirty, value => emit('dirty', value), { immediate: true })
 
-const sources = { builtin: '内置', shared: '共享', scene: '本群' }
+const sources = { builtin: '内置', plugin: '插件附带', shared: '共享', scene: '本群' }
 const items = computed(() => (skills.data.value?.catalog || []).map(skill => ({
   name: skill.name, label: `${skill.name} · ${sources[skill.source]}`, note: skill.description, skill,
 })))
@@ -48,7 +48,7 @@ function changed() {
   <SettingSection v-if="skills.data.value && draft !== null" title="技能"
     :description="'技能是独立任务可以照着做的操作说明。' + (shared.length ? `这个角色也用在 ${shared.map(sceneName).join('、')}，修改会一起生效。` : '')"
     :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
-    <p v-if="skills.data.value.directory === null" class="muted">还没有设置技能目录，可以在任务环境里设置。</p>
+    <p v-if="skills.data.value.directory === null && !items.length" class="muted">还没有可用技能，可启用附带技能的插件或在任务环境设置技能目录。</p>
     <template v-else>
       <AllowList v-model="draft" :items="items" all-label="全部技能">
         <template #item="{ item }">

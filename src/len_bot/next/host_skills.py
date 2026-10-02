@@ -16,11 +16,12 @@ from .host_capabilities import skill_info
 from .network import NetworkRuntime
 from .persona import load_persona
 from .skill_files import delete_skill, list_files, move_skill, read_file
-from .skills import BUILTIN_DIRECTORY, load_catalog, load_skill, load_task_skills, select_skills
+from .skills import BUILTIN_DIRECTORY, load_skill, load_task_skills, select_skills
+from .plugin_host import scene_skill_catalog
 from .tasks_store import TERMINAL, Task, TaskStore
 
 
-Source = Literal['builtin', 'shared', 'scene', 'task']
+Source = Literal['builtin', 'shared', 'scene', 'task', 'plugin']
 SkillName = Annotated[str, Field(min_length=1, max_length=64, pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$')]
 
 
@@ -87,6 +88,11 @@ def register_host_skills(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
             raise HTTPException(422, '非任务来源不接受 task_id')
         if source == 'builtin':
             return BUILTIN_DIRECTORY / name, f'/shared/skills/builtin/{name}', None
+        if source == 'plugin':
+            for skill in scene_skill_catalog(config, scene):
+                if skill.source == 'plugin' and skill.name == name:
+                    return skill.host_path, skill.container_path, None
+            raise HTTPException(404, '当前场景没有这个插件技能')
         directory = skill_directory(config)
         if source == 'shared':
             return directory / 'shared' / name, f'/shared/skills/approved/{name}', None
@@ -142,7 +148,7 @@ def register_host_skills(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
                 def inspect():
                     entries = list_files(path)
                     skill = load_skill(path, source, container)
-                    refs = ([] if source in {'builtin', 'task'} else
+                    refs = ([] if source in {'builtin', 'task', 'plugin'} else
                             saved_references(config, affected(config, scene, source), name))
                     return skill, entries, refs
 
@@ -185,9 +191,7 @@ def register_host_skills(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
                     target = replace(original, source=body.target, host_path=destination,
                                      container_path=target_container)
                     for key in scenes:
-                        catalog = tuple(skill for skill in load_catalog(
-                            skill_directory(config), key,
-                            public_browser=config.worker.public_browser)
+                        catalog = tuple(skill for skill in scene_skill_catalog(config, key)
                                         if skill.host_path != source)
                         if any(skill.name == target.name for skill in catalog):
                             raise ValueError(f'{key} 已存在同名技能 {target.name!r}，没有覆盖或移动')

@@ -19,7 +19,8 @@ from .config import STRICT, load_host_config
 from .discovery import DEFERRED_NAMES
 from .network import NetworkRuntime
 from .persona import load_persona, select_examples
-from .skills import Skill, load_catalog, select_skills
+from .skills import Skill, select_skills
+from .plugin_host import scene_skill_catalog
 
 
 logger = logging.getLogger(__name__)
@@ -144,9 +145,8 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
         path = saved.scenes[scene].persona
         persona = load_persona(path)
         directory = None if saved.worker is None else saved.worker.skills_directory
-        catalog = load_catalog(directory, scene, public_browser=(saved.worker is not None
-                                                                  and saved.worker.public_browser))
-        selected = () if directory is None else select_skills(catalog, persona.skills)
+        catalog = scene_skill_catalog(saved, scene)
+        selected = select_skills(catalog, persona.skills) if saved.worker is not None else ()
         running_directory = None if chat.tasks is None else chat.tasks.settings.skills_directory
         return {
             "scene": scene, "directory": None if directory is None else str(directory),
@@ -188,9 +188,8 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
         affected = [key for key, value in saved.scenes.items() if value.persona == path]
         for key in affected:
             build_tools(saved.scene_config(key), persona, platform=saved.delivery == "onebot")
-            if saved.worker is not None and saved.worker.skills_directory is not None:
-                select_skills(load_catalog(saved.worker.skills_directory, key,
-                                           public_browser=saved.worker.public_browser), persona.skills)
+            if saved.worker is not None:
+                select_skills(scene_skill_catalog(saved, key), persona.skills)
         metadata = persona.model_dump(exclude={"voice", "boundaries", "examples", "knowledge"})
         descriptor, name = tempfile.mkstemp(prefix=".persona-", suffix=".yaml", dir=path)
         temporary = Path(name)

@@ -24,7 +24,8 @@ from .asr_model import AudioSettings
 from .operations import LoggingSettings
 from .limits import ResourceLimits
 from .retention import RetentionSettings
-from .skills import load_catalog, select_skills
+from .skills import select_skills
+from .plugin_host import scene_skill_catalog
 from .pricing import ModelPrice
 from .web_search import WebSearchSettings
 from .memory import RecallSettings, LocalMemoryConfig, OpenVikingMemoryConfig
@@ -352,9 +353,8 @@ def _prepare(root: Path, edit: Callable[[dict, HostConfig], None]
     for scene, settings in candidate.scenes.items():
         build_tools(candidate.scene_config(scene), personas[settings.persona],
                     platform=candidate.delivery == "onebot")
-        if candidate.worker is not None and candidate.worker.skills_directory is not None:
-            select_skills(load_catalog(candidate.worker.skills_directory, scene,
-                                       public_browser=candidate.worker.public_browser),
+        if candidate.worker is not None:
+            select_skills(scene_skill_catalog(candidate, scene),
                           personas[settings.persona].skills)
 
     descriptor, name = tempfile.mkstemp(prefix=".lenbot-config-", suffix=".json", dir=path.parent)

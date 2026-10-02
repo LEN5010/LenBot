@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from .config import PLUGIN_NAME, PLUGIN_RESERVED, HostConfig, _read_root
 from .host_settings import _body, _prepare, _read_saved
 from .network import NetworkRuntime
-from .plugin_host import Manifest, discover, read_manifest, redact_values
+from .plugin_host import ConfigField, ConfigItem, Manifest, discover, read_manifest, redact_values
 
 
 STRICT = ConfigDict(extra="forbid", strict=True)
@@ -44,10 +44,14 @@ class PluginPaths(BaseModel):
 
 
 def _field_info(manifest: Manifest) -> list[dict]:
-    return [{"key": key, "type": item.type, "description": item.description,
-             "required": "default" not in item.model_fields_set,
-             "default": None if item.type == "secret" else item.default}
-            for key, item in manifest.config.items()]
+    def field(key: str, item: ConfigItem) -> dict:
+        return {"key": key, "type": item.type, "description": item.description,
+                "required": "default" not in item.model_fields_set,
+                "default": None if item.type == "secret" else item.default,
+                "options": item.options, "minimum": item.minimum, "maximum": item.maximum,
+                "fields": ([field(name, child) for name, child in item.fields.items()]
+                           if isinstance(item, ConfigField) else [])}
+    return [field(key, item) for key, item in manifest.config.items()]
 
 
 def _masked(manifest: Manifest | None, values: dict) -> dict:
@@ -67,7 +71,8 @@ def _available(saved: HostConfig) -> tuple[dict[str, list[dict]], list[str]]:
                 manifest = read_manifest(directory)
                 entries.append({"directory": str(directory), "error": None, "version": manifest.version,
                                 "description": manifest.description, "authors": manifest.authors,
-                                "license": manifest.license, "fields": _field_info(manifest)})
+                                "license": manifest.license, "repository": manifest.repository,
+                                "homepage": manifest.homepage, "fields": _field_info(manifest)})
             except (OSError, ValueError) as error:
                 entries.append({"directory": str(directory), "error": f"{type(error).__name__}: {error}"})
         available[name] = entries
@@ -85,7 +90,7 @@ def _manifest(saved: HostConfig, name: str) -> Manifest:
 
 def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, running: HostConfig,
                           user: Callable[[Request], str], write_lock: asyncio.Lock) -> None:
-    def state() -> dict:
+    def state(plugin_state: dict) -> dict:
         saved = _read_saved(root)
         _, raw = _read_root(root)
         available, errors = _available(saved)
@@ -97,8 +102,7 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
                                if len(entries) == 1 and entries[0]["error"] is None else None)
         raw_plugins = raw.get("plugins") or {}
         return {
-            "running": ({"plugins": [], "discovery_errors": []} if runtime.plugins is None
-                        else runtime.plugins.state()),
+            "running": plugin_state,
             "available": available, "discovery_errors": errors,
             "saved": {"paths": raw_plugins.get("paths", []),
                       "data_directory": raw_plugins.get("data_directory", "plugin-data"),
@@ -111,6 +115,13 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
                 for scene, settings in running.scenes.items()),
         }
 
+    async def snapshot() -> dict:
+        plugin_state = ({"plugins": [], "discovery_errors": []} if runtime.plugins is None
+                        else runtime.plugins.state())
+        for item in plugin_state["plugins"]:
+            item["model_calls"] = runtime.store.plugin_calls(item["name"])
+        return await asyncio.to_thread(state, plugin_state)
+
     async def save(edit: Callable[[dict, HostConfig], None]) -> dict:
         async with write_lock:
             try:
@@ -119,7 +130,7 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
                     temporary.replace(path)
                 finally:
                     temporary.unlink(missing_ok=True)
-                return await asyncio.to_thread(state)
+                return await snapshot()
             except (ValueError, OSError) as error:
                 raise HTTPException(422 if isinstance(error, ValueError) else 500,
                                     f"{type(error).__name__}: {error}") from error
@@ -128,7 +139,7 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
     async def plugins(_: str = Depends(user)):
         async with write_lock:
             try:
-                return await asyncio.to_thread(state)
+                return await snapshot()
             except (ValueError, OSError) as error:
                 raise HTTPException(422 if isinstance(error, ValueError) else 500,
                                     f"{type(error).__name__}: {error}") from error

@@ -55,7 +55,8 @@ def _historical_columns(table: str, db: sqlite3.Connection) -> str:
     # These additions have no source values in the historical fixtures.
     return ",".join(row[1] for row in db.execute(f"PRAGMA table_info({table})")
                     if (table, row[1]) not in {("messages", "persona_id"),
-                                               ("schedules", "legacy_source")})
+                                               ("schedules", "legacy_source"),
+                                               ("model_calls", "scene"), ("model_calls", "plugin")})
 
 
 def _remove_browser_columns(db) -> None:
@@ -457,7 +458,7 @@ def test_v10_call_position_upgrade_keeps_synthetic_native_groups_unpaired(tmp_pa
     assert _version(tmp_path / "isolated.sqlite3.v12.bak") == (0x4C424E31, 12)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         assert [row[1] for row in db.execute("PRAGMA table_info(model_calls)")] == [
-            *MODEL_CALL_COLUMNS, "mind_entry_seq", "cost",
+            *MODEL_CALL_COLUMNS, "mind_entry_seq", "cost", "scene", "plugin",
         ]
         assert [row[2] for row in db.execute("PRAGMA index_info(turn_calls)")] == [
             "turn_id", "id",
@@ -557,7 +558,7 @@ def test_v12_cost_upgrade_keeps_existing_latency_and_call_facts(tmp_path: Path) 
     assert _rows(path) == before == _rows(backup)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         assert [row[1] for row in db.execute("PRAGMA table_info(model_calls)")] == [
-            *MODEL_CALL_COLUMNS, "mind_entry_seq", "cost",
+            *MODEL_CALL_COLUMNS, "mind_entry_seq", "cost", "scene", "plugin",
         ]
         assert [row[1] for row in old.execute("PRAGMA table_info(model_calls)")] == [
             *MODEL_CALL_COLUMNS, "mind_entry_seq",
@@ -680,7 +681,7 @@ def test_work_task_upgrade_preserves_format_13_rows(tmp_path: Path) -> None:
     assert _rows(path) == before == _rows(backup)
     with Store(path) as store:
         assert [tuple(row) for row in store.db.execute(
-            "SELECT rowid,* FROM model_calls ORDER BY rowid")] == calls_before
+            f"SELECT rowid,{_historical_columns('model_calls', store.db)} FROM model_calls ORDER BY rowid")] == calls_before
         for table in ("tasks", "task_events", "task_files"):
             assert store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
 
@@ -1203,6 +1204,8 @@ def test_format19_jargon_migration_collision_rolls_back(tmp_path: Path) -> None:
 
 
 def _remove_format32_to35_additions(db):
+    db.execute('ALTER TABLE model_calls DROP COLUMN scene')
+    db.execute('ALTER TABLE model_calls DROP COLUMN plugin')
     db.execute('DROP INDEX schedules_legacy_identity')
     db.execute('ALTER TABLE schedules DROP COLUMN legacy_source')
     db.execute('ALTER TABLE messages DROP COLUMN persona_id')

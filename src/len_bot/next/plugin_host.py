@@ -16,17 +16,23 @@ from string import Template
 import sys
 import time
 import tomllib
-from typing import TYPE_CHECKING, Literal, get_type_hints
+from typing import TYPE_CHECKING, Annotated, Literal, get_type_hints
 from urllib.parse import quote, quote_plus
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError, create_model, field_validator
+from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, JsonValue,
+                      TypeAdapter, ValidationError, create_model, field_validator, model_validator)
 
 from .config import PLUGIN_NAME, PLUGIN_RESERVED, HostConfig
 from .external_tools import ExternalTool
 from .messages import parse_notice, ChatMessage
-from .plugin import INTERFACE, MARK, Content, Image, Text, Invocation, Notice, Plugin, PluginContext, Sent
+from .plugin import (INTERFACE, MARK, Content, GenerationRole, Image, Text,
+                     Invocation, Notice, Plugin, PluginContext, Sent)
 from .plugin_kv import PluginKV
+from .model import ChatModel, ModelReply
+from .model_request import request_model
+from .schedule_time import Cron, next_cron, parse_cron
+from .skills import Skill, load_catalog, load_plugin_skills
 from .store import encode
 
 if TYPE_CHECKING:
@@ -42,11 +48,73 @@ FIELD_TYPES = {"string": str, "secret": str, "integer": int, "number": float, "b
 ERROR_LIMIT = 20
 
 
-class ConfigField(BaseModel):
+class ConfigItem(BaseModel):
+    """One form value, also used for an object-list row's named children."""
     model_config = STRICT
-    type: Literal["string", "secret", "integer", "number", "boolean", "string_list", "object_list"]
+    type: Literal["string", "integer", "number", "boolean", "string_list"]
     description: str = Field(min_length=1)
     default: str | int | float | bool | list[str] | list[dict[str, JsonValue]] | None = None
+    options: list[str | int | float] | None = Field(default=None, min_length=1)
+    minimum: float | None = Field(default=None, allow_inf_nan=False)
+    maximum: float | None = Field(default=None, allow_inf_nan=False)
+
+    def annotation(self):
+        constraints = Field(ge=self.minimum, le=self.maximum) if self.type in {"integer", "number"} else Field()
+        value_type = Annotated[FIELD_TYPES[self.type], constraints]
+        if self.options is not None:
+            def choice(value):
+                if value not in self.options:
+                    raise ValueError(f"必须是 {self.options!r} 中的一项")
+                return value
+            value_type = Annotated[value_type, AfterValidator(choice), Field(json_schema_extra={"enum": self.options})]
+        return value_type
+
+    @model_validator(mode="after")
+    def valid_constraints(self):
+        if (self.minimum is not None or self.maximum is not None) and self.type not in {"integer", "number"}:
+            raise ValueError("minimum/maximum 只用于 integer 或 number")
+        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
+            raise ValueError("minimum 不能大于 maximum")
+        if self.options is not None:
+            if self.type not in {"string", "integer", "number"}:
+                raise ValueError("options 只用于 string、integer 或 number")
+            adapter = TypeAdapter(FIELD_TYPES[self.type], config=STRICT)
+            for option in self.options:
+                adapter.validate_python(option)
+        if "default" in self.model_fields_set:
+            TypeAdapter(self.annotation(), config=STRICT).validate_python(self.default)
+        return self
+
+
+class ConfigField(ConfigItem):
+    type: Literal["string", "secret", "integer", "number", "boolean", "string_list", "object_list"]
+    fields: dict[str, ConfigItem] = Field(default_factory=dict)
+
+    def annotation(self):
+        if self.type == "object_list" and self.fields:
+            return list[config_model("PluginConfigRow", self.fields)]
+        return super().annotation()
+
+    @model_validator(mode="after")
+    def object_fields(self):
+        if self.fields and self.type != "object_list":
+            raise ValueError("fields 只用于 object_list")
+        check_field_names(self.fields)
+        return self
+
+
+def check_field_names(fields: Mapping[str, ConfigItem]) -> None:
+    for key in fields:
+        if re.fullmatch(r"[a-z][a-z0-9_]*", key) is None:
+            raise ValueError(f"配置字段 {key!r} 只能使用小写字母、数字和下划线")
+
+
+def config_model(name: str, fields: Mapping[str, ConfigItem]) -> type[BaseModel]:
+    return create_model(name, __config__=STRICT, **{
+        key: (item.annotation(), Field(item.default if "default" in item.model_fields_set else ...,
+                                       description=item.description, validate_default=True))
+        for key, item in fields.items()
+    })
 
 
 class Manifest(BaseModel):
@@ -57,6 +125,8 @@ class Manifest(BaseModel):
     authors: list[str] = Field(min_length=1)
     license: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    repository: HttpUrl | None = None
+    homepage: HttpUrl | None = None
     config: dict[str, ConfigField] = Field(default_factory=dict)
 
     @field_validator("name")
@@ -69,19 +139,11 @@ class Manifest(BaseModel):
     @field_validator("config")
     @classmethod
     def valid_fields(cls, value: dict[str, ConfigField]) -> dict[str, ConfigField]:
-        for key, item in value.items():
-            if re.fullmatch(r"[a-z][a-z0-9_]*", key) is None:
-                raise ValueError(f"config.{key}: keys use lowercase letters, digits and underscores")
-            if "default" in item.model_fields_set:
-                TypeAdapter(FIELD_TYPES[item.type], config=STRICT).validate_python(item.default)
+        check_field_names(value)
         return value
 
     def values_model(self) -> type[BaseModel]:
-        fields = {}
-        for key, item in self.config.items():
-            default = item.default if "default" in item.model_fields_set else ...
-            fields[key] = (FIELD_TYPES[item.type], Field(default, description=item.description))
-        return create_model(f"PluginConfig_{self.name}", __config__=STRICT, **fields)
+        return config_model(f"PluginConfig_{self.name}", self.config)
 
 
 def redact_values(text: str, manifest: Manifest | None, values: Mapping[str, object]) -> str:
@@ -132,12 +194,41 @@ def discover(paths: list[Path]) -> tuple[dict[str, list[Path]], list[str]]:
     return found, errors
 
 
+def scene_skill_catalog(config: HostConfig, scene: str) -> tuple[Skill, ...]:
+    """Read a saved scene's skill sources without importing plugin executable code."""
+    if config.worker is None:
+        return ()
+    skills = list(load_catalog(config.worker.skills_directory, scene,
+                               public_browser=config.worker.public_browser))
+    if config.plugins is not None:
+        found, _ = discover(config.plugins.paths)
+        for name in config.scenes[scene].plugins:
+            directories = found.get(name, [])
+            if len(directories) != 1:
+                raise ValueError(f"插件 {name} 的技能来源无法定位到唯一目录：{directories}")
+            read_manifest(directories[0])
+            skills.extend(load_plugin_skills(directories[0] / "skills", name))
+    return tuple(skills)
+
+
 
 
 @dataclass
 class Background:
     method: str
     seconds: int
+    last_started: float | None = None
+    last_finished: float | None = None
+    last_error: str | None = None
+
+
+@dataclass
+class CronJob:
+    name: str
+    scene: str
+    cron: Cron
+    timezone: str
+    next_run: float
     last_started: float | None = None
     last_finished: float | None = None
     last_error: str | None = None
@@ -159,6 +250,8 @@ class Loaded:
     notices: dict[str, str] = field(default_factory=dict)                   # type -> method
     tools: dict[str, tuple[str, type[BaseModel], str]] = field(default_factory=dict)
     backgrounds: list[Background] = field(default_factory=list)
+    crons: dict[tuple[str, str], CronJob] = field(default_factory=dict)
+    skills: tuple[Skill, ...] = ()
     errors: deque = field(default_factory=lambda: deque(maxlen=ERROR_LIMIT))
     ready: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -240,6 +333,7 @@ class PluginHost:
                              "多个目录提供同名插件：" + "、".join(map(str, directories)))
         record.directory = directory = directories[0]
         record.manifest = manifest = read_manifest(directory)
+        record.skills = load_plugin_skills(directory / "skills", record.name)
         try:
             parsed = manifest.values_model().model_validate(values)
         except ValidationError as error:
@@ -401,6 +495,65 @@ class PluginHost:
         if "memory" not in chat.allowed_tool_names:
             raise PermissionError(f"场景 {scene} 当前加载角色未允许 memory")
         return await chat.memory.execute(scene, arguments)
+
+    async def generate(self, plugin: str, scene: str, prompt: str, role: GenerationRole,
+                       system: str | None) -> str:
+        self._active(plugin, scene)
+        messages = ([] if system is None else [{"role": "system", "content": system}])
+        messages.append({"role": "user", "content": prompt})
+
+        def text_reply(reply: ModelReply) -> None:
+            if reply.tool_calls or not reply.text.strip():
+                raise ValueError(f"插件单次生成未返回完整文字：{encode(reply.message)}")
+
+        async with ChatModel(self.config.model_settings(role)) as model:
+            reply = await request_model(
+                self.config, self.runtime.store, model, messages, [], scene=scene, role=role,
+                plugin=plugin, slots=self.runtime.slots, validate=text_reply, notify=self._notify)
+        return reply.text
+
+    async def delegate(self, plugin: str, scene: str, requester: str, goal: str, deliverable: str,
+                       context: str, materials: Sequence[str]) -> dict:
+        self._active(plugin, scene)
+        if self.runtime.tasks is None:
+            raise ValueError("当前宿主未启用独立工作任务")
+        from .tasks_tools import DelegateArguments
+        arguments = DelegateArguments(goal=goal, deliverable=deliverable, requester=requester,
+                                      context=context, materials=list(materials))
+        return await self.runtime.tasks.delegate(scene, **arguments.model_dump())
+
+    def cron(self, plugin: str, name: str, scene: str, expression: str, timezone: str,
+             handler: Callable[[Invocation], Awaitable[None]]) -> asyncio.Task:
+        record = self._active(plugin, scene)
+        key = (scene, name)
+        if key in record.crons:
+            raise ValueError(f"插件 {plugin} 在 {scene} 已登记定点任务 {name}")
+        cron = parse_cron("cron:" + expression)
+        job = CronJob(name, scene, cron, timezone, next_cron(cron, timezone, self.now()))
+        record.crons[key] = job
+        return self.start_task(plugin, f"定点 {scene}/{name}", self._cron(record, job, handler))
+
+    async def _cron(self, record: Loaded, job: CronJob,
+                    handler: Callable[[Invocation], Awaitable[None]]) -> None:
+        await record.ready.wait()
+        while True:
+            await asyncio.sleep(max(0, job.next_run - self.now()))
+            job.last_started = self.now()
+            try:
+                await handler(Invocation(record.context, job.scene))
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                job.last_error = self._record(record, f"定点 {job.scene}/{job.name}", error)
+            else:
+                job.last_error = None
+            job.last_finished = self.now()
+            job.next_run = next_cron(job.cron, job.timezone, self.now())
+            self._notify()
+
+    def skills_for(self, scene: str) -> tuple[Skill, ...]:
+        return tuple(skill for record in self.plugins.values()
+                     if record.status in {"loaded", "running"} and scene in record.scenes for skill in record.skills)
 
     # Runtime entry points.
 
@@ -631,5 +784,10 @@ class PluginHost:
                                  "last_started": item.last_started, "last_finished": item.last_finished,
                                  "last_error": item.last_error} for item in record.backgrounds],
                 "errors": list(reversed(record.errors)),
+                "crons": [{"name": job.name, "scene": job.scene, "expression": job.cron.expression,
+                           "timezone": job.timezone, "next_run": job.next_run,
+                           "last_started": job.last_started, "last_finished": job.last_finished,
+                           "last_error": job.last_error} for job in record.crons.values()],
+                "skills": [skill.name for skill in record.skills],
             })
         return {"plugins": plugins, "discovery_errors": self.discovery_errors}

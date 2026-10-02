@@ -1,0 +1,24 @@
+name = "counter"
+version = "1.0.0"
+interface = 1
+authors = ["LEN5010"]
+license = "AGPL-3.0-only"
+description = "每群独立计数：命令和全文规则直接回复，另提供只读工具，不主动调用模型。"
+
+[config.label]
+type = "string"
+description = "计数的显示名称"
+default = "本群计数"
+
+[config.step]
+type = "integer"
+description = "发送「计数加一」时增加的数值"
+minimum = 1
+maximum = 100
+default = 1
+
+[config.format]
+type = "string"
+description = "回复样式"
+options = ["compact", "detail"]
+default = "compact"

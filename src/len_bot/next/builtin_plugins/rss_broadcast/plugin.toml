@@ -1,0 +1,40 @@
+name = "rss_broadcast"
+version = "1.0.0"
+interface = 1
+authors = ["LEN5010"]
+license = "AGPL-3.0-only"
+description = "在明确时区的 cron 时刻直接播报 RSS 2.0 订阅，不调用模型；/订阅播报 可手动查看新条目。"
+
+[config.subscriptions]
+type = "object_list"
+description = "RSS 订阅"
+default = []
+
+[config.subscriptions.fields.name]
+type = "string"
+description = "订阅名称（同一群内唯一）"
+
+[config.subscriptions.fields.url]
+type = "string"
+description = "RSS 2.0 地址"
+
+[config.subscriptions.fields.scenes]
+type = "string_list"
+description = "发送场景，如 group:80001；同时需要在该群启用插件"
+
+[config.subscriptions.fields.cron]
+type = "string"
+description = "五段 cron，例如 0 8 * * *"
+default = "0 8 * * *"
+
+[config.subscriptions.fields.timezone]
+type = "string"
+description = "IANA 时区，例如 Asia/Shanghai"
+default = "Asia/Shanghai"
+
+[config.subscriptions.fields.limit]
+type = "integer"
+description = "每次最多播报新条目数"
+minimum = 1
+maximum = 10
+default = 3

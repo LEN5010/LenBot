@@ -34,13 +34,13 @@ _FrontmatterLoader.add_implicit_resolver(
 class Skill:
     name: str
     description: str
-    source: Literal["builtin", "shared", "scene", "task"]
+    source: Literal["builtin", "shared", "scene", "task", "plugin"]
     host_path: Path
     container_path: str
     disable_model_invocation: bool
 
 
-def load_skill(path: Path, source: Literal["builtin", "shared", "scene", "task"],
+def load_skill(path: Path, source: Literal["builtin", "shared", "scene", "task", "plugin"],
                container_path: str) -> Skill:
     file = path / "SKILL.md"
     if file.is_symlink() or not stat.S_ISREG(file.stat().st_mode):
@@ -81,7 +81,7 @@ def load_skill(path: Path, source: Literal["builtin", "shared", "scene", "task"]
     return Skill(name, description, source, path, container_path, disabled)
 
 
-def _directory(root: Path, source: Literal["builtin", "shared", "scene", "task"],
+def _directory(root: Path, source: Literal["builtin", "shared", "scene", "task", "plugin"],
                container_root: str, *, missing_ok: bool,
                public_browser: bool = False) -> tuple[Skill, ...]:
     if root.resolve(strict=False) != root:
@@ -126,6 +126,7 @@ def load_catalog(directory: Path | None, scene: str, *, public_browser: bool = F
 
 
 def select_skills(catalog: tuple[Skill, ...], allowed: Literal["all"] | list[str]) -> tuple[Skill, ...]:
+    _unique(catalog)
     if allowed == "all":
         return catalog
     if len(allowed) != len(set(allowed)):
@@ -135,6 +136,10 @@ def select_skills(catalog: tuple[Skill, ...], allowed: Literal["all"] | list[str
     if unknown:
         raise ValueError(f"Role skills are not in this scene's catalog: {unknown!r}")
     return tuple(available[name] for name in allowed)
+
+
+def load_plugin_skills(directory: Path, plugin: str) -> tuple[Skill, ...]:
+    return _directory(directory, "plugin", f"/shared/skills/plugins/{plugin}", missing_ok=True)
 
 
 def load_task_skills(task_workspace: Path) -> tuple[Skill, ...]:
