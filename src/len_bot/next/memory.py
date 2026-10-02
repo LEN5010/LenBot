@@ -17,7 +17,7 @@ from .memory_jobs import MemoryJobs
 from .memory_openviking import OpenVikingMemory, OpenVikingSettings
 from .memory_summary import MemorySummarizer
 from .memory_role_paths import require_bot_path
-from .messages import ChatMessage, plain_text
+from .messages import ChatMessage, plain_text, render_message
 from .model import ChatModel
 from .model_slots import ModelSlots
 from .store import Store, encode
@@ -346,8 +346,9 @@ class MemoryService:
     async def recall(self, scene: str, messages: list[ChatMessage]) -> dict:
         """Recall from actual chat only; returned text never becomes a native history entry."""
         relevant = [message for message in messages if not message.is_self]
-        queries = [plain_text(message).strip() for message in relevant]
-        queries = [query for query in queries if query]
+        # Short replies need the preceding topic and its actual speakers, including our question.
+        queries = [render_message(message, timezone="UTC") for message in messages
+                   if plain_text(message).strip() and message.send_status in {"received", "sent", "simulated"}]
         budget = self.settings.recall_budget_chars
         items: list[dict] = []
         seen: set[tuple[str, str]] = set()
@@ -371,7 +372,7 @@ class MemoryService:
             per_profile = min(900, budget // 2 // len(profiles)) if profiles else 0
             for profile in profiles:
                 append("scene", profile.path, profile.content, per_profile)
-        query = queries[-1][-1200:] if queries else ""
+        query = "\n".join(queries)[-1200:]
         if query and budget > 0:
             for hit in await self.search(scene, query, self.settings.recall_limit, automatic=True):
                 append(hit["scope"], hit["path"], hit["preview"], budget,
