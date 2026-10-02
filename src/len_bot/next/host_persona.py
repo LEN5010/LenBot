@@ -18,7 +18,7 @@ from .config import STRICT, HostConfig, load_host_config
 from .learning_store import LearningStore
 from .network import NetworkRuntime
 from .skills import select_skills
-from .plugin_host import scene_skill_catalog
+from .plugin_manifest import scene_skill_catalog
 from .persona import (Example, Persona, PersonaTarget, Style, load_persona, parse_persona_files,
                       read_persona_files, require_persona_target)
 from .persona_knowledge import parse_knowledge_document

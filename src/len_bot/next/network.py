@@ -11,7 +11,8 @@ from collections import deque
 
 from .attention import SceneRunner
 from .audio import AudioService
-from .chat import Chat
+from .chat import Chat, tool_catalog
+from .skills import select_skills
 from .config import LabConfig, OneBotForward, SharedConfig
 from .operations import credentials, redact, redact_record
 from .messages import parse_message, parse_notice
@@ -133,7 +134,15 @@ class NetworkRuntime:
             mcp.on_update = self.refresh_external_tools
 
     def refresh_external_tools(self) -> None:
+        if self.mcp is not None:
+            self.mcp.reserved = {tool['function']['name'] for tool in tool_catalog(platform=True)} | (
+                set() if self.plugins is None else set(self.plugins.tool_owner))
         for scene, chat in self.chats.items():
+            if self.tasks is not None:
+                catalog = tuple(skill for skill in chat.skills if skill.source != 'plugin') + (
+                    () if self.plugins is None else self.plugins.skills_for(scene))
+                chat.skills = select_skills(catalog, chat.persona.skills)
+                self.tasks.skills[scene] = chat.skills
             chat.set_external_tools(([] if self.plugins is None else self.plugins.tools_for(scene, preparing=self.status != "running"))
                                     + ([] if self.mcp is None else self.mcp.tools_for(scene)))
         self.notify()

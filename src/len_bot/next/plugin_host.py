@@ -12,18 +12,16 @@ import inspect
 import logging
 from pathlib import Path
 import re
+import shutil
 from string import Template
 import sys
 import time
-import tomllib
-from typing import TYPE_CHECKING, Annotated, Literal, get_type_hints
-from urllib.parse import quote, quote_plus
+from typing import TYPE_CHECKING, Literal, get_type_hints
 from zoneinfo import ZoneInfo
 
-from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, JsonValue,
-                      TypeAdapter, ValidationError, create_model, field_validator, model_validator)
+from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError, create_model
 
-from .config import PLUGIN_NAME, PLUGIN_RESERVED, HostConfig
+from .config import HostConfig
 from .external_tools import ExternalTool
 from .messages import parse_notice, ChatMessage
 from .plugin import (INTERFACE, MARK, Content, GenerationRole, Image, Text,
@@ -32,7 +30,8 @@ from .plugin_kv import PluginKV
 from .model import ChatModel, ModelReply
 from .model_request import request_model
 from .schedule_time import Cron, next_cron, parse_cron
-from .skills import Skill, load_catalog, load_plugin_skills
+from .skills import Skill, load_plugin_skills
+from .plugin_manifest import BUILTIN, Manifest, discover, read_manifest, redact_values
 from .store import encode
 
 if TYPE_CHECKING:
@@ -40,177 +39,9 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-BUILTIN = Path(__file__).with_name("builtin_plugins")
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
 STRICT = ConfigDict(extra="forbid", strict=True)
-FIELD_TYPES = {"string": str, "secret": str, "integer": int, "number": float, "boolean": bool,
-               "string_list": list[str], "object_list": list[dict[str, JsonValue]]}
 ERROR_LIMIT = 20
-
-
-class ConfigItem(BaseModel):
-    """One form value, also used for an object-list row's named children."""
-    model_config = STRICT
-    type: Literal["string", "integer", "number", "boolean", "string_list"]
-    description: str = Field(min_length=1)
-    default: str | int | float | bool | list[str] | list[dict[str, JsonValue]] | None = None
-    options: list[str | int | float] | None = Field(default=None, min_length=1)
-    minimum: float | None = Field(default=None, allow_inf_nan=False)
-    maximum: float | None = Field(default=None, allow_inf_nan=False)
-
-    def annotation(self):
-        constraints = Field(ge=self.minimum, le=self.maximum) if self.type in {"integer", "number"} else Field()
-        value_type = Annotated[FIELD_TYPES[self.type], constraints]
-        if self.options is not None:
-            def choice(value):
-                if value not in self.options:
-                    raise ValueError(f"必须是 {self.options!r} 中的一项")
-                return value
-            value_type = Annotated[value_type, AfterValidator(choice), Field(json_schema_extra={"enum": self.options})]
-        return value_type
-
-    @model_validator(mode="after")
-    def valid_constraints(self):
-        if (self.minimum is not None or self.maximum is not None) and self.type not in {"integer", "number"}:
-            raise ValueError("minimum/maximum 只用于 integer 或 number")
-        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
-            raise ValueError("minimum 不能大于 maximum")
-        if self.options is not None:
-            if self.type not in {"string", "integer", "number"}:
-                raise ValueError("options 只用于 string、integer 或 number")
-            adapter = TypeAdapter(FIELD_TYPES[self.type], config=STRICT)
-            for option in self.options:
-                adapter.validate_python(option)
-        if "default" in self.model_fields_set:
-            TypeAdapter(self.annotation(), config=STRICT).validate_python(self.default)
-        return self
-
-
-class ConfigField(ConfigItem):
-    type: Literal["string", "secret", "integer", "number", "boolean", "string_list", "object_list"]
-    fields: dict[str, ConfigItem] = Field(default_factory=dict)
-
-    def annotation(self):
-        if self.type == "object_list" and self.fields:
-            return list[config_model("PluginConfigRow", self.fields)]
-        return super().annotation()
-
-    @model_validator(mode="after")
-    def object_fields(self):
-        if self.fields and self.type != "object_list":
-            raise ValueError("fields 只用于 object_list")
-        check_field_names(self.fields)
-        return self
-
-
-def check_field_names(fields: Mapping[str, ConfigItem]) -> None:
-    for key in fields:
-        if re.fullmatch(r"[a-z][a-z0-9_]*", key) is None:
-            raise ValueError(f"配置字段 {key!r} 只能使用小写字母、数字和下划线")
-
-
-def config_model(name: str, fields: Mapping[str, ConfigItem]) -> type[BaseModel]:
-    return create_model(name, __config__=STRICT, **{
-        key: (item.annotation(), Field(item.default if "default" in item.model_fields_set else ...,
-                                       description=item.description, validate_default=True))
-        for key, item in fields.items()
-    })
-
-
-class Manifest(BaseModel):
-    model_config = STRICT
-    name: str
-    version: str = Field(min_length=1)
-    interface: int
-    authors: list[str] = Field(min_length=1)
-    license: str = Field(min_length=1)
-    description: str = Field(min_length=1)
-    repository: HttpUrl | None = None
-    homepage: HttpUrl | None = None
-    config: dict[str, ConfigField] = Field(default_factory=dict)
-
-    @field_validator("name")
-    @classmethod
-    def valid_name(cls, value: str) -> str:
-        if PLUGIN_NAME.fullmatch(value) is None or value in PLUGIN_RESERVED:
-            raise ValueError("name must use lowercase letters, digits and underscores, and not be paths/data_directory")
-        return value
-
-    @field_validator("config")
-    @classmethod
-    def valid_fields(cls, value: dict[str, ConfigField]) -> dict[str, ConfigField]:
-        check_field_names(value)
-        return value
-
-    def values_model(self) -> type[BaseModel]:
-        return config_model(f"PluginConfig_{self.name}", self.config)
-
-
-def redact_values(text: str, manifest: Manifest | None, values: Mapping[str, object]) -> str:
-    if manifest is None:
-        return text
-    secrets = set()
-    for key, item in manifest.config.items():
-        if item.type != "secret":
-            continue
-        value = values.get(key, item.default)
-        if isinstance(value, str) and value:
-            secrets.update((value, encode(value)[1:-1], repr(value)[1:-1], quote(value, safe=""), quote_plus(value)))
-    for value in sorted(secrets, key=len, reverse=True):
-        text = text.replace(value, "[redacted]")
-    return text
-
-
-def read_manifest(directory: Path) -> Manifest:
-    path = directory / "plugin.toml"
-    text = path.read_text(encoding="utf-8")
-    try:
-        raw = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as error:
-        raise ValueError(f"{path}: {error}; 原文开头：{text[:300]!r}") from error
-    interface = raw.get("interface")
-    if interface != INTERFACE:
-        raise ValueError(f"{path}: 插件接口版本 {interface!r} 与宿主接口版本 {INTERFACE} 不一致，未加载（不做兼容）")
-    try:
-        manifest = Manifest.model_validate(raw)
-    except ValidationError as error:
-        raise ValueError(f"{path}: {error}") from error
-    if manifest.name != directory.name:
-        raise ValueError(f"{path}: name {manifest.name!r} 必须等于目录名 {directory.name!r}")
-    return manifest
-
-
-def discover(paths: list[Path]) -> tuple[dict[str, list[Path]], list[str]]:
-    """Plugin directories by name across the builtin directory and ``plugins.paths``."""
-    found: dict[str, list[Path]] = {}
-    errors = []
-    for base in (BUILTIN, *paths):
-        if not base.is_dir():
-            errors.append(f"插件目录不存在或不是目录：{base}")
-            continue
-        for directory in sorted(base.iterdir()):
-            if (directory / "plugin.toml").is_file():
-                found.setdefault(directory.name, []).append(directory)
-    return found, errors
-
-
-def scene_skill_catalog(config: HostConfig, scene: str) -> tuple[Skill, ...]:
-    """Read a saved scene's skill sources without importing plugin executable code."""
-    if config.worker is None:
-        return ()
-    skills = list(load_catalog(config.worker.skills_directory, scene,
-                               public_browser=config.worker.public_browser))
-    if config.plugins is not None:
-        found, _ = discover(config.plugins.paths)
-        for name in config.scenes[scene].plugins:
-            directories = found.get(name, [])
-            if len(directories) != 1:
-                raise ValueError(f"插件 {name} 的技能来源无法定位到唯一目录：{directories}")
-            read_manifest(directories[0])
-            skills.extend(load_plugin_skills(directories[0] / "skills", name))
-    return tuple(skills)
-
-
 
 
 @dataclass
@@ -240,6 +71,7 @@ class Loaded:
     directory: Path | None
     manifest: Manifest | None
     scenes: tuple[str, ...]
+    values: dict[str, object] = field(default_factory=dict)
     status: Literal["loaded", "running", "failed", "stopped"] = "failed"
     error: str | None = None
     instance: Plugin | None = None
@@ -290,6 +122,8 @@ class PluginHost:
 
     def __init__(self, config: HostConfig, *, core_tools: set[str], now: Callable[[], float] = time.time):
         self.config = config
+        self.core_tools = core_tools
+        self.started = False
         self.now = now
         self.runtime: NetworkRuntime | None = None
         self.on_update: Callable[[], None] | None = None
@@ -317,8 +151,11 @@ class PluginHost:
             return
         for name, values in settings.configured.items():
             scenes = tuple(scene for scene, item in config.scenes.items() if name in item.plugins)
-            record = Loaded(name, None, None, scenes)
+            record = Loaded(name, None, None, scenes, values=values)
             self.plugins[name] = record
+            if name in settings.disabled:
+                record.status = "stopped"
+                continue
             try:
                 self._load(record, found.get(name, []), values, settings.data_directory / name, core_tools)
             except Exception as error:
@@ -434,7 +271,7 @@ class PluginHost:
 
     def redact(self, plugin: str, text: str) -> str:
         record = self.plugins[plugin]
-        return redact_values(text, record.manifest, self.config.plugins.configured[plugin])
+        return redact_values(text, record.manifest, record.values)
 
     def scene_timezone(self, scene: str) -> str:
         return self.config.scene_timezone(scene)
@@ -565,8 +402,8 @@ class PluginHost:
             self.on_update()
 
     def _record(self, record: Loaded, where: str, error: BaseException) -> str:
-        text = self.redact(record.name, f"{type(error).__name__}: {error}")
-        where = self.redact(record.name, where)
+        text = redact_values(f"{type(error).__name__}: {error}", record.manifest, record.values)
+        where = redact_values(where, record.manifest, record.values)
         record.errors.append({"at": self.now(), "where": where, "error": text})
         logger.error("插件 %s %s 出错：%s", record.name, where, text)
         self._notify()
@@ -608,8 +445,17 @@ class PluginHost:
                 if record.status != "running":
                     raise RuntimeError(f"插件 {record.name} 未运行：{record.status}；{record.error or '尚未启动或已经停止'}")
                 parsed = model.model_validate(arguments)
-                result = await getattr(record.instance, method)(
-                    Invocation(record.context, scene), **{key: getattr(parsed, key) for key in model.model_fields})
+                task = asyncio.create_task(getattr(record.instance, method)(
+                    Invocation(record.context, scene), **{key: getattr(parsed, key) for key in model.model_fields}),
+                    name=f"{record.name}:tool:{name}")
+                self.tasks[task] = record.name
+                task.add_done_callback(lambda done: self.tasks.pop(done, None))
+                try:
+                    result = await task
+                except asyncio.CancelledError:
+                    if asyncio.current_task().cancelling():
+                        raise
+                    raise RuntimeError(f"插件 {record.name} 已停止或重载，本次工具调用中断") from None
                 if not isinstance(result, str):
                     raise TypeError(f"插件工具必须返回文本，实际 {type(result).__name__}")
             except Exception as error:
@@ -617,7 +463,7 @@ class PluginHost:
                 if safe != f"{type(error).__name__}: {error}":
                     raise RuntimeError(safe) from None
                 raise
-            return self.redact(record.name, result)
+            return redact_values(result, record.manifest, record.values)
         return call
 
     def match_message(self, message: ChatMessage, other_bots: tuple[str, ...]) -> Matched | None:
@@ -719,47 +565,107 @@ class PluginHost:
             self._notify()
             await asyncio.sleep(item.seconds)
 
-    async def start(self) -> None:
-        for record in self.plugins.values():
-            if record.status != "loaded":
-                continue
+    async def start_plugin(self, record: Loaded) -> None:
+        try:
+            await record.instance.start()
+        except Exception as error:
+            failure = self._record(record, "启动", error)
             try:
-                await record.instance.start()
-            except Exception as error:
-                record.status, record.error = "failed", self._record(record, "启动", error)
-                self._remove_entries(record)
-                owned = [task for task, owner in self.tasks.items() if owner == record.name]
-                for task in owned:
-                    task.cancel()
-                await asyncio.gather(*owned, return_exceptions=True)
-                try:
-                    await record.instance.stop()
-                except Exception as cleanup:
-                    self._record(record, "启动失败后清理", cleanup)
-                record.ready.set()
-                continue
-            record.status = "running"
+                await self.stop_plugin(record.name)
+            except Exception as cleanup:
+                self._record(record, "启动失败后清理", cleanup)
+            record.status, record.error = "failed", failure
             record.ready.set()
-            for item in record.backgrounds:
-                task = asyncio.get_running_loop().create_task(self._background(record, item))
-                self.tasks[task] = record.name
-                task.add_done_callback(lambda task: self.tasks.pop(task, None))
+            return
+        record.status = "running"
+        record.error = None
+        record.ready.set()
+        for item in record.backgrounds:
+            task = asyncio.create_task(self._background(record, item))
+            self.tasks[task] = record.name
+            task.add_done_callback(lambda done: self.tasks.pop(done, None))
+        self._notify()
+
+    async def start(self) -> None:
+        self.started = True
+        for record in self.plugins.values():
+            if record.status == "loaded":
+                await self.start_plugin(record)
+        self._notify()
+
+    def _unload_module(self, record: Loaded) -> None:
+        prefix = f"lenbot_plugin_{record.name}"
+        for name in list(sys.modules):
+            if name == prefix or name.startswith(prefix + "."):
+                del sys.modules[name]
+        importlib.invalidate_caches()
+
+    async def stop_plugin(self, name: str) -> None:
+        record = self.plugins[name]
+        record.status = "stopped"
+        self._remove_entries(record)
+        record.ready.set()
+        owned = [task for task, owner in self.tasks.items() if owner == name]
+        for task in owned:
+            task.cancel()
+        await asyncio.gather(*owned, return_exceptions=True)
+        for task in owned:
+            self.tasks.pop(task, None)
+        record.crons.clear()
+        try:
+            if record.instance is not None:
+                await record.instance.stop()
+        except Exception as error:
+            record.status, record.error = "failed", self._record(record, "停止", error)
+            raise
+        record.instance = None
+        self._unload_module(record)
+        self._notify()
+
+    async def reload(self, name: str, saved: HostConfig) -> None:
+        if self.closing:
+            raise RuntimeError("插件宿主已结束，不能在停止后重载")
+        if name in self.plugins:
+            await self.stop_plugin(name)
+        settings = saved.plugins
+        if settings is None or name not in settings.configured:
+            self.plugins.pop(name, None)
+            self._notify()
+            return
+        scenes = tuple(scene for scene in self.config.scenes
+                       if scene in saved.scenes and name in saved.scenes[scene].plugins)
+        record = Loaded(name, None, None, scenes, values=settings.configured[name])
+        self.plugins[name] = record
+        if name in settings.disabled:
+            record.status = "stopped"
+            return
+        found, self.discovery_errors = discover(settings.paths)
+        reserved = set(self.core_tools)
+        if self.runtime is not None and self.runtime.mcp is not None:
+            reserved.update(tool.name for scene in self.config.scenes
+                            for tool in self.runtime.mcp.tools_for(scene))
+        try:
+            directories = found.get(name, [])
+            for directory in directories:
+                if directory.parent != BUILTIN:
+                    for cache in directory.rglob("__pycache__"):
+                        shutil.rmtree(cache)
+            self._load(record, directories, record.values, settings.data_directory / name, reserved)
+            if self.started or (self.runtime is not None and self.runtime.accepting):
+                await self.start_plugin(record)
+        except Exception as error:
+            record.status, record.error = "failed", self._record(record, "加载", error)
+            self._remove_entries(record)
+            self._unload_module(record)
         self._notify()
 
     async def close(self) -> None:
         self.closing = True
-        for task in list(self.tasks):
-            task.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
-        for record in self.plugins.values():
-            if record.status in {"loaded", "running"}:
-                try:
-                    await record.instance.stop()
-                except Exception as error:
-                    record.status, record.error = "failed", self._record(record, "停止", error)
-                else:
-                    record.status = "stopped"
+        results = await asyncio.gather(*(self.stop_plugin(name) for name in self.plugins), return_exceptions=True)
         self._notify()
+        errors = [result for result in results if isinstance(result, Exception)]
+        if errors:
+            raise ExceptionGroup("插件停止失败", errors)
 
     def state(self) -> dict:
         plugins = []

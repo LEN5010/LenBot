@@ -18,6 +18,8 @@ const plugins = useResource(() => api('/api/host/plugins'))
 const save = useAction()
 const active = ref('')
 const drafts = ref({}), sceneDraft = ref(null), paths = ref(null)
+const repository = ref(''), removal = ref(null)
+const recommended = ['rss_broadcast', 'group_digest']
 const snapshot = computed(() => plugins.data.value)
 
 const running = computed(() => Object.fromEntries((snapshot.value?.running.plugins || []).map(item => [item.name, item])))
@@ -37,7 +39,7 @@ function initial(name) {
     const item = saved?.[field.key]
     values[field.key] = initialField(field, item && 'value' in item ? item.value : field.default)
   }
-  return { enabled: Boolean(saved), values }
+  return { enabled: Boolean(saved) && !snapshot.value.saved.disabled.includes(name), values }
 }
 const initialPaths = () => ({ paths: snapshot.value.saved.paths.join('\n'), data_directory: snapshot.value.saved.data_directory })
 function reset(part) {
@@ -47,10 +49,12 @@ function reset(part) {
 }
 // A fresh read resets every draft; a save only resets the part that was saved.
 watch(() => plugins.data.value, (value, previous) => {
-  if (!value || previous) return
-  for (const name of names.value) reset(name)
-  reset('scene')
-  reset('paths')
+  if (!value) return
+  for (const name of names.value) if (!drafts.value[name]) reset(name)
+  if (!previous) {
+    reset('scene')
+    reset('paths')
+  }
 })
 
 const pluginDirty = name => Boolean(drafts.value[name]) && !same(drafts.value[name], initial(name))
@@ -81,7 +85,7 @@ async function send(part, path, body) {
     reset(part)
     readPendingRestart()
     notify('已保存')
-  }
+  } else await plugins.reload()
 }
 const savePlugin = name => send(name, `/api/host/plugins/${encodeURIComponent(name)}`,
   () => drafts.value[name].enabled ? { enabled: true, config: configBody(name) } : { enabled: false })
@@ -89,6 +93,35 @@ const saveScene = () => send('scene', `/api/host/scenes/${encodeURIComponent(pro
 const savePaths = () => send('paths', '/api/host/plugin-paths', {
   paths: paths.value.paths.split('\n').map(item => item.trim()).filter(Boolean), data_directory: paths.value.data_directory.trim(),
 })
+async function operate(part, path, method = 'POST', body) {
+  active.value = part
+  const result = await save.run(() => api(path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }))
+  if (result) {
+    const keepPathsDraft = pathsDirty.value
+    plugins.data.value = result
+    if (part === 'install') {
+      repository.value = ''
+      if (!keepPathsDraft) reset('paths')
+      reset(result.operation.name)
+      notify(result.operation.needs_config ? '已安装，请填写参数并启用' : '已安装，可为群聊启用')
+    } else {
+      if (names.value.includes(part)) reset(part)
+      else delete drafts.value[part]
+      notify(result.running.plugins.some(item => item.name === part && item.status === 'failed') ? '操作未完成，请看插件错误' : '操作完成')
+    }
+    removal.value = null
+    readPendingRestart()
+  } else await plugins.reload()
+  return result
+}
+const install = () => operate('install', '/api/host/plugins/install', 'POST', { url: repository.value.trim() })
+const manage = (name, action) => operate(name, `/api/host/plugins/${encodeURIComponent(name)}/${action}`)
+async function remove() {
+  const { name, kind } = removal.value
+  const result = await operate(name, kind === 'source' ? `/api/host/plugins/${encodeURIComponent(name)}`
+    : `/api/host/plugin-data/${encodeURIComponent(name)}`, 'DELETE')
+  if (result && kind === 'source') sceneDraft.value = sceneDraft.value.filter(item => item !== name)
+}
 function toggleScene(name, on) {
   sceneDraft.value = on ? [...sceneDraft.value, name] : sceneDraft.value.filter(item => item !== name)
 }
@@ -100,9 +133,18 @@ const errorOf = part => active.value === part ? save.error.value : null
 <template>
   <ErrorNote v-if="plugins.error.value" title="读取插件失败" :error="plugins.error.value" />
   <template v-if="snapshot && sceneDraft !== null">
+    <form class="surface install-plugin" @submit.prevent="install">
+      <h2>安装插件</h2>
+      <p class="muted">填写 Git 仓库 URL。安装会执行插件代码并安装清单声明的依赖；共享当前 Python 环境，依赖冲突直接报错。</p>
+      <v-text-field v-model="repository" label="插件仓库 URL" placeholder="https://example.com/author/plugin.git"
+        :disabled="save.busy.value && active === 'install'" hide-details />
+      <ErrorNote v-if="errorOf('install')" title="插件安装未完成" :error="errorOf('install')" />
+      <v-btn type="submit" color="primary" :loading="save.busy.value && active === 'install'"
+        :disabled="!repository.trim() || save.busy.value">安装</v-btn>
+    </form>
     <ErrorNote v-for="error in [...snapshot.discovery_errors, ...snapshot.running.discovery_errors]" :key="error" title="有插件目录读不了" :error="error" />
 
-    <SettingSection :title="`${sceneName(scene)} 用哪些插件`" description="插件可提供命令、全文／正则匹配、自动播报和模型工具。先在下面加载插件，再在这里为本群打开。"
+    <SettingSection :title="`${sceneName(scene)} 用哪些插件`" description="先安装并配置插件，再为本群打开。保存会重载涉及的插件，不重启聊天；全局停用的插件保留群配置但不执行。"
       :dirty="sceneDirty" :saving="save.busy.value && active === 'scene'" :error="errorOf('scene')" @save="saveScene">
       <p v-if="!loaded.length" class="muted">还没有加载任何插件。</p>
       <div class="choice">
@@ -112,14 +154,27 @@ const errorOf = part => active.value === part ? save.error.value : null
     </SettingSection>
 
     <SettingSection v-for="name in names" :key="name" :title="name" :description="manifest(name)?.description || ''"
-      :dirty="pluginDirty(name)" :saving="save.busy.value && active === name" :error="errorOf(name)" @save="savePlugin(name)">
+      :dirty="pluginDirty(name)" :saving="save.busy.value && active === name" :error="errorOf(name)" save-label="保存并应用" @save="savePlugin(name)">
       <div class="plugin-status">
+        <span v-if="manifest(name)" class="muted">v{{ manifest(name).version }}</span>
         <v-chip size="small" variant="tonal" :color="statusColor[running[name]?.status]">
           {{ running[name] ? statusLabel[running[name].status] || running[name].status : snapshot.saved.plugins[name] ? '重启后加载' : '未加载' }}</v-chip>
         <span v-if="running[name]?.scenes.length" class="muted">在 {{ running[name].scenes.map(sceneName).join('、') }} 使用</span>
         <a v-if="manifest(name)?.repository" :href="manifest(name).repository" target="_blank" rel="noopener noreferrer">源码仓库</a>
         <a v-if="manifest(name)?.homepage" :href="manifest(name).homepage" target="_blank" rel="noopener noreferrer">使用说明</a>
+        <v-chip v-if="recommended.includes(name)" size="small" variant="outlined">内置推荐</v-chip>
       </div>
+      <div class="plugin-actions">
+        <v-btn v-if="snapshot.saved.plugins[name]" type="button" variant="tonal" size="small"
+          :disabled="save.busy.value || pluginDirty(name)" @click="manage(name, 'reload')">重载</v-btn>
+        <v-btn v-if="manifest(name)?.managed" type="button" variant="tonal" size="small"
+          :disabled="save.busy.value || pluginDirty(name)" @click="manage(name, 'update')">更新</v-btn>
+        <v-btn v-if="manifest(name)?.managed" type="button" variant="text" size="small" color="error"
+          :disabled="save.busy.value" @click="removal = { name, kind: 'source' }">卸载（保留数据）</v-btn>
+        <v-btn v-if="snapshot.saved.disabled.includes(name)" type="button" variant="text" size="small" color="error"
+          :disabled="save.busy.value" @click="removal = { name, kind: 'data' }">单独删除数据</v-btn>
+      </div>
+      <p v-if="manifest(name)?.dependencies.length" class="muted">声明依赖：{{ manifest(name).dependencies.join('、') }}</p>
       <ErrorNote v-if="running[name]?.error" title="插件没有启动成功" :error="running[name].error" />
       <ErrorNote v-for="entry in (snapshot.available[name] || []).filter(item => item.error)" :key="entry.directory"
         title="插件说明文件读不了" :error="entry.error" />
@@ -157,7 +212,7 @@ const errorOf = part => active.value === part ? save.error.value : null
       <p v-if="running[name]?.skills.length" class="muted">附带只读技能：{{ running[name].skills.join('、') }}</p>
 
       <template v-if="manifest(name) && drafts[name]">
-        <v-switch v-model="drafts[name].enabled" color="primary" hide-details label="加载这个插件" />
+        <v-switch v-model="drafts[name].enabled" color="primary" hide-details label="启用这个插件（停用保留参数和数据）" />
         <template v-if="drafts[name].enabled">
           <PluginField v-for="field in manifest(name).fields" :key="field.key" :field="field"
             v-model="drafts[name].values[field.key]" :configured="snapshot.saved.plugins[name]?.[field.key]?.configured" />
@@ -166,6 +221,14 @@ const errorOf = part => active.value === part ? save.error.value : null
       <DevOnly label="插件详情"><pre>{{ JSON.stringify({ available: snapshot.available[name], running: running[name] }, null, 2) }}</pre></DevOnly>
     </SettingSection>
     <p v-if="!names.length" class="surface muted">没有找到插件。</p>
+
+    <section v-if="snapshot.retained_data.length" class="surface">
+      <h2>已保留的插件数据</h2>
+      <div v-for="item in snapshot.retained_data" :key="item.name" class="plugin-status">
+        <span>{{ item.name }} · {{ item.directory }}</span>
+        <v-btn variant="text" size="small" color="error" @click="removal = { name: item.name, kind: 'data' }">单独删除数据</v-btn>
+      </div>
+    </section>
 
     <form @submit.prevent="savePaths">
       <AdvancedFields label="插件目录">
@@ -178,11 +241,23 @@ const errorOf = part => active.value === part ? save.error.value : null
       </AdvancedFields>
     </form>
   </template>
+  <v-dialog :model-value="removal !== null" max-width="560" @update:model-value="value => { if (!value) removal = null }">
+    <v-card v-if="removal" :title="`${removal.kind === 'source' ? '卸载插件' : '删除插件数据'} ${removal.name}`">
+      <v-card-text>{{ removal.kind === 'source' ? '停止本插件的处理器与后台，移除源码和启用配置；KV 与其他数据保留。' : '只删除此插件的数据目录，包括 KV 和素材，不删除聊天历史。此操作不可撤销。' }}</v-card-text>
+      <v-card-text v-if="errorOf(removal.name)"><ErrorNote title="操作未完成" :error="errorOf(removal.name)" /></v-card-text>
+      <v-card-actions><v-spacer /><v-btn @click="removal = null">取消</v-btn>
+        <v-btn color="error" :loading="save.busy.value" @click="remove">{{ removal.kind === 'source' ? '卸载并保留数据' : '删除数据' }}</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
 </template>
 
 <style scoped>
 .choice{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,200px),1fr));gap:0 12px}
 .plugin-status{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.install-plugin{display:grid;gap:14px}
+.install-plugin :deep(.v-btn){justify-self:start}
+.plugin-actions{display:flex;gap:8px;flex-wrap:wrap}
 .commands{margin:0;padding-left:18px}
 .commands li{margin:4px 0}
 .recent-errors summary{cursor:pointer;color:var(--muted)}

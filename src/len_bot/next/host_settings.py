@@ -25,7 +25,7 @@ from .operations import LoggingSettings
 from .limits import ResourceLimits
 from .retention import RetentionSettings
 from .skills import select_skills
-from .plugin_host import scene_skill_catalog
+from .plugin_manifest import scene_skill_catalog
 from .pricing import ModelPrice
 from .web_search import WebSearchSettings
 from .memory import RecallSettings, LocalMemoryConfig, OpenVikingMemoryConfig
