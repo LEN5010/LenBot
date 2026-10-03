@@ -227,3 +227,28 @@ def test_onebot_notice_samples_route_to_scenes():
         parse_notice({**increase, "group_id": "abc"})
     with pytest.raises(ValueError, match="lacks a text notice_type"):
         parse_notice({"time": 1, "post_type": "notice"})
+
+
+@pytest.mark.asyncio
+async def test_rss_scene_disable_keeps_other_scene_cron(tmp_path):
+    root = _root(tmp_path, {"rss_broadcast": {"subscriptions": [{
+        "name": "fixture", "url": "https://example.invalid/feed.xml",
+        "scenes": ["group:80001", "private:80002"], "cron": "0 8 * * *", "timezone": "UTC",
+    }]}}, ["rss_broadcast"])
+    path = root / "lenbot.config.json"
+    source = json.loads(path.read_text())
+    source["scenes"]["private:80002"]["plugins"] = ["rss_broadcast"]
+    path.write_text(json.dumps(source))
+    host = PluginHost(load_host_config(root), core_tools=CORE)
+    await host.start()
+    try:
+        assert len(host.state()["plugins"][0]["crons"]) == 2
+        source["scenes"]["private:80002"]["plugins"] = []
+        path.write_text(json.dumps(source))
+        await host.reload("rss_broadcast", load_host_config(root))
+        state = host.state()["plugins"][0]
+        assert state["status"] == "running"
+        assert state["scenes"] == ["group:80001"]
+        assert [item["scene"] for item in state["crons"]] == ["group:80001"]
+    finally:
+        await host.close()
