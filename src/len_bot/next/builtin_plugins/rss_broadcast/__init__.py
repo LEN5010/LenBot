@@ -1,11 +1,12 @@
 """Scheduled RSS 2.0 subscriptions with plugin-owned cursors and no model calls."""
 
+import asyncio
 from functools import partial
 from xml.etree import ElementTree
 
 import httpx
 
-from len_bot.next.plugin import Invocation, Plugin, command
+from len_bot.next.plugin import Invocation, Plugin, PluginContext, command
 
 
 def read_feed(content: bytes) -> list[tuple[str, str]]:
@@ -28,6 +29,12 @@ def read_feed(content: bytes) -> list[tuple[str, str]]:
 
 
 class RSSBroadcast(Plugin):
+    def __init__(self, ctx: PluginContext):
+        super().__init__(ctx)
+        self.publish_locks = {(scene, subscription["name"]): asyncio.Lock()
+                              for subscription in ctx.config["subscriptions"]
+                              for scene in subscription["scenes"]}
+
     async def start(self) -> None:
         for subscription in self.ctx.config["subscriptions"]:
             for scene in subscription["scenes"]:
@@ -36,6 +43,10 @@ class RSSBroadcast(Plugin):
                               scene=scene, timezone=subscription["timezone"])
 
     async def publish(self, ctx: Invocation, *, subscription: dict) -> None:
+        async with self.publish_locks[ctx.scene, subscription["name"]]:
+            await self.publish_serially(ctx, subscription=subscription)
+
+    async def publish_serially(self, ctx: Invocation, *, subscription: dict) -> None:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             response = await client.get(subscription["url"])
             response.raise_for_status()
