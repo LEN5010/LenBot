@@ -13,6 +13,8 @@ BrowserSkill 在专用环境独立部署。LenBot 保存服务扩展补丁与构
 
 发行组件提交与工具版本集中在 [`components.json`](../components.json)，自动打包路径见[发行说明](../releasing.md)。
 
+已构建包的实际目录和安装操作见[账号浏览成品说明](../browser/README.md)；下面是源码构建入口，不要求成品用户再次安装 Rust／Node。
+
 ## 构建
 
 在单独的构建目录展开上游基线，再应用补丁；`LENBOT_SOURCE` 指向当前 LenBot 源码，`BSK_SOURCE` 指向上游 Git 仓库，`BUILD` 为新建空目录。

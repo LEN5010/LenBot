@@ -30,7 +30,11 @@ def main() -> None:
         shutil.copytree(args.source / 'apps/extension/dist/chrome-mv3', bundle / 'extension')
         for file in ('LICENSE', 'Cargo.lock', 'pnpm-lock.yaml'):
             shutil.copy2(args.source / file, bundle / file)
-        shutil.copy2(PROJECT / 'deploy/current/browserskill-files.md', bundle / 'README.md')
+        shutil.copy2(PROJECT / 'deploy/browser/README.md', bundle / 'README.md')
+        (bundle / 'source-docs').mkdir()
+        shutil.copy2(args.source / 'docs/remote-extension-connection.md',
+                     bundle / 'source-docs/remote-extension-connection.md')
+        shutil.copy2(args.source / 'crates/bsk-file-host/README.md', bundle / 'source-docs/file-host.md')
         shutil.copy2(PROJECT / component['patch'], bundle / 'browserskill-remote-files.patch')
         (bundle / 'component.json').write_text(json.dumps({**component, 'lenbot_version': version,
             'platform': args.platform}, ensure_ascii=False, indent=2) + '\n')

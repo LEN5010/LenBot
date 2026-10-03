@@ -39,15 +39,15 @@ lenbot/
 "$HOME/lenbot/service" restart
 ```
 
-Linux 使用当前用户的 systemd 服务 `lenbot.service`；macOS 使用当前登录用户的 launchd 服务 `local.lenbot`。模板只注册，不开机自启、不自动拉起崩溃进程，不创建另一套 PID 追踪或守护程序。每个用户的这套快捷入口用于一个实例；多实例按[部署说明](deploy/current/README.md)自行命名原生服务。运行与安装使用同一普通账号。
+Linux 使用当前用户的 systemd 服务 `lenbot.service`；macOS 使用当前登录用户的 launchd 服务 `local.lenbot`。模板只注册，不开机自启、不自动拉起崩溃进程，不创建另一套 PID 追踪或守护程序。每个用户的这套快捷入口用于一个实例；多实例按[部署说明](../current/README.md)自行命名原生服务。运行与安装使用同一普通账号。
 
-Linux 需要可用的用户 systemd 会话；无桌面服务器可采用[系统服务模板](deploy/current/lenbot.service)，将工作目录改成实际 `instance/`、ExecStart 改成实际 `run`，写权限同时包含实际 `instance/` 和 `releases/`。该模板另有固定服务账号，安装环境必须由该账号读写。
+Linux 需要可用的用户 systemd 会话；无桌面服务器可采用[系统服务模板](../current/lenbot.service)，将工作目录改成实际 `instance/`、ExecStart 改成实际 `run`，写权限同时包含实际 `instance/` 和 `releases/`。该模板另有固定服务账号，安装环境必须由该账号读写。
 
 macOS 另有 `start.command`／`stop.command`／`restart.command`，注册服务后可双击。`stop` 发 SIGTERM，请用 `status` 确认进程退出后再升级；安装器也使用实例锁拒绝仍在运行的实例。macOS 日志在 `logs/host.log` 和 `host.stderr.log`，Linux 用 `journalctl --user -u lenbot.service`。
 
 ## 升级
 
-取得**另一版本**的部署包。先停止宿主与独立试聊，按[离线维护](deploy/current/operations.md#升级与文件锁)备份实例、外置任务目录及实际采用的记忆服务；旧程序目录不等于数据备份。
+取得**另一版本**的部署包。先停止宿主与独立试聊，按[离线维护](../current/operations.md#升级与文件锁)备份实例、外置任务目录及实际采用的记忆服务；旧程序目录不等于数据备份。
 
 ```sh
 "$HOME/lenbot/service" stop
@@ -65,7 +65,7 @@ macOS 另有 `start.command`／`stop.command`／`restart.command`，注册服务
 
 ## 可选能力
 
-QQ、任务镜像、双记忆、账号浏览和 ASR 的安装见 [deploy/current](deploy/current/README.md)。普通聊天不要求全装，Docker 宿主另用 [Docker 配方](deploy/current/docker.md)。本包生成不代表镜像已上传或版本已公开发布。
+QQ、任务镜像、双记忆、账号浏览和 ASR 的安装见 [deploy/current](../current/README.md)。普通聊天不要求全装，Docker 宿主另用 [Docker 配方](../current/docker.md)。本包生成不代表镜像已上传或版本已公开发布。
 
 ## 已核对范围
 

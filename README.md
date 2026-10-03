@@ -4,16 +4,16 @@
 
 ## 开始使用
 
-普通使用选择**带面板的 wheel 安装包**，只需要 uv（Python 3.13 可由 uv 安装），不用 Node.js。拿到构建产物后：
+普通使用选择 **Linux／macOS 成品部署包**：内含已构建面板的 wheel、锁定依赖清单和安装入口，只需 uv（Python 3.13 可由 uv 安装），不用 Node.js。取得当前构建产物并解压后：
 
 ```sh
-mkdir lenbot-instance && cd lenbot-instance
-uv venv --python 3.13
-uv pip install --python .venv/bin/python /path/to/len_bot-0.1.0-py3-none-any.whl
-.venv/bin/len-bot          # 无配置时打开首次向导；保存后重新执行此命令
+./install.sh install "$HOME/lenbot"
+"$HOME/lenbot/run"     # 首次向导保存后退出；再次执行才启动业务
 ```
 
-当前安装包由[打包命令](CONTRIBUTING.md#构建与提交)生成，尚未上传公共包仓库。需要修改源码时再安装 Node.js 22，在源码根执行 `./scripts/install.sh`；它安装依赖并构建面板，不启动或迁移数据。
+安装后 `instance/` 保存根配置和业务数据，`releases/<版本>/` 保存程序与可写依赖环境。启动、停止、重启和停机升级见[成品包说明](deploy/package/README.md)。也可手工安装独立 wheel；Docker 用户可在新卷中[直接离线初始化](deploy/current/docker.md#直接初始化新卷)，不必先在主机装 wheel。Windows 本轮使用 WSL2／Docker。
+
+当前产物由[打包命令](CONTRIBUTING.md#构建与提交)生成，尚未公开发布；下载链接以实际 Release 为准，不把本地构建当作已上传。修改源码时再安装 Node.js 22 并执行 `./scripts/install.sh`。
 
 QQ 聊天还需一个 OneBot v11 服务；可先在面板试聊。Docker、OpenViking 和 ASR 均为可选能力。完整步骤和一个最小演示见[部署说明](deploy/current/README.md)。
 
@@ -23,7 +23,9 @@ QQ 聊天还需一个 OneBot v11 服务；可先在面板试聊。Docker、OpenV
 
 | 要做什么 | 入口 |
 |---|---|
-| 安装、日常启动、Linux 服务与任务镜像 | [部署说明](deploy/current/README.md) |
+| 成品安装、原生服务与停机升级 | [平台包说明](deploy/package/README.md) |
+| Docker、新卷初始化与任务挂载 | [Docker 部署](deploy/current/docker.md) |
+| 可选服务、模型与 QQ 接入 | [部署说明](deploy/current/README.md) |
 | 角色、任务资料、数据升级与记忆迁移 | [使用与离线维护](deploy/current/operations.md) |
 | 本地语音转写／原生记忆分类 | [ASR](deploy/current/asr.md)／[记忆模板](deploy/current/memory-templates.md) |
 | 源码职责、开发与打包 | [开发指南](CONTRIBUTING.md) |
