@@ -41,7 +41,8 @@ async def rebuild(config: SharedConfig) -> dict:
     if not isinstance(config.memory, LocalMemoryConfig):
         raise ValueError("Memory reindex requires memory.backend=local in the root configuration")
     # Stopping the host is an operator precondition, not a claim inferred from
-    # an idle SQLite connection. The Markdown files themselves are not rewritten.
+    # an idle SQLite connection. Authoritative Markdown bodies are not rewritten;
+    # derived directory summaries are cleared along with the old index.
     backup = await asyncio.to_thread(_backup, config.memory.local.directory / ".memory-index.sqlite3")
     with Store(config.database) as store:
         slots = ModelSlots(config.max_model_requests)
@@ -57,7 +58,7 @@ async def rebuild(config: SharedConfig) -> dict:
             "indexed_files": count,
             "retrieval": "text" if config.memory.local.embedding is None else "hybrid",
             "backup": None if backup is None else str(backup),
-            "markdown_modified": False, "history_preserved": True}
+            "markdown_modified": False, "derived_summaries_cleared": True, "history_preserved": True}
 
 
 def main() -> None:
