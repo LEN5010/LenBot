@@ -1,11 +1,16 @@
 <script setup>
-import { ref } from 'vue'
+import { onBeforeUnmount, ref } from 'vue'
 import { useAction } from '../../../composables/useResource.js'
 import ErrorNote from '../../components/ErrorNote.vue'
 
 const props = defineProps({ profile: { type: Object, required: true }, preview: { type: Function, required: true }, disabled: Boolean })
 const emit = defineEmits(['imported'])
-const file = ref(null), action = useAction(), done = ref('')
+const file = ref(null), action = useAction(), done = ref(''), downloadUrl = ref('')
+function clearDownload() {
+  if (downloadUrl.value) URL.revokeObjectURL(downloadUrl.value)
+  downloadUrl.value = ''
+}
+onBeforeUnmount(clearDownload)
 async function load() {
   done.value = ''
   const result = await action.run(async () => {
@@ -24,11 +29,9 @@ async function download() {
   done.value = ''
   const result = await action.run(() => props.preview(props.profile))
   if (!result) return
-  const url = URL.createObjectURL(new Blob([JSON.stringify(result.profile, null, 2) + '\n'], { type: 'application/json' }))
-  const link = document.createElement('a')
-  link.href = url; link.download = 'persona-profile-draft.json'; link.click()
-  URL.revokeObjectURL(url)
-  done.value = '已导出当前表单草稿，角色文件保持。'
+  clearDownload()
+  downloadUrl.value = URL.createObjectURL(new Blob([JSON.stringify(result.profile, null, 2) + '\n'], { type: 'application/json' }))
+  done.value = '草稿文件已准备好，点击下载链接保存。后续表单修改需重新生成；角色文件未改。'
 }
 </script>
 <template>
@@ -38,7 +41,8 @@ async function download() {
     <v-file-input v-model="file" label="角色表单草稿 JSON" accept="application/json,.json" prepend-icon="" :disabled="disabled || action.busy.value" />
     <div class="actions">
       <v-btn variant="tonal" :disabled="!file || disabled || action.busy.value" @click="load">载入草稿到表单</v-btn>
-      <v-btn variant="text" :disabled="disabled || action.busy.value" @click="download">导出当前草稿</v-btn>
+      <v-btn variant="text" :disabled="disabled || action.busy.value" @click="download">生成当前草稿文件</v-btn>
+      <a v-if="downloadUrl" :href="downloadUrl" download="persona-profile-draft.json">下载刚生成的草稿 JSON</a>
     </div>
     <v-progress-linear v-if="action.busy.value" indeterminate />
     <ErrorNote v-if="action.error.value" title="草稿未完成" :error="action.error.value" />
