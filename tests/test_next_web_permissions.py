@@ -5,7 +5,8 @@ import json
 import pytest
 
 from len_bot.next.chat import Chat
-from len_bot.next.config import WebReadSettings, load_config
+from len_bot.next.chat_config import WebReadSettings
+from len_bot.next.config import load_config
 from len_bot.next.model import ChatModel, ToolCall
 from len_bot.next.persona import load_persona
 from len_bot.next.store import Store, WebPage

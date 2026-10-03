@@ -9,7 +9,7 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
-from .config import STRICT
+from .config_types import STRICT
 from .learning_store import LearningStore
 from .network import NetworkRuntime
 

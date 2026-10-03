@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .config import ImageSettings
+from .chat_config import ImageSettings
 from .http_read import fetch_public
 from .store import ImageAsset, Store
 from .replay_images import RecordedImages

@@ -9,7 +9,8 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from .config import PLUGIN_NAME, PLUGIN_RESERVED, HostConfig, _read_root
+from .plugin_config import PLUGIN_NAME, PLUGIN_RESERVED
+from .config import HostConfig, _read_root
 from .host_settings import _body, _read_saved
 from .network import NetworkRuntime
 from .plugin_manifest import ConfigField, ConfigItem, Manifest, discover, read_manifest, redact_values

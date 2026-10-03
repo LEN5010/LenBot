@@ -13,7 +13,8 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Response, UploadFile
 from pydantic import field_validator
 
-from .config import STRICT, HostConfig, load_host_config
+from .config_types import STRICT
+from .config import HostConfig, load_host_config
 from .host_persona import PersonaFileChange, finish_role_write, validate_dependencies
 from .image_assets import MAX_IMAGE_BYTES, inspect_image
 from .network import NetworkRuntime

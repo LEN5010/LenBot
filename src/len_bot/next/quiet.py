@@ -4,7 +4,7 @@ from datetime import datetime, time as WallTime, timedelta, timezone as DateTime
 from math import ceil, floor
 from zoneinfo import ZoneInfo
 
-from .config import QuietHours
+from .chat_config import QuietHours
 
 
 def _boundary(local: datetime, zone: ZoneInfo, *, later: bool) -> float:

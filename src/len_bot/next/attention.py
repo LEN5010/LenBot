@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from .chat import Chat
 from .scene_control import SceneControlArguments, TemporaryQuiet, require_control
 from .limits import LimitReached
-from .config import Attention
+from .chat_config import Attention
 from .delivery import report_parts, split_expression
 from .messages import ChatMessage, Segment, parse_message, plain_text
 from .proactive import PROMPT as PROACTIVE_PROMPT, ProactiveStore, idle_text

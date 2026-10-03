@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .pdf_read import read_pdf
 
-from .config import WebReadSettings
+from .chat_config import WebReadSettings
 from .http_read import fetch_public
 from .store import Store, WebPage
 from .replay_web import RecordedWeb

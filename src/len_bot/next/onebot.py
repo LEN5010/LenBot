@@ -16,7 +16,7 @@ from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
-from .config import OneBotForward, OneBotReverse
+from .onebot_config import OneBotForward, OneBotReverse
 from .messages import ChatMessage, SendResult, UploadResult, parse_send_result, parse_upload_result
 
 

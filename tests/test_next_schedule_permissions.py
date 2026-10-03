@@ -2,7 +2,7 @@
 
 import pytest
 
-from len_bot.next.config import ScheduleSettings
+from len_bot.next.chat_config import ScheduleSettings
 from len_bot.next.schedule import check_cancellation, check_creation, identity_roles
 
 

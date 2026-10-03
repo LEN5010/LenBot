@@ -18,7 +18,9 @@ import uvicorn
 from len_bot.web.shell import mount_panel
 from .attention import SceneRunner
 from .chat import Chat
-from .config import LabConfig, ScenePersona, STRICT, load_config, read_scene_persona, save_scene_persona
+from .config import LabConfig, load_config, read_scene_persona, save_scene_persona
+from .chat_config import ScenePersona
+from .config_types import STRICT
 from .instance_lock import instance_lock
 from .model import ChatModel
 from .memory import MemoryService, open_memory

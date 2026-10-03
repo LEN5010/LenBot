@@ -6,7 +6,7 @@ from typing import Callable, Literal
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, field_validator, model_validator
 
-from .config import STRICT
+from .config_types import STRICT
 from .jargon_store import JargonStore
 from .network import NetworkRuntime
 

@@ -7,7 +7,8 @@ import pytest
 from PIL import Image
 
 from len_bot.next.chat import Chat
-from len_bot.next.config import ImageSettings, load_config
+from len_bot.next.chat_config import ImageSettings
+from len_bot.next.config import load_config
 from len_bot.next.images import LookArguments, execute_look
 from len_bot.next.messages import parse_message
 from len_bot.next.model import ChatModel, ToolCall

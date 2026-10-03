@@ -15,10 +15,19 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from .chat_tools import build_tools
-from .config import (
-    STRICT, Compaction, ImageSettings, Attention, HostConfig, LearningSettings, Proactive, Roles, ScenePersona,
-    TextDelivery, WebReadSettings, _load_host_source, _read_root,
+from .config_types import STRICT
+from .chat_config import (
+    Compaction,
+    ImageSettings,
+    Attention,
+    Proactive,
+    ScenePersona,
+    TextDelivery,
+    WebReadSettings,
 )
+from .config import HostConfig, _load_host_source, _read_root
+from .learning_config import LearningSettings
+from .models_config import Roles
 from .persona import Persona, load_persona
 from .asr_model import AudioSettings
 from .operations import LoggingSettings

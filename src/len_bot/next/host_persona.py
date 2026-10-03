@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field, field_validator
 import yaml
 
 from .chat_tools import build_tools
-from .config import STRICT, HostConfig, load_host_config
+from .config_types import STRICT
+from .config import HostConfig, load_host_config
 from .learning_store import LearningStore
 from .network import NetworkRuntime
 from .skills import select_skills

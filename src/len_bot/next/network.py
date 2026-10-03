@@ -14,7 +14,8 @@ from .audio import AudioService
 from .chat import Chat
 from .chat_tools import tool_catalog
 from .skills import select_skills
-from .config import LabConfig, OneBotForward, SharedConfig
+from .config import LabConfig, SharedConfig
+from .onebot_config import OneBotForward
 from .operations import credentials, redact, redact_record
 from .messages import parse_message, parse_notice
 from .model import ChatModel

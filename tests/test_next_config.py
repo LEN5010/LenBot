@@ -11,12 +11,19 @@ from datetime import time as WallTime
 import pytest
 from pydantic import ValidationError
 
+from len_bot.next.onebot_config import ONEBOT_SETTINGS, OneBotForward, OneBotReverse
+from len_bot.next.maintenance_config import HistoryImportSettings, PanelSettings
 from len_bot.next.config import (
-    ONEBOT_SETTINGS, HistoryImportSettings, HostConfig, LabConfig, LearningSettings,
-    OneBotForward, OneBotReverse,
-    PanelSettings, QuietHours, ScenePersona, load_config, load_host_config, load_instance_config,
-    read_scene_persona, save_scene_persona,
+    HostConfig,
+    LabConfig,
+    load_config,
+    load_host_config,
+    load_instance_config,
+    read_scene_persona,
+    save_scene_persona,
 )
+from len_bot.next.learning_config import LearningSettings
+from len_bot.next.chat_config import QuietHours, ScenePersona
 from len_bot.next.persona import load_persona
 from len_bot.next.store import FORMAT_VERSION
 from len_bot.web.auth import hash_password

@@ -17,7 +17,8 @@ from len_bot.web.auth import (
     clear_login_failures, create_session, login_blocked, record_login_failure,
     revoke_session, session_user, verify_password,
 )
-from .config import PanelSettings, STRICT
+from .maintenance_config import PanelSettings
+from .config_types import STRICT
 
 
 class Login(BaseModel):
