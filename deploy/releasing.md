@@ -16,7 +16,7 @@
 
 宿主／任务／记忆镜像采用 Linux amd64 和 arm64 原生 runner 构建。浏览器组件使用 Linux amd64／arm64、macOS Intel／arm64 runner；Linux 二进制在 Ubuntu 24.04 构建，运行系统需要对应的 glibc，不将其声明为任意 Linux 发行版通用静态包。Python 平台包的依赖在目标机由 uv 安装，不包含一个预装的跨平台 Python 环境。[官方 runner 范围](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。
 
-`components.json` 是服务上游与工具版本来源。配套源码由 `prepare_component.py` 从固定提交取回后应用补丁，不打包维护者的本机检出、登录资料或服务目录。版本号是 LenBot 配套发行号，不冒充上游自己的软件版本。
+`components.json` 是服务上游、工具版本和浏览器 Rust 目标三元组来源。工作流按平台选择明确 target，打包只读取 `target/<triple>/release` 下的对应二进制，不从宿主默认目录取文件后仅改平台标签。配套源码由 `prepare_component.py` 从固定提交取回后应用补丁，不打包维护者的本机检出、登录资料或服务目录。版本号是 LenBot 配套发行号，不冒充上游自己的软件版本。
 
 ## 候选构建：默认不发布
 
@@ -75,4 +75,4 @@ GitHub 仓库需要 Actions 的包写入与 Release 写入权限；GHCR 包的�
 
 程序与服务各保留原许可。发行附 patched 服务源码、锁文件和实际可取得的依赖声明；BrowserSkill 包保留 Cargo 依赖许可原件、pnpm 许可元数据及扩展直接安装树的许可资料，不能据此声称已逐项核对所有二进制的全部第三方来源。原生系统包和浏览器发行物按镜像内对应声明处理。
 
-本机已核对两个固定基线可以应用本版补丁并生成源码包；工作流通过静态语法检查。macOS ARM64 与 Ubuntu 24.04 ARM64 浏览器配套包已从同一 patched 源码完成 CLI、助手和扩展构建及打包；amd64 浏览器产物、全平台远端构建、镜像上传与公开 Release 尚未执行。未安装扩展或注册助手，平台矩阵不等同于运行通过。
+本机已核对两个固定基线可以应用本版补丁并生成源码包；工作流通过静态语法检查。macOS ARM64／Intel 与 Ubuntu 24.04 ARM64 浏览器配套包已从同一 patched 源码完成 CLI、助手和扩展构建及打包；Linux amd64 浏览器产物、全平台远端构建、镜像上传与公开 Release 尚未执行。未安装扩展或注册助手，平台矩阵不等同于运行通过。
