@@ -15,6 +15,8 @@ from len_bot.next.learning_store import LearningStore
 from len_bot.next.messages import parse_message, plain_text
 from len_bot.next.store import FORMAT_VERSION, Store
 from len_bot.next.tasks_store import TaskStore
+from len_bot.next.plugin_store import PluginStore
+from len_bot.next.schedule_store import ScheduleStore
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "next" / "migration"
@@ -261,7 +263,7 @@ def test_old_format_upgrades_without_changing_original_records(tmp_path: Path, f
             assert store.load_attention("group:12345") == V6_ATTENTION
             assert store.load_attention("private:67890") is None
             assert store.pending_messages("group:12345")
-            assert store.list_schedules("group:12345", status="all") == []
+            assert ScheduleStore(store).list_schedules("group:12345", status="all") == []
         with sqlite3.connect(path) as db, sqlite3.connect(original_backup) as old:
             assert db.execute(
                 "SELECT scene,compact_through,recap,last_message_seq,attention_state "
@@ -742,7 +744,7 @@ def test_v14_interval_upgrade_preserves_one_time_schedules_chat_and_tasks(tmp_pa
         assert db.execute("SELECT interval_seconds FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
         assert db.execute("SELECT cron FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
     with Store(path) as store:
-        assert [schedule.status for schedule in store.list_schedules("group:12345", status="all")] == [
+        assert [schedule.status for schedule in ScheduleStore(store).list_schedules("group:12345", status="all")] == [
             "delivered", "blocked", "pending",
         ]
         assert TaskStore(store).get("group:12345", 51).input == "合成原始任务要求"
@@ -810,8 +812,8 @@ def test_v15_daily_cron_upgrade_preserves_interval_schedules_chat_and_tasks(tmp_
         with pytest.raises(sqlite3.IntegrityError):
             db.execute("UPDATE schedules SET cron='cron:0 12 * * *' WHERE id=1")
     with Store(path) as store:
-        assert store.get_schedule("group:12345", 1).interval_seconds == 3600
-        assert store.get_schedule("group:12345", 1).cron is None
+        assert ScheduleStore(store).get_schedule("group:12345", 1).interval_seconds == 3600
+        assert ScheduleStore(store).get_schedule("group:12345", 1).cron is None
         assert TaskStore(store).get("group:12345", 52).question == {"question": "还需要哪一页？"}
         assert TaskStore(store).get_file("group:12345", 52, 82).name == "draft.txt"
 
@@ -1672,7 +1674,7 @@ def test_format23_schedule_cron_text_and_proactive_table_keep_rows(tmp_path: Pat
         assert old.execute("SELECT name FROM sqlite_master WHERE name='proactive_wakes'").fetchone() is None
     with Store(path) as store:
         assert [(item.id, item.cron, item.status, item.reason) for item in
-                (store.get_schedule("group:80001", id) for id in (101, 102, 103, 104))] == [
+                (ScheduleStore(store).get_schedule("group:80001", id) for id in (101, 102, 103, 104))] == [
             (101, "cron:0 0 * * *", "pending", None), (102, "cron:5 9 * * *", "pending", None),
             (103, "cron:59 23 * * *", "blocked", "合成原始原因"), (104, None, "cancelled", None),
         ]
@@ -1732,10 +1734,10 @@ def test_format24_plugin_events_table_keeps_all_rows(tmp_path: Path) -> None:
             db.execute("INSERT INTO plugin_events(scene,plugin,kind,content,created) "
                        "VALUES ('group:80001','clock','other','x',1.0)")
     with Store(path) as store:
-        event = store.add_plugin_event("group:80001", "clock", "event", "合成事件")
-        store.add_plugin_event("group:80001", "clock", "reply", "合成回复")
-        assert store.plugin_wake_pending("group:80001")
-        assert store.pending_plugin_events("group:80001") == [(event, "合成事件"), (event + 1, "合成回复")]
+        event = PluginStore(store).add_plugin_event("group:80001", "clock", "event", "合成事件")
+        PluginStore(store).add_plugin_event("group:80001", "clock", "reply", "合成回复")
+        assert PluginStore(store).plugin_wake_pending("group:80001")
+        assert PluginStore(store).pending_plugin_events("group:80001") == [(event, "合成事件"), (event + 1, "合成回复")]
 
 
 def test_format24_plugin_events_collision_rolls_back(tmp_path: Path) -> None:

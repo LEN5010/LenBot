@@ -15,9 +15,10 @@ from .identity import roles_for
 
 from .config import LabConfig, ScheduleSettings
 from .schedule_time import Cron, next_cron, parse_cron
+from .schedule_store import Schedule, ScheduleStore
 
 if TYPE_CHECKING:
-    from .store import Schedule, Store
+    from .store import Store
 
 
 _INTERVAL = re.compile(r"every ([1-9][0-9]*)([mhd])\Z")
@@ -224,7 +225,7 @@ def create_arrangement(store: Store, config: LabConfig, args: ScheduleArguments,
         raise PermissionError('当前黑名单账号不能创建安排')
     check_creation(effective_settings(config), requester=args.requester, target=args.target,
                    bot_qq=config.bot_qq, root_owner=config.owner_qq, group_role=platform_role(store, config, args.requester))
-    return store.create_schedule(config.scene, due_at=when, timezone=config.timezone,
+    return ScheduleStore(store).create_schedule(config.scene, due_at=when, timezone=config.timezone,
                                  note=args.note, target=args.target, requester=args.requester,
                                  limit=config.schedules.max_pending, interval_seconds=interval_seconds,
                                  cron=None if cron is None else cron.expression)
@@ -232,12 +233,12 @@ def create_arrangement(store: Store, config: LabConfig, args: ScheduleArguments,
 
 def cancel_arrangement(store: Store, config: LabConfig, *, id: int,
                        requester: str | None) -> Schedule:
-    item = store.get_schedule(config.scene, id)
+    item = ScheduleStore(store).get_schedule(config.scene, id)
     if requester != item.requester and requester in config.permissions.blacklist:
         raise PermissionError('黑名单账号只能取消本人的安排')
     check_cancellation(effective_settings(config), requester=requester, creator=item.requester,
                        bot_qq=config.bot_qq, root_owner=config.owner_qq, group_role=platform_role(store, config, requester))
-    return store.cancel_schedule(config.scene, item.id)
+    return ScheduleStore(store).cancel_schedule(config.scene, item.id)
 
 
 def execute_schedule(store: Store, config: LabConfig, name: Literal["schedule", "schedule_list", "schedule_cancel"],
@@ -252,7 +253,7 @@ def execute_schedule(store: Store, config: LabConfig, name: Literal["schedule", 
             store, config, id=cancel.id, requester=cancel.requester,
         ))
     page = ScheduleListArguments.model_validate(arguments)
-    items = store.list_schedules(config.scene, status=page.status, offset=page.offset, limit=page.limit + 1)
+    items = ScheduleStore(store).list_schedules(config.scene, status=page.status, offset=page.offset, limit=page.limit + 1)
     more = len(items) > page.limit
     content = "\n\n".join(describe(item) for item in items[:page.limit]) or "没有符合条件的安排。"
     if more:

@@ -33,6 +33,7 @@ from .schedule_time import Cron, next_cron, parse_cron
 from .skills import Skill, load_plugin_skills
 from .plugin_manifest import BUILTIN, Manifest, discover, read_manifest, redact_values
 from .store import encode
+from .plugin_store import PluginStore
 
 if TYPE_CHECKING:
     from .network import NetworkRuntime
@@ -312,7 +313,7 @@ class PluginHost:
         now = datetime.fromtimestamp(self.now(), ZoneInfo(self.scene_timezone(scene)))
         content = Template((PROMPTS / "next_plugin_event.md").read_text(encoding="utf-8")).substitute(
             plugin=plugin, time=now.isoformat(timespec="seconds"), text=self.redact(plugin, text.strip())).strip()
-        self.runtime.store.add_plugin_event(scene, plugin, "event", content)
+        PluginStore(self.runtime.store).add_plugin_event(scene, plugin, "event", content)
         self.runtime.runners[scene].changed.set()
         self._notify()
 
@@ -523,7 +524,7 @@ class PluginHost:
             except Exception as error:
                 result = "处理失败：" + self._record(record, matched.label, error)
             finally:
-                self.runtime.store.add_plugin_event(
+                PluginStore(self.runtime.store).add_plugin_event(
                     message.scene, record.name, "reply", self.message_report(message, matched, result))
                 self._notify()
 

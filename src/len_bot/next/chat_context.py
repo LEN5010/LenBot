@@ -19,6 +19,7 @@ from .schedule import describe
 from .skills import Skill
 from .store import Store, encode
 from .tasks_store import TaskStore
+from .schedule_store import ScheduleStore
 
 
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
@@ -122,7 +123,7 @@ def turn_state(config: LabConfig, store: Store, *, now: float,
     """Read the current scene's pending work and per-request reference material."""
     moment = datetime.fromtimestamp(now, ZoneInfo(config.timezone)).isoformat(timespec="seconds")
     state = {"role": "user", "content": f"当前时间：{moment}"}
-    schedules = store.list_schedules(config.scene, limit=21)
+    schedules = ScheduleStore(store).list_schedules(config.scene, limit=21)
     if schedules:
         state["content"] += "\n<未完成安排>\n" + "\n\n".join(
             describe(item, preview=True) for item in schedules[:20]) + "\n</未完成安排>"

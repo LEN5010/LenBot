@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .network import NetworkRuntime
 from .proactive import ProactiveStore
 from .schedule import ScheduleArguments, cancel_arrangement, create_arrangement
+from .schedule_store import ScheduleStore
 
 
 class PanelScheduleArguments(ScheduleArguments):
@@ -65,7 +66,7 @@ def register_host_schedules(app: FastAPI, *, runtime: NetworkRuntime,
                       offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=20),
                       _: str = Depends(user)):
         chat_for(scene)
-        items = runtime.store.list_schedules(scene, status=status, offset=offset, limit=limit + 1)
+        items = ScheduleStore(runtime.store).list_schedules(scene, status=status, offset=offset, limit=limit + 1)
         return {"items": [asdict(item) for item in items[:limit]],
                 "next_offset": offset + limit if len(items) > limit else None}
 
@@ -89,7 +90,7 @@ def register_host_schedules(app: FastAPI, *, runtime: NetworkRuntime,
     async def cancel(id: int, scene: str, body: CancelArguments, _: str = Depends(user)):
         chat = chat_for(scene)
         try:
-            runtime.store.get_schedule(scene, id)
+            ScheduleStore(runtime.store).get_schedule(scene, id)
         except ValueError as error:
             raise HTTPException(404, str(error)) from error
         try:

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
 
 from .messages import ChatMessage, plain_text
-from .store import Store, encode
+from .store_codec import encode, decode_message
+
+if TYPE_CHECKING:
+    from .store import Store
 
 
 StoredVector = tuple[bytes, str, int]
@@ -17,6 +20,38 @@ EXPRESSION_COLUMNS = "id,scene,situation,style,sources,status,updated,vector IS 
 BATCH_SUMMARY_COLUMNS = (
     "id,scene,after_seq,through_seq,started,ended,status,model_started,usage,cost,error"
 )
+
+
+SCHEMA = """
+CREATE TABLE learning_state (
+    scene TEXT PRIMARY KEY, after_seq INTEGER NOT NULL
+);
+CREATE TABLE learning_batches (
+    id INTEGER PRIMARY KEY, scene TEXT NOT NULL,
+    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL,
+    started REAL NOT NULL, ended REAL, model_started REAL,
+    status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
+    request TEXT NOT NULL, response TEXT, usage TEXT, cost TEXT, error TEXT
+);
+CREATE INDEX learning_batches_scene ON learning_batches(scene,id);
+CREATE TABLE expressions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL, situation TEXT NOT NULL,
+    style TEXT NOT NULL, sources TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','adopted','rejected')),
+    updated REAL NOT NULL, vector BLOB, vector_binding TEXT,
+    vector_dimensions INTEGER, UNIQUE(scene,situation,style)
+);
+CREATE INDEX expressions_scene_status ON expressions(scene,status,id);
+CREATE TABLE expression_embedding_calls (
+    id INTEGER PRIMARY KEY, scene TEXT NOT NULL, turn_id TEXT,
+    purpose TEXT NOT NULL CHECK(purpose IN ('query','index','reindex')),
+    started REAL NOT NULL, ended REAL, request TEXT NOT NULL,
+    response TEXT, usage TEXT, cost TEXT, error TEXT
+);
+CREATE INDEX expression_embedding_scene ON expression_embedding_calls(scene,id);
+CREATE INDEX learning_batches_usage ON learning_batches(model_started,scene);
+CREATE INDEX expression_embedding_calls_usage ON expression_embedding_calls(started,scene);
+"""
 
 
 class LearningStore:
@@ -54,7 +89,7 @@ class LearningStore:
         for row in rows:
             if not row["is_received"] or row["received_at"] is None:
                 continue
-            message = Store._message(row["body"])
+            message = decode_message(row["body"])
             if (message.send_status == "received" and not message.is_self
                     and message.sender.uid not in exclude_uids and plain_text(message).strip()):
                 selected.append((row["seq"], message, row["received_at"]))
@@ -69,7 +104,7 @@ class LearningStore:
             "ORDER BY seq DESC", (scene, after_seq, encode(exclude_uids)),
         )
         for body, received_at in rows:
-            if plain_text(Store._message(body)).strip():
+            if plain_text(decode_message(body)).strip():
                 return received_at
         return None
 

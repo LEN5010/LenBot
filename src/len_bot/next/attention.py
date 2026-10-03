@@ -22,6 +22,8 @@ from .messages import ChatMessage, Segment, parse_message, plain_text
 from .proactive import PROMPT as PROACTIVE_PROMPT, ProactiveStore, idle_text
 from .quiet import next_quiet_start, quiet_period
 from .schedule import effective_settings, check_creation, platform_role, wake_text
+from .plugin_store import PluginStore
+from .schedule_store import ScheduleStore
 
 
 Channel = Literal["direct", "named", "focus", "ambient"]
@@ -342,7 +344,7 @@ class SceneRunner:
             if period is None and self.audio_ready():
                 reason = "此前语音的识别结果已就绪，完整工具组结束后处理"
                 break
-            due_at = self.store.next_schedule_at(self.config.scene)
+            due_at = ScheduleStore(self.store).next_schedule_at(self.config.scene)
             if period is None and due_at is not None and due_at <= now:
                 reason = "当前场景有到期安排，完整工具组结束后处理"
                 break
@@ -378,7 +380,7 @@ class SceneRunner:
 
     def due_schedules(self, now: float) -> list[tuple[int, str]]:
         scheduled = []
-        for item in self.store.due_schedules(self.config.scene, now):
+        for item in ScheduleStore(self.store).due_schedules(self.config.scene, now):
             try:
                 if "schedule" not in self.chat.toolset.allowed_tool_names:
                     raise PermissionError("当前角色或场景未开放 schedule，安排未交付")
@@ -389,16 +391,16 @@ class SceneRunner:
                                group_role=platform_role(self.store, self.config, item.requester))
             except PermissionError as error:
                 reason = f"{type(error).__name__}: {error}"
-                self.store.block_schedule(self.config.scene, item.id, reason)
+                ScheduleStore(self.store).block_schedule(self.config.scene, item.id, reason)
                 self.emit({"type": "schedule", "id": item.id, "status": "blocked", "error": reason})
             else:
                 scheduled.append((item.id, wake_text(item, now)))
         return scheduled
 
     def schedule_deadline(self, now: float) -> float | None:
-        due_at = self.store.next_schedule_at(self.config.scene)
+        due_at = ScheduleStore(self.store).next_schedule_at(self.config.scene)
         if ((self.chat.tasks is not None and self.chat.tasks.records.pending_notices(self.config.scene))
-                or self.store.plugin_wake_pending(self.config.scene) or self.audio_ready()):
+                or PluginStore(self.store).plugin_wake_pending(self.config.scene) or self.audio_ready()):
             due_at = now if due_at is None else min(now, due_at)
         if due_at is None:
             return None
@@ -448,7 +450,7 @@ class SceneRunner:
             scheduled = self.due_schedules(now) if period is None else []
             task_notice = (period is None and self.chat.tasks is not None
                            and self.chat.tasks.records.pending_notices(self.config.scene))
-            plugin_event = period is None and self.store.plugin_wake_pending(self.config.scene)
+            plugin_event = period is None and PluginStore(self.store).plugin_wake_pending(self.config.scene)
             if scheduled or task_notice or plugin_event or (period is None and self.audio_ready()):
                 return self.store.pending_messages(self.config.scene), None, scheduled
             notice_until = None
@@ -562,7 +564,7 @@ class SceneRunner:
         if self.quiet_period(self.now()) is None:
             if self.audio_ready():
                 self.chat.turn_channels.add("audio")
-        events = self.store.pending_plugin_events(
+        events = PluginStore(self.store).pending_plugin_events(
             self.config.scene, include_events=self.quiet_period(self.now()) is None)
         if events:
             self.chat.turn_channels.add("plugin")
@@ -690,7 +692,7 @@ class SceneRunner:
         ).strip()
         pending = self.store.pending_messages(self.config.scene)
         batch = self.batch(pending, "[安静前未触发唤醒的消息]") if pending else None
-        events = self.store.pending_plugin_events(self.config.scene)
+        events = PluginStore(self.store).pending_plugin_events(self.config.scene)
         await self.turn("proactive", batch=batch, channels={"proactive", "plugin"} if events else {"proactive"},
                         plugin_events=events or None,
                         proactive=(text, local.date().isoformat(), idle_since))
@@ -712,7 +714,7 @@ class SceneRunner:
                 quiet = self.quiet_period(self.now()) is not None
                 notices = (self.chat.tasks.records.pending_notices(self.config.scene)
                            if self.chat.tasks is not None and not quiet else [])
-                events = self.store.pending_plugin_events(self.config.scene, include_events=not quiet)
+                events = PluginStore(self.store).pending_plugin_events(self.config.scene, include_events=not quiet)
                 audio = not quiet and self.audio_ready()
                 channel = ("system" if scheduled or notices or events or audio
                            else self.state.pending.channel if self.state.pending else "resume")

@@ -27,6 +27,7 @@ from .reply_effect_store import ReplyEffectStore
 from .sticker_assets import CollectedSticker
 from .sticker_store import StickerStore
 from .store import Store, encode
+from .plugin_store import PluginStore
 
 
 class MessageSender(Protocol):
@@ -248,7 +249,7 @@ class ChatExpression:
                     if interruption is not None:
                         report += "\n" + interruption
                     moment = datetime.fromtimestamp(self.now(), ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
-                    self.store.add_plugin_event(self.config.scene, plugin, "reply", Template(
+                    PluginStore(self.store).add_plugin_event(self.config.scene, plugin, "reply", Template(
                         (PROMPTS / "next_plugin_reply.md").read_text()).substitute(
                         plugin=plugin, time=moment,
                         report=("模拟表达（未发送到 QQ）：" if self.send_message is None else "") + report).strip())

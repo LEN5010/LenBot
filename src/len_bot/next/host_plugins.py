@@ -15,6 +15,7 @@ from .network import NetworkRuntime
 from .plugin_manifest import ConfigField, ConfigItem, Manifest, discover, read_manifest, redact_values
 from .plugin_manager import PluginManager
 from .plugin_install import repository_url
+from .plugin_store import PluginStore
 
 
 STRICT = ConfigDict(extra="forbid", strict=True)
@@ -147,7 +148,7 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
         plugin_state = ({"plugins": [], "discovery_errors": []} if runtime.plugins is None
                         else runtime.plugins.state())
         for item in plugin_state["plugins"]:
-            item["model_calls"] = runtime.store.plugin_calls(item["name"])
+            item["model_calls"] = PluginStore(runtime.store).plugin_calls(item["name"])
         return await asyncio.to_thread(state, plugin_state)
 
     async def save(edit: Callable[[dict, HostConfig], None], names: Sequence[str] = ()) -> dict:

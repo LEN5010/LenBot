@@ -34,6 +34,7 @@ from .store import Store
 from .tasks import WorkTasks
 from .tasks_store import TaskStore
 from .skills import load_catalog, select_skills
+from .plugin_store import PluginStore
 
 
 class HostPanelServer(uvicorn.Server):
@@ -109,7 +110,7 @@ async def run() -> None:
     ) for settings, persona in scenes}
     slots = ModelSlots(config.max_model_requests)
     with host_logging(config.logging, credentials(config)), Store(config.database) as store:
-        store.recover_plugin_calls()
+        PluginStore(store).recover_plugin_calls()
         if config.onebot is None and (TaskStore(store).containers() or TaskStore(store).browser_in_use()):
             raise ValueError('stdin模拟宿主不能清理原库中残留的容器或账号浏览会话；先在所属原实例明确处理，不使用导入的定位访问外部实例')
         budget = ModelBudget(config, store, None, root=config._instance_root)
