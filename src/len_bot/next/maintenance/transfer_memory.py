@@ -102,9 +102,11 @@ def processing_state(jobs: sqlite3.Connection, messages: sqlite3.Connection, sce
         if not 0 <= row['after_seq'] <= maxima[row['scene']]:
             raise ValueError(f'Memory cursor outside current chat range: {row!r}')
     for row in state['memory_exclusions']:
-        if messages.execute('SELECT 1 FROM messages WHERE scene=? AND seq=?',
-                            (row['scene'], row['message_seq'])).fetchone() is None:
-            raise ValueError(f'Memory exclusion has no actual source message: {row!r}')
+        # Retention may remove excluded originals, even without an ingest cursor.
+        # Keep their exclusion metadata; any surviving original must still match.
+        source = messages.execute('SELECT scene FROM messages WHERE seq=?', (row['message_seq'],)).fetchone()
+        if source is not None and source['scene'] != row['scene']:
+            raise ValueError(f'Memory exclusion source belongs to another scene: {row!r}')
     latest = {row['scene']: row['id'] for row in state['memory_jobs']}
     for row in state['memory_jobs']:
         details = json.loads(row['details'])
