@@ -167,7 +167,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
             "models": {"mind": config.models.roles.mind.model,
                        "voice": config.models.roles.voice.model},
             "messages": [
-                {"seq": seq, "rendered": chat.render(message), "text": chat.render_text(message), **asdict(message),
+                {"seq": seq, "rendered": chat.context.render(message), "text": chat.context.render_text(message), **asdict(message),
                  "images": runtime.store.message_media(scene, seq)}
                 for seq, message in runtime.store.recent_records(scene)
             ],

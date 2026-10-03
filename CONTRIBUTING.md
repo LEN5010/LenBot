@@ -10,7 +10,7 @@
 |---|---|
 | `src/len_bot/next/host*.py` | 启动、装配与面板 HTTP 接口 |
 | `next/chat.py`、`attention.py`、`context.py` | 会话执行、唤醒与历史压缩 |
-| `next/chat_context.py`、`chat_tools.py` | 请求材料、工具定义与装配，供运行及面板／离线命令共用 |
+| `next/chat_context.py`、`chat_tools.py`、`chat_expression.py` | 请求材料、工具发现与分派、表达与场景发送出口 |
 | `next/memory*.py`、`tasks*.py`、`worker*.py` | 双记忆后端、任务调度与容器通信 |
 | `next/import_*.py`、`migrate*.py`、`archive_*.py`、`transfer_memory.py`、`export_persona_memory_templates.py` | 显式离线维护 |
 | `src/len_bot/prompts/`、`builtin_skills/` | 提示词与任务方法 |

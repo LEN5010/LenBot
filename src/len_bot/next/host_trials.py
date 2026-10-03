@@ -179,7 +179,7 @@ class HostTrials:
             try:
                 stack.enter_context(instance_lock(root))
                 source_chat = self.runtime.chats[scene]
-                context = [source_chat.render(message) for message in
+                context = [source_chat.context.render(message) for message in
                            self.runtime.store.recent(scene, context_messages)] if context_messages else []
                 source = self.config.scene_config(scene)
                 memory = None
@@ -194,7 +194,7 @@ class HostTrials:
                     'web_read':None, 'web_search':None})
                 config = LabConfig.model_validate_json(candidate.model_dump_json())
                 if persona_draft is None:
-                    original = self.runtime.chats[scene].allowed_tool_names
+                    original = self.runtime.chats[scene].toolset.allowed_tool_names
                 elif persona.tools == 'all':
                     original = {item['function']['name'] for item in tool_catalog(platform=False)}
                 else:

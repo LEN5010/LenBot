@@ -7,10 +7,13 @@ from pathlib import Path
 from string import Template
 from zoneinfo import ZoneInfo
 
+from .audio_store import AudioStore
 from .config import LabConfig
+from .context import project_history
 from .discovery import DEFERRED_NAMES
 from .jargon_store import JargonStore
-from .messages import ChatMessage, plain_text
+from .memory import MemoryService
+from .messages import ChatMessage, plain_text, render_message, render_text
 from .persona import Persona, select_examples
 from .schedule import describe
 from .skills import Skill
@@ -140,3 +143,43 @@ def turn_state(config: LabConfig, store: Store, *, now: float,
     if jargon is not None:
         state["content"] += "\n" + jargon
     return state
+
+
+class ChatContext:
+    """Scene materials shared by model requests, expression and panel views."""
+
+    def __init__(self, config: LabConfig, persona: Persona, store: Store, *,
+                 platform: bool, memory: MemoryService | None):
+        self.config, self.persona, self.store = config, persona, store
+        self.platform, self.memory = platform, memory
+        self.system: str
+        self._base_system: str
+
+    def configure_tools(self, allowed: list[dict], external: list[dict], *, skills: tuple[Skill, ...]) -> None:
+        self._base_system = build_system(self.config, self.persona, allowed, platform=self.platform,
+                                         skills=skills, external=external)
+        self.system = self.profile_system(
+            None if self.memory is None else self.memory.group_profile(self.config.scene))
+
+    def profile_system(self, profile: str | None) -> str:
+        if profile is None:
+            return self._base_system
+        return self._base_system + "\n" + Template((PROMPTS / "next_group_profile.md").read_text()).substitute(
+            profile=profile.strip())
+
+    def render(self, message: ChatMessage) -> str:
+        quote = (None if message.reply_to is None else
+                 self.store.find_message(message.scene, message.reply_to))
+        return render_message(message, timezone=self.config.timezone, reply=quote,
+                              audio=AudioStore(self.store).captions(message.scene, message.platform_message_id))
+
+    def render_text(self, message: ChatMessage) -> str:
+        quote = (None if message.reply_to is None else
+                 self.store.find_message(message.scene, message.reply_to))
+        return render_text(message, reply=quote,
+                           audio=AudioStore(self.store).captions(message.scene, message.platform_message_id))
+
+    async def project(self, recap: str | None, entries: list[tuple[int, dict]], state: dict) -> list[dict]:
+        profile = None if self.memory is None else await self.memory.read_group_profile(self.config.scene)
+        self.system = self.profile_system(profile)
+        return [{"role": "system", "content": self.system}] + project_history(recap, entries) + [state]

@@ -1,14 +1,24 @@
 """One model request, shared by chat turns and explicit plugin generation."""
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
+from typing import Literal, Protocol
 
 from .config import SharedConfig
-from .context import ContextBudgetError, estimate_request, estimate_text_request
+from .context import CompactionPlan, ContextBudgetError, estimate_request, estimate_text_request
 from .model import ChatModel, ModelProtocolError, ModelReply
 from .model_slots import ModelSlots
 from .pricing import estimate_cost
 from .store import Store
+
+
+class ChatRequest(Protocol):
+    """The scene request callback used by expression and image tools."""
+
+    def __call__(self, turn_id: str, role: Literal["mind", "voice", "recap", "vision"],
+                 messages: list[dict], tools: list[dict], *,
+                 recap_target: CompactionPlan | None = None,
+                 expression_ids: list[int] | None = None) -> Awaitable[ModelReply]: ...
 
 
 async def request_model(config: SharedConfig, store: Store, model: ChatModel,

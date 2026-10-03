@@ -303,7 +303,7 @@ class PluginHost:
         safe_parts = [Text(self.redact(plugin, part.text)) if isinstance(part, Text)
                       else Image(part.data, self.redact(plugin, part.description)) if isinstance(part, Image)
                       else part for part in parts]
-        return await self.runtime.chats[scene].send_plugin_content(plugin, safe_parts, reply_to=reply_to)
+        return await self.runtime.chats[scene].expression.send_plugin_content(plugin, safe_parts, reply_to=reply_to)
 
     def emit_event(self, plugin: str, scene: str, text: str) -> None:
         self._active(plugin, scene)
@@ -329,7 +329,7 @@ class PluginHost:
         chat = self.runtime.chats[scene]
         if chat.memory is None:
             raise ValueError(f"场景 {scene} 未配置长期记忆服务")
-        if "memory" not in chat.allowed_tool_names:
+        if "memory" not in chat.toolset.allowed_tool_names:
             raise PermissionError(f"场景 {scene} 当前加载角色未允许 memory")
         return await chat.memory.execute(scene, arguments)
 

@@ -37,7 +37,7 @@ def register_host_schedules(app: FastAPI, *, runtime: NetworkRuntime,
         return {"timezone": runtime.config.timezone,
                 "scenes": [{"scene": scene, "timezone": chat.config.timezone,
                             **chat.config.schedules.model_dump(mode="json"),
-                            "tool_allowed": "schedule" in chat.allowed_tool_names}
+                            "tool_allowed": "schedule" in chat.toolset.allowed_tool_names}
                            for scene, chat in runtime.chats.items()]}
 
     @app.get("/api/host/schedules/proactive")
@@ -74,7 +74,7 @@ def register_host_schedules(app: FastAPI, *, runtime: NetworkRuntime,
         chat = chat_for(scene)
         if not runtime.accepting:
             raise HTTPException(409, "宿主正在停止，不再创建新安排")
-        if "schedule" not in chat.allowed_tool_names:
+        if "schedule" not in chat.toolset.allowed_tool_names:
             raise HTTPException(403, "当前角色或场景未开放 schedule")
         try:
             item = create_arrangement(runtime.store, chat.config, body, now=runtime.store.now)
