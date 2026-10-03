@@ -15,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from .config_types import STRICT
+from .host_task_models import TaskDetail, TaskPage
 from .network import NetworkRuntime
 from .task_files import file_info
 from .tasks_store import TERMINAL, TaskStore
@@ -81,7 +82,7 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
                                 and runtime.config.onebot.upload_visible_root is not None),
                 "notice": "模型与公共流量使用独立管道；是否启用与目标是否连通分开。文件登记与上传回执分别显示。"}
 
-    @app.get("/api/host/tasks")
+    @app.get("/api/host/tasks", response_model=TaskPage)
     async def listing(scene: str, status: str = "active", offset: int = Query(0, ge=0),
                       limit: int = Query(20, ge=1, le=20), _: str = Depends(user)):
         scene_exists(scene)
@@ -92,7 +93,7 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
         return {"items": [asdict(item) for item in items[:limit]],
                 "next_offset": offset + limit if len(items) > limit else None}
 
-    @app.get("/api/host/tasks/{id}")
+    @app.get("/api/host/tasks/{id}", response_model=TaskDetail)
     async def detail(id: int, scene: str, after: int = Query(0, ge=0),
                      limit: int = Query(100, ge=1, le=100), _: str = Depends(user)):
         scene_exists(scene)

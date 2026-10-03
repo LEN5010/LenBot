@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, queryString } from '../../../api.js'
+import { tasksApi } from '../../api/tasks.js'
 import { useResource } from '../../../composables/useResource.js'
 import { useHostEvents } from '../../events.js'
 import { formatTime } from '../../time.js'
@@ -14,11 +14,11 @@ import { taskStatus } from './taskLabels.js'
 const props = defineProps({ scene: { type: String, required: true }, operator: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
 const route = useRoute(), router = useRouter()
-const state = useResource(() => api('/api/host/tasks/state'))
+const state = useResource(() => tasksApi.state())
 const settings = computed(() => state.data.value?.scenes.find(item => item.scene === props.scene) || null)
 const filter = ref('active'), rows = ref([])
-const list = useResource(async more => ({ more: more === true, ...(await api('/api/host/tasks?' + queryString({
-  scene: props.scene, status: filter.value, offset: more === true ? list.data.value.next_offset : 0, limit: 20 }))) }))
+const list = useResource(async more => ({ more: more === true, ...(await tasksApi.list(props.scene, {
+  status: filter.value, offset: more === true ? list.data.value.next_offset : 0, limit: 20 })) }))
 watch(() => list.data.value, value => { if (value) rows.value = value.more ? [...rows.value, ...value.items] : value.items })
 watch(filter, () => list.reload())
 const selected = computed(() => /^[1-9][0-9]*$/.test(route.query.id ?? '') ? Number(route.query.id) : null)

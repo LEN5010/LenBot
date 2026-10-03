@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { api, queryString } from '../../../api.js'
+import { tasksApi } from '../../api/tasks.js'
+import { materialsApi } from '../../api/materials.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify } from '../../store.js'
 import ErrorNote from '../../components/ErrorNote.vue'
@@ -8,16 +9,15 @@ import ErrorNote from '../../components/ErrorNote.vue'
 const props = defineProps({ scene: { type: String, required: true }, operator: { type: String, required: true } })
 const emit = defineEmits(['dirty', 'created', 'close'])
 const goal = ref(''), deliverable = ref(''), context = ref(''), materials = ref([]), accountBrowser = ref(false)
-const shared = useResource(() => api('/api/host/materials?' + queryString({ scene: props.scene })))
+const shared = useResource(() => materialsApi.list(props.scene))
 const files = computed(() => (shared.data.value?.files || []).map(file => ({ title: file.name, value: file.name })))
 const dirty = computed(() => Boolean(goal.value || deliverable.value || context.value || materials.value.length || accountBrowser.value))
 watch(dirty, value => emit('dirty', value), { immediate: true })
 const validQQ = computed(() => /^[1-9][0-9]*$/.test(props.operator))
 const create = useAction()
 async function submit() {
-  const result = await create.run(() => api('/api/host/tasks/delegate?' + queryString({ scene: props.scene }), { method: 'POST',
-    body: JSON.stringify({ requester: props.operator, goal: goal.value, deliverable: deliverable.value, context: context.value,
-      account_browser: accountBrowser.value, materials: materials.value }) }))
+  const result = await create.run(() => tasksApi.delegate(props.scene, { requester: props.operator, goal: goal.value, deliverable: deliverable.value, context: context.value,
+      account_browser: accountBrowser.value, materials: materials.value }))
   if (!result) return
   notify('任务已排队')
   emit('created', result)

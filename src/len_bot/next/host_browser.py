@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -11,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from .account_browser import AccountBrowser, AccountBrowserSettings
 from .host_settings import _prepare, _read_saved
 from .task_browser import TaskBrowser
-from .tasks_store import TaskStore
+from .tasks_store import Task, TaskStore
 
 
 class BrowserChange(BaseModel):
@@ -26,6 +25,13 @@ class ReleaseBrowser(BaseModel):
     session_id: str | None = None
 
 
+class BrowserState(BaseModel):
+    running: AccountBrowserSettings | None
+    saved: AccountBrowserSettings | None
+    restart_required: bool
+    occupied: list[Task]
+
+
 def register_host_browser(app: FastAPI, *, root: Path, runtime, user, write_lock):
     running = runtime.config.account_browser
     browser = None if running is None else AccountBrowser(running)
@@ -38,19 +44,18 @@ def register_host_browser(app: FastAPI, *, root: Path, runtime, user, write_lock
         return browser
 
     def view(saved):
-        return {'running': None if running is None else running.model_dump(mode='json'),
-                'saved': None if saved.account_browser is None else saved.account_browser.model_dump(mode='json'),
-                'restart_required': saved.account_browser != running,
-                'occupied': [asdict(item) for item in records.browser_in_use()]}
+        return BrowserState(running=running, saved=saved.account_browser,
+                            restart_required=saved.account_browser != running,
+                            occupied=records.browser_in_use())
 
-    @app.get('/api/host/browser')
+    @app.get('/api/host/browser', response_model=BrowserState)
     async def state(_: str = Depends(user)):
         try:
             return view(await asyncio.to_thread(_read_saved, root))
         except (ValueError, OSError) as error:
             raise HTTPException(422, str(error)) from error
 
-    @app.put('/api/host/browser')
+    @app.put('/api/host/browser', response_model=BrowserState)
     async def save(request: Request, _: str = Depends(user)):
         try:
             body = BrowserChange.model_validate_json(await request.body())

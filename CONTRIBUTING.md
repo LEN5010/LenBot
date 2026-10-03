@@ -18,7 +18,7 @@
 | `next/import_*.py`、`migrate*.py`、`archive_*.py`、`transfer_memory.py`、`export_persona_memory_templates.py` | 显式离线维护 |
 | `next/audio_synthesis.py` | 未启用的文本／音色输入与音频文件结果契约 |
 | `src/len_bot/prompts/`、`builtin_skills/` | 提示词与任务方法 |
-| `src/len_bot/web/frontend/` | Vue 面板；`web/static/dist/` 为忽略的构建产物 |
+| `src/len_bot/web/frontend/` | Vue 面板，`src/host/api/` 为业务请求；`web/static/dist/` 为忽略的构建产物 |
 | `src/len_bot/eval/`、`tests/` | 行为回放／边界与迁移检查 |
 | `docker/next-worker/`、`deploy/current/`、`scripts/` | 任务镜像、部署、安装与分发构建 |
 
