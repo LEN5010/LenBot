@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import traceback
 from uuid import uuid4
 
@@ -34,7 +34,7 @@ class DeliverFile(BaseModel):
 def file_info(file: TaskFile, records: TaskStore) -> dict:
     return {"id": file.id, "task_id": file.task_id, "name": file.name,
             "size": file.size, "note": file.note, "status": "registered",
-            "upload": records.latest_file_upload(file)}
+            "exists": Path(file.path).is_file(), "upload": records.latest_file_upload(file)}
 
 
 class TaskFiles:
@@ -64,7 +64,10 @@ class TaskFiles:
         except BaseException:
             target.unlink(missing_ok=True)
             raise
-        self.records.add_event(item.scene, item.id, "file", file_info(file, self.records))
+        original = PurePosixPath(arguments.path)
+        relative = original.relative_to('/workspace') if original.is_absolute() else original
+        self.records.add_event(item.scene, item.id, "file", {**file_info(file, self.records),
+            'source': {'scope': 'workspace', 'task_id': item.id, 'file_id': None, 'path': str(relative)}})
         self.notify(item.scene)
         return file_info(file, self.records)
 

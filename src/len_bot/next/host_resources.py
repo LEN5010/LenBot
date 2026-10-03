@@ -1,9 +1,10 @@
 """Authenticated task-resource browsing, reading, download and explicit registration."""
 
 from collections.abc import Callable
+from typing import Annotated
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, JsonValue
 from starlette.concurrency import run_in_threadpool
@@ -37,6 +38,30 @@ class ResourceEntry(BaseModel):
     reference: ResourceFileRef
     note: str | None
     upload: dict[str, JsonValue] | None
+    source: dict[str, JsonValue] | None
+    registrations: list[int]
+    deletion: dict[str, JsonValue] | None
+    deletable: bool
+
+
+class AdoptResource(BaseModel):
+    model_config = STRICT
+    reference: ResourceFileRef
+    requester: str = Field(pattern=r'^[1-9][0-9]*$')
+    name: MaterialName
+
+
+class DeleteResource(BaseModel):
+    model_config = STRICT
+    reference: ResourceFileRef
+    requester: str = Field(pattern=r'^[1-9][0-9]*$')
+
+
+class UploadResource(BaseModel):
+    model_config = STRICT
+    name: MaterialName
+    requester: str = Field(pattern=r'^[1-9][0-9]*$')
+    file: UploadFile
 
 
 class ResourceListing(ResourceLocation):
@@ -137,3 +162,39 @@ def register_host_resources(app: FastAPI, *, runtime: NetworkRuntime,
             raise HTTPException(403, str(error)) from error
         except (ValueError, OSError) as error:
             raise failure(error) from error
+
+    def tasks(scene: str):
+        service(scene)
+        if runtime.tasks is None:
+            raise HTTPException(409, '当前没有任务服务')
+        return runtime.tasks
+
+    @app.post('/api/host/resources/adopt')
+    async def adopt(scene: str, body: AdoptResource, _: str = Depends(user)):
+        try:
+            return await tasks(scene).adopt_resource(scene, body.reference, requester=body.requester, name=body.name)
+        except PermissionError as error:
+            raise HTTPException(403, str(error)) from error
+        except (ValueError, OSError) as error:
+            raise failure(error) from error
+
+    @app.delete('/api/host/resources')
+    async def delete(scene: str, body: DeleteResource, _: str = Depends(user)):
+        try:
+            return await tasks(scene).delete_resource(scene, body.reference, requester=body.requester)
+        except PermissionError as error:
+            raise HTTPException(403, str(error)) from error
+        except (ValueError, OSError) as error:
+            raise failure(error) from error
+
+    @app.post('/api/host/resources/upload')
+    async def upload(scene: str, body: Annotated[UploadResource, Form(media_type='multipart/form-data')],
+                     _: str = Depends(user)):
+        try:
+            return await tasks(scene).upload_resource(scene, body.file.file, requester=body.requester, name=body.name)
+        except PermissionError as error:
+            raise HTTPException(403, str(error)) from error
+        except (ValueError, OSError) as error:
+            raise failure(error) from error
+        finally:
+            await body.file.close()

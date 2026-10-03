@@ -98,6 +98,31 @@ def open_regular(path: Path) -> tuple[BinaryIO, int]:
         raise
 
 
+def copy_stream(source: BinaryIO, target: Path, max_bytes: int) -> int:
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'wb') as output:
+        total = 0
+        while chunk := source.read(1024 * 1024):
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(f'File exceeds worker.max_file_bytes: {total} > {max_bytes}')
+            output.write(chunk)
+        output.flush()
+        os.fsync(output.fileno())
+    return total
+
+
+def save_shared(source: BinaryIO, directory: Path, name: str, max_bytes: int) -> dict:
+    require_directory(directory)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(prefix='.resource-copy-', dir=directory.parent) as temporary:
+        staged = Path(temporary) / 'content'
+        size = copy_stream(source, staged, max_bytes)
+        target = directory / name
+        os.link(staged, target, follow_symlinks=False)
+    return {'directory': str(directory), 'name': name, 'path': str(target), 'size': size}
+
+
 def adopt_file(directory: Path, source: TaskFile, *, delivery_root: Path, name: str, max_bytes: int) -> dict:
     require_directory(directory)
     origin = Path(source.path)

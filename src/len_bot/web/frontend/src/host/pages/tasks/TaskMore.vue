@@ -76,9 +76,9 @@ async function discardEnvironment() {
           <h3>存为本群共享资料</h3>
           <p class="muted">以后新建任务时可以选这份资料。</p>
           <div class="row">
-            <v-select :model-value="keepFile" :items="files.map(file => ({ title: file.name, value: file.id }))" label="交付的文件" density="compact" hide-details @update:model-value="chooseKeep" />
+            <v-select :model-value="keepFile" :items="files.filter(file => file.exists).map(file => ({ title: file.name, value: file.id }))" label="交付的文件" density="compact" hide-details @update:model-value="chooseKeep" />
             <v-text-field v-model="keepName" label="保存为" density="compact" hide-details />
-            <v-btn variant="outlined" :disabled="keepFile === null || !keepName.trim()" :loading="keep.busy.value || shared.loading.value" @click="keepShared">保存</v-btn>
+            <v-btn variant="outlined" :disabled="!files.some(file => file.id === keepFile && file.exists) || !keepName.trim()" :loading="keep.busy.value || shared.loading.value" @click="keepShared">保存</v-btn>
           </div>
           <ErrorNote v-if="shared.error.value" title="读取共享资料失败" :error="shared.error.value" />
           <ErrorNote v-if="keep.error.value" title="没有保存成功" :error="keep.error.value" />

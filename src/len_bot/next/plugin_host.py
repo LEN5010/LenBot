@@ -358,7 +358,7 @@ class PluginHost:
         from .tasks_tools import DelegateArguments
         arguments = DelegateArguments(goal=goal, deliverable=deliverable, requester=requester,
                                       context=context, materials=list(materials))
-        return await self.runtime.tasks.delegate(scene, **arguments.model_dump())
+        return await self.runtime.tasks.delegate(scene, **arguments.model_dump(exclude={'resources'}), resources=arguments.resources)
 
     def cron(self, plugin: str, name: str, scene: str, expression: str, timezone: str,
              handler: Callable[[Invocation], Awaitable[None]]) -> asyncio.Task:
