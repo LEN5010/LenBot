@@ -35,7 +35,7 @@ from .chat_config import (
     ScenePersona,
     SceneSettings,
 )
-from .plugin_config import PluginSettings
+from .plugin_config import PluginSettings, PluginCatalogSettings
 from .maintenance_config import (
     PanelSettings,
     HistoryImportSettings,
@@ -329,6 +329,7 @@ class HostConfig(SharedConfig):
     panel: PanelSettings | None = None
     scenes: dict[str, SceneSettings] = Field(min_length=1)
     plugins: PluginSettings | None = None
+    plugin_catalog: PluginCatalogSettings = Field(default_factory=PluginCatalogSettings)
     mcp: dict[str, MCPService] = Field(default_factory=dict)
 
     @model_validator(mode='after')

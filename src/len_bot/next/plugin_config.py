@@ -4,14 +4,33 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 PLUGIN_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")
 
 
 PLUGIN_RESERVED = frozenset({"paths", "data_directory", "disabled"})
+
+
+def catalog_url(value: str) -> str:
+    parsed = urlsplit(value)
+    if (parsed.scheme not in {'http', 'https'} or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None or parsed.fragment):
+        raise ValueError('插件目录使用不含凭据和片段的完整 HTTP(S) JSON 地址')
+    return value
+
+
+class PluginCatalogSettings(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    url: str | None = None
+
+    @field_validator('url')
+    @classmethod
+    def source_url(cls, value: str | None) -> str | None:
+        return None if value is None else catalog_url(value)
 
 
 class PluginSettings(BaseModel):

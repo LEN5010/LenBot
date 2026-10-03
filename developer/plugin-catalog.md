@@ -1,0 +1,52 @@
+# 静态插件目录
+
+目录帮助用户发现用途和安装位置；插件接口、配置与实际运行能力仍来自安装后的 `plugin.toml`。默认目录随宿主打包，内容见 [plugin_catalog.json](../src/len_bot/next/plugin_catalog.json)。
+
+## 使用
+
+「能力 → 插件 → 发现」可搜索名称、用途、作者和能力，按分类或来源筛选。详情包含用法、许可证、接口要求和源码位置；安装后转到配置与选群，不自动对所有群启用。
+
+在「目录来源」填写 HTTP(S) JSON 地址，保存并读取；留空恢复内置目录。根配置对应：
+
+```json
+"plugin_catalog": {"url": "https://example.com/lenbot-plugins.json"}
+```
+
+远程目录在明确刷新时读取，不在启动或每次打开页面时联网。页面显示来源及成功读取时间。读取失败显示原错，已读取的同源内容保留原时间；换 URL 后等待读取新目录。目录快照只存在当前进程中。
+
+## 索引格式
+
+顶层 `version` 是索引格式版本，目前为 1；每项 `version` 是展示用插件版本。下面的仓库和主页是占位示例：
+
+```json
+{
+  "version": 1,
+  "entries": [{
+    "name": "example_feed",
+    "title": "示例订阅",
+    "description": "按指定时刻发送订阅更新。",
+    "authors": ["插件维护者"],
+    "license": "MIT",
+    "version": "1.0.0",
+    "interface": 1,
+    "category": "自动播报",
+    "capabilities": ["无模型", "RSS"],
+    "usage": ["填写订阅地址并保存。", "选择启用场景。"],
+    "install": "git",
+    "repository": "https://example.com/author/example_feed.git",
+    "homepage": "https://example.com/author/example_feed",
+    "ref": "v1.0.0"
+  }]
+}
+```
+
+同一目录的名称唯一。`capabilities`、`usage` 可省略；`homepage`、`ref` 可为空。Git 条目需要独立插件仓库，ref 支持标签、分支或提交。内置条目使用 `install: "builtin"`，跟随宿主发布，不指定 ref。接口版本只是目录说明，实际安装清单仍按宿主 v1 接口解析。
+
+## 版本与发布
+
+- 目录版本号是介绍，源码版本取自安装后的清单，运行版本取自已加载的插件；Git 提交和选定 ref 单独显示。
+- 指定 ref 的安装使用 detached HEAD，并在该仓库 `.git/lenbot-install.json` 保存选择。明确更新时重新获取它；标签不会因默认分支有新提交而自动切换。
+- 未指定 ref 的安装跟随默认分支，更新使用 fast-forward。需要切换时在更新框填写新的标签、分支或提交。
+- 第三方发布者先提供独立 Git 仓库、清单与使用资料，再将条目加入其选择的目录。私人站点和凭据留在用户配置，个人仓库不随主项目自动公开。
+
+这是一份分发索引，无账号、评分、上传后台或新权限层。手填仓库入口与目录安装使用同一个管理器。
