@@ -185,7 +185,7 @@ async def run(lifecycle: HostLifecycle) -> None:
                 settings.learning is not None and settings.learning.collect_stickers
                 for settings in config.scenes.values()) else
                 StickerCollector(config, store, vision, slots=slots,
-                                 recording=lambda scene: runtime.chats[scene].replay_images))
+                                 recording=lambda scene: runtime.chats[scene].toolset.replay_images))
             reply_effects = (None if not any(
                 settings.learning is not None and settings.learning.reply_effects
                 for settings in config.scenes.values()) else
