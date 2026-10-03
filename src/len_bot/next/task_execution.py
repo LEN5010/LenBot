@@ -24,6 +24,7 @@ from .sandbox import DockerSandbox
 from .skills import Skill, load_task_skills, merge_task_skills
 from .store import Store
 from .task_browser import TaskBrowser
+from .task_browser_files import BrowserOutput, record_browser_output
 from .task_files import TaskFiles
 from .task_inputs import require_inputs
 from .task_live import TaskLiveText
@@ -378,6 +379,12 @@ class TaskExecution:
         self._notify(item.scene)
 
     async def _request(self, path: str, raw: bytes) -> dict:
+        if path == '/task/browser-file':
+            if not self.settings.public_browser:
+                raise PermissionError('当前任务未开放公共浏览器')
+            result = record_browser_output(self.settings, self.records, self.item, BrowserOutput.parse(raw))
+            self._notify(self.item.scene)
+            return result
         if path == '/task/mcp':
             try:
                 call = TaskMCPCall.model_validate_json(raw)

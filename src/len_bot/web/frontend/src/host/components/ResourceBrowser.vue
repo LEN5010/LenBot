@@ -24,6 +24,7 @@ function parent() { path.value = path.value.split('/').slice(0, -1).join('/') }
 const size = bytes => bytes == null ? '—' : bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${(bytes / 1024).toFixed(1)} KB`
 const purpose = { workspace: '工作文件', output: 'out 产物原件', session: 'Pi 会话', inputs: '输入快照', deliveries: '独立交付副本', runtime: '运行文件', shared: '共享资料' }
 const upload = { uploaded: '平台已确认上传', failed: '上传失败', unconfirmed: '上传结果未确认' }
+const browserKind = { download: '浏览器下载', screenshot: '页面截图', pdf: '页面 PDF' }
 
 const previewOpen = ref(false), selected = ref(null), text = ref(''), objectUrl = ref(null)
 const preview = useResource(async (entry, offset = 0) => ({ entry,
@@ -100,6 +101,10 @@ const validOperator = computed(() => /^[1-9][0-9]*$/.test(props.operator))
           <strong v-else>{{ entry.name }}</strong>
           <small>{{ purpose[entry.purpose] }} · {{ size(entry.size) }} · {{ formatTime(entry.modified) }}{{ entry.kind === 'symlink' ? ' · 符号链接' : '' }}{{ !entry.exists && !entry.deletion ? ' · 副本已不在磁盘' : '' }}</small>
           <small v-if="entry.source" class="source">来源：{{ sourceLabel(entry) }}</small>
+          <small v-if="entry.browser_source">{{ browserKind[entry.browser_source.kind] }} · {{ formatTime(entry.browser_source.created) }}<br />
+            生成时页面：{{ entry.browser_source.page_title }} · {{ entry.browser_source.page_url }}
+            <template v-if="entry.browser_source.download_url"><br />下载地址：{{ entry.browser_source.download_url }}</template>
+          </small>
           <small v-if="entry.registrations.length">曾登记交付：{{ entry.registrations.map(id => `#${id}`).join('、') }}（独立副本）</small>
           <small v-if="entry.deletion">{{ formatTime(entry.deletion.created) }} · QQ {{ entry.deletion.requester }} 已删除本地副本</small>
           <p v-if="entry.note">{{ entry.note }}</p>

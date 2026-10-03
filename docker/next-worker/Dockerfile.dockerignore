@@ -9,6 +9,8 @@
 !docker/next-worker/
 !docker/next-worker/lenbot-extension.ts
 !docker/next-worker/lenbot-browser.cjs
+!docker/next-worker/browser-files.cjs
+!docker/next-worker/lenbot-render.cjs
 !scripts/
 !scripts/collect_python_licenses.py
 !scripts/collect_frontend_licenses.cjs
