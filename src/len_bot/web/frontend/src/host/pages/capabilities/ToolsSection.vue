@@ -42,7 +42,7 @@ const shared = computed(() => (caps.data.value?.role_tools.affected_scenes || []
 
 async function submit() {
   const result = await save.run(() => api(`/api/host/scenes/${encodeURIComponent(props.scene)}/role-tools`, {
-    method: 'PUT', body: JSON.stringify({ tools: draft.value }),
+    method: 'PUT', body: JSON.stringify({ directory: caps.data.value.role_tools.directory, tools: draft.value }),
   }))
   if (result) {
     caps.data.value = { ...caps.data.value, role_tools: result }
@@ -55,7 +55,7 @@ async function submit() {
 <template>
   <ErrorNote v-if="caps.error.value" title="读取工具失败" :error="caps.error.value" />
   <SettingSection v-if="caps.data.value && draft !== null" title="工具"
-    :description="`角色 ${caps.data.value.persona.name} 在群里能用哪些工具。` + (shared.length ? `这个角色也用在 ${shared.map(sceneName).join('、')}，修改会一起生效。` : '')"
+    :description="`已保存角色 ${caps.data.value.role_tools.persona.name} 在群里能用哪些工具。` + (shared.length ? `这个角色也用在 ${shared.map(sceneName).join('、')}，修改会一起生效。` : '')"
     :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
     <AllowList :model-value="draft" @update:model-value="update" :items="items" all-label="全部可用的工具">
       <template #item="{ item }">
