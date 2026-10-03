@@ -16,7 +16,7 @@ services:
     mem_limit: 3g
     pids_limit: 256
   openviking:
-    image: lenbot-openviking:a09a9d2
+    image: lenbot-openviking:memory-forget
     container_name: lenbot-openviking
     restart: 'no'
     ports:
