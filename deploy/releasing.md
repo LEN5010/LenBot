@@ -9,7 +9,7 @@
 | 产物 | 构建来源 |
 |---|---|
 | wheel、sdist、Linux／macOS 部署包 | `scripts/build_release.py`，两平台包采用同一 wheel |
-| 宿主镜像 | `deploy/current/Dockerfile`，同提交的宿主与面板 |
+| 宿主镜像 | `deploy/current/Dockerfile` 的 wheel 构建路径，直接安装上述同一 wheel 与依赖清单 |
 | 任务镜像 | `docker/next-worker/Dockerfile`，同提交的桥接和浏览器文件协议 |
 | OpenViking 镜像与源码包 | `deploy/components.json` 固定上游提交，应用本提交的 forget 补丁 |
 | BrowserSkill 四平台包与源码包 | 固定上游提交及远程文件补丁，分别包含 bsk、文件助手、扩展及许可材料 |
@@ -28,13 +28,25 @@ gh workflow run release.yml --ref <分支或标签> -f publish=false
 
 `publish=false` 不登录镜像仓库、不创建 Release：包文件保存在 `release-packages`、浏览器二进制在 `browser-*`，各架构镜像在 `image-*-*` artifact 的 `image.tar` 中。下载后 `docker load -i image.tar` 即可加载实际候选镜像。artifact 名称区分组件与架构，不依赖加载时猜测。[Docker 构建产物跨作业保存](https://docs.docker.com/build/ci/github-actions/share-image-jobs/)。
 
+同次构建同时导出根 `uv.lock` 的运行依赖清单 `requirements.txt`。平台部署包与发行宿主镜像共同安装这份清单，不在安装时重新挑选允许范围内的最新依赖；插件依赖仍由显式安装／恢复动作处理。
+
 本机构建程序包仍使用：
 
 ```sh
 uv run --no-sync python scripts/build_release.py /tmp/lenbot-release
 ```
 
-它不执行 GitHub 工作流或构建全部镜像。独立准备一个服务源码：
+它不执行 GitHub 工作流或构建全部镜像。用这次产物构建宿主镜像：
+
+```sh
+docker build --build-arg PACKAGE_SOURCE=wheel \
+  --build-context release=/tmp/lenbot-release/artifacts \
+  -f deploy/current/Dockerfile -t lenbot-current:candidate .
+```
+
+`release` 是明确传入的 [Docker 命名构建上下文](https://docs.docker.com/build/concepts/context/#named-contexts)，只读取其中的 wheel 和 `requirements.txt`。默认未传该构建参数时仍从源码构建，用于本地开发；两种路径明确选择，不因失败自动切换。
+
+独立准备一个服务源码：
 
 ```sh
 uv run --no-sync python scripts/prepare_component.py openviking /tmp/openviking-release \

@@ -2,6 +2,8 @@
 
 宿主镜像包含程序、面板、Git、SSH、uv 和 `/usr/bin/docker` 客户端，不运行 Docker daemon。普通聊天只用[基础配方](host.compose.yaml)；启用工作时再合并[任务挂载](host.tasks.compose.yaml)。所有业务参数仍只来自容器工作目录内的 `lenbot.config.json`，不设置 `DOCKER_HOST` 或通过环境变量改模型、场景及任务参数。
 
+发行构建直接安装同次 wheel 和运行依赖清单，命令见[同版构建](../releasing.md)。默认 `docker build -f deploy/current/Dockerfile .` 保留从源码构建的开发入口；运行镜像与插件可写环境相同。
+
 ## 实例与程序分开
 
 默认身份 `10000:10000`，工作目录 `/srv/lenbot`。实例使用原生命名卷，Python 环境使用与镜像发行版本对应的另一命名卷。新卷从镜像填充已安装程序和目录属主；重建容器复用同版环境，插件依赖不会丢失。
