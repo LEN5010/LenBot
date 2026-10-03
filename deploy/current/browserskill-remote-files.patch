@@ -1,0 +1,1700 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 7b8b531..bc14a43 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -173,6 +173,21 @@ dependencies = [
+  "zip",
+ ]
+ 
++[[package]]
++name = "bsk-file-host"
++version = "0.3.1"
++dependencies = [
++ "anyhow",
++ "base64",
++ "bsk-protocol",
++ "clap",
++ "dirs",
++ "serde",
++ "serde_json",
++ "tempfile",
++ "uuid",
++]
++
+ [[package]]
+ name = "bsk-protocol"
+ version = "0.3.1"
+diff --git a/Cargo.toml b/Cargo.toml
+index d260747..a564438 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -3,6 +3,7 @@ resolver = "2"
+ members = [
+   "crates/bsk-cli",
+   "crates/bsk-protocol",
++  "crates/bsk-file-host",
+ ]
+ default-members = ["crates/bsk-cli"]
+ 
+diff --git a/README.md b/README.md
+index d156ac3..3ac92fa 100644
+--- a/README.md
++++ b/README.md
+@@ -30,7 +30,7 @@ Use the `bsk` CLI with Cursor, Claude Code, Codex, OpenClaw, CodeBuddy, WorkBudd
+ | --- | --- |
+ | **Work with your existing accounts** | Use the browser's current login state to read documents, search internal sites, fill forms, and complete web workflows. |
+ | **Keep browser tasks visible** | Give the agent its own window, borrow an existing tab when needed, and take over for login, verification, or other human-only steps. |
+-| **Read, interact, and capture** | Inspect page text and controls, click and type, manage tabs, capture viewport or full-page screenshots, and upload or download files in local mode. |
++| **Read, interact, and capture** | Inspect page text and controls, click and type, manage tabs, capture viewport or full-page screenshots, and upload or download files, with a native file helper for remote mode. |
+ | **Debug websites with evidence** | Connect actions to requests, response bodies, console messages, and page changes. Inspect performance, slow APIs, and suspected duplicate requests; use explicit HTTP rules or request replay to test a hypothesis. |
+ | **Choose the right browser** | Name browser instances, bind a task to a specific profile, or pair an agent running on a server with a browser on your computer. |
+ | **Review what happened** | Reopen browser-local debugging history, export evidence as JSON, or enable a separate operation audit to review task activity. |
+@@ -214,7 +214,7 @@ The name is set in BrowserSkill; it is not automatically taken from Chrome's pro
+ 
+ Keep the browser and its logins on your computer while the agent, CLI, and daemon run on a server. Pair the extension with that server over authenticated WSS; the browser initiates the connection, so your computer needs no inbound port.
+ 
+-The built-in server supports device pairing, renewal, and revocation. Remote mode currently does not support file upload or download. [Remote connection guide](docs/remote-extension-connection.md)
++The built-in server supports device pairing, renewal, and revocation. Remote file transfer uses the browser-machine [Native Messaging helper](crates/bsk-file-host/README.md). [Remote connection guide](docs/remote-extension-connection.md)
+ 
+ ## Browser control and privacy
+ 
+diff --git a/README.zh-CN.md b/README.zh-CN.md
+index 4287d2c..f801134 100644
+--- a/README.zh-CN.md
++++ b/README.zh-CN.md
+@@ -214,7 +214,7 @@ bsk session start --browser "工作账号" --no-focus --json
+ 
+ 保留本机浏览器和登录态，让 Agent、CLI 与 daemon 在服务器运行。扩展通过经过鉴权的 WSS 与服务器配对，由浏览器主动建立连接，本机无需开放入站端口。
+ 
+-内置服务端支持设备配对、续期和撤销授权。远程模式目前不支持文件上传和下载。详见[远程连接指南](docs/remote-extension-connection.md)。
++内置服务端支持设备配对、续期和撤销授权。远程文件上传和下载通过浏览器电脑上的 [Native Messaging 文件助手](crates/bsk-file-host/README.md) 完成。详见[远程连接指南](docs/remote-extension-connection.md)。
+ 
+ ## 浏览器控制与隐私
+ 
+diff --git a/apps/extension/src/session-manager/manager.ts b/apps/extension/src/session-manager/manager.ts
+index 3e351d3..72b6a51 100644
+--- a/apps/extension/src/session-manager/manager.ts
++++ b/apps/extension/src/session-manager/manager.ts
+@@ -1,3 +1,4 @@
++import { nativeFiles } from "@/tools/native-files";
+ import { AGENT_WINDOW_HOME, type AgentWindowApi, chromeAgentWindowApi } from "./agent-window";
+ import { RefStore } from "./ref-store";
+ 
+@@ -320,6 +321,7 @@ export class SessionManager {
+   ): Promise<SessionContext | null> {
+     const ctx = this.sessions.get(sessionId);
+     if (!ctx) return null;
++    await nativeFiles.releaseSession(sessionId);
+     if (!options.dropOnly) {
+       await this.agentWindow.remove(ctx.agentWindowId);
+     }
+diff --git a/apps/extension/src/tools/dispatcher.ts b/apps/extension/src/tools/dispatcher.ts
+index 0a65890..3674126 100644
+--- a/apps/extension/src/tools/dispatcher.ts
++++ b/apps/extension/src/tools/dispatcher.ts
+@@ -111,6 +111,7 @@ import {
+   type TabSelectParams,
+ } from "./tabs";
+ import { handleUpload } from "./upload";
++import { nativeFiles, type BrowserFileParams } from "./native-files";
+ import { handleWaitForNavigation } from "./waits";
+ import { handleWheel } from "./wheel";
+ import { handleWindowResize, type WindowResizeParams } from "./window";
+@@ -406,16 +407,16 @@ export class ToolDispatcher {
+     onInputSent?: (tabId: number) => void,
+   ): Promise<unknown | RpcError> {
+     const sessionId = (req.params as { session_id?: string } | undefined)?.session_id;
+-    // Also enforce this for gateways backed by a local-mode daemon, where the
+-    // standalone server's early IPC rejection does not apply.
++    // A remote session uses the explicit browser-machine transport selected by its daemon.
+     if (
+       sessionId &&
+       this.sessions.get(sessionId)?.remote &&
+-      (req.method === "tool.upload" || req.method === "tool.download")
++      (req.method === "tool.upload" || req.method === "tool.download") &&
++      !(req.params as UploadParams | DownloadParams).native_files
+     ) {
+       return {
+         code: "unsupported",
+-        message: "Remote connections do not support upload or download",
++        message: "Remote files require the Native Messaging file transport from the daemon",
+       };
+     }
+     const preparationError = await prepareBackgroundExecution(
+@@ -427,6 +428,15 @@ export class ToolDispatcher {
+     );
+     if (preparationError) return preparationError;
+     switch (req.method) {
++      case "tool.file_transfer": {
++        const params = req.params as BrowserFileParams;
++        if (!this.sessions.has(params.session_id))
++          return {
++            code: "not_found",
++            message: "file transfer session not found",
++          } satisfies RpcError;
++        return nativeFiles.call(params, signal);
++      }
+       case "tool.debug":
+         if (!this.debug)
+           return {
+diff --git a/apps/extension/src/tools/download.ts b/apps/extension/src/tools/download.ts
+index 546ae8d..0752abe 100644
+--- a/apps/extension/src/tools/download.ts
++++ b/apps/extension/src/tools/download.ts
+@@ -11,6 +11,7 @@ import {
+   type NavigationTargetsApi,
+ } from "./download-capture";
+ import { clickResolvedTarget, type InteractionDeps, resolveActionTarget } from "./interaction";
++import { nativeFiles } from "./native-files";
+ import { enforceAgentWindow, isRpcError, lookupSession, resolveTargetTab } from "./shared";
+ 
+ let downloadActive = false;
+@@ -42,6 +43,11 @@ export async function handleDownload(
+     const address = await resolveActionTarget(deps.cdp, ctx, target, params, "download");
+     if (isRpcError(address)) return address;
+ 
++    if (params.native_files)
++      await nativeFiles.call(
++        { session_id: ctx.sessionId, command: { action: "ready" } },
++        deps.signal,
++      );
+     const capture = await captureBrowserDownload({
+       cdp: deps.cdp,
+       target: address.cdpTarget,
+@@ -56,15 +62,38 @@ export async function handleDownload(
+     });
+     if (isRpcError(capture)) return capture;
+     const { click, item } = capture;
++    let nativeSize: number | undefined;
++    if (params.native_files) {
++      const transferId = params.browser_relative_dir.split("/")[1];
++      try {
++        const imported = await nativeFiles.call<{ byte_size: number }>(
++          {
++            session_id: ctx.sessionId,
++            command: { action: "import", transfer_id: transferId, browser_path: item.filename },
++          },
++          deps.signal,
++        );
++        nativeSize = imported.byte_size;
++      } catch (error) {
++        try {
++          await (deps.downloads ?? chromeDownloadsApi).removeFile(item.id);
++        } catch (cleanup) {
++          throw new Error(`${String(error)}; download cleanup: ${String(cleanup)}`, {
++            cause: error,
++          });
++        }
++        throw error;
++      }
++    }
+     return {
+       tab_id: target.tabId,
+       used_ref: click.used_ref,
+       used_selector: click.used_selector,
+       suggested_filename: item.filename.split(/[\\/]/).pop() ?? "download",
+-      byte_size: item.fileSize >= 0 ? item.fileSize : item.totalBytes,
++      byte_size: nativeSize ?? (item.fileSize >= 0 ? item.fileSize : item.totalBytes),
+       mime: item.mime || undefined,
+       danger: item.danger,
+-      browser_path: item.filename,
++      browser_path: params.native_files ? undefined : item.filename,
+     };
+   } finally {
+     downloadActive = false;
+diff --git a/apps/extension/src/tools/native-files.ts b/apps/extension/src/tools/native-files.ts
+new file mode 100644
+index 0000000..b7eadac
+--- /dev/null
++++ b/apps/extension/src/tools/native-files.ts
+@@ -0,0 +1,96 @@
++import type { RpcError } from "@/transport/types";
++
++export type BrowserFileCommand =
++  | { action: "ready" }
++  | { action: "begin"; name: string; byte_size: number }
++  | { action: "chunk"; transfer_id: string; offset: number; data_base64: string }
++  | { action: "finish" | "release"; transfer_id: string }
++  | { action: "import"; transfer_id: string; browser_path: string }
++  | { action: "read"; transfer_id: string; offset: number }
++  | { action: "close" };
++export interface BrowserFileParams {
++  session_id: string;
++  command: BrowserFileCommand;
++}
++interface Reply {
++  id: string;
++  result?: unknown;
++  error?: RpcError;
++}
++
++/** One Native Messaging port; its files belong to the existing browser sessions. */
++class NativeFiles {
++  private port: chrome.runtime.Port | null = null;
++  private readonly sessions = new Set<string>();
++  private readonly pending = new Map<
++    string,
++    { resolve(value: unknown): void; reject(error: Error): void }
++  >();
++
++  private connect(): chrome.runtime.Port {
++    if (this.port) return this.port;
++    const port = chrome.runtime.connectNative("com.browserskill.files");
++    port.onMessage.addListener((message: Reply) => {
++      if (
++        !message ||
++        typeof message.id !== "string" ||
++        "result" in message === "error" in message
++      ) {
++        const error = new Error(
++          `Invalid native file response: ${JSON.stringify(message).slice(0, 300)}`,
++        );
++        for (const pending of this.pending.values()) pending.reject(error);
++        this.pending.clear();
++        port.disconnect();
++        this.port = null;
++        return;
++      }
++      const pending = this.pending.get(message.id);
++      if (!pending) return; // A cancelled call can complete its current file chunk.
++      this.pending.delete(message.id);
++      if (message.error) pending.reject(new Error(message.error.message));
++      else pending.resolve(message.result);
++    });
++    port.onDisconnect.addListener(() => {
++      const error = new Error(
++        chrome.runtime.lastError?.message ?? "Native file helper disconnected",
++      );
++      this.port = null;
++      for (const pending of this.pending.values()) pending.reject(error);
++      this.pending.clear();
++    });
++    this.port = port;
++    return port;
++  }
++
++  async call<T>(params: BrowserFileParams, signal?: AbortSignal): Promise<T> {
++    signal?.throwIfAborted();
++    const port = this.connect();
++    const id = crypto.randomUUID();
++    if (["begin", "import"].includes(params.command.action)) this.sessions.add(params.session_id);
++    let onAbort: () => void;
++    const result = new Promise<unknown>((resolve, reject) => {
++      onAbort = () => {
++        this.pending.delete(id);
++        reject(signal!.reason);
++      };
++      this.pending.set(id, { resolve, reject });
++      signal?.addEventListener("abort", onAbort, { once: true });
++      port.postMessage({ id, params });
++    });
++    try {
++      return (await result) as T;
++    } finally {
++      signal?.removeEventListener("abort", onAbort!);
++      this.pending.delete(id);
++    }
++  }
++
++  async releaseSession(session: string): Promise<void> {
++    if (!this.sessions.has(session)) return;
++    await this.call({ session_id: session, command: { action: "close" } });
++    this.sessions.delete(session);
++  }
++}
++
++export const nativeFiles = new NativeFiles();
+diff --git a/apps/extension/src/transport/__tests__/remote-connection.browser.test.ts b/apps/extension/src/transport/__tests__/remote-connection.browser.test.ts
+index 4b075aa..9eac0fc 100644
+--- a/apps/extension/src/transport/__tests__/remote-connection.browser.test.ts
++++ b/apps/extension/src/transport/__tests__/remote-connection.browser.test.ts
+@@ -180,7 +180,7 @@ describe.skipIf(!enabled)("standalone remote browser", () => {
+           ).rejects.toMatchObject({ code: "permission_denied" });
+           for (const method of ["tool.upload", "tool.download"])
+             await expect(rpc(method, { session_id: session })).rejects.toMatchObject({
+-              code: "unsupported",
++              code: "invalid_params",
+             });
+           // Change the browser user's preference; remote request flags cannot set it.
+           await evaluate(
+diff --git a/apps/extension/src/transport/types.ts b/apps/extension/src/transport/types.ts
+index 31591fc..d3f318b 100644
+--- a/apps/extension/src/transport/types.ts
++++ b/apps/extension/src/transport/types.ts
+@@ -687,6 +687,7 @@ export interface UploadFile {
+ export type UploadMode = "input" | "drop";
+ 
+ export interface UploadParams {
++  native_files?: boolean;
+   session_id: string;
+   ref?: string;
+   selector?: string;
+@@ -704,6 +705,7 @@ export interface UploadResult {
+ }
+ 
+ export interface DownloadParams {
++  native_files?: boolean;
+   session_id: string;
+   ref?: string;
+   selector?: string;
+diff --git a/apps/extension/wxt.config.ts b/apps/extension/wxt.config.ts
+index e9c5bd0..29ba17b 100644
+--- a/apps/extension/wxt.config.ts
++++ b/apps/extension/wxt.config.ts
+@@ -43,6 +43,7 @@ export default defineConfig({
+       "activeTab",
+       "debugger",
+       "downloads",
++      "nativeMessaging",
+       "idle",
+       "notifications",
+       "scripting",
+diff --git a/crates/bsk-cli/src/cli/download.rs b/crates/bsk-cli/src/cli/download.rs
+index b1ef44d..149cf62 100644
+--- a/crates/bsk-cli/src/cli/download.rs
++++ b/crates/bsk-cli/src/cli/download.rs
+@@ -50,6 +50,7 @@ pub fn dispatch(args: DownloadArgs, format: Format) -> Result<(), CliError> {
+     let info = ensure_daemon().context("ensure daemon is running")?;
+     let (ref_, selector) = split_target(args.target, args.ref_, args.selector)?;
+     let params = DownloadParams {
++        native_files: false,
+         session_id: args.session,
+         ref_,
+         selector,
+diff --git a/crates/bsk-cli/src/cli/upload.rs b/crates/bsk-cli/src/cli/upload.rs
+index 7249a8d..a7c97d8 100644
+--- a/crates/bsk-cli/src/cli/upload.rs
++++ b/crates/bsk-cli/src/cli/upload.rs
+@@ -77,6 +77,7 @@ pub fn dispatch(args: UploadArgs, format: Format) -> Result<(), CliError> {
+         }
+     }
+     let params = UploadParams {
++        native_files: false,
+         session_id: args.session,
+         ref_,
+         selector,
+diff --git a/crates/bsk-cli/src/daemon/browser_files.rs b/crates/bsk-cli/src/daemon/browser_files.rs
+new file mode 100644
+index 0000000..3f5de81
+--- /dev/null
++++ b/crates/bsk-cli/src/daemon/browser_files.rs
+@@ -0,0 +1,188 @@
++//! File bytes between the daemon staging area and one session's browser helper.
++
++use std::fs::File;
++use std::io::Read;
++use std::sync::Arc;
++use std::time::Duration;
++
++use base64::{Engine, engine::general_purpose::STANDARD};
++use bsk_protocol::{BrowserFileCommand, BrowserFileParams, ErrorCode, Method, RpcError};
++use bsk_protocol::{
++    TransferBeginResult, TransferChunkParams, TransferChunkResult, TransferIdParams,
++    TransferReleaseResult, UploadParams,
++};
++use serde::{Deserialize, de::DeserializeOwned};
++
++use super::{
++    file_transfer::TRANSFER_CHUNK_SIZE, inflight::ToolInflightEntry, sessions::SessionId,
++    state::DaemonState,
++};
++
++#[derive(Deserialize)]
++struct NativeReady {
++    staged_path: String,
++}
++
++async fn call<T: DeserializeOwned>(
++    state: &Arc<DaemonState>,
++    sid: &SessionId,
++    command: BrowserFileCommand,
++    timeout: Duration,
++    inflight: &Arc<ToolInflightEntry>,
++) -> Result<T, RpcError> {
++    let params = BrowserFileParams {
++        session_id: sid.0.clone(),
++        command,
++    };
++    let result = state
++        .tool_queues
++        .dispatch(
++            sid,
++            Method::ToolFileTransfer,
++            serde_json::to_value(params).map_err(protocol)?,
++            timeout,
++            Some(inflight.clone()),
++        )
++        .await
++        .map_err(|error| error.into_rpc())?;
++    serde_json::from_value(result).map_err(protocol)
++}
++
++pub async fn upload(
++    state: &Arc<DaemonState>,
++    sid: &SessionId,
++    upload: &mut UploadParams,
++    timeout: Duration,
++    inflight: &Arc<ToolInflightEntry>,
++) -> Result<(), RpcError> {
++    for file in &mut upload.files {
++        let path = file
++            .staged_path
++            .as_ref()
++            .expect("resolved daemon upload path");
++        let mut source = File::open(path).map_err(protocol)?;
++        let size = source.metadata().map_err(protocol)?.len();
++        let begin: TransferBeginResult = call(
++            state,
++            sid,
++            BrowserFileCommand::Begin {
++                name: file.name.clone(),
++                byte_size: size,
++            },
++            timeout,
++            inflight,
++        )
++        .await?;
++        if begin.chunk_size != TRANSFER_CHUNK_SIZE {
++            return Err(protocol(format!(
++                "native chunk size differs: {}",
++                begin.chunk_size
++            )));
++        }
++        let mut offset = 0;
++        let mut data = vec![0; TRANSFER_CHUNK_SIZE as usize];
++        while offset < size {
++            let count = (size - offset).min(data.len() as u64) as usize;
++            source.read_exact(&mut data[..count]).map_err(protocol)?;
++            let chunk: TransferChunkResult = call(
++                state,
++                sid,
++                BrowserFileCommand::Chunk {
++                    transfer_id: begin.transfer_id.clone(),
++                    offset,
++                    data_base64: STANDARD.encode(&data[..count]),
++                },
++                timeout,
++                inflight,
++            )
++            .await?;
++            offset += count as u64;
++            if chunk.next_offset != offset {
++                return Err(protocol(format!(
++                    "native upload offset differs: {} != {offset}",
++                    chunk.next_offset
++                )));
++            }
++        }
++        let ready: NativeReady = call(
++            state,
++            sid,
++            BrowserFileCommand::Finish {
++                transfer_id: begin.transfer_id,
++            },
++            timeout,
++            inflight,
++        )
++        .await?;
++        file.staged_path = Some(ready.staged_path);
++    }
++    Ok(())
++}
++
++pub async fn download(
++    state: &Arc<DaemonState>,
++    sid: &SessionId,
++    id: &str,
++    size: u64,
++    timeout: Duration,
++    inflight: &Arc<ToolInflightEntry>,
++) -> Result<u64, RpcError> {
++    state.transfers.prepare_remote_download(id, size)?;
++    let mut offset = 0;
++    loop {
++        let chunk: TransferChunkResult = call(
++            state,
++            sid,
++            BrowserFileCommand::Read {
++                transfer_id: id.to_string(),
++                offset,
++            },
++            timeout,
++            inflight,
++        )
++        .await?;
++        let data_base64 = chunk
++            .data_base64
++            .ok_or_else(|| protocol("native download returned no bytes"))?;
++        let received = state.transfers.write_download_chunk(TransferChunkParams {
++            transfer_id: id.to_string(),
++            offset,
++            data_base64,
++        })?;
++        if received.next_offset != chunk.next_offset
++            || chunk.eof != (chunk.next_offset == size)
++            || (!chunk.eof && chunk.next_offset == offset)
++        {
++            return Err(protocol(format!(
++                "native download boundary differs: offset={offset}, next={}, eof={}, size={size}",
++                chunk.next_offset, chunk.eof
++            )));
++        }
++        offset = chunk.next_offset;
++        if chunk.eof {
++            break;
++        }
++    }
++    state.transfers.finish_download(TransferIdParams {
++        transfer_id: id.to_string(),
++    })?;
++    let _: TransferReleaseResult = call(
++        state,
++        sid,
++        BrowserFileCommand::Release {
++            transfer_id: id.to_string(),
++        },
++        timeout,
++        inflight,
++    )
++    .await?;
++    Ok(offset)
++}
++
++fn protocol(error: impl std::fmt::Display) -> RpcError {
++    RpcError {
++        code: ErrorCode::ProtocolError,
++        message: error.to_string(),
++        data: None,
++    }
++}
+diff --git a/crates/bsk-cli/src/daemon/file_transfer.rs b/crates/bsk-cli/src/daemon/file_transfer.rs
+index 397e30b..9e851dd 100644
+--- a/crates/bsk-cli/src/daemon/file_transfer.rs
++++ b/crates/bsk-cli/src/daemon/file_transfer.rs
+@@ -209,6 +209,21 @@ impl TransferRegistry {
+     }
+ 
+     pub fn write_chunk(&self, p: TransferChunkParams) -> Result<TransferChunkResult, RpcError> {
++        self.append_chunk(p, Direction::Upload)
++    }
++
++    pub fn write_download_chunk(
++        &self,
++        p: TransferChunkParams,
++    ) -> Result<TransferChunkResult, RpcError> {
++        self.append_chunk(p, Direction::Download)
++    }
++
++    fn append_chunk(
++        &self,
++        p: TransferChunkParams,
++        direction: Direction,
++    ) -> Result<TransferChunkResult, RpcError> {
+         let bytes = base64::engine::general_purpose::STANDARD
+             .decode(p.data_base64)
+             .map_err(|e| invalid(format!("invalid transfer chunk: {e}")))?;
+@@ -219,7 +234,7 @@ impl TransferRegistry {
+         let entry = entries
+             .get_mut(&p.transfer_id)
+             .ok_or_else(|| not_found("transfer not found"))?;
+-        if entry.direction != Direction::Upload || entry.ready {
++        if entry.direction != direction || entry.ready {
+             return Err(invalid("transfer is not writable"));
+         }
+         if p.offset != entry.written {
+@@ -246,12 +261,24 @@ impl TransferRegistry {
+     }
+ 
+     pub fn finish_upload(&self, p: TransferIdParams) -> Result<TransferReadyResult, RpcError> {
++        self.finish(p, Direction::Upload)
++    }
++
++    pub fn finish_download(&self, p: TransferIdParams) -> Result<TransferReadyResult, RpcError> {
++        self.finish(p, Direction::Download)
++    }
++
++    fn finish(
++        &self,
++        p: TransferIdParams,
++        direction: Direction,
++    ) -> Result<TransferReadyResult, RpcError> {
+         let mut entries = self.entries.lock().unwrap();
+         let entry = entries
+             .get_mut(&p.transfer_id)
+             .ok_or_else(|| not_found("transfer not found"))?;
+-        if entry.direction != Direction::Upload {
+-            return Err(invalid("transfer is not an upload"));
++        if entry.direction != direction {
++            return Err(invalid("transfer direction differs"));
+         }
+         if entry.written != entry.expected_size.unwrap_or(entry.written) {
+             return Err(invalid(format!(
+@@ -315,6 +342,31 @@ impl TransferRegistry {
+         })
+     }
+ 
++    pub fn prepare_remote_download(&self, id: &str, size: u64) -> Result<(), RpcError> {
++        if size > MAX_TRANSFER_BYTES {
++            return Err(invalid("download exceeds transfer limit"));
++        }
++        let mut entries = self.entries.lock().unwrap();
++        let entry = entries
++            .get_mut(id)
++            .ok_or_else(|| not_found("download transfer not found"))?;
++        if entry.direction != Direction::Download || entry.expected_size.is_some() {
++            return Err(invalid(
++                "download staging already initialized or has another direction",
++            ));
++        }
++        let destination = entry.path.join("payload");
++        let file = OpenOptions::new()
++            .write(true)
++            .create_new(true)
++            .open(&destination)
++            .map_err(io_error)?;
++        set_private_file(&file).map_err(io_error)?;
++        entry.path = destination;
++        entry.expected_size = Some(size);
++        Ok(())
++    }
++
+     pub fn import_download(&self, id: &str, reported_path: &Path) -> Result<u64, RpcError> {
+         let mut entries = self.entries.lock().unwrap();
+         let entry = entries
+diff --git a/crates/bsk-cli/src/daemon/ipc.rs b/crates/bsk-cli/src/daemon/ipc.rs
+index b6350ce..94343c1 100644
+--- a/crates/bsk-cli/src/daemon/ipc.rs
++++ b/crates/bsk-cli/src/daemon/ipc.rs
+@@ -353,16 +353,6 @@ async fn handle_tool_dispatch(
+             });
+         }
+     };
+-    // Reject before allocating local transfer resources. The extension also
+-    // enforces this for third-party gateways backed by a local-mode daemon.
+-    if state.config.server.is_some() && matches!(method, Method::ToolUpload | Method::ToolDownload)
+-    {
+-        return ResponseBody::Err(RpcError {
+-            code: ErrorCode::Unsupported,
+-            message: "upload and download are not supported for remote browsers".into(),
+-            data: None,
+-        });
+-    }
+     // Pre-flight: if the user has clicked the agent-window mask's
+     // stop button, every session carries a one-shot "pending
+     // interrupt" marker. The marker is consumed by the next method
+@@ -466,12 +456,15 @@ async fn handle_tool_dispatch(
+             });
+         }
+     }
++    let entry = inflight_guard.entry();
++    let remote_files = state.config.server.is_some();
+     let mut download_transfer_id: Option<String> = None;
+     if method == Method::ToolUpload {
+         let mut upload: UploadParams = match serde_json::from_value(params) {
+             Ok(v) => v,
+             Err(err) => return ResponseBody::Err(invalid_params(err.to_string())),
+         };
++        upload.native_files = remote_files;
+         if upload.files.is_empty() || upload.files.len() > super::file_transfer::MAX_UPLOAD_FILES {
+             return ResponseBody::Err(invalid_params(format!(
+                 "upload requires 1..={} files",
+@@ -486,6 +479,13 @@ async fn handle_tool_dispatch(
+         for (file, path) in upload.files.iter_mut().zip(paths) {
+             file.staged_path = Some(path.to_string_lossy().into_owned());
+         }
++        if remote_files {
++            if let Err(error) =
++                super::browser_files::upload(state, &session_id, &mut upload, timeout, &entry).await
++            {
++                return ResponseBody::Err(error);
++            }
++        }
+         params = serde_json::to_value(upload).unwrap_or(Value::Null);
+     } else if method == Method::ToolDownload {
+         let mut download: DownloadParams = match serde_json::from_value(params) {
+@@ -496,6 +496,7 @@ async fn handle_tool_dispatch(
+             Ok(v) => v,
+             Err(err) => return ResponseBody::Err(err),
+         };
++        download.native_files = remote_files;
+         download.browser_relative_dir = Some(staging.browser_relative_dir);
+         download.max_byte_size = Some(super::file_transfer::MAX_TRANSFER_BYTES);
+         download_transfer_id = Some(staging.transfer_id);
+@@ -506,21 +507,31 @@ async fn handle_tool_dispatch(
+     {
+         object.insert("_audit_id".into(), audit_id);
+     }
+-    let entry = inflight_guard.entry();
+     // `record_stop` must reach the extension while `record_await` holds the
+     // serial busy lock — finishing the recording unblocks await.
+     let outcome = if method == Method::ToolRecordStop {
+         state
+             .tool_queues
+-            .dispatch_unlocked(&session_id, method.clone(), params, timeout, Some(entry))
++            .dispatch_unlocked(
++                &session_id,
++                method.clone(),
++                params,
++                timeout,
++                Some(entry.clone()),
++            )
+             .await
+     } else {
+         state
+             .tool_queues
+-            .dispatch(&session_id, method.clone(), params, timeout, Some(entry))
++            .dispatch(
++                &session_id,
++                method.clone(),
++                params,
++                timeout,
++                Some(entry.clone()),
++            )
+             .await
+     };
+-    drop(inflight_guard);
+     match outcome {
+         Ok(v) if method == Method::ToolDownload => {
+             let id = download_transfer_id.expect("download transfer allocated");
+@@ -537,20 +548,29 @@ async fn handle_tool_dispatch(
+                     });
+                 }
+             };
+-            let Some(path) = result.browser_path.take() else {
+-                state
+-                    .transfers
+-                    .release(TransferIdParams { transfer_id: id });
+-                return ResponseBody::Err(RpcError {
+-                    code: ErrorCode::ProtocolError,
+-                    message: "tool.download returned no browser_path".into(),
+-                    data: None,
+-                });
++            let imported = if remote_files {
++                super::browser_files::download(
++                    state,
++                    &session_id,
++                    &id,
++                    result.byte_size,
++                    timeout,
++                    &entry,
++                )
++                .await
++            } else {
++                match result.browser_path.take() {
++                    Some(path) => state
++                        .transfers
++                        .import_download(&id, std::path::Path::new(&path)),
++                    None => Err(RpcError {
++                        code: ErrorCode::ProtocolError,
++                        message: "local tool.download returned no browser_path".into(),
++                        data: None,
++                    }),
++                }
+             };
+-            match state
+-                .transfers
+-                .import_download(&id, std::path::Path::new(&path))
+-            {
++            match imported {
+                 Ok(size) => {
+                     result.byte_size = size;
+                     result.transfer_id = Some(id);
+diff --git a/crates/bsk-cli/src/daemon/mod.rs b/crates/bsk-cli/src/daemon/mod.rs
+index 4f0c9cf..7f191c3 100644
+--- a/crates/bsk-cli/src/daemon/mod.rs
++++ b/crates/bsk-cli/src/daemon/mod.rs
+@@ -2,6 +2,7 @@
+ 
+ pub mod abort;
+ pub mod audit;
++mod browser_files;
+ pub mod browsers;
+ mod cancel_forward;
+ pub mod file_transfer;
+diff --git a/crates/bsk-file-host/Cargo.toml b/crates/bsk-file-host/Cargo.toml
+new file mode 100644
+index 0000000..9555bbc
+--- /dev/null
++++ b/crates/bsk-file-host/Cargo.toml
+@@ -0,0 +1,19 @@
++[package]
++name = "bsk-file-host"
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++license.workspace = true
++repository.workspace = true
++description = "BrowserSkill browser-machine file helper for Native Messaging"
++
++[dependencies]
++anyhow.workspace = true
++base64.workspace = true
++bsk-protocol.workspace = true
++clap.workspace = true
++dirs.workspace = true
++serde.workspace = true
++serde_json.workspace = true
++tempfile.workspace = true
++uuid.workspace = true
+diff --git a/crates/bsk-file-host/README.md b/crates/bsk-file-host/README.md
+new file mode 100644
+index 0000000..a1068dd
+--- /dev/null
++++ b/crates/bsk-file-host/README.md
+@@ -0,0 +1,25 @@
++# Browser-machine file helper
++
++Use the matching daemon, extension and `bsk-file-host` from this branch. Local daemon mode keeps its existing local file paths. Server mode transfers bytes over the paired browser connection; it does not share the daemon filesystem with Chrome.
++
++## Install on the browser computer
++
++1. Build `cargo build --release -p bsk -p bsk-file-host` and `pnpm --filter @browser-skill/extension build`.
++2. Load the extension from `apps/extension/dist/chrome-mv3`, note its extension ID, and place `bsk-file-host` in its final program directory.
++3. Run `bsk-file-host install --extension-id <extension-id>`. It registers this executable with the current user's Google Chrome. No administrator access is needed. Re-run after moving the executable or changing the extension ID.
++4. Connect the extension using the daemon's server-mode pairing link. Existing `bsk upload` and `bsk download` commands then use the remote file transport.
++
++For Chromium, Chrome for Testing, or a nondefault profile on macOS/Linux, pass that browser's `NativeMessagingHosts` directory explicitly with `--manifest-directory`. Windows installation writes the Google Chrome user registry entry. Other Windows browsers require their own native-host registry entry. To remove the helper, remove its `com.browserskill.files.json` manifest (and the corresponding Windows native-host registry entry), then remove the executable.
++
++Registration writes only the Native Messaging host manifest and, on Windows, its Chrome registration. It does not install an extension, open browser tabs, or connect a daemon.
++
++## File lifecycle
++
++- IPC upload chunks first enter the daemon's existing session staging. The daemon forwards them to the extension's helper in 512 KiB chunks, then sends the browser-local path to the existing real file-input/drop implementation.
++- An upload means the control has received the file; webpage submission is a separate action. The helper retains uploaded files until session close, even after the invoking CLI releases its daemon copy.
++- Download capture keeps the existing Chrome download transaction. Before clicking, the extension connects to the helper. It imports only the completed file under this transfer's `BrowserSkill/tr_*` directory, then returns its actual size. The daemon reads the helper's chunks and supplies the existing `transfer.read` IPC result to the caller.
++- The helper copies a completed download into its private temporary directory and removes the browser download original. After byte transfer the daemon releases this helper copy. Session stop also releases uploads and unfinished transfers; closing the Native Messaging input releases remaining files.
++- Session IDs and transfer IDs are existing transport scope, not a new business identity or resource catalog. File bytes do not enter tool-result text. Upload/download responses remain filenames, metadata and transfer handles.
++- Helper errors end the current operation. No local/remote fallback or repeated page action is performed. The `native_files` flag is set by daemon mode, not by tool callers. `tool.file_transfer` is an extension-side internal operation, not a public arbitrary-path IPC method.
++
++The helper uses Chrome's [Native Messaging framing and host registration](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging). A 512 KiB byte chunk stays below the 1 MiB native-to-extension JSON message limit after base64 encoding.
+diff --git a/crates/bsk-file-host/src/files.rs b/crates/bsk-file-host/src/files.rs
+new file mode 100644
+index 0000000..951c9e6
+--- /dev/null
++++ b/crates/bsk-file-host/src/files.rs
+@@ -0,0 +1,275 @@
++use std::collections::HashMap;
++use std::fs::{self, File, OpenOptions};
++use std::io::{Read, Seek, SeekFrom, Write};
++use std::path::{Path, PathBuf};
++
++use anyhow::{Context, Result, bail, ensure};
++use base64::{Engine, engine::general_purpose::STANDARD};
++use bsk_protocol::{BrowserFileCommand, BrowserFileParams};
++use serde_json::{Value, json};
++use tempfile::TempDir;
++use uuid::Uuid;
++
++pub const CHUNK_BYTES: usize = 512 * 1024;
++const MAX_BYTES: u64 = 512 * 1024 * 1024;
++
++struct Entry {
++    session: String,
++    path: PathBuf,
++    size: u64,
++    written: u64,
++    ready: bool,
++    download: bool,
++}
++
++pub struct Files {
++    root: TempDir,
++    entries: HashMap<String, Entry>,
++}
++
++impl Files {
++    pub fn new() -> Result<Self> {
++        Ok(Self {
++            root: tempfile::Builder::new()
++                .prefix("bsk-browser-files-")
++                .tempdir()?,
++            entries: HashMap::new(),
++        })
++    }
++
++    fn entry(&mut self, session: &str, id: &str) -> Result<&mut Entry> {
++        let entry = self
++            .entries
++            .get_mut(id)
++            .context("native file transfer not found")?;
++        ensure!(
++            entry.session == session,
++            "native file transfer belongs to another session"
++        );
++        Ok(entry)
++    }
++
++    pub fn execute(&mut self, params: BrowserFileParams) -> Result<Value> {
++        let session = params.session_id;
++        ensure!(!session.is_empty(), "session_id must not be empty");
++        match params.command {
++            BrowserFileCommand::Ready => Ok(json!({"chunk_size":CHUNK_BYTES})),
++            BrowserFileCommand::Begin { name, byte_size } => {
++                ensure!(
++                    !name.is_empty()
++                        && name != "."
++                        && name != ".."
++                        && !name.contains(['/', '\\', '\0', '\r', '\n']),
++                    "invalid upload filename: {name:?}"
++                );
++                let staged: u64 = self
++                    .entries
++                    .values()
++                    .filter(|e| e.session == session)
++                    .map(|e| e.size)
++                    .sum();
++                ensure!(
++                    byte_size <= MAX_BYTES && staged.saturating_add(byte_size) <= MAX_BYTES,
++                    "session staging exceeds {MAX_BYTES} bytes"
++                );
++                let id = format!("tr_{}", Uuid::new_v4().simple());
++                let directory = self.root.path().join(&id);
++                fs::create_dir(&directory)?;
++                let path = directory.join(&name);
++                OpenOptions::new()
++                    .write(true)
++                    .create_new(true)
++                    .open(&path)?;
++                self.entries.insert(
++                    id.clone(),
++                    Entry {
++                        session,
++                        path,
++                        size: byte_size,
++                        written: 0,
++                        ready: false,
++                        download: false,
++                    },
++                );
++                Ok(json!({"transfer_id":id,"chunk_size":CHUNK_BYTES}))
++            }
++            BrowserFileCommand::Chunk {
++                transfer_id,
++                offset,
++                data_base64,
++            } => {
++                let data = STANDARD
++                    .decode(data_base64)
++                    .context("invalid base64 file chunk")?;
++                ensure!(
++                    data.len() <= CHUNK_BYTES,
++                    "file chunk exceeds {CHUNK_BYTES} bytes"
++                );
++                let entry = self.entry(&session, &transfer_id)?;
++                ensure!(
++                    !entry.download && !entry.ready,
++                    "native upload is not writable"
++                );
++                ensure!(
++                    offset == entry.written,
++                    "chunk offset {offset} differs from {}",
++                    entry.written
++                );
++                let next = offset + data.len() as u64;
++                ensure!(next <= entry.size, "chunk exceeds declared file size");
++                OpenOptions::new()
++                    .append(true)
++                    .open(&entry.path)?
++                    .write_all(&data)?;
++                entry.written = next;
++                Ok(json!({"next_offset":next,"eof":false}))
++            }
++            BrowserFileCommand::Finish { transfer_id } => {
++                let entry = self.entry(&session, &transfer_id)?;
++                ensure!(
++                    !entry.download && entry.written == entry.size,
++                    "upload incomplete: {} of {} bytes",
++                    entry.written,
++                    entry.size
++                );
++                entry.ready = true;
++                Ok(
++                    json!({"transfer_id":transfer_id,"byte_size":entry.size,"staged_path":entry.path}),
++                )
++            }
++            BrowserFileCommand::Import {
++                transfer_id,
++                browser_path,
++            } => {
++                let suffix = transfer_id
++                    .strip_prefix("tr_")
++                    .context("download transfer_id must start with tr_")?;
++                Uuid::parse_str(suffix).context("invalid download transfer_id")?;
++                ensure!(
++                    !self.entries.contains_key(&transfer_id),
++                    "native download transfer already exists"
++                );
++                let reported = PathBuf::from(browser_path);
++                ensure!(
++                    reported.is_absolute(),
++                    "download path must be absolute: {reported:?}"
++                );
++                ensure!(
++                    !fs::symlink_metadata(&reported)?.file_type().is_symlink(),
++                    "download file is a symbolic link"
++                );
++                let path = reported.canonicalize()?;
++                let directory = path.parent().context("download has no directory")?;
++                ensure!(
++                    directory.ends_with(Path::new("BrowserSkill").join(&transfer_id)),
++                    "download is outside its BrowserSkill transfer directory: {path:?}"
++                );
++                let metadata = fs::metadata(&path)?;
++                ensure!(
++                    metadata.is_file() && metadata.len() <= MAX_BYTES,
++                    "download must be a regular file within {MAX_BYTES} bytes"
++                );
++                let size = metadata.len();
++                let staging = self.root.path().join(&transfer_id);
++                fs::create_dir(&staging)?;
++                let destination = staging.join("payload");
++                self.entries.insert(
++                    transfer_id.clone(),
++                    Entry {
++                        session,
++                        path: destination.clone(),
++                        size,
++                        written: 0,
++                        ready: false,
++                        download: true,
++                    },
++                );
++                let mut target = OpenOptions::new()
++                    .write(true)
++                    .create_new(true)
++                    .open(&destination)?;
++                let copied = std::io::copy(&mut File::open(&path)?.take(size), &mut target)?;
++                ensure!(
++                    copied == size,
++                    "download changed during import: {copied} of {size} bytes"
++                );
++                fs::remove_file(&path)?;
++                fs::remove_dir(directory)?;
++                let entry = self
++                    .entries
++                    .get_mut(&transfer_id)
++                    .expect("inserted download");
++                entry.written = size;
++                entry.ready = true;
++                Ok(json!({"transfer_id":transfer_id,"byte_size":size}))
++            }
++            BrowserFileCommand::Read {
++                transfer_id,
++                offset,
++            } => {
++                let entry = self.entry(&session, &transfer_id)?;
++                ensure!(
++                    entry.download && entry.ready,
++                    "native download is not readable"
++                );
++                ensure!(offset <= entry.size, "read offset exceeds download size");
++                let count = (entry.size - offset).min(CHUNK_BYTES as u64) as usize;
++                let mut data = vec![0; count];
++                let mut file = File::open(&entry.path)?;
++                file.seek(SeekFrom::Start(offset))?;
++                file.read_exact(&mut data)?;
++                let next = offset + count as u64;
++                Ok(
++                    json!({"next_offset":next,"eof":next == entry.size,"data_base64":STANDARD.encode(data)}),
++                )
++            }
++            BrowserFileCommand::Release { transfer_id } => {
++                self.release(&session, &transfer_id)?;
++                Ok(json!({"released":true}))
++            }
++            BrowserFileCommand::Close => {
++                let ids: Vec<_> = self
++                    .entries
++                    .iter()
++                    .filter(|(_, e)| e.session == session)
++                    .map(|(id, _)| id.clone())
++                    .collect();
++                for id in &ids {
++                    self.release(&session, id)?;
++                }
++                Ok(json!({"released":ids.len()}))
++            }
++        }
++    }
++
++    fn release(&mut self, session: &str, id: &str) -> Result<()> {
++        let entry = self.entry(session, id)?;
++        let directory = entry.path.parent().context("transfer has no directory")?;
++        // Each directory contains one transfer. Retain the entry on a removal
++        // error so explicit session close can finish the same cleanup later.
++        if entry.path.exists() {
++            fs::remove_file(&entry.path)?;
++        }
++        fs::remove_dir(directory)?;
++        self.entries.remove(id);
++        Ok(())
++    }
++
++    pub fn close(&mut self) -> Result<()> {
++        let entries: Vec<_> = self
++            .entries
++            .iter()
++            .map(|(id, e)| (id.clone(), e.session.clone()))
++            .collect();
++        let mut errors = Vec::new();
++        for (id, session) in entries {
++            if let Err(error) = self.release(&session, &id) {
++                errors.push(format!("{id}: {error:#}"));
++            }
++        }
++        if !errors.is_empty() {
++            bail!("native file cleanup: {}", errors.join("; "));
++        }
++        Ok(())
++    }
++}
+diff --git a/crates/bsk-file-host/src/install.rs b/crates/bsk-file-host/src/install.rs
+new file mode 100644
+index 0000000..65f9ea2
+--- /dev/null
++++ b/crates/bsk-file-host/src/install.rs
+@@ -0,0 +1,81 @@
++use anyhow::{Context, Result, ensure};
++use clap::Parser;
++use serde_json::json;
++use std::path::PathBuf;
++
++pub const HOST: &str = "com.browserskill.files";
++
++#[derive(Parser)]
++struct Install {
++    #[arg(long)]
++    extension_id: String,
++    /// User-level NativeMessagingHosts directory; defaults to Google Chrome.
++    #[arg(long)]
++    manifest_directory: Option<PathBuf>,
++}
++
++pub fn run() -> Result<()> {
++    let args = Install::parse_from(
++        std::iter::once("bsk-file-host install".to_string()).chain(std::env::args().skip(2)),
++    );
++    ensure!(
++        args.extension_id.len() == 32
++            && args
++                .extension_id
++                .bytes()
++                .all(|c| (b'a'..=b'p').contains(&c)),
++        "extension-id must be the 32-character Chrome extension ID"
++    );
++    let directory = match args.manifest_directory {
++        Some(path) => path,
++        None => default_directory()?,
++    };
++    std::fs::create_dir_all(&directory)?;
++    let manifest = directory.canonicalize()?.join(format!("{HOST}.json"));
++    let binary = std::env::current_exe()?.canonicalize()?;
++    std::fs::write(
++        &manifest,
++        serde_json::to_vec_pretty(&json!({
++            "name":HOST, "description":"BrowserSkill session files", "path":binary,
++            "type":"stdio", "allowed_origins":[format!("chrome-extension://{}/", args.extension_id)]
++        }))?,
++    )?;
++    #[cfg(windows)]
++    {
++        let status = std::process::Command::new("reg")
++            .args([
++                "ADD",
++                &format!("HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\{HOST}"),
++                "/ve",
++                "/t",
++                "REG_SZ",
++                "/d",
++            ])
++            .arg(&manifest)
++            .arg("/f")
++            .status()?;
++        ensure!(
++            status.success(),
++            "Native Messaging registry update failed: {status}"
++        );
++    }
++    println!(
++        "{}",
++        json!({"manifest":manifest,"binary":binary,"extension_id":args.extension_id})
++    );
++    Ok(())
++}
++
++fn default_directory() -> Result<PathBuf> {
++    let home = dirs::home_dir().context("user home directory is unavailable")?;
++    #[cfg(target_os = "macos")]
++    return Ok(home.join("Library/Application Support/Google/Chrome/NativeMessagingHosts"));
++    #[cfg(target_os = "linux")]
++    return Ok(home.join(".config/google-chrome/NativeMessagingHosts"));
++    #[cfg(windows)]
++    return Ok(dirs::data_local_dir()
++        .context("local application directory is unavailable")?
++        .join("BrowserSkill/native-files"));
++    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
++    anyhow::bail!("choose --manifest-directory for this platform; home={home:?}");
++}
+diff --git a/crates/bsk-file-host/src/main.rs b/crates/bsk-file-host/src/main.rs
+new file mode 100644
+index 0000000..14beaac
+--- /dev/null
++++ b/crates/bsk-file-host/src/main.rs
+@@ -0,0 +1,69 @@
++mod files;
++mod install;
++
++use anyhow::{Context, Result, ensure};
++use bsk_protocol::BrowserFileParams;
++use serde::Deserialize;
++use serde_json::json;
++use std::io::{self, BufRead, Read, Write};
++
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct Request {
++    id: String,
++    params: BrowserFileParams,
++}
++
++fn serve(files: &mut files::Files) -> Result<()> {
++    let mut input = io::BufReader::new(io::stdin().lock());
++    let mut output = io::stdout().lock();
++    while !input.fill_buf()?.is_empty() {
++        let mut header = [0; 4];
++        input.read_exact(&mut header)?;
++        let length = u32::from_ne_bytes(header) as usize;
++        ensure!(
++            length > 0 && length <= 1024 * 1024,
++            "invalid Native Messaging length: {length}"
++        );
++        let mut raw = vec![0; length];
++        input.read_exact(&mut raw)?;
++        let request: Request = serde_json::from_slice(&raw).with_context(|| {
++            format!(
++                "invalid Native Messaging request: {}",
++                String::from_utf8_lossy(&raw[..raw.len().min(300)])
++            )
++        })?;
++        let reply = match files.execute(request.params) {
++            Ok(result) => json!({"id":request.id,"result":result}),
++            Err(error) => {
++                json!({"id":request.id,"error":{"code":"protocol_error","message":format!("{error:#}")}})
++            }
++        };
++        let bytes = serde_json::to_vec(&reply)?;
++        output.write_all(&(bytes.len() as u32).to_ne_bytes())?;
++        output.write_all(&bytes)?;
++        output.flush()?;
++    }
++    Ok(())
++}
++
++fn main() -> Result<()> {
++    let argument = std::env::args().nth(1);
++    if argument.as_deref() == Some("install") {
++        return install::run();
++    }
++    if matches!(argument.as_deref(), Some("--help" | "-h")) {
++        println!(
++            "bsk-file-host install --extension-id <id> [--manifest-directory <directory>]\nWithout a subcommand, serve Native Messaging on stdin/stdout."
++        );
++        return Ok(());
++    }
++    let mut files = files::Files::new()?;
++    let result = serve(&mut files);
++    let cleanup = files.close();
++    if let Err(error) = &cleanup {
++        eprintln!("{error:#}");
++    }
++    result?;
++    cleanup
++}
+diff --git a/crates/bsk-protocol/schema/tool_download_params.json b/crates/bsk-protocol/schema/tool_download_params.json
+index 3bfbba7..dc5d55f 100644
+--- a/crates/bsk-protocol/schema/tool_download_params.json
++++ b/crates/bsk-protocol/schema/tool_download_params.json
+@@ -22,6 +22,10 @@
+       "format": "uint64",
+       "minimum": 0.0
+     },
++    "native_files": {
++      "default": false,
++      "type": "boolean"
++    },
+     "ref": {
+       "type": [
+         "string",
+diff --git a/crates/bsk-protocol/schema/tool_file_transfer_params.json b/crates/bsk-protocol/schema/tool_file_transfer_params.json
+new file mode 100644
+index 0000000..8c1e455
+--- /dev/null
++++ b/crates/bsk-protocol/schema/tool_file_transfer_params.json
+@@ -0,0 +1,194 @@
++{
++  "$schema": "http://json-schema.org/draft-07/schema#",
++  "title": "BrowserFileParams",
++  "type": "object",
++  "required": [
++    "command",
++    "session_id"
++  ],
++  "properties": {
++    "command": {
++      "$ref": "#/definitions/BrowserFileCommand"
++    },
++    "session_id": {
++      "type": "string"
++    }
++  },
++  "additionalProperties": false,
++  "definitions": {
++    "BrowserFileCommand": {
++      "oneOf": [
++        {
++          "type": "object",
++          "required": [
++            "action"
++          ],
++          "properties": {
++            "action": {
++              "type": "string",
++              "enum": [
++                "ready"
++              ]
++            }
++          },
++          "additionalProperties": false
++        },
++        {
++          "type": "object",
++          "required": [
++            "action",
++            "byte_size",
++            "name"
++          ],
++          "properties": {
++            "action": {
++              "type": "string",
++              "enum": [
++                "begin"
++              ]
++            },
++            "byte_size": {
++              "type": "integer",
++              "format": "uint64",
++              "minimum": 0.0
++            },
++            "name": {
++              "type": "string"
++            }
++          },
++          "additionalProperties": false
++        },
++        {
++          "type": "object",
++          "required": [
++            "action",
++            "data_base64",
++            "offset",
++            "transfer_id"
++          ],
++          "properties": {
++            "action": {
++              "type": "string",
++              "enum": [
++                "chunk"
++              ]
++            },
++            "data_base64": {
++              "type": "string"
++            },
++            "offset": {
++              "type": "integer",
++              "format": "uint64",
++              "minimum": 0.0
++            },
++            "transfer_id": {
++              "type": "string"
++            }
++          },
++          "additionalProperties": false
++        },
++        {
++          "type": "object",
++          "required": [
++            "action",
++            "transfer_id"
++          ],
++          "properties": {
++            "action": {
++              "type": "string",
++              "enum": [
++                "finish"
++              ]
++            },
++            "transfer_id": {
++              "type": "string"
++            }
++          },
++          "additionalProperties": false
++        },
++        {
++          "type": "object",
++          "required": [
++            "action",
++            "browser_path",
++            "transfer_id"
++          ],
++          "properties": {
++            "action": {
++              "type": "string",
++              "enum": [
++                "import"
++              ]
++            },
++            "browser_path": {
++              "type": "string"
++            },
++            "transfer_id": {
++              "type": "string"
++            }
++          },
++          "additionalProperties": false
++        },
++        {
++          "type": "object",
++          "required": [
++            "action",
++            "offset",
++            "transfer_id"
++          ],
++          "properties": {
++            "action": {
++              "type": "string",
++              "enum": [
++                "read"
++              ]
++            },
++            "offset": {
++              "type": "integer",
++              "format": "uint64",
++              "minimum": 0.0
++            },
++            "transfer_id": {
++              "type": "string"
++            }
++          },
++          "additionalProperties": false
++        },
++        {
++          "type": "object",
++          "required": [
++            "action",
++            "transfer_id"
++          ],
++          "properties": {
++            "action": {
++              "type": "string",
++              "enum": [
++                "release"
++              ]
++            },
++            "transfer_id": {
++              "type": "string"
++            }
++          },
++          "additionalProperties": false
++        },
++        {
++          "type": "object",
++          "required": [
++            "action"
++          ],
++          "properties": {
++            "action": {
++              "type": "string",
++              "enum": [
++                "close"
++              ]
++            }
++          },
++          "additionalProperties": false
++        }
++      ]
++    }
++  }
++}
+diff --git a/crates/bsk-protocol/schema/tool_upload_params.json b/crates/bsk-protocol/schema/tool_upload_params.json
+index dd784b9..347dc08 100644
+--- a/crates/bsk-protocol/schema/tool_upload_params.json
++++ b/crates/bsk-protocol/schema/tool_upload_params.json
+@@ -16,6 +16,10 @@
+     "mode": {
+       "$ref": "#/definitions/UploadMode"
+     },
++    "native_files": {
++      "default": false,
++      "type": "boolean"
++    },
+     "ref": {
+       "type": [
+         "string",
+diff --git a/crates/bsk-protocol/src/bin/dump-schema.rs b/crates/bsk-protocol/src/bin/dump-schema.rs
+index 0d5db1b..94227e2 100644
+--- a/crates/bsk-protocol/src/bin/dump-schema.rs
++++ b/crates/bsk-protocol/src/bin/dump-schema.rs
+@@ -93,6 +93,7 @@ fn main() {
+     dump!(PressResult, "tool_press_result");
+     dump!(SelectParams, "tool_select_params");
+     dump!(SelectResult, "tool_select_result");
++    dump!(BrowserFileParams, "tool_file_transfer_params");
+     dump!(UploadParams, "tool_upload_params");
+     dump!(UploadResult, "tool_upload_result");
+     dump!(DownloadParams, "tool_download_params");
+diff --git a/crates/bsk-protocol/src/method.rs b/crates/bsk-protocol/src/method.rs
+index 9a6d6b5..a1b2ba9 100644
+--- a/crates/bsk-protocol/src/method.rs
++++ b/crates/bsk-protocol/src/method.rs
+@@ -94,6 +94,8 @@ pub enum Method {
+     ToolPress,
+     #[serde(rename = "tool.select")]
+     ToolSelect,
++    #[serde(rename = "tool.file_transfer")]
++    ToolFileTransfer,
+     #[serde(rename = "tool.upload")]
+     ToolUpload,
+     #[serde(rename = "tool.download")]
+@@ -244,6 +246,7 @@ impl Method {
+             | Method::SystemPing
+             | Method::SystemStatus
+             | Method::BrowserList
++            | Method::ToolFileTransfer
+             | Method::TransferBegin
+             | Method::TransferChunk
+             | Method::TransferFinish
+diff --git a/crates/bsk-protocol/src/tools/browser_files.rs b/crates/bsk-protocol/src/tools/browser_files.rs
+new file mode 100644
+index 0000000..7c0a839
+--- /dev/null
++++ b/crates/bsk-protocol/src/tools/browser_files.rs
+@@ -0,0 +1,41 @@
++//! Browser-machine file operations, carried only over the bound extension connection.
++
++use schemars::JsonSchema;
++use serde::{Deserialize, Serialize};
++
++#[derive(Debug, Serialize, Deserialize, JsonSchema)]
++#[serde(deny_unknown_fields)]
++pub struct BrowserFileParams {
++    pub session_id: String,
++    pub command: BrowserFileCommand,
++}
++
++#[derive(Debug, Serialize, Deserialize, JsonSchema)]
++#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
++pub enum BrowserFileCommand {
++    Ready,
++    Begin {
++        name: String,
++        byte_size: u64,
++    },
++    Chunk {
++        transfer_id: String,
++        offset: u64,
++        data_base64: String,
++    },
++    Finish {
++        transfer_id: String,
++    },
++    Import {
++        transfer_id: String,
++        browser_path: String,
++    },
++    Read {
++        transfer_id: String,
++        offset: u64,
++    },
++    Release {
++        transfer_id: String,
++    },
++    Close,
++}
+diff --git a/crates/bsk-protocol/src/tools/file_transfer.rs b/crates/bsk-protocol/src/tools/file_transfer.rs
+index e2cd97c..820ab97 100644
+--- a/crates/bsk-protocol/src/tools/file_transfer.rs
++++ b/crates/bsk-protocol/src/tools/file_transfer.rs
+@@ -32,6 +32,8 @@ impl UploadMode {
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+ pub struct UploadParams {
+     pub session_id: String,
++    #[serde(default)]
++    pub native_files: bool,
+     #[serde(
+         rename = "ref",
+         alias = "ref_",
+@@ -63,6 +65,8 @@ pub struct UploadResult {
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+ pub struct DownloadParams {
+     pub session_id: String,
++    #[serde(default)]
++    pub native_files: bool,
+     #[serde(
+         rename = "ref",
+         alias = "ref_",
+@@ -158,6 +162,7 @@ mod tests {
+     #[test]
+     fn upload_agent_shape_omits_daemon_path_and_uses_ref_wire_name() {
+         let value = serde_json::to_value(UploadParams {
++            native_files: false,
+             session_id: "s1".into(),
+             ref_: Some("@e3".into()),
+             selector: None,
+@@ -179,6 +184,7 @@ mod tests {
+     #[test]
+     fn upload_drop_mode_is_explicit_on_the_wire() {
+         let value = serde_json::to_value(UploadParams {
++            native_files: false,
+             session_id: "s1".into(),
+             ref_: Some("@e3".into()),
+             selector: None,
+@@ -198,6 +204,7 @@ mod tests {
+     #[test]
+     fn download_agent_shape_omits_daemon_path() {
+         let value = serde_json::to_value(DownloadParams {
++            native_files: false,
+             session_id: "s1".into(),
+             ref_: None,
+             selector: Some("#export".into()),
+diff --git a/crates/bsk-protocol/src/tools/mod.rs b/crates/bsk-protocol/src/tools/mod.rs
+index ea4beb0..f745fd8 100644
+--- a/crates/bsk-protocol/src/tools/mod.rs
++++ b/crates/bsk-protocol/src/tools/mod.rs
+@@ -1,5 +1,6 @@
+ //! Typed params/results for the `tool.*` RPC methods (§7).
+ 
++pub mod browser_files;
+ pub mod console;
+ pub mod debug;
+ pub mod dialog;
+@@ -22,6 +23,7 @@ pub mod waits;
+ pub mod wheel;
+ pub mod window;
+ 
++pub use browser_files::*;
+ pub use console::*;
+ pub use debug::*;
+ pub use dialog::*;
+diff --git a/docs/remote-extension-connection.md b/docs/remote-extension-connection.md
+index a4723e4..9a0bab0 100644
+--- a/docs/remote-extension-connection.md
++++ b/docs/remote-extension-connection.md
+@@ -199,7 +199,7 @@ Cross-window popups are never automatically moved or claimed. They use the ordin
+ 
+ Disconnecting cancels task work, returns borrowed tabs and closes task-created tabs. User-created tabs survive cleanup. Failed returns preserve the window and must be resolved before reconnecting. Reconnection starts new tasks; commands and sessions are never replayed. Failed remote authentication does not select a local connection automatically.
+ 
+-Remote upload and download are unsupported in this version and return the `unsupported` error. Existing local file transfer behavior is unchanged. Screenshots and other existing RPC content results remain supported. There is no background task tab group or alternative window model.
++Remote upload and download use the browser-machine [Native Messaging file helper](../crates/bsk-file-host/README.md). Install the matching helper and extension; server mode explicitly selects this byte transport. Existing local file transfer behavior is unchanged. Screenshots and other existing RPC content results remain supported. There is no background task tab group or alternative window model.
+ 
+ Device credentials live in extension-origin IndexedDB; ordinary extension settings contain only the selected connection mode and a non-secret revision. Fresh local profiles and explicitly selected local mode do not read that credential database. If remote storage fails, the popup reports the error and the extension does not fall back automatically. Explicitly selecting the local connection can recover startup even when the credential database is unavailable. Legacy remote settings still migrate before ordinary settings access is restored. The standalone server persists hashed credentials with private file permissions and atomic writes. Treat the whole browser profile and `BSK_HOME` as trusted local data. Protect TLS private keys separately.
+ 
