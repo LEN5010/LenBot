@@ -104,11 +104,13 @@ def main() -> None:
     wheel = BUNDLE / metadata['wheel']
     shutil.copy2(wheel, release / wheel.name)
     shutil.copy2(BUNDLE / 'release.json', release / 'release.json')
+    shutil.copy2(BUNDLE / 'requirements.txt', release / 'requirements.txt')
     for name in ('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md'):
         shutil.copy2(BUNDLE / name, release / name)
     run(uv, 'venv', '--python', '3.13', str(release / '.venv'))
     python = str(release / '.venv/bin/python')
-    run(uv, 'pip', 'install', '--python', python, str(release / wheel.name))
+    run(uv, 'pip', 'install', '--python', python, '--requirement',
+        str(release / 'requirements.txt'), str(release / wheel.name))
     if args.action == 'upgrade':
         for module in ('migrate', 'migrate_memory_jobs', 'plugin_dependencies'):
             run(python, '-m', 'len_bot.next.' + module, cwd=instance)

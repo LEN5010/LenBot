@@ -1,6 +1,6 @@
 # LenBot 成品部署包
 
-本包包含带面板的 wheel、安装入口和部署资料，不包含私人配置或角色。安装需要 **uv** 和网络；uv 准备 Python 3.13 并安装 Python 依赖，不需要 Node/npm。插件 Git 安装另需系统 Git。Linux／macOS 使用各自标注的包；Windows 使用 WSL2 Linux 或 Docker，不提供原生 Windows 启动器。
+本包包含带面板的 wheel、安装入口和部署资料，不包含私人配置或角色。安装需要 **uv** 和网络；uv 准备 Python 3.13，并按包内从发行锁文件导出的 `requirements.txt` 安装 Python 依赖，不需要 Node/npm。插件 Git 安装另需系统 Git。Linux／macOS 使用各自标注的包；Windows 使用 WSL2 Linux 或 Docker，不提供原生 Windows 启动器。
 
 ## 新安装
 

@@ -87,7 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        if: matrix.component == 'openviking'
+        if: matrix.component == 'host' || matrix.component == 'openviking'
         with:
           name: release-packages
           path: packages
@@ -118,6 +118,8 @@ jobs:
           context: ${{ steps.recipe.outputs.context }}
           file: ${{ steps.recipe.outputs.file }}
           platforms: ${{ matrix.target.platform }}
+          build-args: ${{ matrix.component == 'host' && 'PACKAGE_SOURCE=wheel' || '' }}
+          build-contexts: ${{ matrix.component == 'host' && 'release=./packages' || '' }}
           tags: ${{ steps.recipe.outputs.tag }}:${{ needs.packages.outputs.version }}-${{ matrix.target.arch }}
           push: ${{ needs.packages.outputs.publish == 'true' }}
           outputs: ${{ needs.packages.outputs.publish != 'true' && format('type=docker,dest={0}/image.tar', runner.temp) || '' }}

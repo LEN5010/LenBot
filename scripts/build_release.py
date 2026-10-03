@@ -211,8 +211,12 @@ def build(project: Path, output: Path, *, offline: bool, npm_cache: Path | None)
         artifacts.mkdir()
         run('packages', ['uv', 'build', *options, '--out-dir', str(artifacts)], stage)
         report['artifacts'] = inspect_packages(artifacts, stage)
+        requirements = artifacts / 'requirements.txt'
+        run('dependency-export', ['uv', 'export', '--locked', '--no-dev', '--no-emit-project',
+            '--no-hashes', '--no-header', *options, '--output-file', str(requirements)], stage)
+        report['artifacts']['requirements'] = str(requirements)
         report['artifacts']['deployment_bundles'] = [str(path) for path in
-            build_deployments(Path(report['artifacts']['wheel']), stage, artifacts)]
+            build_deployments(Path(report['artifacts']['wheel']), stage, artifacts, requirements)]
         report['finished'] = time.time()
     except BaseException as error:
         report['error'] = f'{type(error).__name__}: {error}'
