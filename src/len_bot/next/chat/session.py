@@ -142,9 +142,10 @@ class Chat:
         """One explicit operator-requested compaction; caller owns the scene lock."""
         recap, entries = self.store.active_history(self.config.scene)
         binding = self.config.models.roles.mind
-        state = {"role": "user", "content": "运营者请求压缩已有完整对话，原始记录保留。"}
+        state = turn_state(self.config, self.store, now=self.now())
+        projection = await self.context.project(recap, entries, state)
         plan = plan_compaction(
-            entries, system={"role": "system", "content": self.context.system}, state=state,
+            entries, system=projection[0], state=projection[-1],
             tools=self.toolset.core_tools, output_tokens=binding.max_output_tokens,
             trigger_tokens=int(binding.context_window_tokens * self.config.compaction.trigger_ratio),
             keep_recent_tokens=self.config.compaction.keep_recent_tokens,

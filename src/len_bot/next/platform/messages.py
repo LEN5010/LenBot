@@ -246,10 +246,8 @@ def render_body(segments: list[Segment]) -> str:
 
 def render_message(message: ChatMessage, *, timezone: str, reply: ChatMessage | None = None,
                    audio: dict[int, str] | None = None) -> str:
-    """Render a single message with its actual sender, words, and known reply."""
-    clock = datetime.fromtimestamp(message.time, ZoneInfo(timezone)).isoformat(sep=" ", timespec="seconds")
-    return (f"[{clock}] {'（已撤回）' if message.recalled else ''}{_speaker(message)}："
-            f"{render_text(message, reply=reply, audio=audio)}")
+    """Single-message callers share the batch's identity, quote and receipt semantics."""
+    return render_batch([(message, reply, {} if audio is None else audio)], timezone=timezone)
 
 
 def render_text(message: ChatMessage, *, reply: ChatMessage | None = None,

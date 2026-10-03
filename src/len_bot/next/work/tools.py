@@ -152,6 +152,19 @@ async def execute_tasks(service: WorkTasks, scene: str, name: str, args: dict) -
                 "next_offset": result["next_offset"]}
     if parsed.action in {"status", "continue", "cancel"}:
         return task_summary(result, detail=True)
+    if parsed.action == 'outputs':
+        return {**result, 'registered_files': [delivery_summary(file) for file in result['registered_files']]}
+    return result
+
+
+def delivery_summary(file: dict) -> dict:
+    """Keep actual file identity and receipt state; raw upload frames stay in events."""
+    result = {key: file[key] for key in ('id', 'name', 'size', 'status', 'exists')}
+    if file['note'] is not None:
+        result['note'] = file['note']
+    upload = file['upload']
+    result['upload'] = None if upload is None else {
+        key: upload[key] for key in ('status', 'platform_file_id', 'error', 'created', 'ended')}
     return result
 
 
@@ -163,7 +176,8 @@ def task_summary(item: dict, *, detail: bool) -> dict:
             value[key] = item[key]
     if detail:
         value.update({key: item[key] for key in (
-            "deliverable", "files", "workspace_discard_requested", "account_browser", "browser_active")})
+            "deliverable", "workspace_discard_requested", "account_browser", "browser_active")})
+        value['files'] = [delivery_summary(file) for file in item['files']]
     return value
 
 

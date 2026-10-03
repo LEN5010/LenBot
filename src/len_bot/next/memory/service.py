@@ -180,12 +180,6 @@ class MemoryService:
                 elif latest["details"].get("native_phase") == "submitting" and task_id is None:
                     self.pending_native_tasks[scene] = "submission outcome unknown"
 
-    def group_profile(self, scene: str) -> str | None:
-        """Scene root overview for the system text; only local summaries provide one."""
-        if self.summarizer is None:
-            return None
-        return self.backend.summary_text_sync(scene)
-
     async def read_group_profile(self, scene: str) -> str | None:
         """Read the current derived profile under the backend's existing write/read lock."""
         if isinstance(self.backend, OpenVikingMemory):

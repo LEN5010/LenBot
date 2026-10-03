@@ -14,6 +14,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from .session import Chat
+from .recap import estimate_content, estimate_request
 from .scene_control import SceneControlArguments, TemporaryQuiet, require_control
 from ..models.limits import LimitReached
 from ..configuration.chat import Attention
@@ -510,7 +511,26 @@ class SceneRunner:
                 pass  # The known burst/cooldown deadline has arrived.
 
     def batch(self, pending: list[tuple[int, ChatMessage, float]], reason: str) -> tuple[int, list[str]]:
-        return pending[-1][0], [self.chat.context.batch([message for _, message, _ in pending], reason=reason)]
+        binding = self.config.models.roles.mind
+        available = (int(binding.context_window_tokens * self.config.compaction.trigger_ratio)
+                     - estimate_request([{"role": "system", "content": self.chat.context.system}],
+                                        self.chat.toolset.tools, binding.max_output_tokens)
+                     - self.config.compaction.max_output_tokens)
+        target = max(1, min(self.config.compaction.keep_recent_tokens, available))
+        contents, selected = [], []
+        text = ""
+        for _, message, _ in pending:
+            candidate = self.chat.context.batch([*selected, message], reason=reason if not contents else None)
+            if selected and estimate_content(candidate) > target:
+                contents.append(text)
+                selected = [message]
+                text = self.chat.context.batch(selected)
+            else:
+                selected.append(message)
+                text = candidate
+        if selected:
+            contents.append(text)
+        return pending[-1][0], contents
 
     def consumed_state(self) -> AttentionState:
         state = copy.deepcopy(self.state)

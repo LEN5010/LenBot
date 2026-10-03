@@ -266,7 +266,8 @@ class SceneTools:
             names = [tool["function"]["name"] for tool in matched]
             discovered = sorted(set(self.store.load_discovered_tools(self.config.scene)) | set(names))
             return tool_result({"available_from": "next_model_request", "tools": [
-                {"name": tool["function"]["name"], "description": tool["function"]["description"]}
+                {"name": tool["function"]["name"],
+                 "description": tool["function"]["description"].split("。", 1)[0]}
                 for tool in matched]}), None, discovered
         if call.name in self.external:
             tool = self.external[call.name]

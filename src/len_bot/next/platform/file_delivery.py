@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import stat
 from collections.abc import Awaitable, Callable
 from pathlib import Path, PurePosixPath
@@ -10,7 +11,6 @@ from pathlib import Path, PurePosixPath
 from pydantic import BaseModel, ConfigDict, Field
 
 from .messages import UploadResult
-from ..storage.store import encode
 from ..work.store import TaskStore
 
 
@@ -40,7 +40,7 @@ async def execute_send_file(
     upload: Callable[[str, str, str], Awaitable[UploadResult]],
     on_update: Callable[[], None],
 ) -> str:
-    """Record one attempt before I/O and return its actual final event as JSON text."""
+    """Record the full receipt; return only actionable file and delivery facts to the model."""
     file = records.get_file(scene, args.task_id, args.file_id)
     path = Path(file.path)
     root = local_root.resolve(strict=True)
@@ -70,4 +70,7 @@ async def execute_send_file(
         )
     event = records.finish_file_upload(scene, file.task_id, event_id, result)
     on_update()
-    return encode({"task_id": file.task_id, **event})
+    return json.dumps({"task_id": file.task_id, "event_id": event_id,
+                       **{key: event[key] for key in ('file_id', 'name', 'size', 'status',
+                                                     'platform_file_id', 'error')}},
+                      ensure_ascii=False, allow_nan=False, separators=(',', ':'))
