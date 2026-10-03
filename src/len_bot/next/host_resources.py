@@ -175,7 +175,7 @@ def register_host_resources(app: FastAPI, *, runtime: NetworkRuntime,
             return await tasks(scene).adopt_resource(scene, body.reference, requester=body.requester, name=body.name)
         except PermissionError as error:
             raise HTTPException(403, str(error)) from error
-        except (ValueError, OSError) as error:
+        except (ValueError, OSError, RuntimeError) as error:
             raise failure(error) from error
 
     @app.delete('/api/host/resources')
@@ -194,7 +194,7 @@ def register_host_resources(app: FastAPI, *, runtime: NetworkRuntime,
             return await tasks(scene).upload_resource(scene, body.file.file, requester=body.requester, name=body.name)
         except PermissionError as error:
             raise HTTPException(403, str(error)) from error
-        except (ValueError, OSError) as error:
+        except (ValueError, OSError, RuntimeError) as error:
             raise failure(error) from error
         finally:
             await body.file.close()

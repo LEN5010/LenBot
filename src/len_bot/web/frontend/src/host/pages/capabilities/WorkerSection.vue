@@ -16,7 +16,7 @@ const saved = computed(() => settings.data.value?.saved)
 
 const fresh = () => ({
   docker_binary: '', docker_host: '', image: '', workspace_root: '', runtime_root: '',
-  delivery_root: '', uid: '', gid: '', cpus: 2, memory: '2g', tmpfs_size: '256m', pids_limit: 512,
+  delivery_root: '', storage_pool: null, uid: '', gid: '', cpus: 2, memory: '2g', tmpfs_size: '256m', pids_limit: 512,
   command_timeout_seconds: 30, max_running: 4, max_containers: 8, max_scene_containers: 4,
   max_calls: 40, max_request_bytes: 8 * 1024 * 1024, max_response_bytes: 64 * 1024 * 1024, max_cost: null,
   compaction_reserve_tokens: 16384, compaction_keep_recent_tokens: 20000,
@@ -103,6 +103,11 @@ async function submit() {
         <v-text-field :model-value="draft.skills_directory ?? ''" label="技能目录" hint="留空不用技能，例如 data/skills" persistent-hint
           @update:model-value="value => draft.skills_directory = value ? value : null" />
       </div>
+
+      <h3>任务存储池</h3>
+      <p v-if="draft.storage_pool">{{ draft.storage_pool.kind === 'apfs' ? 'APFS 卷配额' : 'ext4 文件系统' }} · {{ draft.storage_pool.mount }}</p>
+      <p v-else>当前未配置池硬上限。</p>
+      <p>初始化、扩容和文件移交在停机后完成，存储池绑定与目录一起更新。实际容量见 <RouterLink :to="{name:'host-resources'}">资源页</RouterLink>。</p>
 
       <AdvancedFields>
         <v-text-field v-for="[key, label, hint] in advanced" :key="key" :model-value="draft[key]" :label="label" :hint="hint" :persistent-hint="Boolean(hint)"

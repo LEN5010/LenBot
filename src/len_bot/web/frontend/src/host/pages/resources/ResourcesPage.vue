@@ -15,6 +15,7 @@ import { taskStatus } from '../tasks/taskLabels.js'
 import ResourceTaskDraft from '../tasks/ResourceTaskDraft.vue'
 import TaskSpaceCard from '../../components/TaskSpaceCard.vue'
 import TaskCleanupDialog from '../../components/TaskCleanupDialog.vue'
+import StoragePoolCard from '../../components/StoragePoolCard.vue'
 
 const route = useRoute(), router = useRouter()
 const scenes = computed(() => host.state?.scenes || [])
@@ -60,6 +61,7 @@ function created(task) {
   <HostPage title="资源" description="浏览文件、保留成果，或选作下一项任务的资料。">
     <template #actions><v-select :model-value="scene" :items="options" label="场景" density="compact" class="scene"
       @update:model-value="value => router.push({ name: 'host-resources', query: { scene: value } })" /></template>
+    <StoragePoolCard :version="resourceVersion + spaceVersion" />
     <div v-if="scene" class="resources">
       <aside class="surface task-list">
         <v-btn :variant="taskId === null ? 'tonal' : 'text'" @click="select(null)">本场景共享资料</v-btn>
@@ -93,7 +95,7 @@ function created(task) {
         <TaskSpaceCard v-if="taskId" :key="`space:${scene}:${taskId}`" class="surface" :scene="scene" :task-id="taskId" :operator="operator" :version="spaceVersion" @changed="filesChanged" />
         <ResourceTaskDraft :key="scene" :scene="scene" :operator="operator" @dirty="value => dirty = value" @created="created">
           <template #default="{ select: selectFile }">
-            <ResourceBrowser :key="`${scene}:${taskId}:${resourceVersion}`" :scene="scene" :task-id="taskId" :operator="operator" @select="selectFile" />
+            <ResourceBrowser :key="`${scene}:${taskId}:${resourceVersion}`" :scene="scene" :task-id="taskId" :operator="operator" @select="selectFile" @changed="spaceVersion++" />
           </template>
         </ResourceTaskDraft>
       </div>

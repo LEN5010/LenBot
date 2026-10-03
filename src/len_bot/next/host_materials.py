@@ -16,6 +16,7 @@ from .network import NetworkRuntime
 from .task_materials import MaterialName, adopt_file, finish_file_operation, list_materials, material_directory, open_regular
 from .tasks_store import TaskStore
 from .tasks_config import WorkerSettings
+from .storage_pool import worker_pool_usage
 
 
 class MaterialAdoption(BaseModel):
@@ -51,8 +52,8 @@ class MaterialDownload(StreamingResponse):
             self.source.close()
 
 
-def failure(error: ValueError | OSError) -> HTTPException:
-    status = 404 if isinstance(error, FileNotFoundError) else 409 if isinstance(error, (ValueError, FileExistsError)) else 500
+def failure(error: ValueError | OSError | RuntimeError) -> HTTPException:
+    status = 404 if isinstance(error, FileNotFoundError) else 409 if isinstance(error, (ValueError, FileExistsError, RuntimeError)) else 500
     return HTTPException(status, ''.join(traceback.format_exception_only(error)).strip())
 
 
@@ -94,9 +95,10 @@ def register_host_materials(app: FastAPI, *, runtime: NetworkRuntime, user: Call
             raise HTTPException(404, str(error)) from error
         async with changes:
             try:
+                await finish_file_operation(worker_pool_usage, worker)
                 result = await finish_file_operation(adopt_file, directory, source,
                     delivery_root=worker.delivery_root, name=body.name, max_bytes=worker.max_file_bytes)
-            except (ValueError, OSError) as error:
+            except (ValueError, OSError, RuntimeError) as error:
                 raise failure(error) from error
             user(request)
             return {**result, 'scene': scene, 'notice': '共享原件已复制，源交付副本保留；未挂入任务或上传平台。'}

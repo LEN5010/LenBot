@@ -31,6 +31,7 @@ async function closeEnvironment() {
     <ErrorNote v-if="storage.error.value" title="读取空间失败" :error="storage.error.value" />
     <template v-if="storage.data.value">
       <p>{{ continuationLabel[storage.data.value.continuation] }}</p>
+      <p v-if="storage.data.value.hard_disk_quota" class="muted">共用实例池 {{ fileSize(storage.data.value.hard_disk_quota.limit_bytes) }} 硬上限，当前可写 {{ fileSize(storage.data.value.hard_disk_quota.available_bytes) }}。</p>
       <ul><li v-for="root in storage.data.value.roots" :key="root.kind">
         {{ rootLabel[root.kind] }}：{{ root.exists ? `${root.usage.files} 个文件 · 内容 ${fileSize(root.usage.file_bytes)} · 磁盘分配 ${fileSize(root.usage.allocated_bytes)}` : '目录不存在' }}</li></ul>
       <p class="muted">临时文件：{{ fileSize(storage.data.value.temporary.reduce((sum, entry) => sum + entry.file_bytes, 0)) }}。Pi 会话、工作文件和输入不属于临时清理。</p>

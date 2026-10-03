@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .pricing import Rate
+from .storage_pool_config import StoragePool
 
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
@@ -37,6 +38,7 @@ class WorkerSettings(BaseModel):
     workspace_root: Path
     runtime_root: Path
     delivery_root: Path
+    storage_pool: StoragePool | None = None
     skills_directory: Path | None = None
     uid: int = Field(gt=0, strict=True)
     gid: int = Field(gt=0, strict=True)
@@ -112,6 +114,13 @@ class WorkerSettings(BaseModel):
             for second_name, second in roots.items():
                 if first_name != second_name and first.is_relative_to(second):
                     raise ValueError(f"worker.{first_name} must not be inside worker.{second_name}")
+        if self.storage_pool is not None:
+            mount = self.storage_pool.mount
+            for path in (self.workspace_root, self.runtime_root):
+                if path == mount or not path.is_relative_to(mount):
+                    raise ValueError('worker workspace/runtime roots must be separate directories below storage_pool.mount')
+            if self.delivery_root.is_relative_to(mount):
+                raise ValueError('worker.delivery_root stays outside the task storage pool')
         return self
 
 

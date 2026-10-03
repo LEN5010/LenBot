@@ -28,6 +28,7 @@ from .task_files import TaskFiles
 from .task_inputs import require_inputs
 from .task_live import TaskLiveText
 from .task_materials import finish_file_operation
+from .storage_pool import worker_pool_usage
 from .tasks_store import Task, TaskStore
 from .worker_model import Limits, WorkerModelProxy
 from .worker_session import WorkerSession, worker_session
@@ -120,6 +121,7 @@ class TaskExecution:
         def bind_proxy(proxy: WorkerModelProxy) -> None:
             self._proxy = proxy
         try:
+            await finish_file_operation(worker_pool_usage, self.settings)
             if item.materials:
                 await finish_file_operation(require_inputs, self.settings.runtime_root / item.scene / str(item.id) / 'inputs',
                                             tuple(item.materials), self.settings.max_file_bytes)

@@ -430,9 +430,9 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                         )
                     if running.worker is not None and candidate.worker is not None:
                         if any(getattr(running.worker, key) != getattr(candidate.worker, key)
-                               for key in ("docker_host", "workspace_root", "runtime_root")):
+                               for key in ("docker_host", "workspace_root", "runtime_root", "storage_pool")):
                             raise ValueError(
-                                "运行中不能保存任务 Docker 地址、工作区或运行目录的迁移；"
+                                "运行中不能保存任务 Docker 地址、工作区、运行目录或存储池的迁移；"
                                 "先停机清理任务容器，再搬迁原文件和修改根配置。根配置未保存"
                             )
                     temporary.replace(path)
