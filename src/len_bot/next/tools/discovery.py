@@ -6,6 +6,25 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 DEFERRED_NAMES = frozenset({"scene_control", "schedule_list", "schedule_cancel", "persona_knowledge", "open_forward", "member_info", "transcribe"})
 
 
+def model_schema(schema: dict | bool) -> dict | bool:
+    """Remove generated titles from owned schema nodes, not business data/maps."""
+    if isinstance(schema, bool):
+        return schema
+    result = {}
+    for key, value in schema.items():
+        if key == "title":
+            continue
+        if key in {"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}:
+            value = {name: model_schema(child) for name, child in value.items()}
+        elif key in {"allOf", "anyOf", "oneOf", "prefixItems"}:
+            value = [model_schema(child) for child in value]
+        elif key in {"items", "additionalProperties", "unevaluatedProperties", "unevaluatedItems",
+                     "contains", "propertyNames", "not", "if", "then", "else"}:
+            value = model_schema(value)
+        result[key] = value
+    return result
+
+
 class ToolSearchArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 

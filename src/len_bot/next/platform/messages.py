@@ -1,7 +1,9 @@
 """OneBot messages and message/file action receipts for the new chat core."""
 
 from dataclasses import dataclass
+from collections.abc import Sequence
 from datetime import datetime, timezone
+import json
 from typing import Literal, Mapping
 import re
 from uuid import uuid4
@@ -258,8 +260,45 @@ def render_text(message: ChatMessage, *, reply: ChatMessage | None = None,
         if reply is None:
             quote = f"（回复消息 {message.reply_to}）"
         else:
-            quote = f"（回复 {'已撤回 · ' if reply.recalled else ''}{_speaker(reply)}：{_body(reply.segments)[:40]}）"
+            quote = (f"（回复消息 {message.reply_to}，{'已撤回 · ' if reply.recalled else ''}"
+                     f"{_speaker(reply)}，节选：{_body(reply.segments)[:40]}）")
     return f"{quote}{_body(message.segments, audio)}"
+
+
+def render_batch(items: Sequence[tuple[ChatMessage, ChatMessage | None, dict[int, str]]], *,
+                 timezone: str, reason: str | None = None) -> str:
+    """A persisted batch: real identifiers, one date/zone header, indented words."""
+    lines = [] if reason is None else [reason]
+    identifiers = {(message.scene, message.platform_message_id) for message, _, _ in items
+                   if message.platform_message_id is not None}
+    previous = None
+    for message, reply, audio in items:
+        local = datetime.fromtimestamp(message.time, ZoneInfo(timezone))
+        header = (message.scene, local.date(), local.strftime('%z'))
+        if header != previous:
+            lines.append(f"{message.scene}｜{local.date()}｜{timezone} {local.strftime('%z')}")
+            previous = header
+        # Names and IDs are data on one line, not new batch headings.
+        name = '我' if message.is_self else message.sender.card or message.sender.nickname
+        speaker = (f"QQ {message.sender.uid}" if name is None else
+                   f"{json.dumps(name, ensure_ascii=False)}(QQ {message.sender.uid})")
+        labels = []
+        if message.platform_message_id is not None:
+            labels.append('id=' + json.dumps(message.platform_message_id, ensure_ascii=False))
+        if message.reply_to is not None:
+            labels.append('回复=' + json.dumps(message.reply_to, ensure_ascii=False))
+        if message.send_status != 'received':
+            labels.append('状态=' + message.send_status)
+        if message.recalled:
+            labels.append('已撤回')
+        suffix = '' if not labels else ' [' + '，'.join(labels) + ']'
+        lines.append(f"{local.strftime('%H:%M:%S')} {speaker}{suffix}")
+        if reply is not None and (reply.scene, reply.platform_message_id) not in identifiers:
+            excerpt = json.dumps(_body(reply.segments)[:40], ensure_ascii=False)
+            who = json.dumps(_speaker(reply), ensure_ascii=False)
+            lines.append(f"  引用节选 {who}{'（已撤回）' if reply.recalled else ''}：{excerpt}")
+        lines.extend('  ' + line for line in _body(message.segments, audio).split('\n'))
+    return '\n'.join(lines)
 
 
 def parse_send_result(raw: dict) -> SendResult:

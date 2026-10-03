@@ -273,7 +273,7 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.onebot is None and config.delivery == "simulated"
     assert config.panel is None
     assert config.compaction.trigger_ratio == 0.6
-    assert config.compaction.keep_recent_entries == 30
+    assert config.compaction.keep_recent_tokens == 20000
     assert config.compaction.max_output_tokens == 1024
     assert config.text_delivery.max_chars == 300
     assert config.text_delivery.min_interval_seconds == 0.6
@@ -1768,8 +1768,11 @@ def test_quiet_hours_reject_invalid_configuration(tmp_path, quiet, field):
         (lambda source: source.update(compaction={"trigger_ratio": 0.1}), "compaction.trigger_ratio"),
         (lambda source: source.update(compaction={"trigger_ratio": 1}), "trigger_ratio"),
         (lambda source: source.update(compaction={"trigger_ratio": "0.6"}), "trigger_ratio"),
-        (lambda source: source.update(compaction={"keep_recent_entries": 0}), "keep_recent_entries"),
-        (lambda source: source.update(compaction={"keep_recent_entries": 30.0}), "keep_recent_entries"),
+        (lambda source: source.update(compaction={"keep_recent_tokens": 0}), "keep_recent_tokens"),
+        (lambda source: source.update(compaction={"keep_recent_tokens": 30.0}), "keep_recent_tokens"),
+        (lambda source: source.update(compaction={"keep_recent_entries": 30}), "keep_recent_entries"),
+        (lambda source: source.update(voice_context_tokens=0), "voice_context_tokens"),
+        (lambda source: source.update(voice_context_tokens=True), "voice_context_tokens"),
         (lambda source: source.update(compaction={"max_output_tokens": 0}), "max_output_tokens"),
         (lambda source: source.update(compaction={"max_output_tokens": 100000}), "compaction.max_output_tokens"),
         (lambda source: source.update(compaction={"unknown": True}), "unknown"),

@@ -359,7 +359,8 @@ class SceneRunner:
                 await asyncio.wait_for(self.changed.wait(), timeout=delay)
             except TimeoutError:
                 pass  # Recheck the wait deadline and any quiet interval that just ended.
-        return f"等待结束：实际等待 {time.monotonic() - started:.3f} 秒；{reason}。"
+        observed = datetime.fromtimestamp(self.now(), ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
+        return f"等待结束 {observed}：实际等待 {time.monotonic() - started:.3f} 秒；{reason}。"
 
     def ambient_interval(self) -> float:
         base, maximum = self.settings.ambient_min_interval_seconds, self.settings.ambient_max_interval_seconds
@@ -509,14 +510,7 @@ class SceneRunner:
                 pass  # The known burst/cooldown deadline has arrived.
 
     def batch(self, pending: list[tuple[int, ChatMessage, float]], reason: str) -> tuple[int, list[str]]:
-        contents = []
-        for _, message, _ in pending:
-            content = self.chat.context.render(message) + f"（平台消息 ID：{message.platform_message_id}）"
-            if message.reply_to is not None:
-                content += f"（回复平台消息 ID：{message.reply_to}）"
-            contents.append(content)
-        contents[0] = reason + "\n" + contents[0]
-        return pending[-1][0], contents
+        return pending[-1][0], [self.chat.context.batch([message for _, message, _ in pending], reason=reason)]
 
     def consumed_state(self) -> AttentionState:
         state = copy.deepcopy(self.state)
