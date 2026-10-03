@@ -5,8 +5,24 @@ from pathlib import Path
 import shutil
 import tempfile
 
-from .task_materials import list_materials, material_directory, open_regular, require_directory
+from pydantic import BaseModel, model_validator
+
+from .config_types import STRICT
+from .task_materials import MaterialName, list_materials, material_directory, open_regular, require_directory
+from .task_resources import ResourceFileRef
 from .tasks_config import WorkerSettings
+
+
+class ResourceInput(BaseModel):
+    model_config = STRICT
+    reference: ResourceFileRef
+    name: MaterialName
+
+    @model_validator(mode='after')
+    def input_scope(self):
+        if self.reference.scope == 'runtime':
+            raise ValueError('运行环境文件不作为任务输入；选择工作文件、输入快照、交付或共享资料')
+        return self
 
 
 def create_stage(settings: WorkerSettings, scene: str) -> Path:
@@ -41,7 +57,8 @@ def copy_inputs(stage: Path, settings: WorkerSettings, scene: str, names: tuple[
                     raise OSError(f'Shared input grew during snapshot: {shared / name}')
                 output.flush()
                 os.fsync(output.fileno())
-        copies.append({'name': name, 'size': size, 'source_path': str(shared / name), 'container_path': f'/inputs/{name}'})
+        copies.append({'name': name, 'size': size, 'source_path': str(shared / name), 'container_path': f'/inputs/{name}',
+                       'reference': ResourceFileRef(scope='shared', path=name).model_dump()})
     return copies
 
 

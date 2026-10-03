@@ -258,7 +258,7 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
         if runtime.tasks is None:
             raise HTTPException(409, "尚未配置任务执行器")
         try:
-            return await runtime.tasks.delegate(scene, **body.model_dump())
+            return await runtime.tasks.delegate(scene, **body.model_dump(exclude={'resources'}), resources=body.resources)
         except PermissionError as error:
             raise HTTPException(403, ''.join(traceback.format_exception_only(error)).strip()) from error
         except (ValueError, RuntimeError) as error:

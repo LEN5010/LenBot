@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Callable
 import traceback
-from typing import BinaryIO
+from typing import Annotated, BinaryIO
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -102,7 +102,7 @@ def register_host_materials(app: FastAPI, *, runtime: NetworkRuntime, user: Call
             return {**result, 'scene': scene, 'notice': '共享原件已复制，源交付副本保留；未挂入任务或上传平台。'}
 
     @app.get('/api/host/materials/file')
-    async def download(scene: str, name: MaterialName = Query(), _: str = Depends(user)):
+    async def download(scene: str, name: Annotated[MaterialName, Query()], _: str = Depends(user)):
         worker = worker_for(scene)
         try:
             directory = material_directory(worker.workspace_root, scene)

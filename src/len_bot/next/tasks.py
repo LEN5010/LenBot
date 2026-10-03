@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from string import Template
 import traceback
-from typing import Literal, TYPE_CHECKING
+from typing import BinaryIO, Literal, TYPE_CHECKING
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -28,12 +28,12 @@ from .skills import Skill
 from .store import Store
 from .task_execution import TaskExecution
 from .task_files import TaskFiles, file_info
-from .task_resources import ResourceFileRef, TaskResources
+from .task_resources import ResourceFileRef, TaskResources, resource_purpose
 from .task_browser import TaskBrowser
 from .tasks_store import TERMINAL, Task, TaskStore
 from .worker_model import Limits
-from .task_materials import MaterialName, finish_file_operation
-from .task_inputs import copy_inputs, create_stage, publish_inputs, remove_stage
+from .task_materials import MaterialName, finish_file_operation, material_directory, save_shared
+from .task_inputs import ResourceInput, copy_inputs, create_stage, publish_inputs, remove_stage
 from .operations import credentials, diagnostic_value, redact, redact_record
 
 if TYPE_CHECKING:
@@ -188,6 +188,58 @@ class WorkTasks:
             self._notify(scene)
             return result
 
+    def _can_manage_shared(self, scene: str, requester: str) -> None:
+        if requester in self.config.scene_config(scene).permissions.blacklist:
+            raise PermissionError('黑名单账号不能修改共享资料')
+        if not self._roles(scene, requester).intersection(self.config.scenes[scene].tasks.manage_roles):
+            raise PermissionError('共享资料写入和删除需要本场景任务管理权限')
+
+    async def upload_resource(self, scene: str, source: BinaryIO, *, requester: str, name: str) -> dict:
+        self._can_manage_shared(scene, requester)
+        async with self.file_changes:
+            result = await finish_file_operation(save_shared, source,
+                material_directory(self.settings.workspace_root, scene), name, self.settings.max_file_bytes)
+            self._notify(scene)
+            return result
+
+    async def adopt_resource(self, scene: str, reference: ResourceFileRef, *, requester: str, name: str) -> dict:
+        if reference.scope not in {'workspace', 'inputs', 'deliveries'}:
+            raise ValueError('从任务工作文件、输入快照或登记交付中选择共享资料')
+        self._can_manage_shared(scene, requester)
+        self._inspect_task(scene, reference.task_id, requester)
+        async with self.file_changes:
+            opened = self.resources.open(scene, reference)
+            with opened.stream as source:
+                result = await finish_file_operation(save_shared, source,
+                    material_directory(self.settings.workspace_root, scene), name, self.settings.max_file_bytes)
+            self.records.add_event(scene, reference.task_id, 'resource_shared',
+                {**result, 'source': reference.model_dump(), 'requester': requester})
+            self._notify(scene)
+            return result
+
+    async def delete_resource(self, scene: str, reference: ResourceFileRef, *, requester: str) -> dict:
+        async with self.file_changes:
+            if reference.scope == 'shared':
+                self._can_manage_shared(scene, requester)
+            elif reference.scope in {'workspace', 'deliveries'}:
+                item = self.records.get(scene, reference.task_id)
+                self._can_manage(item, requester)
+                if reference.scope == 'workspace':
+                    if (item.status not in TERMINAL or item.container is not None or item.browser_active
+                            or item.id in self.running):
+                        raise ValueError('任务执行收尾后再删除工作文件')
+                    if resource_purpose(reference.scope, reference.path) == 'session':
+                        raise ValueError('Pi 会话由释放整个环境操作管理')
+            else:
+                raise ValueError('输入快照与运行文件由任务环境清理管理')
+            result = await self.resources.remove(scene, reference)
+            if reference.task_id is not None:
+                self.records.add_event(scene, reference.task_id,
+                    'file_deleted' if reference.scope == 'deliveries' else 'resource_deleted',
+                    {**result, 'file_id': reference.file_id, 'requester': requester})
+            self._notify(scene)
+            return result
+
     def _event_result(self, item: Task, value: dict) -> dict:
         content = Template((PROMPTS / 'next_task_history.md').read_text()).substitute(
             scene=item.scene, task=item.id, result=json.dumps(value, ensure_ascii=False, allow_nan=False))
@@ -237,14 +289,22 @@ class WorkTasks:
 
     async def delegate(self, scene: str, *, requester: str, goal: str,
                        deliverable: str, context: str, account_browser: bool = False,
-                       materials: Sequence[MaterialName] = ()) -> dict:
+                       materials: Sequence[MaterialName] = (), resources: Sequence[ResourceInput] = ()) -> dict:
         self._admit_delegate(scene, requester, account_browser)
-        selected = tuple(materials)
+        selected = (*materials, *(item.name for item in resources))
         stage = create_stage(self.settings, scene) if selected else None
         item: Task | None = None
         original_error: BaseException | None = None
         try:
-            copies = [] if stage is None else await finish_file_operation(copy_inputs, stage, self.settings, scene, selected)
+            copies = ([] if not materials else
+                      await finish_file_operation(copy_inputs, stage, self.settings, scene, tuple(materials)))
+            for selection in resources:
+                if selection.reference.task_id is not None:
+                    self._inspect_task(scene, selection.reference.task_id, requester)
+                opened = self.resources.open(scene, selection.reference)
+                size = await finish_file_operation(self.resources.copy_opened, opened, stage / selection.name)
+                copies.append({'name': selection.name, 'size': size, 'source_path': str(opened.path),
+                               'reference': selection.reference.model_dump(), 'container_path': f'/inputs/{selection.name}'})
             if stage is not None:
                 self._admit_delegate(scene, requester, account_browser)
             item = self._register_delegate(scene, requester, goal, deliverable, context, account_browser, selected)

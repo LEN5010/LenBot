@@ -21,6 +21,7 @@ class RegisteredFile(BaseModel):
     size: int
     note: str | None
     status: Literal['registered']
+    exists: bool
     upload: dict[str, JsonValue] | None
 
 

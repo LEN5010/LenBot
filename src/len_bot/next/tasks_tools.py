@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from .task_materials import MaterialSelection
+from .task_inputs import ResourceInput
 
 if TYPE_CHECKING:
     from .tasks import WorkTasks
@@ -25,6 +26,15 @@ class DelegateArguments(BaseModel):
     context: str = ""
     account_browser: bool = False
     materials: MaterialSelection = Field(default_factory=list, description='本场景共享普通资料的实际文件名选集；登记前复制为本任务私有只读快照，最多16份。不选择整个共享目录。')
+    resources: list[ResourceInput] = Field(default_factory=list, max_length=16,
+        description='本场景已有任务文件或交付的实际引用及输入文件名；与 materials 合计最多16份，名称不得重复。')
+
+    @model_validator(mode='after')
+    def distinct_inputs(self):
+        names = [*self.materials, *(item.name for item in self.resources)]
+        if len(names) > 16 or len(names) != len(set(names)):
+            raise ValueError('materials 与 resources 合计最多16份，输入文件名必须不同')
+        return self
 
     @field_validator("goal", "deliverable")
     @classmethod
@@ -130,7 +140,7 @@ async def execute_tasks(service: WorkTasks, scene: str, name: str, args: dict) -
         return await service.delegate(
             scene, requester=parsed.requester, goal=parsed.goal,
             deliverable=parsed.deliverable, context=parsed.context, account_browser=parsed.account_browser,
-            materials=parsed.materials,
+            materials=parsed.materials, resources=parsed.resources,
         )
     if name != "task":
         raise ValueError(f"unknown task tool {name!r}")

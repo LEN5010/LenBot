@@ -9,21 +9,22 @@ import DevOnly from '../../components/DevOnly.vue'
 import TaskEvents from './TaskEvents.vue'
 import TaskMore from './TaskMore.vue'
 import ResourceBrowser from '../../components/ResourceBrowser.vue'
+import ResourceTaskDraft from './ResourceTaskDraft.vue'
 import { finished, taskStatus } from './taskLabels.js'
 
 const props = defineProps({
   id: { type: Number, required: true }, scene: { type: String, required: true }, operator: { type: String, required: true },
   version: { type: Number, required: true }, service: { type: Object, required: true }, settings: { type: Object, default: null },
 })
-const emit = defineEmits(['dirty', 'changed'])
+const emit = defineEmits(['dirty', 'changed', 'created'])
 const detail = useResource(() => tasksApi.detail(props.scene, props.id))
 watch(() => props.version, () => detail.reload())
 const task = computed(() => detail.data.value?.task)
 const at = value => formatTime(value, props.settings?.timezone)
 const validQQ = computed(() => /^[1-9][0-9]*$/.test(props.operator))
 
-const append = ref(''), followUp = ref(''), answer = ref(''), choice = ref(null)
-const dirty = computed(() => Boolean(append.value || followUp.value || answer.value || choice.value !== null))
+const append = ref(''), followUp = ref(''), answer = ref(''), choice = ref(null), resourceDirty = ref(false)
+const dirty = computed(() => Boolean(append.value || followUp.value || answer.value || choice.value !== null || resourceDirty.value))
 watch(dirty, value => emit('dirty', value), { immediate: true })
 // An answer typed for one question must not be sent to the next one.
 watch(() => task.value?.question?.id, (now, before) => { if (before !== undefined && now !== before) { answer.value = ''; choice.value = null } })
@@ -85,6 +86,11 @@ async function save(file) {
 }
 const uploadLabel = { uploaded: '已发到 QQ', failed: '发送失败', unconfirmed: '不确定是否发出' }
 const statusColor = { done: 'success', failed: 'error', waiting_input: 'warning' }
+function created(task) {
+  resourceDirty.value = false
+  emit('dirty', dirty.value)
+  emit('created', task)
+}
 </script>
 
 <template>
@@ -155,16 +161,21 @@ const statusColor = { done: 'success', failed: 'error', waiting_input: 'warning'
           <div><strong>{{ file.name }}</strong>
             <span class="muted"> · {{ (file.size / 1024).toFixed(1) }} KB{{ file.upload ? ` · ${uploadLabel[file.upload.status] || file.upload.status}` : '' }}</span>
             <p v-if="file.note" class="muted">{{ file.note }}</p>
+            <p v-if="!file.exists" class="muted">本地副本已不在磁盘，历史登记和发送记录保留。</p>
             <ErrorNote v-if="file.upload?.error" title="发送到 QQ 失败" :error="file.upload.error" />
           </div>
-          <v-btn size="small" variant="outlined" :loading="download.busy.value" @click="save(file)">下载</v-btn>
+          <v-btn size="small" variant="outlined" :disabled="!file.exists" :loading="download.busy.value" @click="save(file)">下载</v-btn>
         </li>
       </ul>
     </section>
 
     <TaskEvents :scene="scene" :task-id="id" :first="detail.data.value.events" :first-next="detail.data.value.next_after" :timezone="settings?.timezone" />
     <TaskMore :scene="scene" :task="task" :files="detail.data.value.files" :service="service" :operator="operator" @changed="detail.reload(); emit('changed')" />
-    <ResourceBrowser v-if="service.configured" :scene="scene" :task-id="id" :operator="operator" @changed="detail.reload(); emit('changed')" />
+    <ResourceTaskDraft v-if="service.configured" :scene="scene" :operator="operator" @dirty="value => resourceDirty = value" @created="created">
+      <template #default="{ select }">
+        <ResourceBrowser :scene="scene" :task-id="id" :operator="operator" @select="select" @changed="detail.reload(); emit('changed')" />
+      </template>
+    </ResourceTaskDraft>
   </div>
 </template>
 

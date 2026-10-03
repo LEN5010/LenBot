@@ -2,22 +2,32 @@
 import { computed, ref, watch } from 'vue'
 import { tasksApi } from '../../api/tasks.js'
 import { materialsApi } from '../../api/materials.js'
+import { resourceLabel } from '../../resourceLabels.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify } from '../../store.js'
 import ErrorNote from '../../components/ErrorNote.vue'
 
-const props = defineProps({ scene: { type: String, required: true }, operator: { type: String, required: true } })
+const props = defineProps({ scene: { type: String, required: true }, operator: { type: String, required: true },
+  initialResources: { type: Array, default: () => [] } })
 const emit = defineEmits(['dirty', 'created', 'close'])
 const goal = ref(''), deliverable = ref(''), context = ref(''), materials = ref([]), accountBrowser = ref(false)
+const resources = ref(props.initialResources.map(item => ({ reference: { ...item.reference }, name: item.name })))
 const shared = useResource(() => materialsApi.list(props.scene))
 const files = computed(() => (shared.data.value?.files || []).map(file => ({ title: file.name, value: file.name })))
-const dirty = computed(() => Boolean(goal.value || deliverable.value || context.value || materials.value.length || accountBrowser.value))
+const dirty = computed(() => Boolean(goal.value || deliverable.value || context.value || materials.value.length || resources.value.length || accountBrowser.value))
+const inputProblem = computed(() => {
+  const names = [...materials.value, ...resources.value.map(item => item.name)]
+  if (names.length > 16) return '每项任务最多选择 16 份资料。'
+  if (names.some(name => !name.trim() || name.length > 240 || /[/\\\0\r\n]/.test(name))) return '输入文件名须为 1–240 字符，不包含目录分隔符或换行。'
+  if (new Set(names).size !== names.length) return '资料文件名重复，请修改输入文件名或移除重复选择。'
+  return ''
+})
 watch(dirty, value => emit('dirty', value), { immediate: true })
 const validQQ = computed(() => /^[1-9][0-9]*$/.test(props.operator))
 const create = useAction()
 async function submit() {
   const result = await create.run(() => tasksApi.delegate(props.scene, { requester: props.operator, goal: goal.value, deliverable: deliverable.value, context: context.value,
-      account_browser: accountBrowser.value, materials: materials.value }))
+      account_browser: accountBrowser.value, materials: materials.value, resources: resources.value }))
   if (!result) return
   notify('任务已排队')
   emit('created', result)
@@ -38,17 +48,28 @@ function close() {
       <v-select v-model="materials" :items="files" multiple chips closable-chips label="给任务的资料（可不选）"
         hint="从本群的共享资料里选，任务里只能读不能改" persistent-hint :loading="shared.loading.value" />
       <ErrorNote v-if="shared.error.value" title="读取共享资料失败" :error="shared.error.value" />
+      <section v-if="resources.length" class="resource-inputs">
+        <h3>从资源页选取的资料</h3>
+        <div v-for="(item, index) in resources" :key="index" class="resource-input">
+          <p class="muted">{{ resourceLabel(item.reference) }}</p>
+          <div class="input-name"><v-text-field v-model="item.name" label="任务中的输入文件名" density="compact" hide-details />
+            <v-btn size="small" variant="text" @click="resources.splice(index, 1)">移除</v-btn></div>
+        </div>
+        <p class="muted">创建时复制为本任务的只读快照，来源之后修改或删除不影响本任务。</p>
+      </section>
+      <p v-if="inputProblem" class="problem">{{ inputProblem }}</p>
       <v-checkbox v-model="accountBrowser" label="使用账号浏览器（需要主人本人发起）" hide-details />
       <p v-if="!validQQ" class="problem">先在上方填写你的 QQ</p>
       <ErrorNote v-if="create.error.value" title="没有创建成功" :error="create.error.value" />
-      <p v-if="create.error.value && materials.length" class="muted">选了资料时，任务可能已经建好了，请先看看任务列表再决定要不要重新提交。</p>
+      <p v-if="create.error.value && (materials.length || resources.length)" class="muted">选了资料时，任务可能已经建好了，请先看看任务列表再决定要不要重新提交。</p>
     </v-card-text>
     <v-card-actions><v-spacer /><v-btn :disabled="create.busy.value" @click="close">取消</v-btn>
-      <v-btn color="primary" :loading="create.busy.value" :disabled="!validQQ || !goal.trim() || !deliverable.trim()" @click="submit">开始</v-btn></v-card-actions>
+      <v-btn color="primary" :loading="create.busy.value" :disabled="!validQQ || !goal.trim() || !deliverable.trim() || Boolean(inputProblem)" @click="submit">开始</v-btn></v-card-actions>
   </v-card>
 </template>
 
 <style scoped>
 .form{display:grid;gap:14px}
 .problem{color:var(--error-text);margin:0}
+.resource-inputs{display:grid;gap:12px}.resource-input p{margin:0 0 6px;overflow-wrap:anywhere}.input-name{display:flex;align-items:center;gap:8px}
 </style>

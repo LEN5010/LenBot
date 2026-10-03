@@ -425,6 +425,22 @@ class TaskStore:
         ).fetchone()
         return None if row is None else {"created": row["created"], **json.loads(row["body"])}
 
+    def input_sources(self, scene: str, task_id: int) -> dict[str, dict]:
+        rows = self.db.execute("SELECT body FROM task_events WHERE scene=? AND task_id=? AND kind='material_inputs' ORDER BY id",
+                               (scene, task_id))
+        return {item['name']: item for row in rows for item in json.loads(row['body'])['files']}
+
+    def file_sources(self, scene: str, task_id: int) -> dict[int, dict | None]:
+        rows = self.db.execute("SELECT json_extract(body,'$.id'),json_extract(body,'$.source') FROM task_events "
+                               "WHERE scene=? AND task_id=? AND kind='file' ORDER BY id", (scene, task_id))
+        return {row[0]: None if row[1] is None else json.loads(row[1]) for row in rows}
+
+    def file_deletions(self, scene: str, task_id: int) -> dict[int, dict]:
+        return {row['file_id']: {'created': row['created'], 'requester': row['requester']}
+                for row in self.db.execute("SELECT created,json_extract(body,'$.file_id') AS file_id,"
+                    "json_extract(body,'$.requester') AS requester FROM task_events "
+                    "WHERE scene=? AND task_id=? AND kind='file_deleted' ORDER BY id", (scene, task_id))}
+
     def start_egress_connection(self, scene: str, task_id: int, body: dict) -> int:
         return self.add_event(scene, task_id, "egress_connection", body)
 

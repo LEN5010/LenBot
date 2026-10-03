@@ -76,7 +76,7 @@ const accepting = computed(() => state.data.value?.configured && state.data.valu
       </section>
       <div class="detail">
         <TaskDetail v-if="selected" :key="selected" :id="selected" :scene="scene" :operator="operator" :version="version"
-          :service="state.data.value" :settings="settings" @dirty="value => detailDirty = value" @changed="list.reload()" />
+          :service="state.data.value" :settings="settings" @dirty="value => detailDirty = value" @changed="list.reload()" @created="created" />
         <p v-else class="surface muted">选择一个任务查看详情</p>
       </div>
     </div>
