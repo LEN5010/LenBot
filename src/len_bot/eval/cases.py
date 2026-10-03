@@ -9,7 +9,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from len_bot.next.config import EpochSeconds
+from len_bot.next.config_types import EpochSeconds
 from len_bot.next.messages import parse_message
 
 

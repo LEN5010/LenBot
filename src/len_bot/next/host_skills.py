@@ -11,7 +11,8 @@ from typing import Annotated, Literal
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field, model_validator
 
-from .config import HostConfig, STRICT, load_host_config
+from .config import HostConfig, load_host_config
+from .config_types import STRICT
 from .host_capabilities import skill_info
 from .network import NetworkRuntime
 from .persona import load_persona

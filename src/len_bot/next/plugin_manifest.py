@@ -10,7 +10,8 @@ from urllib.parse import quote, quote_plus
 
 from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, JsonValue,
                       TypeAdapter, ValidationError, create_model, field_validator, model_validator)
-from .config import PLUGIN_NAME, PLUGIN_RESERVED, HostConfig
+from .plugin_config import PLUGIN_NAME, PLUGIN_RESERVED
+from .config import HostConfig
 from .plugin import INTERFACE
 from .skills import Skill, load_catalog, load_plugin_skills
 from .store import encode

@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 
-from .config import STRICT
+from .config_types import STRICT
 from .memory_local import LocalMemory
 from .network import NetworkRuntime
 from .recall import RecallArguments, message_page

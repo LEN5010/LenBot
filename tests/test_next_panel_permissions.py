@@ -6,7 +6,8 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from len_bot.next.config import OneBotForward, load_config
+from len_bot.next.onebot_config import OneBotForward
+from len_bot.next.config import load_config
 from len_bot.next.panel import create_app
 from len_bot.next.store import Store
 from len_bot.web.auth import create_session, hash_password, revoke_session

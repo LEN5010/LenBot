@@ -15,7 +15,8 @@ from pydantic import BaseModel, field_validator
 import yaml
 
 from .chat_tools import build_tools, tool_catalog, tool_unavailable_reasons
-from .config import STRICT, load_host_config
+from .config_types import STRICT
+from .config import load_host_config
 from .discovery import DEFERRED_NAMES
 from .network import NetworkRuntime
 from .persona import load_persona, select_examples

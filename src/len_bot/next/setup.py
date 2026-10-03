@@ -18,7 +18,9 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 import uvicorn
 import yaml
 
-from .config import Binding, HostConfig, OneBotSettings, Provider
+from .models_config import Binding, Provider
+from .config import HostConfig
+from .onebot_config import OneBotSettings
 from .persona import Persona, load_persona
 from len_bot.web.auth import hash_password
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from .config import Proactive, QuietHours
+from .chat_config import Proactive, QuietHours
 from .quiet import local_period, next_local_start, quiet_period
 from .reply_effect_store import ReplyEffectStore
 

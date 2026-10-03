@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from len_bot.next.asr_model import ASRBinding, ASRProtocolError, AudioSettings, parse_transcription
 from len_bot.next.audio import TranscribeArguments, parse_record
-from len_bot.next.config import Models
+from len_bot.next.models_config import Models
 
 
 def wav_bytes():

@@ -13,7 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .identity import roles_for
 
-from .config import LabConfig, ScheduleSettings
+from .config import LabConfig
+from .chat_config import ScheduleSettings
 from .schedule_time import Cron, next_cron, parse_cron
 from .schedule_store import Schedule, ScheduleStore
 

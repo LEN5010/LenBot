@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, field_validator, model_validator
 
-from .config import STRICT
+from .config_types import STRICT
 from .network import NetworkRuntime
 from .sticker_store import StickerStore
 

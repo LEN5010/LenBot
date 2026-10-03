@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
-from .config import STRICT
+from .config_types import STRICT
 from .network import NetworkRuntime
 from .task_files import file_info
 from .tasks_store import TERMINAL, TaskStore

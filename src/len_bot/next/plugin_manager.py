@@ -8,7 +8,8 @@ from pathlib import Path
 import shutil
 
 from .chat_tools import tool_catalog
-from .config import HostConfig, PluginSettings
+from .config import HostConfig
+from .plugin_config import PluginSettings
 from .host_settings import _prepare, _read_saved
 from .network import NetworkRuntime
 from .plugin_host import PluginHost
