@@ -8,9 +8,8 @@ from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from string import Template
-from zoneinfo import ZoneInfo
 
-from .chat_context import PROMPTS, build_system
+from .chat_context import PROMPTS, build_system, turn_state
 from .chat_tools import build_tools
 from .config import HostConfig, load_host_config
 from .instance_lock import instance_lock
@@ -19,9 +18,7 @@ from .discovery import DEFERRED_NAMES
 from .memory import LocalMemoryConfig
 from .memory_local import scene_overview
 from .persona import Persona, load_persona
-from .schedule import describe
 from .store import FORMAT_VERSION, Store, encode
-from .schedule_store import ScheduleStore
 
 
 def _binding(config: HostConfig) -> tuple[str, str, str]:
@@ -47,14 +44,7 @@ def _status(store: Store, scene: str) -> None:
 
 def _state(store: Store, config: HostConfig, scene: str, persona: Persona) -> dict:
     local = config.scene_config(scene)
-    now = datetime.now(ZoneInfo(config.timezone)).isoformat(timespec="seconds")
-    content = f"当前时间：{now}"
-    schedules = ScheduleStore(store).list_schedules(scene, limit=21)
-    if schedules:
-        content += "\n<未完成安排>\n" + "\n\n".join(
-            describe(item, preview=True) for item in schedules[:20]) + "\n</未完成安排>"
-        if len(schedules) > 20:
-            content += "\n这里只列前 20 条；schedule_list 可继续查看。"
+    expression = None
     if local.voice_mode == "direct":
         variants = [style for style in persona.styles if style.weight > 0]
         if variants:
@@ -63,8 +53,7 @@ def _state(store: Store, config: HostConfig, scene: str, persona: Persona) -> di
                 (template.substitute(name=style.name, note="" if style.note is None else style.note)
                  for style in variants), key=lambda text: len(text.encode("utf-8")),
             )
-            content += "\n" + expression
-    return {"role": "user", "content": content}
+    return turn_state(local, store, now=datetime.now(UTC).timestamp(), expression_style=expression)
 
 
 def _check_budget(store: Store, config: HostConfig, scene: str, persona: Persona,

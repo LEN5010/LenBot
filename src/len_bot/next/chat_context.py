@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from string import Template
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from .audio_store import AudioStore
@@ -22,16 +24,41 @@ from .tasks_store import TaskStore
 from .schedule_store import ScheduleStore
 
 
+if TYPE_CHECKING:
+    from .chat_tools import SayArguments
+
+
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
 
 
-def voice_prompt(persona: Persona, *, platform: bool) -> str:
-    return Template((PROMPTS / "next_voice.md").read_text()).substitute(
-        name=persona.name, brief=persona.brief,
-        outlet=(PROMPTS / ("next_platform_outlet.md" if platform else "next_simulated_outlet.md")).read_text().strip(),
-        self_reference="、".join(persona.self_reference), voice=persona.voice,
+def character_material(config: LabConfig, persona: Persona) -> str:
+    scene_details = {}
+    if config.persona_aliases:
+        scene_details["本场景对你的称呼"] = config.persona_aliases
+    if config.relationships:
+        scene_details["关系说明（QQ → 描述）"] = dict(sorted(config.relationships.items()))
+    if config.behavior_addendum is not None:
+        scene_details["本场景行为补充"] = config.behavior_addendum
+    scene_material = (Template((PROMPTS / "next_scene_persona.md").read_text()).substitute(
+        details=encode(scene_details)) if scene_details else "")
+    return Template((PROMPTS / "next_character.md").read_text()).substitute(
+        brief=persona.brief, self_reference="、".join(persona.self_reference),
+        aliases="、".join(persona.aliases), behavior=persona.behavior, voice=persona.voice,
         boundaries=persona.boundaries,
         examples="\n\n".join(f"{e.context}\n台词：{e.line}" for e in select_examples(persona)),
+        scene_material=scene_material,
+    )
+
+
+def expression_principles(persona: Persona) -> str:
+    return Template((PROMPTS / "next_expression_principles.md").read_text()).substitute(name=persona.name)
+
+
+def voice_prompt(config: LabConfig, persona: Persona, *, platform: bool) -> str:
+    return Template((PROMPTS / "next_voice.md").read_text()).substitute(
+        name=persona.name, scene=config.scene, character=character_material(config, persona),
+        expression_principles=expression_principles(persona),
+        outlet=(PROMPTS / ("next_platform_outlet.md" if platform else "next_simulated_outlet.md")).read_text().strip(),
     )
 
 
@@ -42,28 +69,14 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
     names = {tool["function"]["name"] for tool in allowed}
     deferred = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES] + list(external)
     mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
-    expression_mode = Template((PROMPTS / mode).read_text()).substitute(
-        voice=persona.voice,
-        examples="\n\n".join(f"{e.context}\n台词：{e.line}" for e in select_examples(persona)))
     system = Template((PROMPTS / "next_mind.md").read_text()).substitute(
         name=persona.name, scene=config.scene, bot_qq=config.bot_qq,
-        brief=persona.brief, self_reference="、".join(persona.self_reference),
-        aliases="、".join(persona.aliases), behavior=persona.behavior,
-        boundaries=persona.boundaries, expression_mode=expression_mode,
+        character=character_material(config, persona), expression_mode=(PROMPTS / mode).read_text(),
+        response_choice=Template((PROMPTS / "next_response_choice.md").read_text()).substitute(name=persona.name),
+        expression_principles=expression_principles(persona),
         outlet=(PROMPTS / ("next_platform_outlet.md" if platform else
                            "next_simulated_outlet.md")).read_text().strip(),
     )
-    scene_details = {}
-    if config.persona_aliases:
-        scene_details["本场景对你的称呼"] = config.persona_aliases
-    if config.relationships:
-        scene_details["关系说明（QQ → 描述）"] = dict(sorted(config.relationships.items()))
-    if config.behavior_addendum is not None:
-        scene_details["本场景行为补充"] = config.behavior_addendum
-    if scene_details:
-        system += "\n" + Template((PROMPTS / "next_scene_persona.md").read_text()).substitute(
-            details=encode(scene_details),
-        )
     if group_profile is not None:
         system += "\n" + Template((PROMPTS / "next_group_profile.md").read_text()).substitute(
             profile=group_profile.strip())
@@ -143,6 +156,7 @@ def turn_state(config: LabConfig, store: Store, *, now: float,
     jargon = jargon_context(config, store, store.recent_context_messages(config.scene))
     if jargon is not None:
         state["content"] += "\n" + jargon
+    state["content"] = Template((PROMPTS / "next_turn_state.md").read_text()).substitute(state=state["content"])
     return state
 
 
@@ -153,6 +167,7 @@ class ChatContext:
                  platform: bool, memory: MemoryService | None):
         self.config, self.persona, self.store = config, persona, store
         self.platform, self.memory = platform, memory
+        self.voice_system = voice_prompt(config, persona, platform=platform)
         self.system: str
         self._base_system: str
 
@@ -167,6 +182,31 @@ class ChatContext:
             return self._base_system
         return self._base_system + "\n" + Template((PROMPTS / "next_group_profile.md").read_text()).substitute(
             profile=profile.strip())
+
+    def voice_messages(self, arguments: SayArguments, *, quote: ChatMessage | None,
+                       expression_style: str | None, selected: Sequence[dict]) -> list[dict]:
+        recent = self.store.recent_context_messages(self.config.scene)
+        messages = [{"role": "system", "content": self.voice_system},
+                    {"role": "user", "content": "<群聊对话稿>\n"
+                     + "\n".join(self.render(message) for message in recent) + "\n</群聊对话稿>"}]
+        if expression_style is not None:
+            messages.append({"role": "user", "content": expression_style})
+        jargon = jargon_context(self.config, self.store, recent + ([] if quote is None else [quote]),
+                                intent=arguments.content)
+        if jargon is not None:
+            messages.append({"role": "user", "content": jargon})
+        if selected:
+            messages.append({"role": "user", "content": Template(
+                (PROMPTS / "next_learned_expressions.md").read_text(),
+            ).substitute(expressions=encode([
+                {"情境": item["situation"], "说法": item["style"]} for item in selected
+            ]))})
+        messages.append({"role": "user", "content": encode({
+            "本轮表达意图与必要背景": arguments.content, "详略倾向": arguments.length,
+            "引用的实际原话": None if quote is None else self.render(quote),
+            "平台已负责提及的QQ": arguments.mention,
+        })})
+        return messages
 
     def render(self, message: ChatMessage) -> str:
         quote = (None if message.reply_to is None else

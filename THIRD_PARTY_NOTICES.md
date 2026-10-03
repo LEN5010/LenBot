@@ -22,6 +22,10 @@ LenBot 原创代码采用 AGPL-3.0-only。第三方依赖和独立服务保留�
 
 源码引用、独立服务使用和直接复制代码不是同一件事。这里没有把研究仓库的整个 LICENSE 当成已完成全部来源核对；实际复制片段和随包第三方材料仍需发布前逐项确认。用户个人角色、知识、聊天及插件内容不随通用框架默认发布，也不因根许可证自动获得再分发许可。
 
+## 表达提示选段
+
+`next_response_choice.md` 与 `next_expression_principles.md` 使用维护者提供的「智脑 Z（10.1）」与「NVWA Cosmos TT」预设选段，并做角色称呼及群聊语境的字面替换；实际位置、采用段落与替换清单见[表达材料来源](developer/expression-materials.md)。这些选段不标成 LenBot 原创文本。提供的预设顶层没有独立许可证字段，仓库不为其推定或改写许可；发行资料需按实际取得的授权保留相应来源和许可说明。完整预设、研究原件与其中脚本未打入宿主。
+
 ## 面板实际随包的资料
 
 - 面板使用锁定的 `@mdi/js` 7.4.47 SVG 图标及 Vuetify 的 `mdi-svg` 图标集，不安装或分发 `@mdi/font` 字体。保留该包原 `LICENSE`（Pictogrammers Free License，分别说明图标的 Apache 2.0 和代码的 MIT 许可），不将整个图标包改称 MIT 或 AGPL。

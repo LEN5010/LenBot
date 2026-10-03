@@ -27,6 +27,7 @@ QQ 聊天还需一个 OneBot v11 服务；可先在面板试聊。Docker、OpenV
 | 角色、任务资料、数据升级与记忆迁移 | [使用与离线维护](deploy/current/operations.md) |
 | 本地语音转写／原生记忆分类 | [ASR](deploy/current/asr.md)／[记忆模板](deploy/current/memory-templates.md) |
 | 源码职责、开发与打包 | [开发指南](CONTRIBUTING.md) |
+| 群聊表达材料与原文采用 | [表达材料来源](developer/expression-materials.md) |
 | 工程约束／第三方来源 | [AGENTS.md](AGENTS.md)／[第三方材料](THIRD_PARTY_NOTICES.md) |
 
 维护者的设计、计划和运行记录在本机 `docs/`，不随 Git 或发行包发布。
