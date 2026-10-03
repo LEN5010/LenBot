@@ -4,6 +4,8 @@
 
 ## 安装成品（macOS／Linux）
 
+平台部署包包含 wheel 和[安装入口](../package/README.md)：解压后 `./install.sh install "$HOME/lenbot"`，再用生成的 `run` 完成首次向导；安装不启动业务。版本化程序、原生服务与停机升级也由该入口说明。下文保留单独 wheel 的手工安装方式。
+
 取得 `len_bot-0.1.0-py3-none-any.whl` 后，在一个新目录按根 [README](../../README.md#开始使用) 安装。wheel 已带面板，不运行 npm，不复制维护者的 `personas/`、配置或业务库。uv 可准备 Python 3.13；普通聊天不安装 Docker、OpenViking 或 ASR。
 
 从实例目录执行 `.venv/bin/len-bot`，打开终端打印的首次配置链接。填实际模型地址、名称、上下文窗口及凭据；向导创建新的角色包，不依赖私人角色。建议先选模拟发送。尚未准备 OneBot 时可选反向 WebSocket，只在本机等待连接，再到面板试聊；它不会自己登录 QQ。
