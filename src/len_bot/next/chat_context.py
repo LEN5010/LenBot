@@ -68,10 +68,9 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
     """Render the actual stable mind system text for this scene and outlet."""
     names = {tool["function"]["name"] for tool in allowed}
     deferred = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES] + list(external)
-    mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
     system = Template((PROMPTS / "next_mind.md").read_text()).substitute(
         name=persona.name, scene=config.scene, bot_qq=config.bot_qq,
-        character=character_material(config, persona), expression_mode=(PROMPTS / mode).read_text(),
+        character=character_material(config, persona),
         response_choice=Template((PROMPTS / "next_response_choice.md").read_text()).substitute(name=persona.name),
         expression_principles=expression_principles(persona),
         outlet=(PROMPTS / ("next_platform_outlet.md" if platform else

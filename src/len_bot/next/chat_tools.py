@@ -165,9 +165,17 @@ def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[
     if names & DEFERRED_NAMES and "tool_search" not in names:
         raise ValueError("角色开放低频工具时必须同时开放 tool_search")
     emotions = sorted({value for sticker in persona.stickers.values() for value in sticker.emotions})
-    return [{**tool, "function": {**tool["function"], "description": tool["function"]["description"]
-                 + " 当前角色情绪标签：" + encode(emotions)}}
-            if tool["function"]["name"] == "react" else tool for tool in allowed]
+    for index, tool in enumerate(allowed):
+        function = tool["function"]
+        if function["name"] == "say":
+            parameters = SayArguments.model_json_schema()
+            mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
+            parameters["properties"]["content"]["description"] = (PROMPTS / mode).read_text().strip()
+            allowed[index] = {**tool, "function": {**function, "parameters": parameters}}
+        elif function["name"] == "react":
+            allowed[index] = {**tool, "function": {**function, "description": function["description"]
+                              + " 当前角色情绪标签：" + encode(emotions)}}
+    return allowed
 
 
 class SceneTools:
