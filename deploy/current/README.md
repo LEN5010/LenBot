@@ -39,6 +39,8 @@ docker compose -f deploy/current/services.compose.yaml up -d
 
 只用聊天不要求 Docker、OpenViking 或 ASR；只启动根配置实际采用的服务。停止时先 Ctrl-C 停 Bot、再停 ASR，最后 `docker compose -f deploy/current/services.compose.yaml stop`，不删除服务卷。
 
+本机源码实例在配套服务就绪后，可双击 `deploy/current/start.command`，或在实例根执行 `.venv/bin/len-bot`。启动入口只运行现有环境，不安装、不迁移、不覆盖配置；终端 Ctrl-C 停止 Bot。
+
 | 服务 | 本机部署入口 | 私有数据／配置 |
 |---|---|---|
 | LenBot 面板 | 根 `panel`；本机为 `http://127.0.0.1:11307` | `lenbot.config.json` |
@@ -67,11 +69,12 @@ docker compose -f deploy/current/services.compose.yaml up -d
 - 本地语音转写安装只见[ASR说明](asr.md)。
 - 外部服务使用自身配置，不能覆盖LenBot根运行参数。示例Compose不会自动重启服务；用户自行选择是否启用。
 
-首次构建原生记忆镜像时，把固定提交 `a09a9d20a8e07d08973aee177802d00e08df29e6` 的OpenViking源码放入独立目录：
+首次构建原生记忆镜像时，把固定提交 `a09a9d20a8e07d08973aee177802d00e08df29e6` 的 OpenViking 源码放入独立目录，应用[完整遗忘扩展](memory-forget.md)后构建 Compose 使用的标签：
 
 ```sh
+git -C /path/to/openviking-source apply "$PWD/deploy/current/openviking-forget.patch"
 docker build -f "$PWD/deploy/current/Dockerfile.openviking" \
-  -t lenbot-openviking:a09a9d2 /path/to/openviking-source
+  -t lenbot-openviking:memory-forget /path/to/openviking-source
 docker compose -f deploy/current/services.compose.yaml up -d embeddings
 docker exec lenbot-embeddings ollama pull bge-m3:567m
 ```
