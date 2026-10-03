@@ -76,10 +76,10 @@ class PluginManager:
             raise ValueError(f'根配置没有插件 {name}，请先配置并启用')
         await self.apply(name, saved)
 
-    async def install(self, url: str) -> dict:
+    async def install(self, url: str, *, ref: str | None = None) -> dict:
         saved = await asyncio.to_thread(_read_saved, self.root)
         directory, manifest, output = await self.installer.install(
-            url, [] if saved.plugins is None else saved.plugins.paths)
+            url, [] if saved.plugins is None else saved.plugins.paths, ref=ref)
         name = manifest.name
 
         def register(source: dict, previous: HostConfig) -> None:
@@ -106,9 +106,10 @@ class PluginManager:
                 source['plugins']['disabled'].remove(name)
             saved = await self.save(enable)
             await self.apply(name, saved)
-        return {'name': name, 'directory': str(directory), 'needs_config': needs_config, 'output': output.strip()}
+        return {'name': name, 'directory': str(directory), 'needs_config': needs_config, 'output': output.strip(),
+                'source': await self.installer.details(name)}
 
-    async def update(self, name: str) -> dict:
+    async def update(self, name: str, *, ref: str | None = None) -> dict:
         self.installer.managed_path(name)
         if self.runtime.plugins is not None and name in self.runtime.plugins.plugins:
             try:
@@ -116,14 +117,15 @@ class PluginManager:
             finally:
                 self.runtime.refresh_external_tools()
         try:
-            manifest, output = await self.installer.update(name)
+            manifest, output = await self.installer.update(name, ref=ref)
         except Exception as error:
             if self.runtime.plugins is not None and name in self.runtime.plugins.plugins:
                 record = self.runtime.plugins.plugins[name]
                 record.status, record.error = 'failed', self.runtime.plugins.report_error(name, '更新', error)
             raise
         await self.reload(name)
-        return {'name': name, 'version': manifest.version, 'output': output}
+        return {'name': name, 'version': manifest.version, 'output': output,
+                'source': await self.installer.details(name)}
 
     async def uninstall(self, name: str) -> None:
         self.installer.managed_path(name)

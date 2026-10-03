@@ -6,16 +6,19 @@ import asyncio
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+import httpx
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from .plugin_config import PLUGIN_NAME, PLUGIN_RESERVED
+from .plugin_config import PLUGIN_NAME, PLUGIN_RESERVED, PluginCatalogSettings
+from .plugin_catalog import CatalogView, PluginCatalog
 from .config import HostConfig, _read_root
 from .host_settings import _body, _read_saved
 from .network import NetworkRuntime
 from .plugin_manifest import ConfigField, ConfigItem, Manifest, discover, read_manifest, redact_values
 from .plugin_manager import PluginManager
-from .plugin_install import repository_url
+from .plugin_install import repository_url, revision_ref
 from .plugin_store import PluginStore
 
 
@@ -47,8 +50,17 @@ class PluginPaths(BaseModel):
     data_directory: str = Field(min_length=1)
 
 
-class PluginInstall(BaseModel):
+class PluginVersion(BaseModel):
     model_config = STRICT
+    ref: str | None = None
+
+    @field_validator('ref')
+    @classmethod
+    def selected_ref(cls, value: str | None) -> str | None:
+        return None if value is None else revision_ref(value)
+
+
+class PluginInstall(PluginVersion):
     url: str
 
     @field_validator('url')
@@ -106,6 +118,7 @@ def _manifest(saved: HostConfig, name: str) -> Manifest:
 def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, running: HostConfig,
                           user: Callable[[Request], str], write_lock: asyncio.Lock) -> None:
     manager = PluginManager(root, runtime, running, write_lock)
+    catalog = PluginCatalog()
 
     def require_name(name: str) -> None:
         if PLUGIN_NAME.fullmatch(name) is None or name in PLUGIN_RESERVED:
@@ -150,7 +163,42 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
                         else runtime.plugins.state())
         for item in plugin_state["plugins"]:
             item["model_calls"] = PluginStore(runtime.store).plugin_calls(item["name"])
-        return await asyncio.to_thread(state, plugin_state)
+        result = await asyncio.to_thread(state, plugin_state)
+        for name, entries in result['available'].items():
+            for entry in entries:
+                entry['source'] = None
+                if entry['managed']:
+                    try:
+                        entry['source'] = await manager.installer.details(name)
+                    except (ValueError, OSError, RuntimeError) as error:
+                        entry['error'] = f"{entry['error'] or ''}\n{type(error).__name__}: {error}".strip()
+        return result
+
+    @app.get('/api/host/plugin-catalog', response_model=CatalogView)
+    async def read_catalog(_: str = Depends(user)):
+        try:
+            saved = await asyncio.to_thread(_read_saved, root)
+            return catalog.view(saved.plugin_catalog)
+        except (ValueError, OSError) as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.put('/api/host/plugin-catalog', response_model=CatalogView)
+    async def choose_catalog(request: Request, _: str = Depends(user)):
+        change = await _body(request, PluginCatalogSettings)
+        try:
+            candidate = await manager.save(lambda source, _: source.update(plugin_catalog=change.model_dump()))
+            running.plugin_catalog = candidate.plugin_catalog
+            return catalog.view(candidate.plugin_catalog)
+        except (ValueError, OSError) as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.post('/api/host/plugin-catalog/refresh', response_model=CatalogView)
+    async def refresh_catalog(_: str = Depends(user)):
+        try:
+            saved = await asyncio.to_thread(_read_saved, root)
+            return await catalog.refresh(saved.plugin_catalog)
+        except (ValueError, OSError, httpx.HTTPError, httpx.InvalidURL) as error:
+            raise HTTPException(502, str(error)) from error
 
     async def save(edit: Callable[[dict, HostConfig], None], names: Sequence[str] = ()) -> dict:
         async with manager.lock:
@@ -175,7 +223,7 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
     @app.post('/api/host/plugins/install')
     async def install(request: Request, _: str = Depends(user)):
         change = await _body(request, PluginInstall)
-        return await operate(lambda: manager.install(change.url))
+        return await operate(lambda: manager.install(change.url, ref=change.ref))
 
     @app.post('/api/host/plugins/{name}/reload')
     async def reload(name: str, _: str = Depends(user)):
@@ -183,9 +231,10 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
         return await operate(lambda: manager.reload(name))
 
     @app.post('/api/host/plugins/{name}/update')
-    async def update(name: str, _: str = Depends(user)):
+    async def update(name: str, request: Request, _: str = Depends(user)):
         require_name(name)
-        return await operate(lambda: manager.update(name))
+        change = await _body(request, PluginVersion)
+        return await operate(lambda: manager.update(name, ref=change.ref))
 
     @app.delete('/api/host/plugins/{name}')
     async def uninstall(name: str, _: str = Depends(user)):

@@ -9,4 +9,4 @@
 "scenes": {"group:10001": {"plugins": ["clock"]}}
 ```
 
-由旧 `local_plugins/local_clock` 迁来。旧版的读取工具没有迁移，因为每次大脑请求已经带当前时间；旧版由插件内 Agent 组织的时间简报也没有迁移。
+也可在「能力 → 插件」打开 clock、保存配置并选择启用场景。`show_seconds` 默认开启；关闭后时间精确到分钟。无需模型或工作容器。

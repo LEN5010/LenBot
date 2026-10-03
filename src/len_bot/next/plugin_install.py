@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import asyncio
 from importlib.metadata import distributions
+import json
 from pathlib import Path
 import shutil
 import sys
 import tempfile
 from urllib.parse import urlsplit
+
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from .plugin_manifest import Manifest, discover, parse_manifest, read_manifest
 
@@ -40,6 +43,33 @@ def repository_url(value: str) -> str:
     return value
 
 
+def revision_ref(value: str) -> str:
+    if not value.strip() or value.startswith(('-', '+')) or any(char in value for char in (':', '\x00', '\r', '\n')):
+        raise ValueError('ref 使用分支、标签或提交，不使用 Git 选项或 refspec')
+    return value
+
+
+class InstallSelection(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    ref: str | None
+
+    @field_validator('ref')
+    @classmethod
+    def selected_ref(cls, value: str | None) -> str | None:
+        return None if value is None else revision_ref(value)
+
+
+def read_selection(directory: Path) -> InstallSelection:
+    path = directory / '.git' / 'lenbot-install.json'
+    if not path.exists():
+        return InstallSelection(ref=None)
+    raw = path.read_text(encoding='utf-8')
+    try:
+        return InstallSelection.model_validate_json(raw)
+    except ValidationError as error:
+        raise ValueError(f'插件安装定位解析失败：{path}: {error}；原文：{raw[:300]!r}') from error
+
+
 class PluginInstaller:
     def __init__(self, root: Path):
         self.root = root
@@ -62,7 +92,21 @@ class PluginInstaller:
             return await run_command('uv', 'pip', 'install', '--python', sys.executable,
                                      '--constraints', str(constraints), '--', *manifest.dependencies)
 
-    async def install(self, url: str, paths: list[Path]) -> tuple[Path, Manifest, str]:
+    async def checkout_ref(self, path: Path, ref: str) -> str:
+        revision_ref(ref)
+        await run_command('git', 'check-ref-format', '--allow-onelevel', ref)
+        output = await run_command('git', 'fetch', '--no-tags', 'origin', ref, cwd=path)
+        output += '\n' + await run_command('git', 'checkout', '--detach', 'FETCH_HEAD', cwd=path)
+        return output.strip()
+
+    async def details(self, name: str) -> dict:
+        path = self.managed_path(name)
+        return {'ref': read_selection(path).ref,
+                'revision': await run_command('git', 'rev-parse', 'HEAD', cwd=path),
+                'branch': await run_command('git', 'branch', '--show-current', cwd=path),
+                'repository': await run_command('git', 'remote', 'get-url', 'origin', cwd=path)}
+
+    async def install(self, url: str, paths: list[Path], *, ref: str | None = None) -> tuple[Path, Manifest, str]:
         url = repository_url(url)
         if self.directory.resolve() != self.directory:
             raise ValueError(f'插件安装目录不能穿过目录链接：{self.directory}')
@@ -70,6 +114,8 @@ class PluginInstaller:
         with tempfile.TemporaryDirectory(prefix='.install-', dir=self.directory) as temporary:
             checkout = Path(temporary) / 'checkout'
             output = await run_command('git', 'clone', '--', url, str(checkout))
+            if ref is not None:
+                output += '\n' + await self.checkout_ref(checkout, ref)
             manifest = parse_manifest(checkout / 'plugin.toml')
             found, _ = discover(paths)
             destination = self.directory / manifest.name
@@ -77,14 +123,18 @@ class PluginInstaller:
                 raise ValueError(f'插件 {manifest.name} 已存在，使用更新而不是覆盖安装')
             # Keep a failed dependency installation visible and repairable in the plugin page.
             checkout.rename(destination)
+            (destination / '.git' / 'lenbot-install.json').write_text(json.dumps({'ref': ref}) + '\n', encoding='utf-8')
         return destination, manifest, output.strip()
 
-    async def update(self, name: str) -> tuple[Manifest, str]:
+    async def update(self, name: str, *, ref: str | None = None) -> tuple[Manifest, str]:
         path = self.managed_path(name)
         if await run_command('git', 'status', '--porcelain', '--untracked-files=no', cwd=path):
             raise ValueError(f'插件 {name} 有本地修改，未覆盖；先由维护者处理后再更新')
-        output = await run_command('git', 'pull', '--ff-only', cwd=path)
+        selected = read_selection(path).ref if ref is None else revision_ref(ref)
+        output = (await run_command('git', 'pull', '--ff-only', cwd=path) if selected is None else
+                  await self.checkout_ref(path, selected))
         manifest = read_manifest(path)
+        (path / '.git' / 'lenbot-install.json').write_text(json.dumps({'ref': selected}) + '\n', encoding='utf-8')
         output += '\n' + await self.dependencies(manifest)
         return manifest, output.strip()
 
