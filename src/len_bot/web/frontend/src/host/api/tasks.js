@@ -28,7 +28,6 @@ import { api, queryString } from '../../api.js'
  * @typedef {{task:TaskRecord & {workspace_discard_requested:boolean, active_timeout_seconds:number|null}, events:TaskEventPreview[], network:Object|null, next_after:number, files:RegisteredFile[]}} TaskDetail
  * @typedef {{requester:string, goal:string, deliverable:string, context:string, account_browser:boolean, materials:string[], resources?:import('./resources.js').ResourceInput[]}} DelegateInput
  * @typedef {{action:'append'|'continue'|'answer'|'cancel', id:number, requester:string, text?:string, confirmed?:boolean, question_id?:string}} TaskActionInput
- * @typedef {{requester:string, workspace:string, runtime:string, confirmed:boolean}} DiscardInput
  */
 
 const taskUrl = (scene, id, suffix = '', query = {}) => `/api/host/tasks/${id}${suffix}?${queryString({ scene, ...query })}`
@@ -56,9 +55,6 @@ export const tasksApi = {
 
   /** @param {string} scene @param {number} id */
   storage: (scene, id) => api(taskUrl(scene, id, '/storage')),
-
-  /** @param {string} scene @param {number} id @param {DiscardInput} body */
-  discard: (scene, id, body) => api(taskUrl(scene, id, '/workspace-discard'), { method: 'POST', body: JSON.stringify(body) }),
 
   skills: (scene, id) => api(taskUrl(scene, id, '/skills')),
   sessionUrl: (scene, id) => taskUrl(scene, id, '/session'),

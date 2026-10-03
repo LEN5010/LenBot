@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .sandbox import DockerSandbox, SandboxHandle
 from .task_materials import finish_file_operation
-from .task_storage import discard_task_trees, output_entries
+from .task_storage import clean_temporary_files, discard_task_trees, output_entries
 from .tasks_config import WorkerSettings
 from .tasks_store import Task, TaskFile, TaskStore
 
@@ -107,4 +107,18 @@ class TaskFiles:
                     record_error.add_note(f'Task #{id} environment is discarded; filesystem result={progress!r}')
                     raise
                 original_error.add_note(f'Workspace removal result recording also failed: {type(record_error).__name__}: {record_error}')
+        return progress
+
+    async def clean_temporary(self, item: Task, *, requester: str) -> dict:
+        progress = {'complete': False, 'removed': [], 'absent': [], 'active_root': None,
+                    'removed_file_bytes': 0, 'error': None}
+        try:
+            await finish_file_operation(clean_temporary_files, self.settings, item.scene, item.id, progress)
+        except BaseException as error:
+            progress['error'] = ''.join(traceback.format_exception_only(error)).strip()
+            error.add_note(f'Temporary cleanup partial result: {progress!r}')
+            raise
+        finally:
+            self.records.add_event(item.scene, item.id, 'temporary_cleanup', {'requester': requester, **progress})
+            self.notify(item.scene)
         return progress

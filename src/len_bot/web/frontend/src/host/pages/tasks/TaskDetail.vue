@@ -20,6 +20,7 @@ const emit = defineEmits(['dirty', 'changed', 'created'])
 const detail = useResource(() => tasksApi.detail(props.scene, props.id))
 watch(() => props.version, () => detail.reload())
 const task = computed(() => detail.data.value?.task)
+const resourceVersion = ref(0)
 const at = value => formatTime(value, props.settings?.timezone)
 const validQQ = computed(() => /^[1-9][0-9]*$/.test(props.operator))
 
@@ -170,10 +171,10 @@ function created(task) {
     </section>
 
     <TaskEvents :scene="scene" :task-id="id" :first="detail.data.value.events" :first-next="detail.data.value.next_after" :timezone="settings?.timezone" />
-    <TaskMore :scene="scene" :task="task" :files="detail.data.value.files" :service="service" :operator="operator" @changed="detail.reload(); emit('changed')" />
+    <TaskMore :scene="scene" :task="task" :files="detail.data.value.files" :service="service" :operator="operator" @changed="resourceVersion++; detail.reload(); emit('changed')" />
     <ResourceTaskDraft v-if="service.configured" :scene="scene" :operator="operator" @dirty="value => resourceDirty = value" @created="created">
       <template #default="{ select }">
-        <ResourceBrowser :scene="scene" :task-id="id" :operator="operator" @select="select" @changed="detail.reload(); emit('changed')" />
+        <ResourceBrowser :key="resourceVersion" :scene="scene" :task-id="id" :operator="operator" @select="select" @changed="detail.reload(); emit('changed')" />
       </template>
     </ResourceTaskDraft>
   </div>

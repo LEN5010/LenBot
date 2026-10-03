@@ -5,8 +5,8 @@ import { materialsApi } from '../../api/materials.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify } from '../../store.js'
 import ErrorNote from '../../components/ErrorNote.vue'
-import DevOnly from '../../components/DevOnly.vue'
 import SkillInspector from '../../components/SkillInspector.vue'
+import TaskSpaceCard from '../../components/TaskSpaceCard.vue'
 import { finished } from './taskLabels.js'
 
 const props = defineProps({
@@ -15,7 +15,6 @@ const props = defineProps({
 })
 const emit = defineEmits(['changed'])
 const stopped = computed(() => props.service.configured && finished(props.task.status) && props.task.container === null)
-const validQQ = computed(() => /^[1-9][0-9]*$/.test(props.operator))
 
 // Keep a delivered file in this group's shared materials, so later tasks can be given it.
 const shared = useResource(() => materialsApi.list(props.scene), { immediate: false })
@@ -37,30 +36,11 @@ function chooseKeep(id) {
   keepName.value = props.files.find(file => file.id === id)?.name ?? ''
 }
 
-const storage = useResource(() => tasksApi.storage(props.scene, props.task.id), { immediate: false })
-const rootLabel = { workspace: '工作目录', runtime: '运行目录', deliveries: '交付文件' }
-const size = bytes => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${(bytes / 1024).toFixed(1)} KB`
-
 const skills = useResource(() => tasksApi.skills(props.scene, props.task.id), { immediate: false })
 const inspected = ref(null)
 const inspecting = computed({ get: () => inspected.value !== null, set: value => { if (!value) inspected.value = null } })
 function skillMoved() { inspected.value = null; skills.reload() }
 
-// Discarding removes the workspace and the native session; delivered files and records stay.
-const discard = useAction()
-const canDiscard = computed(() => stopped.value && !props.task.browser_active && !props.task.workspace_discard_requested)
-async function discardEnvironment() {
-  if (!window.confirm('清理这个任务的工作目录和会话？清理后不能再接着做，交付的文件会保留。')) return
-  const result = await discard.run(async () => {
-    const usage = await tasksApi.storage(props.scene, props.task.id)
-    const path = kind => usage.roots.find(root => root.kind === kind).path
-    return tasksApi.discard(props.scene, props.task.id, {
-      requester: props.operator, workspace: path('workspace'), runtime: path('runtime'), confirmed: true })
-  })
-  if (!result) return
-  notify(result.removal.removed.length || result.removal.absent.length ? '已清理' : result.notice)
-  emit('changed')
-}
 </script>
 
 <template>
@@ -84,14 +64,7 @@ async function discardEnvironment() {
           <ErrorNote v-if="keep.error.value" title="没有保存成功" :error="keep.error.value" />
         </div>
 
-        <div v-if="service.configured" class="block">
-          <h3>占用空间 <v-btn size="small" variant="text" :loading="storage.loading.value" @click="storage.reload()">查看</v-btn></h3>
-          <ErrorNote v-if="storage.error.value" title="读取占用空间失败" :error="storage.error.value" />
-          <ul v-if="storage.data.value" class="plain">
-            <li v-for="root in storage.data.value.roots" :key="root.kind">{{ rootLabel[root.kind] || root.kind }}：{{ root.exists ? size(root.usage.file_bytes) : '已清理' }}
-              <DevOnly><span class="muted"> {{ root.path }}</span></DevOnly></li>
-          </ul>
-        </div>
+        <TaskSpaceCard v-if="service.configured" :scene="scene" :task-id="task.id" :operator="operator" @changed="emit('changed')" />
 
         <div v-if="stopped" class="block">
           <h3>任务自己写的技能 <v-btn size="small" variant="text" :loading="skills.loading.value" @click="skills.reload()">查看</v-btn></h3>
@@ -104,14 +77,6 @@ async function discardEnvironment() {
           </ul>
         </div>
 
-        <div v-if="canDiscard" class="block">
-          <h3>清理任务环境</h3>
-          <p class="muted">删除工作目录和会话，释放空间。之后不能再接着做，交付的文件和记录会保留。</p>
-          <v-btn variant="outlined" color="error" :disabled="!validQQ" :loading="discard.busy.value" @click="discardEnvironment">清理</v-btn>
-          <p v-if="!validQQ" class="muted">填写上方你的 QQ 后才能清理。</p>
-          <ErrorNote v-if="discard.error.value" title="没有清理成功" :error="discard.error.value" />
-        </div>
-        <p v-else-if="task.workspace_discard_requested" class="muted">任务环境已清理。</p>
       </v-expansion-panel-text>
     </v-expansion-panel>
   </v-expansion-panels>
