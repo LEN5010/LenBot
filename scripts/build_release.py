@@ -26,6 +26,7 @@ REQUIRED_SOURCE = (
     'scripts/collect_frontend_licenses.cjs', 'deploy/current/README.md',
     'deploy/current/lenbot.service', 'deploy/current/Dockerfile', 'deploy/current/memory-templates.md',
     'deploy/current/docker.md', 'deploy/current/host.compose.yaml', 'deploy/current/host.tasks.compose.yaml',
+    'deploy/current/first-setup.example.json',
     'deploy/current/services.compose.yaml', 'deploy/current/Dockerfile.openviking',
     'deploy/current/start-asr.sh', 'deploy/current/asr.md',
     'deploy/current/memory-forget.md', 'deploy/current/openviking-forget.patch',

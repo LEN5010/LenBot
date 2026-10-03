@@ -15,7 +15,28 @@ docker volume create lenbot-data
 docker volume create lenbot-python-r1
 ```
 
-首次实例通过已安装 wheel 的向导创建，向导保存后退出。停机将这份**新实例**的配置和角色导入卷；数据库已有内容时按离线升级处理，不用初始化命令覆盖：
+### 直接初始化新卷
+
+不必在主机先装 Python 或 wheel。复制包中的 `first-setup.example.json` 为本机 `first-setup.json`，限制文件权限，再人工填写实际 QQ／群号、模型地址／名称／窗口、密钥、角色与面板账户：
+
+```sh
+cp /path/to/release/deploy/current/first-setup.example.json ./first-setup.json
+chmod 600 first-setup.json
+# 编辑 first-setup.json 后，在新卷内离线生成根配置及角色：
+docker compose -f host.compose.yaml run --rm --no-deps -T \
+  --entrypoint /opt/lenbot/.venv/bin/python lenbot \
+  -m len_bot.next.initialize < first-setup.json
+```
+
+此命令只解析初始化资料并生成卷内的 `lenbot.config.json` 和新角色，不监听端口、不调用模型、不连接 QQ。根配置或同名角色目录已存在时直接报错，不覆盖旧实例。输入 JSON 是首次配置资料，不是运行参数；后续启动不再读取它，填过的文件含明文凭据，按本机凭据文件管理。
+
+Docker 示例使用 `panel_host: "0.0.0.0"` 和 `panel_port: 11307`，这两个值写入唯一根配置；Compose 只发布到主机回环。默认 direct 模式下填写同一 mind／voice 绑定，启用 voice 模式时分别填写。模型、OneBot、记忆等地址按容器网络填写，容器内 `127.0.0.1` 不是 Docker 主机。
+
+示例反向 OneBot 监听 8080；基础配方没有替你公开该端口。让 OneBot 加入同一容器网络并连接 `ws://lenbot:8080`，或按实际桥接环境添加端口映射。示例监听与模拟发送配置不会替你登录 QQ，也不自动获得真实群连接。
+
+### 导入已通过向导准备的新实例
+
+仍可在主机用 wheel 向导创建后导入。先按容器位置调整新实例的根配置：
 
 ```sh
 tar -C /absolute/path/to/new-instance -cf - lenbot.config.json personas | \
@@ -24,7 +45,7 @@ tar -C /absolute/path/to/new-instance -cf - lenbot.config.json personas | \
     --entrypoint tar lenbot-current:local --no-same-owner -xf - -C /srv/lenbot
 ```
 
-导入前，根配置路径按容器位置填写，`panel.host` 为 `0.0.0.0`、`panel.port` 为 `11307`；面板端口只发布到主机回环。模型、OneBot、记忆等地址按容器网络填写，容器内 `127.0.0.1` 不是 Docker 主机。只有这份配置决定实际连接和发送方式。
+这条导入路径只用于新卷。已有业务数据按离线升级维护，不用初始化资料覆盖。
 
 普通聊天不用 Docker socket 或任务目录：
 
