@@ -112,8 +112,11 @@ def main() -> None:
     run(uv, 'pip', 'install', '--python', python, '--requirement',
         str(release / 'requirements.txt'), str(release / wheel.name))
     if args.action == 'upgrade':
-        for module in ('migrate', 'migrate_memory_jobs', 'plugin_dependencies'):
-            run(python, '-m', 'len_bot.next.' + module, cwd=instance)
+        if (instance / 'lenbot.config.json').exists():
+            for module in ('migrate', 'migrate_memory_jobs', 'plugin_dependencies'):
+                run(python, '-m', 'len_bot.next.' + module, cwd=instance)
+        else:
+            print('实例尚无根配置，仅升级程序；首次配置留到明确运行时创建。')
     # Do not switch a currently running instance, including one started during installation.
     run(python, '-c', '''from pathlib import Path
 import os

@@ -496,6 +496,9 @@ def main() -> None:
                 raise ValueError(f'Trial database must not be a symbolic link: {path}')
             locks.enter_context(instance_lock(path.parent))
         for path in [config.database, *trials]:
+            if not path.exists():
+                print(f"No database at configured path; nothing created or migrated: {path}")
+                continue
             with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
                 app, version = _format(db)
             if app == APPLICATION_ID and version == FORMAT_VERSION:

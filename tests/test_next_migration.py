@@ -1929,3 +1929,29 @@ def test_format31_audio_cost_migration_preserves_actual_exchanges(tmp_path):
         assert original.execute('SELECT * FROM audio_calls').fetchall()==before
         actual=[tuple(row) for row in store.db.execute('SELECT * FROM audio_calls')]
         assert actual==[row+(None,) for row in before]
+
+
+def test_migration_command_for_initialized_but_unstarted_instance(tmp_path):
+    import subprocess
+    import sys
+    from len_bot.next.config import load_host_config
+    from len_bot.next.setup import FirstSetup, initialize
+
+    sample = Path(__file__).resolve().parents[1] / 'deploy/current/first-setup.example.json'
+    initialize(tmp_path, FirstSetup.model_validate_json(sample.read_bytes()))
+    config = load_host_config(tmp_path)
+    config_bytes = (tmp_path / 'lenbot.config.json').read_bytes()
+    result = subprocess.run([sys.executable, '-m', 'len_bot.next.migrate'], cwd=tmp_path,
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert 'nothing created or migrated' in result.stdout
+    assert not config.database.exists()
+    assert (tmp_path / 'lenbot.config.json').read_bytes() == config_bytes
+
+    config.database.parent.mkdir(parents=True)
+    config.database.write_bytes(b'not an sqlite database; preserve this input')
+    broken = subprocess.run([sys.executable, '-m', 'len_bot.next.migrate'], cwd=tmp_path,
+                            capture_output=True, text=True)
+    assert broken.returncode != 0
+    assert 'file is not a database' in broken.stderr
+    assert config.database.read_bytes() == b'not an sqlite database; preserve this input'
