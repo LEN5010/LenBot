@@ -1,7 +1,10 @@
 <script setup>
 // Sticky save bar for a page-sized form that is saved in one go.
+import { nextTick } from 'vue'
+import { openRestart } from '../restart.js'
 import ErrorNote from './ErrorNote.vue'
-defineProps({
+const props = defineProps({
+  onSave: { type: Function, required: true },
   dirty: { type: Boolean, required: true },
   saving: { type: Boolean, default: false },
   error: { type: [Object, String], default: null },
@@ -9,6 +12,11 @@ defineProps({
   label: { type: String, default: '保存' },
 })
 defineEmits(['discard'])
+async function saveRestart() {
+  await props.onSave()
+  await nextTick()
+  if (!props.error && !props.dirty) await openRestart()
+}
 </script>
 <template>
   <div class="save-bar" :class="{ show: dirty || error }">
@@ -16,6 +24,7 @@ defineEmits(['discard'])
     <div class="save-row">
       <span :class="{ problem }">{{ problem || (dirty ? '有未保存的修改' : '') }}</span>
       <v-btn variant="text" :disabled="!dirty || saving" @click="$emit('discard')">放弃修改</v-btn>
+      <v-btn type="button" variant="tonal" :disabled="!dirty || saving || Boolean(problem)" @click="saveRestart">保存并重启</v-btn>
       <v-btn type="submit" color="primary" :loading="saving" :disabled="!dirty || Boolean(problem)">{{ label }}</v-btn>
     </div>
   </div>
@@ -23,7 +32,7 @@ defineEmits(['discard'])
 <style scoped>
 .save-bar{position:sticky;bottom:0;z-index:2;display:none;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 16px;box-shadow:0 -4px 16px rgba(23,43,70,.08)}
 .save-bar.show{display:grid}
-.save-row{display:flex;align-items:center;justify-content:flex-end;gap:8px}
+.save-row{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .save-row span{margin-right:auto;color:var(--muted)}
 .save-row span.problem{color:var(--error-text)}
 </style>

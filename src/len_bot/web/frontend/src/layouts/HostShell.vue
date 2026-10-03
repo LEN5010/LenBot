@@ -10,6 +10,8 @@ import { runtimeLabel, sectionLabel } from '../host/labels.js'
 import { sceneName } from '../api.js'
 import { hostAreas, hostTarget } from '../router/hostNavigation.js'
 import ErrorNote from '../host/components/ErrorNote.vue'
+import RestartDialog from '../host/components/RestartDialog.vue'
+import { restartFlow, openRestart } from '../host/restart.js'
 import markUrl from '../assets/lenbot-mark.svg'
 
 const route = useRoute(), router = useRouter(), { mobile } = useDisplay()
@@ -71,6 +73,7 @@ async function exit() {
     <v-btn v-if="mobile" :icon="mdiMenu" variant="text" aria-label="打开导航" @click="drawer = true" />
     <v-app-bar-title><span class="host-bar-title">{{ area?.title || route.meta.title }}</span></v-app-bar-title>
     <v-chip v-if="host.state?.delivery === 'simulated'" size="small" variant="tonal" color="secondary" class="mr-2">模拟发送</v-chip>
+    <v-btn variant="text" size="small" :disabled="restartFlow.waiting" @click="openRestart">重启</v-btn>
     <span class="host-status" :class="{ ok: status.ok }"><span class="dot" />{{ status.text }}</span>
   </v-app-bar>
   <v-main tag="div">
@@ -78,11 +81,13 @@ async function exit() {
       <ErrorNote v-if="logoutError" title="退出登录失败" :error="logoutError" class="mb-4" />
       <v-alert v-if="restartItems.length" type="info" variant="tonal" class="mb-4" role="status">
         这些修改已保存，重启 LenBot 后生效：{{ restartItems.join('、') }}
+        <v-btn size="small" variant="text" :disabled="restartFlow.waiting" @click="openRestart">重启应用</v-btn>
       </v-alert>
       <ErrorNote v-if="host.restart?.error" title="无法确认哪些修改需要重启" :error="host.restart.error" class="mb-4" />
-      <slot />
+      <slot v-if="!restartFlow.waiting" />
     </main>
   </v-main>
+  <RestartDialog />
   <v-snackbar v-model="toast" :timeout="3000" location="bottom">{{ host.toast }}</v-snackbar>
 </template>
 

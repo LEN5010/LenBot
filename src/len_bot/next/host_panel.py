@@ -24,6 +24,8 @@ from .host_trials import HostTrials, register_host_trials
 from .host_browser import register_host_browser
 from .host_permissions import register_host_permissions
 from .host_settings import register_host_settings
+from .host_lifecycle import HostLifecycle
+from .host_restart import register_host_restart
 from .host_operations import register_host_operations
 from .host_memory import register_host_memory
 from .host_tasks import register_host_tasks
@@ -40,7 +42,7 @@ from .network import NetworkRuntime
 from .panel_auth import changes_socket, install_panel_auth
 
 
-def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> FastAPI:
+def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifecycle: HostLifecycle | None = None) -> FastAPI:
     if config.panel is None:
         raise ValueError("Multi-scene host panel requires panel configuration in lenbot.config.json")
 
@@ -69,6 +71,9 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
         trials.notify()
 
     user = install_panel_auth(app, config.panel, on_logout=logged_out)
+    register_host_restart(app, root=root, running=config, runtime=runtime, trials=trials,
+                          lifecycle=HostLifecycle() if lifecycle is None else lifecycle,
+                          user=user, write_lock=write_lock)
     register_host_operations(app, runtime=runtime, user=user)
     register_host_trials(app, trials, user)
     register_host_browser(app, root=root, runtime=runtime, user=user, write_lock=write_lock)

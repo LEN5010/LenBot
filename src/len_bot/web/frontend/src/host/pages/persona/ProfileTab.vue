@@ -77,7 +77,7 @@ const draftFiles = () => api(`${base.value}/draft`, { method: 'POST',
         <StylesEditor v-model="draft.styles" />
       </section>
       <ExamplesEditor v-model:examples="draft.examples" v-model:tags="draft.example_tags" />
-      <SaveBar :dirty="dirty" :saving="save.busy.value" :error="save.error.value" :problem="problem" @discard="discard" />
+      <SaveBar :on-save="submit" :dirty="dirty" :saving="save.busy.value" :error="save.error.value" :problem="problem" @discard="discard" />
     </form>
     <DraftTrial :scene="scene" :disabled="Boolean(problem)" :draft="draftFiles" />
   </template>
