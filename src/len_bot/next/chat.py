@@ -233,6 +233,7 @@ class Chat:
                     self.check_limits()
                     messages = await self.prepare_context(turn_id, expression_style=expression_style, recalled=recalled)
                     reply = await self.request(turn_id, "mind", messages, self.toolset.tools)
+                    end_turn, group_failed = False, False
                     for call in reply.tool_calls:
                         if call.name == "memory":
                             # A tool may have edited or removed the recalled file, even if
@@ -243,6 +244,7 @@ class Chat:
                                 turn_id, call, wait_for_messages, expression_style=expression_style, direct=self.direct_request,
                             )
                         except Exception as error:
+                            group_failed = True
                             failed_tools += 1
                             self.store.complete_tool(scene, call.id, f"{call.name} 失败：{type(error).__name__}: {error}")
                             if isinstance(error, LimitReached):
@@ -255,14 +257,17 @@ class Chat:
                                     call.id, expression, turn_id=turn_id, channels=self.turn_channels,
                                 )
                                 expressions.append(content)
-                                if delivery_status not in {"sent", "simulated"}:
+                                if delivery_status in {"sent", "simulated"}:
+                                    end_turn = end_turn or expression.end_turn
+                                else:
+                                    group_failed = True
                                     failed_tools += 1
                         self.notify()
                     if step + 1 < self.config.max_steps and extensions < self.config.attention.max_extensions:
                         if await append_new(bool(reply.tool_calls), turn_id):
                             extensions += 1
                             continue
-                    if not reply.tool_calls:
+                    if not reply.tool_calls or (end_turn and not group_failed):
                         status = "settled"
                         break
         except asyncio.CancelledError:

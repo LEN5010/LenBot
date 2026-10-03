@@ -113,7 +113,7 @@ class ChatExpression:
         if arguments.reply_to is not None:
             segments.append(Segment("reply", {"id": arguments.reply_to}))
         segments.append(Segment("image", {"summary": summary}))
-        return Expression(self.simulated_message(segments, reply_to=arguments.reply_to), sticker)
+        return Expression(self.simulated_message(segments, reply_to=arguments.reply_to), sticker, end_turn=arguments.end_turn)
 
     async def deliver_expression(self, call_id: str, expression: Expression, *,
                                  turn_id: str, channels: set[str]) -> tuple[str, str]:

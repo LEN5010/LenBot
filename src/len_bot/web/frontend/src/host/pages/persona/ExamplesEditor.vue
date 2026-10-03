@@ -1,5 +1,5 @@
 <script setup>
-// Hand-written sample lines. Up to eight go to the model: the first eight, or the ones with the chosen tags.
+// Operator-managed scenario/line references: the first eight, or up to eight with selected tags.
 import { computed, watch } from 'vue'
 import { mdiArrowUp, mdiClose, mdiPlus } from '@mdi/js'
 
@@ -19,7 +19,7 @@ function up(index) {
 <template>
   <section class="surface examples">
     <h2>样例</h2>
-    <p class="muted">写几句它在某种场合会说的话，模型会照着这个感觉说。</p>
+    <p class="muted">保留具体情境和对应说法，可以从已有记录选原句。这些是表达参考，不是本群已经发生的事。</p>
     <v-select v-if="available.length" v-model="tags" :items="available" label="只给它看带这些标签的样例" multiple chips closable-chips
       hint="不选就用前 8 条；选了就用带这些标签的，最多 8 条" persistent-hint />
     <p v-if="!examples.length" class="muted">还没有样例。</p>
