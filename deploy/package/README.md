@@ -66,3 +66,9 @@ macOS 另有 `start.command`／`stop.command`／`restart.command`，注册服务
 ## 可选能力
 
 QQ、任务镜像、双记忆、账号浏览和 ASR 的安装见 [deploy/current](deploy/current/README.md)。普通聊天不要求全装，Docker 宿主另用 [Docker 配方](deploy/current/docker.md)。本包生成不代表镜像已上传或版本已公开发布。
+
+## 已核对范围
+
+macOS 本机已从成品包完成全新安装、launchd 注册不启动、显式启停、服务重启和面板重启；独立合成实例经过停机备份、版本环境升级、插件恢复与 current 切换后可重新启动，配置、人工角色、停用插件源码和独立数据保持。该次数据库已是格式 36，未把无须转换的升级宣称为新迁移验证。
+
+Linux ARM64 已完成非 root 新安装及模板生成，原生 systemd 启停和完整升级仍待核对。以上操作没有连接真实 QQ，也不证明全平台模型／记忆／浏览器功能通过。
