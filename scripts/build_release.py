@@ -13,10 +13,14 @@ import tarfile
 import time
 import zipfile
 
+from build_deployment import build_deployments
+
 
 REQUIRED_SOURCE = (
     'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md', 'uv.lock', '.dockerignore',
-    'scripts/install.sh', 'scripts/build_release.py', 'scripts/collect_python_licenses.py',
+    'scripts/install.sh', 'scripts/build_release.py', 'scripts/build_deployment.py',
+    'deploy/package/install.sh', 'deploy/package/install.py', 'deploy/package/README.md',
+    'scripts/collect_python_licenses.py',
     'scripts/collect_frontend_licenses.cjs', 'deploy/current/README.md',
     'deploy/current/lenbot.service', 'deploy/current/Dockerfile', 'deploy/current/memory-templates.md',
     'deploy/current/docker.md', 'deploy/current/host.compose.yaml', 'deploy/current/host.tasks.compose.yaml',
@@ -205,6 +209,8 @@ def build(project: Path, output: Path, *, offline: bool, npm_cache: Path | None)
         artifacts.mkdir()
         run('packages', ['uv', 'build', *options, '--out-dir', str(artifacts)], stage)
         report['artifacts'] = inspect_packages(artifacts, stage)
+        report['artifacts']['deployment_bundles'] = [str(path) for path in
+            build_deployments(Path(report['artifacts']['wheel']), stage, artifacts)]
         report['finished'] = time.time()
     except BaseException as error:
         report['error'] = f'{type(error).__name__}: {error}'
