@@ -8,6 +8,7 @@ import ErrorNote from '../../components/ErrorNote.vue'
 import DevOnly from '../../components/DevOnly.vue'
 import TaskEvents from './TaskEvents.vue'
 import TaskMore from './TaskMore.vue'
+import ResourceBrowser from '../../components/ResourceBrowser.vue'
 import { finished, taskStatus } from './taskLabels.js'
 
 const props = defineProps({
@@ -163,6 +164,7 @@ const statusColor = { done: 'success', failed: 'error', waiting_input: 'warning'
 
     <TaskEvents :scene="scene" :task-id="id" :first="detail.data.value.events" :first-next="detail.data.value.next_after" :timezone="settings?.timezone" />
     <TaskMore :scene="scene" :task="task" :files="detail.data.value.files" :service="service" :operator="operator" @changed="detail.reload(); emit('changed')" />
+    <ResourceBrowser v-if="service.configured" :scene="scene" :task-id="id" :operator="operator" @changed="detail.reload(); emit('changed')" />
   </div>
 </template>
 

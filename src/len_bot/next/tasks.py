@@ -12,6 +12,7 @@ from pathlib import Path
 from string import Template
 import traceback
 from typing import Literal, TYPE_CHECKING
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .config import HostConfig
@@ -27,6 +28,7 @@ from .skills import Skill
 from .store import Store
 from .task_execution import TaskExecution
 from .task_files import TaskFiles, file_info
+from .task_resources import ResourceFileRef, TaskResources
 from .task_browser import TaskBrowser
 from .tasks_store import TERMINAL, Task, TaskStore
 from .worker_model import Limits
@@ -70,6 +72,7 @@ class WorkTasks:
             command_timeout_seconds=settings.command_timeout_seconds,
         ))
         self.files = TaskFiles(settings, self.records, self.sandbox, self._notify)
+        self.resources = TaskResources(settings, self.records)
         self.task_browser = TaskBrowser(config, self.records, self.browser)
         self.running: dict[int, TaskExecution] = {}
         self.file_changes = asyncio.Lock()
@@ -162,6 +165,28 @@ class WorkTasks:
                       path: str, offset: int, limit: int) -> dict:
         item = self._inspect_task(scene, id, requester)
         return await self.files.outputs(item, path=path, offset=offset, limit=limit)
+
+    async def register_resource(self, scene: str, reference: ResourceFileRef, *,
+                                requester: str, name: str, note: str) -> dict:
+        if reference.scope != 'workspace':
+            raise ValueError('从任务工作区选择需要登记的成果；已有交付可直接使用')
+        async with self.file_changes:
+            item = self._inspect_task(scene, reference.task_id, requester)
+            destination = self.settings.delivery_root / scene / str(item.id)
+            destination.mkdir(parents=True, exist_ok=True)
+            target = destination / uuid4().hex
+            try:
+                opened = self.resources.open(scene, reference)
+                size = await finish_file_operation(self.resources.copy_opened, opened, target)
+                file = self.records.add_file(scene, item.id, name=name, path=str(target), size=size, note=note)
+            except BaseException:
+                target.unlink(missing_ok=True)
+                raise
+            result = file_info(file, self.records)
+            self.records.add_event(scene, item.id, 'file',
+                                   {**result, 'source': reference.model_dump(), 'requester': requester})
+            self._notify(scene)
+            return result
 
     def _event_result(self, item: Task, value: dict) -> dict:
         content = Template((PROMPTS / 'next_task_history.md').read_text()).substitute(
