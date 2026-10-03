@@ -43,13 +43,16 @@ class RSSBroadcast(Plugin):
         key = f"{ctx.scene}/{subscription['name']}"
         seen = await ctx.get_kv(key, [])
         new = [(title, link) for title, link in items if link not in seen][:subscription["limit"]]
-        if not new:
-            return
-        text = subscription["name"] + "\n" + "\n\n".join(f"{title}\n{link}" for title, link in new)
-        sent = await ctx.reply(text)
-        if sent.status not in {"sent", "simulated"}:
-            raise RuntimeError(sent.report)
-        await ctx.set_kv(key, list(dict.fromkeys([link for _, link in new] + seen))[:100])
+        if new:
+            text = subscription["name"] + "\n" + "\n\n".join(f"{title}\n{link}" for title, link in new)
+            sent = await ctx.reply(text)
+            if sent.status not in {"sent", "simulated"}:
+                raise RuntimeError(sent.report)
+        links = {link for _, link in items}
+        history = list(dict.fromkeys([link for _, link in new] + seen))
+        retained = [link for index, link in enumerate(history) if index < 100 or link in links]
+        if retained != seen:
+            await ctx.set_kv(key, retained)
 
     @command("订阅播报", "直接播报本群订阅的新条目，可指定订阅名称，不调用模型")
     async def publish_now(self, ctx: Invocation, args: str) -> None:
