@@ -4,6 +4,10 @@ import asyncio
 import pytest
 
 from len_bot.next.memory.local import LocalMemory, LocalMemorySettings
+from len_bot.next.memory.jobs import MemoryJobs
+from len_bot.next.memory.service import LocalMemoryConfig, MemoryService
+from len_bot.next.platform.messages import parse_message
+from len_bot.next.storage.store import Store
 
 
 def test_pending_files_do_not_take_automatic_search_slots(tmp_path):
@@ -95,4 +99,40 @@ def test_offline_reindex_clears_derived_summaries_and_preserves_history(tmp_path
             assert (await backend.read(scene, 'events/meeting.md')).content == '周五活动取消，读书会改到周六。'
             await backend.write_summary(scene, '', '周六读书会', '读书会改到周六。')
             assert backend.summary_text_sync(scene) == '读书会改到周六。'
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(('texts', 'content'), [
+    (['之前说的读书会在哪里？', '对，就是那个'], '周五读书会在图书馆二楼。'),
+    (['Where does the BOOK CLUB meet?', 'The one on Friday'], 'The book club meets in the library.'),
+    (['聚餐'], '周五聚餐在二楼。'),
+    (['聚餐', '哪里'], '周五聚餐在二楼。'),
+    (['聚餐', '对，就是那个'], '周五聚餐在二楼。'),
+    (['之前说的读书会在哪里？', '好'], '周五读书会在图书馆二楼。'),
+])
+def test_text_only_automatic_recall_uses_chat_topics_without_message_metadata(tmp_path, texts, content):
+    async def run():
+        settings = LocalMemoryConfig(backend='local', local=LocalMemorySettings(directory=tmp_path / 'memory'),
+                                     recall_limit=1)
+        with Store(tmp_path / 'chat.db') as store, MemoryJobs(tmp_path / 'memory.db') as jobs:
+            backend = LocalMemory(settings.local)
+            service = MemoryService(settings, backend, jobs=jobs, store=store, active_personas={})
+            scene = 'group:80001'
+            await service.write(scene, 'events/meeting.md', content, '记录已确认活动地点')
+            await backend.write(scene, 'legacy-import/meeting.md', content, '待确认材料')
+            await backend.write('group:80002', 'events/other.md', content, '其他场景资料')
+            await backend.write(scene, 'events/common.md', '大家好。', '日常问候')
+            await backend.write(scene, 'events/metadata.md', '群友 90001 2026-10-03 20:40:00 UTC', '身份资料')
+            messages = [parse_message({
+                'post_type': 'message', 'message_type': 'group', 'group_id': 80001, 'user_id': 90001,
+                'self_id': 70001, 'message_id': index, 'time': 1791060000,
+                'sender': {'nickname': '群友', 'role': 'member'},
+                'message': [{'type': 'text', 'data': {'text': text}}]}, own_message_ids=set())
+                for index, text in enumerate(texts, 1)]
+            result = await service.recall(scene, messages)
+            assert result['query'] == '\n'.join(texts)
+            assert [item['path'] for item in result['items']] == ['events/meeting.md']
+            assert result['content_chars'] <= result['budget_chars']
+            # Explicit search retains its complete literal query, without automatic expansion.
+            assert await service.search(scene, '读书会在哪里？ BOOK CLUB meet?', 5) == []
     asyncio.run(run())
