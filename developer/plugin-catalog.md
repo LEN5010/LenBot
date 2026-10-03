@@ -1,6 +1,6 @@
 # 静态插件目录
 
-目录帮助用户发现用途和安装位置；插件接口、配置与实际运行能力仍来自安装后的 `plugin.toml`。默认目录随宿主打包，内容见 [plugin_catalog.json](../src/len_bot/next/plugin_catalog.json)。
+目录帮助用户发现用途和安装位置；插件接口、配置与实际运行能力仍来自安装后的 `plugin.toml`。默认目录随宿主打包，内容见 [plugin_catalog.json](../src/len_bot/next/plugins/plugin_catalog.json)。
 
 ## 使用
 

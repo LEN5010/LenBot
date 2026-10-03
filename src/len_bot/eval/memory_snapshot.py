@@ -12,8 +12,8 @@ import sqlite3
 
 from .cases import InitialMemory
 from ..next.config import LabConfig
-from ..next.memory import LocalMemoryConfig
-from ..next.memory_jobs import FORMAT_VERSION
+from ..next.memory.service import LocalMemoryConfig
+from ..next.memory.jobs import FORMAT_VERSION
 
 
 def offline_database(path: Path, application: int, version: int) -> sqlite3.Connection:

@@ -7,8 +7,8 @@ from mcp import types
 from pydantic import ValidationError
 
 from len_bot.next.config import load_host_config
-from len_bot.next.mcp_config import MCPService
-from len_bot.next.mcp_host import MCPToolError, text_result
+from len_bot.next.configuration.mcp import MCPService
+from len_bot.next.tools.mcp_host import MCPToolError, text_result
 
 
 def config(tmp_path, services):

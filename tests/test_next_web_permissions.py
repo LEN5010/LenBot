@@ -4,13 +4,13 @@ import json
 
 import pytest
 
-from len_bot.next.chat import Chat
-from len_bot.next.chat_config import WebReadSettings
+from len_bot.next.chat.session import Chat
+from len_bot.next.configuration.chat import WebReadSettings
 from len_bot.next.config import load_config
-from len_bot.next.model import ChatModel, ToolCall
-from len_bot.next.persona import load_persona
-from len_bot.next.store import Store, WebPage
-from len_bot.next.web_read import WebReadArguments, execute_web_read
+from len_bot.next.models.client import ChatModel, ToolCall
+from len_bot.next.persona.profile import load_persona
+from len_bot.next.storage.store import Store, WebPage
+from len_bot.next.tools.web_read import WebReadArguments, execute_web_read
 
 
 def _page(content: str) -> WebPage:

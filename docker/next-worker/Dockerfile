@@ -27,9 +27,9 @@ RUN groupadd --gid 10000 agent \
     && mkdir -p /workspace /run/lenbot \
     && chown 10000:10000 /workspace /run/lenbot
 
-COPY src/len_bot/next/worker_bridge.py /opt/lenbot/worker_bridge.py
-COPY src/len_bot/next/egress_wire.py /opt/lenbot/egress_wire.py
-COPY src/len_bot/next/worker_egress_bridge.py /opt/lenbot/worker_egress_bridge.py
+COPY src/len_bot/next/work/worker_bridge.py /opt/lenbot/worker_bridge.py
+COPY src/len_bot/next/work/egress_wire.py /opt/lenbot/egress_wire.py
+COPY src/len_bot/next/work/worker_egress_bridge.py /opt/lenbot/worker_egress_bridge.py
 COPY docker/next-worker/lenbot-extension.ts /opt/lenbot/lenbot-extension.ts
 COPY --chmod=755 docker/next-worker/lenbot-browser.cjs /usr/local/bin/lenbot-browser
 COPY docker/next-worker/browser-files.cjs /opt/lenbot/browser-files.cjs

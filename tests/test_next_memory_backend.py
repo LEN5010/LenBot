@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from len_bot.next.memory_local import LocalMemory, LocalMemorySettings
+from len_bot.next.memory.local import LocalMemory, LocalMemorySettings
 
 
 def test_pending_files_do_not_take_automatic_search_slots(tmp_path):
@@ -36,7 +36,7 @@ def test_pending_material_cannot_enter_directory_summaries(tmp_path):
 
 
 def test_changed_profile_is_not_current_and_empty_summary_can_be_removed(tmp_path):
-    from len_bot.next.memory_local import scene_overview
+    from len_bot.next.memory.local import scene_overview
     async def run():
         backend = LocalMemory(LocalMemorySettings(directory=tmp_path / 'memory'))
         scene = 'group:80001'

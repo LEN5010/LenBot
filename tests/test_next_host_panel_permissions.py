@@ -7,12 +7,12 @@ from pathlib import Path
 import httpx
 
 from len_bot.next.config import load_host_config
-from len_bot.next.host_panel import create_app
-from len_bot.next.messages import parse_message
-from len_bot.next.model import ChatModel
-from len_bot.next.network import NetworkRuntime
-from len_bot.next.persona import load_persona
-from len_bot.next.store import Store
+from len_bot.next.panel.app import create_app
+from len_bot.next.platform.messages import parse_message
+from len_bot.next.models.client import ChatModel
+from len_bot.next.runtime.network import NetworkRuntime
+from len_bot.next.persona.profile import load_persona
+from len_bot.next.storage.store import Store
 from len_bot.web.auth import hash_password
 
 

@@ -6,14 +6,14 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from len_bot.next.chat import Chat
-from len_bot.next.chat_config import ImageSettings
+from len_bot.next.chat.session import Chat
+from len_bot.next.configuration.chat import ImageSettings
 from len_bot.next.config import load_config
-from len_bot.next.images import LookArguments, execute_look
-from len_bot.next.messages import parse_message
-from len_bot.next.model import ChatModel, ToolCall
-from len_bot.next.persona import load_persona
-from len_bot.next.store import ImageAsset, Store
+from len_bot.next.media.images import LookArguments, execute_look
+from len_bot.next.platform.messages import parse_message
+from len_bot.next.models.client import ChatModel, ToolCall
+from len_bot.next.persona.profile import load_persona
+from len_bot.next.storage.store import ImageAsset, Store
 
 
 def _jpeg(color: str) -> bytes:

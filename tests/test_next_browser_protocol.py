@@ -7,7 +7,7 @@ import tempfile
 import pytest
 from pydantic import ValidationError
 
-from len_bot.next.account_browser import AccountBrowser, AccountBrowserSettings, BrowserAction, BrowserRPCError
+from len_bot.next.browser.client import AccountBrowser, AccountBrowserSettings, BrowserAction, BrowserRPCError
 
 
 def test_browser_native_frames():

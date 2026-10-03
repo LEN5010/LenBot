@@ -5,11 +5,11 @@ from decimal import Decimal
 from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
-from len_bot.next.limits import ResourceLimits, ModelBudget, LimitReached, check_speech
-from len_bot.next.model_slots import ModelSlots
-from len_bot.next.messages import ChatMessage,Sender,Segment
-from len_bot.next.store import Store
-from len_bot.next.memory_jobs import MemoryJobs
+from len_bot.next.models.limits import ResourceLimits, ModelBudget, LimitReached, check_speech
+from len_bot.next.models.slots import ModelSlots
+from len_bot.next.platform.messages import ChatMessage,Sender,Segment
+from len_bot.next.storage.store import Store
+from len_bot.next.memory.jobs import MemoryJobs
 
 
 def settings(path, **values):
@@ -119,7 +119,7 @@ def test_trial_budget_uses_explicit_root_and_requires_migrated_sidecar(tmp_path)
     {'message_days':{'nickname':1}},{'message_days':{'group:1':0}},
     {'message_days':{'group:1':True}},{'message_days':{'private:1':'2'}}])
 def test_retention_configuration_rejects_ambiguous_or_unmetered_windows(value):
-    from len_bot.next.retention import RetentionSettings
+    from len_bot.next.runtime.retention import RetentionSettings
     with pytest.raises(ValidationError):
         RetentionSettings.model_validate(value)
 

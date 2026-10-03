@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from len_bot.next.config import load_host_config
-from len_bot.next.plugin_host import BUILTIN, PluginHost, parse_notice, read_manifest
+from len_bot.next.plugins.host import BUILTIN, PluginHost, parse_notice, read_manifest
 
 
 CORE = {"say", "wait", "tool_search"}

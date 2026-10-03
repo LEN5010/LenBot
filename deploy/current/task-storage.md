@@ -11,7 +11,7 @@
 Linux 需要 `e2fsprogs` 和 `util-linux`。选择新的镜像文件和空挂载目录，例如：
 
 ```sh
-.venv/bin/python -m len_bot.next.storage_pool_admin create-ext4 \
+.venv/bin/python -m len_bot.next.maintenance.storage_pool_admin create-ext4 \
   --image /opt/lenbot/instance/state/task-pool.img \
   --mount /opt/lenbot/instance/state/task-pool \
   --size-gib 32 --uid "$(id -u)" --gid "$(id -g)"
@@ -22,7 +22,7 @@ Linux 需要 `e2fsprogs` 和 `util-linux`。选择新的镜像文件和空挂载
 macOS 先用 `diskutil apfs list` 查看实际容器，再添加一个独立的大小写敏感 APFS 卷；下面的容器和目录替换为实际值：
 
 ```sh
-.venv/bin/python -m len_bot.next.storage_pool_admin create-apfs \
+.venv/bin/python -m len_bot.next.maintenance.storage_pool_admin create-apfs \
   --container disk3 --name LenBotTasks \
   --mount /Users/你的用户名/lenbot-instance/state/task-pool \
   --size-gib 32 --uid "$(id -u)" --gid "$(id -g)"
@@ -36,12 +36,12 @@ macOS 先用 `diskutil apfs list` 查看实际容器，再添加一个独立的�
 
 ```sh
 # Linux：使用刚创建并挂载的新池
-.venv/bin/python -m len_bot.next.storage_pool_admin move-ext4 \
+.venv/bin/python -m len_bot.next.maintenance.storage_pool_admin move-ext4 \
   --image /opt/lenbot/instance/state/task-pool.img \
   --mount /opt/lenbot/instance/state/task-pool
 
 # macOS：填写创建结果中的实际卷 UUID
-.venv/bin/python -m len_bot.next.storage_pool_admin move-apfs \
+.venv/bin/python -m len_bot.next.maintenance.storage_pool_admin move-apfs \
   --mount /Users/你的用户名/lenbot-instance/state/task-pool \
   --volume-uuid 创建结果中的UUID
 ```
@@ -64,11 +64,11 @@ APFS 使用 `kind: "apfs"`、`mount` 和创建输出中的真实 `volume_uuid`�
 
 ```sh
 # 只读，可在宿主运行时执行
-.venv/bin/python -m len_bot.next.storage_pool_admin status
+.venv/bin/python -m len_bot.next.maintenance.storage_pool_admin status
 # 停止实例后，挂载已配置但当前未挂载的池
-.venv/bin/python -m len_bot.next.storage_pool_admin mount
+.venv/bin/python -m len_bot.next.maintenance.storage_pool_admin mount
 # 停止实例后，扩展已挂载的 ext4 池
-.venv/bin/python -m len_bot.next.storage_pool_admin grow --size-gib 64
+.venv/bin/python -m len_bot.next.maintenance.storage_pool_admin grow --size-gib 64
 ```
 
 挂载和扩容使用实例锁。扩容只增大镜像和文件系统，不缩小；APFS 使用新建更大 quota 卷后离线移交的路径。池没有挂载或 APFS 没有 quota 时，任务不会转而写入一个不限额的普通目录。
@@ -83,7 +83,7 @@ APFS 使用 `kind: "apfs"`、`mount` 和创建输出中的真实 `volume_uuid`�
 从实例根生成对应的接线材料：
 
 ```sh
-.venv/bin/python -m len_bot.next.storage_pool_admin deployment > task-pool-deployment.json
+.venv/bin/python -m len_bot.next.maintenance.storage_pool_admin deployment > task-pool-deployment.json
 ```
 
 Linux 输出 `fstab_line`、`systemd_dropin` 和 `compose_override`：fstab 使用 `noauto`，systemd 的 `RequiresMountsFor` 在启动实例时拉起所需挂载；drop-in 还开放该池的服务写入路径。[systemd 挂载依赖](https://raw.githubusercontent.com/systemd/systemd/main/man/systemd.unit.xml)。将 drop-in 安装为 `lenbot.service.d/task-pool.conf` 并执行 `systemctl daemon-reload`；原服务启动入口保持。

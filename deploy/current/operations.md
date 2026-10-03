@@ -22,7 +22,7 @@
 
 仓库安装需要宿主可执行 Git 和 uv；普通聊天不依赖 Git。能力页提供静态目录，也接受完整仓库 URL，安装后直接配置并选群；依赖由 uv 按清单安装，与宿主共享环境，冲突会显示原错。未指定 ref 的更新快进当前分支，指定 ref 的更新重新获取所选标签／分支／提交，均不覆盖本地修改，重载会中断该插件自己的在途调用。全局停用保留参数与群选择；卸载移除源码和配置，但保留独立数据，删除数据需另行操作。内置插件随宿主升级，手工目录不由安装器更新或卸载。
 
-重建 Python 环境或采用新的 Docker 发行卷后，从停止的实例根执行 `python -m len_bot.next.plugin_dependencies`（使用目标环境解释器）。它合并已配置插件的依赖，一次解析安装；保留已安装的宿主版本、插件源码、所选 Git ref 与 KV。安装失败直接结束，处理后明确再执行。
+重建 Python 环境或采用新的 Docker 发行卷后，从停止的实例根执行 `python -m len_bot.next.maintenance.plugin_dependencies`（使用目标环境解释器）。它合并已配置插件的依赖，一次解析安装；保留已安装的宿主版本、插件源码、所选 Git ref 与 KV。安装失败直接结束，处理后明确再执行。
 
 ## 任务资料与环境
 
@@ -47,8 +47,8 @@
 停止实例、试聊及相关外部写者，按涉及范围备份配置、业务／记忆库和引用文件。SQLite的WAL也属于数据。从实例根执行：
 
 ```sh
-uv run --no-sync python -m len_bot.next.migrate
-uv run --no-sync python -m len_bot.next.migrate_memory_jobs
+uv run --no-sync python -m len_bot.next.maintenance.migrate
+uv run --no-sync python -m len_bot.next.maintenance.migrate_memory_jobs
 ```
 
 当前业务格式36、记忆处理格式5；已有当前格式不重复转换。35→36 让插件单次生成记录真实场景和插件来源，不再伪造聊天轮，旧调用从原 turn 回填场景并保留原始内容。运行与维护共用 `.lenbot-instance.lock`，占用就停止本次操作；不要删锁文件解锁。启动不会自动迁移数据。

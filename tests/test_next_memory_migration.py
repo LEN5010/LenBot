@@ -9,11 +9,11 @@ import sqlite3
 import pytest
 
 from len_bot.next.config import load_host_config
-from len_bot.next.import_legacy_memory import import_legacy_memory
-from len_bot.next.memory_jobs import FORMAT_VERSION, MemoryJobs
-from len_bot.next.messages import ChatMessage, Sender, Segment
-from len_bot.next.migrate_memory_jobs import migrate_memory_jobs
-from len_bot.next.store import Store
+from len_bot.next.maintenance.import_legacy_memory import import_legacy_memory
+from len_bot.next.memory.jobs import FORMAT_VERSION, MemoryJobs
+from len_bot.next.platform.messages import ChatMessage, Sender, Segment
+from len_bot.next.maintenance.migrate_memory_jobs import migrate_memory_jobs
+from len_bot.next.storage.store import Store
 
 
 APPLICATION_ID = 0x4C424D4A

@@ -6,9 +6,9 @@ from pathlib import Path
 import pytest
 
 from len_bot.next.config import HostConfig
-from len_bot.next.store import Store
-from len_bot.next.tasks import WorkTasks
-from len_bot.next.tasks_tools import execute_tasks
+from len_bot.next.storage.store import Store
+from len_bot.next.work.service import WorkTasks
+from len_bot.next.work.tools import execute_tasks
 
 
 def test_account_task_requires_root_owner_and_new_workspace(tmp_path: Path):

@@ -11,31 +11,31 @@ import uvicorn
 
 from .config import load_host_config
 from .instance_lock import instance_lock
-from .host_lifecycle import HostLifecycle, RESTART_EXIT
-from .operations import host_logging, credentials, redact
-from .chat_context import PROMPTS
-from .chat_tools import build_tools, tool_catalog
-from .host_panel import create_app
-from .model import ChatModel
-from .model_slots import ModelSlots
-from .limits import ModelBudget
-from .memory import open_memory
-from .memory_ingest import open_memory_ingestor
-from .learning import ExpressionLearner
-from .jargon import JargonLearner
-from .sticker_collection import StickerCollector
-from .reply_effects import ReplyEffectTracker
-from .sticker_store import StickerStore
-from .expression_selection import open_expression_service
-from .network import NetworkRuntime
-from .persona import load_persona
-from .plugin_host import PluginHost
-from .mcp_host import MCPHost
-from .store import Store
-from .tasks import WorkTasks
-from .tasks_store import TaskStore
-from .skills import load_catalog, select_skills
-from .plugin_store import PluginStore
+from .runtime.lifecycle import HostLifecycle, RESTART_EXIT
+from .runtime.operations import host_logging, credentials, redact
+from .chat.context import PROMPTS
+from .chat.tools import build_tools, tool_catalog
+from .panel.app import create_app
+from .models.client import ChatModel
+from .models.slots import ModelSlots
+from .models.limits import ModelBudget
+from .memory.service import open_memory
+from .memory.ingest import open_memory_ingestor
+from .learning.expressions import ExpressionLearner
+from .learning.jargon import JargonLearner
+from .learning.sticker_collection import StickerCollector
+from .learning.reply_effects import ReplyEffectTracker
+from .learning.sticker_store import StickerStore
+from .learning.expression_selection import open_expression_service
+from .runtime.network import NetworkRuntime
+from .persona.profile import load_persona
+from .plugins.host import PluginHost
+from .tools.mcp_host import MCPHost
+from .storage.store import Store
+from .work.service import WorkTasks
+from .work.store import TaskStore
+from .tools.skills import load_catalog, select_skills
+from .plugins.store import PluginStore
 
 
 class HostPanelServer(uvicorn.Server):
@@ -98,7 +98,7 @@ async def run_with_panel(runtime: NetworkRuntime, server: HostPanelServer, lifec
 async def run(lifecycle: HostLifecycle) -> None:
     root = Path.cwd()
     if not (root / 'lenbot.config.json').exists():
-        from .setup import run_setup
+        from .panel.setup import run_setup
         await run_setup(root)
         return
     config = load_host_config(root)

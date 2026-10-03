@@ -11,8 +11,8 @@ from datetime import time as WallTime
 import pytest
 from pydantic import ValidationError
 
-from len_bot.next.onebot_config import ONEBOT_SETTINGS, OneBotForward, OneBotReverse
-from len_bot.next.maintenance_config import HistoryImportSettings, PanelSettings
+from len_bot.next.configuration.onebot import ONEBOT_SETTINGS, OneBotForward, OneBotReverse
+from len_bot.next.configuration.maintenance import HistoryImportSettings, PanelSettings
 from len_bot.next.config import (
     HostConfig,
     LabConfig,
@@ -22,10 +22,10 @@ from len_bot.next.config import (
     read_scene_persona,
     save_scene_persona,
 )
-from len_bot.next.learning_config import LearningSettings
-from len_bot.next.chat_config import QuietHours, ScenePersona
-from len_bot.next.persona import load_persona
-from len_bot.next.store import FORMAT_VERSION
+from len_bot.next.configuration.learning import LearningSettings
+from len_bot.next.configuration.chat import QuietHours, ScenePersona
+from len_bot.next.persona.profile import load_persona
+from len_bot.next.storage.store import FORMAT_VERSION
 from len_bot.web.auth import hash_password
 
 
@@ -1292,7 +1292,7 @@ def test_offline_version_upgrade_cli_selects_explicit_multiscene_root(tmp_path):
     shutil.copyfile(fixture, root / "isolated.sqlite3")
 
     completed = subprocess.run(
-        [sys.executable, "-m", "len_bot.next.migrate"], cwd=root,
+        [sys.executable, "-m", "len_bot.next.maintenance.migrate"], cwd=root,
         text=True, capture_output=True, check=False,
     )
 

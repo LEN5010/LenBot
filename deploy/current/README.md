@@ -131,7 +131,7 @@ sudo journalctl -u lenbot -n 100 --no-pager
 
 ## 升级成品
 
-停止实例和试聊，按[离线维护](operations.md#升级与文件锁)备份。用 `uv pip install --python .venv/bin/python /path/to/新版本.whl` 替换程序，重建 Python 环境时先运行 `.venv/bin/python -m len_bot.next.plugin_dependencies` 安装原插件声明依赖；再从同一实例目录用 `.venv/bin/python -m len_bot.next.migrate` 和 `-m len_bot.next.migrate_memory_jobs` 执行该版本要求的离线转换，最后 `.venv/bin/len-bot` 启动。安装不改根配置与角色；任务镜像单独升级，不自动迁移或重启。
+停止实例和试聊，按[离线维护](operations.md#升级与文件锁)备份。用 `uv pip install --python .venv/bin/python /path/to/新版本.whl` 替换程序，重建 Python 环境时先运行 `.venv/bin/python -m len_bot.next.maintenance.plugin_dependencies` 安装原插件声明依赖；再从同一实例目录用 `.venv/bin/python -m len_bot.next.maintenance.migrate` 和 `-m len_bot.next.maintenance.migrate_memory_jobs` 执行该版本要求的离线转换，最后 `.venv/bin/len-bot` 启动。安装不改根配置与角色；任务镜像单独升级，不自动迁移或重启。
 
 ## 分发
 

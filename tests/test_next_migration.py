@@ -10,13 +10,13 @@ import sqlite3
 import pytest
 from PIL import Image
 
-from len_bot.next.migrate import migrate_database
-from len_bot.next.learning_store import LearningStore
-from len_bot.next.messages import parse_message, plain_text
-from len_bot.next.store import FORMAT_VERSION, Store
-from len_bot.next.tasks_store import TaskStore
-from len_bot.next.plugin_store import PluginStore
-from len_bot.next.schedule_store import ScheduleStore
+from len_bot.next.maintenance.migrate import migrate_database
+from len_bot.next.learning.store import LearningStore
+from len_bot.next.platform.messages import parse_message, plain_text
+from len_bot.next.storage.store import FORMAT_VERSION, Store
+from len_bot.next.work.store import TaskStore
+from len_bot.next.plugins.store import PluginStore
+from len_bot.next.chat.schedule_store import ScheduleStore
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "next" / "migration"
@@ -1565,7 +1565,7 @@ def _format22_source(path: Path) -> None:
     _format21_source(path)
     with sqlite3.connect(path) as db:
         db.execute("PRAGMA user_version = 21")
-    from len_bot.next import migrate as migration
+    from len_bot.next.maintenance import migrate as migration
     with sqlite3.connect(path, isolation_level=None) as db:
         migration._upgrade_one_step(db, path, 21)
     path.with_name(path.name + ".v21.bak").unlink()
@@ -1616,7 +1616,7 @@ def test_format22_reply_effect_collision_rolls_back(tmp_path: Path) -> None:
 def _format23_source(path: Path) -> None:
     """Upgrade the format-22 synthetic source with the committed step and add daily schedules."""
     _format22_source(path)
-    from len_bot.next import migrate as migration
+    from len_bot.next.maintenance import migrate as migration
     with sqlite3.connect(path, isolation_level=None) as db:
         migration._upgrade_one_step(db, path, 22)
     path.with_name(path.name + ".v22.bak").unlink()
@@ -1698,7 +1698,7 @@ def test_format23_proactive_collision_rolls_back_schedule_rebuild(tmp_path: Path
 def _format24_source(path: Path) -> None:
     """Upgrade the format-23 synthetic source with the committed step and add a proactive wake."""
     _format23_source(path)
-    from len_bot.next import migrate as migration
+    from len_bot.next.maintenance import migrate as migration
     with sqlite3.connect(path, isolation_level=None) as db:
         migration._upgrade_one_step(db, path, 23)
     path.with_name(path.name + ".v23.bak").unlink()
@@ -1754,7 +1754,7 @@ def test_format24_plugin_events_collision_rolls_back(tmp_path: Path) -> None:
 
 def _format25_source(path: Path) -> None:
     _format24_source(path)
-    from len_bot.next import migrate as migration
+    from len_bot.next.maintenance import migrate as migration
     with sqlite3.connect(path, isolation_level=None) as db:
         migration._upgrade_one_step(db, path, 24)
     path.with_name(path.name + '.v24.bak').unlink()
@@ -1935,13 +1935,13 @@ def test_migration_command_for_initialized_but_unstarted_instance(tmp_path):
     import subprocess
     import sys
     from len_bot.next.config import load_host_config
-    from len_bot.next.setup import FirstSetup, initialize
+    from len_bot.next.panel.setup import FirstSetup, initialize
 
     sample = Path(__file__).resolve().parents[1] / 'deploy/current/first-setup.example.json'
     initialize(tmp_path, FirstSetup.model_validate_json(sample.read_bytes()))
     config = load_host_config(tmp_path)
     config_bytes = (tmp_path / 'lenbot.config.json').read_bytes()
-    result = subprocess.run([sys.executable, '-m', 'len_bot.next.migrate'], cwd=tmp_path,
+    result = subprocess.run([sys.executable, '-m', 'len_bot.next.maintenance.migrate'], cwd=tmp_path,
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert 'nothing created or migrated' in result.stdout
@@ -1950,7 +1950,7 @@ def test_migration_command_for_initialized_but_unstarted_instance(tmp_path):
 
     config.database.parent.mkdir(parents=True)
     config.database.write_bytes(b'not an sqlite database; preserve this input')
-    broken = subprocess.run([sys.executable, '-m', 'len_bot.next.migrate'], cwd=tmp_path,
+    broken = subprocess.run([sys.executable, '-m', 'len_bot.next.maintenance.migrate'], cwd=tmp_path,
                             capture_output=True, text=True)
     assert broken.returncode != 0
     assert 'file is not a database' in broken.stderr
