@@ -30,7 +30,9 @@ def read_feed(content: bytes) -> list[tuple[str, str]]:
 class RSSBroadcast(Plugin):
     async def start(self) -> None:
         for subscription in self.ctx.config["subscriptions"]:
-            for scene in subscription["scenes"]:
+            for scene in self.ctx.scenes:
+                if scene not in subscription["scenes"]:
+                    continue
                 self.ctx.cron(subscription["name"], subscription["cron"],
                               partial(self.publish, subscription=subscription),
                               scene=scene, timezone=subscription["timezone"])
