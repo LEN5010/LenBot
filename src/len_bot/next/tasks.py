@@ -1,13 +1,12 @@
-"""Scene-owned work tasks: scheduling, native Pi questions and copied files."""
+"""Scene-owned task lifecycle, permissions, scheduling and completion notices."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from datetime import datetime
 from decimal import Decimal
-from functools import partial
 import json
 from pathlib import Path
 from string import Template
@@ -15,61 +14,31 @@ import traceback
 from typing import Literal, TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
-
 from .config import HostConfig
-from .audio import AudioService, TranscribeArguments
-from .account_browser import AccountBrowser, BROWSER_TOOL
+from .audio import AudioService
+from .account_browser import AccountBrowser
 from .identity import roles_for
 from .egress_usage import EgressUsage
 from .model_slots import ModelSlots
 from .memory import MemoryService
 from .pricing import cost_summary
-from .recall import RecallArguments, recall_chat
 from .sandbox import DockerSandbox, DockerSettings
-from .skills import Skill, load_task_skills, merge_task_skills
+from .skills import Skill
 from .store import Store
-from .task_live import TaskLiveText
+from .task_execution import TaskExecution
 from .task_files import TaskFiles, file_info
 from .task_browser import TaskBrowser
 from .tasks_store import TERMINAL, Task, TaskStore
-from .worker_model import Limits, WorkerModelProxy
-from .worker_session import WorkerSession, worker_session
+from .worker_model import Limits
 from .task_materials import MaterialName, finish_file_operation
-from .task_inputs import copy_inputs, create_stage, publish_inputs, remove_stage, require_inputs
+from .task_inputs import copy_inputs, create_stage, publish_inputs, remove_stage
 from .operations import credentials, diagnostic_value, redact, redact_record
 
 if TYPE_CHECKING:
-    from .external_tools import ExternalTool
     from .mcp_host import MCPHost
 
 
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
-
-
-class TaskMCPCall(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
-    name: str = Field(pattern=r"^mcp__[a-zA-Z0-9_-]{1,59}$")
-    arguments: dict[str, JsonValue]
-
-
-@dataclass
-class RunningTask:
-    item: Task
-    job: asyncio.Task | None = None
-    session: WorkerSession | None = None
-    proxy: WorkerModelProxy | None = field(default=None, repr=False)
-    answer: asyncio.Future[dict] | None = None
-    input_ready: bool = False
-    timer: asyncio.Timeout | None = None
-    remaining: float = 0
-    active_limit: float = 0
-    cancelled: bool = False
-    last_progress: str | None = None
-    next_progress: float = 300
-    live_text: TaskLiveText = field(default_factory=TaskLiveText)
-    skills: tuple[Skill, ...] = ()
-    mcp_tools: dict[str, ExternalTool] = field(default_factory=dict)
 
 
 class WorkTasks:
@@ -102,7 +71,7 @@ class WorkTasks:
         ))
         self.files = TaskFiles(settings, self.records, self.sandbox, self._notify)
         self.task_browser = TaskBrowser(config, self.records, self.browser)
-        self.running: dict[int, RunningTask] = {}
+        self.running: dict[int, TaskExecution] = {}
         self.file_changes = asyncio.Lock()
         self.live_listeners: dict[int, set[asyncio.Event]] = {}
         self.changed = asyncio.Event()
@@ -166,8 +135,8 @@ class WorkTasks:
         item = self.records.get(scene, id)
         current = self.running.get(id)
         value = {"task_id": item.id, "scene": item.scene, "status": item.status,
-                 "preview": None if current is None else current.live_text.snapshot()}
-        return value if current is None or current.proxy is None else current.proxy.recorded(value)
+                 "preview": None if current is None else current.preview()}
+        return value if current is None else current.recorded(value)
 
     def _inspect_task(self, scene: str, id: int, requester: str) -> Task:
         item = self.records.get(scene, id)
@@ -183,8 +152,8 @@ class WorkTasks:
     def _event_text(self, item: Task, event: dict) -> str:
         value = diagnostic_value(event['body'])
         current = self.running.get(item.id)
-        if current is not None and current.proxy is not None:
-            value = current.proxy.recorded(value)
+        if current is not None:
+            value = current.recorded(value)
         secrets = credentials(self.config)
         value = redact_record(value, lambda text: redact(text, secrets))
         return json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2)
@@ -301,9 +270,7 @@ class WorkTasks:
         if item.status not in {"running", "waiting_input"}:
             raise ValueError("追加只适用于已开始的任务；已结束任务用 continue")
         current = self.running[id]
-        if current.session is None:
-            raise ValueError("任务容器仍在启动，请稍后追加")
-        await current.session.pi.command("steer", message=text)
+        await current.steer(text)
         self.records.add_event(scene, id, "input", {"requester": requester, "text": text, "mode": "steer"})
         self._notify(scene)
         return {"id": id, "status": "steering_queued", "text": text}
@@ -355,7 +322,7 @@ class WorkTasks:
         if item.question["id"] != question_id:
             raise ValueError("当前问题已经变化；请重读任务后针对新的问题回答，没有发送这次旧答复")
         current = self.running[id]
-        if current.answer.done():
+        if current.answer_received:
             raise ValueError("当前问题已收到回答或已超时，正在等待执行槽")
         if item.question["method"] == "confirm":
             self._can_manage(item, requester)
@@ -369,7 +336,7 @@ class WorkTasks:
                 raise ValueError("回答必须是当前问题提供的一个选项")
             response = {"value": text}
         self.records.add_event(scene, id, "answer", {"requester": requester, **response})
-        current.answer.set_result(response)
+        current.submit_answer(response)
         self._notify(scene)
         return {"id": id, "status": "answer_received", "notice": "等待执行槽后继续原任务"}
 
@@ -385,9 +352,7 @@ class WorkTasks:
             self._finish(item, "cancelled", None, f"QQ {requester} 取消排队任务")
         elif item.status in {"running", "waiting_input"}:
             current = self.running[id]
-            current.cancelled = True
-            if not current.job.cancelling():
-                current.job.cancel()
+            current.interrupt(explicit=True)
             await asyncio.gather(current.job, return_exceptions=True)
         return self.status(scene, id)
 
@@ -428,11 +393,10 @@ class WorkTasks:
             if self._pump is not None:
                 await self._pump
         finally:
-            jobs = [current.job for current in self.running.values()]
-            for job in jobs:
-                if not job.cancelling():
-                    job.cancel()
-            await asyncio.gather(*jobs, return_exceptions=True)
+            executions = list(self.running.values())
+            for current in executions:
+                current.interrupt()
+            await asyncio.gather(*(current.job for current in executions), return_exceptions=True)
 
     async def wait_failure(self) -> None:
         raise await asyncio.shield(self._failure)
@@ -445,15 +409,14 @@ class WorkTasks:
         for scene in self.config.scenes:
             self.on_update(scene)
 
-    def _job_done(self, current: RunningTask, job: asyncio.Task) -> None:
+    def _job_done(self, current: TaskExecution, job: asyncio.Task) -> None:
         try:
             if job.cancelled():
                 # Cancellation before the coroutine's first step has no finally.
                 if current.item.id in self.running:
                     self._finish(current.item, "cancelled" if current.cancelled else "failed",
                                  None, "任务在开始执行前被中断")
-                    self.running.pop(current.item.id)
-                    self._notify_live(current.item.id)
+                    self._release_execution(current.item.id)
             elif (error := job.exception()) is not None:
                 self._fail(error)
         except Exception as error:
@@ -468,6 +431,15 @@ class WorkTasks:
         containers = [*active, *(item for item in self.records.containers() if item.id not in self.running)]
         return not new_container or (len(containers) < self.settings.max_containers
             and sum(item.scene == scene for item in containers) < self.settings.max_scene_containers)
+
+    async def _wait_for_slot(self, scene: str) -> None:
+        while not self._room(scene, new_container=False):
+            self.changed.clear()
+            await self.changed.wait()
+
+    def _release_execution(self, id: int) -> None:
+        self.running.pop(id)
+        self._notify_live(id)
 
     async def _schedule(self) -> None:
         try:
@@ -493,11 +465,18 @@ class WorkTasks:
                         self._finish(item, "failed", None, str(error))
                         continue
                     if self._room(item.scene, new_container=True):
-                        current = RunningTask(self.records.start(item.scene, item.id))
+                        current = TaskExecution(
+                            self.records.start(item.scene, item.id), self.config, self.store,
+                            sandbox=self.sandbox, files=self.files, browser=self.task_browser, egress=self.egress,
+                            slots=self.slots, memory=self.memory, audio=self.audio, mcp=self.mcp,
+                            skills=self.skills, skill_permissions=self.skill_permissions,
+                            tool_permissions=self.tool_permissions, data_tools=self.data_tools,
+                            active_timeout=self.active_timeout, limits=self._limits,
+                            wait_for_slot=self._wait_for_slot, finish=self._finish, release=self._release_execution,
+                            notify=self._notify, on_update=self.on_update, notify_live=self._notify_live)
                         self.running[item.id] = current
                         self._notify_live(item.id)
-                        current.job = asyncio.create_task(self._run(current))
-                        current.job.add_done_callback(lambda job, current=current: self._job_done(current, job))
+                        current.start().add_done_callback(lambda job, current=current: self._job_done(current, job))
                         self.on_update(item.scene)
                 await self.changed.wait()
         except Exception as error:
@@ -521,323 +500,3 @@ class WorkTasks:
             notice += '\n账号浏览过程未公开；仅根主人可按权限读取原事件。'
         self.records.add_event(item.scene, item.id, "finished", body, notice=notice)
         self._notify(item.scene)
-
-    async def _run(self, current: RunningTask) -> None:
-        item = current.item
-        binding = self.config.models.roles.worker
-        price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
-        status, summary, error_text = "failed", None, None
-        def bind_proxy(proxy: WorkerModelProxy) -> None:
-            current.proxy = proxy
-        try:
-            if item.materials:
-                await finish_file_operation(require_inputs, self.settings.runtime_root / item.scene / str(item.id) / 'inputs',
-                                            tuple(item.materials), self.settings.max_file_bytes)
-            if self.settings.mcp:
-                if self.mcp is None:
-                    raise RuntimeError('任务MCP宿主尚未接入')
-                allowed = self.tool_permissions[item.scene]
-                current.mcp_tools = {tool.name: tool for tool in self.mcp.tools_for(item.scene)
-                                     if allowed == 'all' or tool.name in allowed}
-            current.active_limit = self.active_timeout(item)
-            async with asyncio.timeout(current.active_limit) as timer:
-                current.timer = timer
-                current.skills = self.skills[item.scene]
-                if item.account_browser:
-                    await self.task_browser.start(item)
-                    current.skills = tuple(skill for skill in current.skills if skill.source == 'builtin')
-                if (not item.account_browser and self.settings.skills_directory is not None
-                        and self.skill_permissions[item.scene] == "all"):
-                    workspace = self.settings.workspace_root / item.scene / "tasks" / str(item.id)
-                    authored = await asyncio.to_thread(load_task_skills, workspace)
-                    current.skills = merge_task_skills(current.skills, authored)
-                async with worker_session(
-                    self.sandbox, scene=item.scene, task_id=str(item.id),
-                    skills=current.skills,
-                    input_names=tuple(item.materials),
-                    data_tools=self.data_tools[item.scene] + ([BROWSER_TOOL] if item.account_browser else [])
-                               + [tool.definition['function'] for tool in current.mcp_tools.values()],
-                    task_timeout_seconds=current.active_limit,
-                    public_browser=self.settings.public_browser,
-                    settings=self.config.model_settings("worker"), provider=binding.provider,
-                    context_window_tokens=binding.context_window_tokens, price=price,
-                    limits=self._limits(item), model_reasoning=self.settings.model_reasoning,
-                    input_support=self.settings.input_support, slots=self.slots,
-                    compaction_reserve_tokens=self.settings.compaction_reserve_tokens,
-                    compaction_keep_recent_tokens=self.settings.compaction_keep_recent_tokens,
-                    egress_settings=self.settings.egress,
-                    egress_bytes_per_second=(
-                        self.settings.egress.bytes_per_second
-                        if self.config.scenes[item.scene].tasks.egress_bytes_per_second is None
-                        else self.config.scenes[item.scene].tasks.egress_bytes_per_second
-                    ),
-                    before_bytes=partial(self.egress.before_bytes, item.scene, item.id),
-                    on_bytes=partial(self.egress.on_bytes, item.scene, item.id),
-                    on_connection=partial(self.egress.on_connection, item.scene, item.id),
-                    start_call=lambda facts: self.records.start_call(item.scene, item.id, facts),
-                    finish_call=self.records.finish_call,
-                    on_proxy=bind_proxy,
-                    on_container=lambda container: self.records.set_container(item.scene, item.id, container),
-                    task_request=lambda path, raw: self._request(current, path, raw),
-                ) as session:
-                    current.session = session
-                    consuming = asyncio.create_task(self._consume(current))
-                    failed = asyncio.create_task(session.wait_failure())
-                    try:
-                        done, _ = await asyncio.wait({consuming, failed}, return_when=asyncio.FIRST_COMPLETED)
-                        session.bridge.raise_if_failed()
-                        if session.egress is not None:
-                            session.egress.raise_if_failed()
-                        if failed in done:
-                            await failed
-                        summary = await consuming
-                    finally:
-                        consuming.cancel()
-                        failed.cancel()
-                        await asyncio.gather(consuming, failed, return_exceptions=True)
-                session.bridge.raise_if_failed()
-                if session.egress is not None:
-                    session.egress.raise_if_failed()
-                self.records.set_container(item.scene, item.id, None)
-                status = "done"
-        except asyncio.CancelledError:
-            status = "cancelled" if current.cancelled else "failed"
-            error_text = "任务被明确取消" if current.cancelled else "宿主停止，中断活动任务"
-        except Exception as error:
-            error_text = "".join(traceback.format_exception_only(error)).strip()
-        finally:
-            closing = asyncio.create_task(self._finalize(current, status, summary, error_text))
-            while not closing.done():
-                try:
-                    await asyncio.shield(closing)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
-            closing.result()
-
-    async def _finalize(self, current: RunningTask, status: str, summary: str | None,
-                        error_text: str | None) -> None:
-        item = current.item
-        try:
-            actual = self.records.get(item.scene, item.id)
-            if actual.container is not None:
-                try:
-                    await self.sandbox.stop_recorded(item.scene, str(item.id), actual.container)
-                    self.records.set_container(item.scene, item.id, None)
-                except Exception as error:
-                    status = "failed"
-                    error_text = f"{error_text or ''}\n容器清理失败：{type(error).__name__}: {error}"
-            actual = self.records.get(item.scene, item.id)
-            if actual.browser_active:
-                try:
-                    await self.task_browser.stop(actual)
-                except Exception as error:
-                    status = 'failed'
-                    error_text = f'{error_text or ""}\n浏览器清理失败：{type(error).__name__}: {error}'
-            if current.proxy is not None:
-                summary = current.proxy.recorded(summary)
-                error_text = current.proxy.recorded(error_text)
-            self._finish(item, status, summary, error_text)
-        finally:
-            try:
-                self.egress.release_task(item.scene, item.id)
-            finally:
-                self.running.pop(item.id)
-                self._notify_live(item.id)
-
-    async def _consume(self, current: RunningTask) -> str:
-        item, session = current.item, current.session
-        # PiRpc's reader already drains stdout while prompt is being accepted.
-        environment = Template((PROMPTS / "next_worker_environment.md").read_text()).substitute(
-            facts=json.dumps({
-                "public_network": session.egress is not None,
-                "proxy": None if session.egress is None else f"http://127.0.0.1:{session.egress.port}",
-                "task_traffic": self.egress.status(item.scene, item.id),
-                "scene_today_traffic": self.egress.status(item.scene),
-                "active_timeout_seconds": current.active_limit,
-                "model_call_limit": self.settings.max_calls,
-                "data_tools": [tool["name"] for tool in self.data_tools[item.scene]] + (["account_browser"] if item.account_browser else [])
-                              + list(current.mcp_tools),
-                "public_browser": None if session.browser_cli_version is None else {
-                    "command": "lenbot-browser", "cli_version": session.browser_cli_version,
-                    "session": "public", "profile": "in-memory",
-                    "output_directory": "/workspace/out/browser",
-                    "startup_check": "CLI and executable only; browser opens on demand",
-                },
-                "skills": [{"name": skill.name, "source": skill.source,
-                            "path": skill.container_path + "/SKILL.md"}
-                           for skill in current.skills if not skill.disable_model_invocation],
-            }, ensure_ascii=False, allow_nan=False),
-        )
-        request = item.input + "\n\n" + environment
-        continuation = self.records.continuation(item)
-        if continuation is not None:
-            request += '\n\n' + Template((PROMPTS / 'next_worker_continuation.md').read_text()).substitute(
-                facts=json.dumps({'task_id': item.id, 'scene': item.scene, 'original_requester': item.requester,
-                    'original_goal': item.goal, 'original_deliverable': item.deliverable,
-                    'original_context': item.context, 'original_created_at': item.created,
-                    'current_operator': continuation.requester, 'current_text': continuation.text},
-                    ensure_ascii=False, allow_nan=False))
-        if item.materials:
-            request += '\n\n' + Template((PROMPTS / 'next_worker_materials.md').read_text()).substitute(
-                materials=json.dumps([{'name': name, 'path': f'/inputs/{name}'} for name in item.materials],
-                                     ensure_ascii=False, allow_nan=False))
-        # Pi 0.87.1 acknowledges prompt preflight with success:true and no data.
-        # Completion is reported by the event stream, not by this response.
-        await session.pi.command("prompt", message=request)
-        final: dict | None = None
-        while True:
-            deadline = current.timer.when()
-            if deadline is not None:
-                elapsed = current.active_limit - max(0, deadline - asyncio.get_running_loop().time())
-                if elapsed >= current.next_progress:
-                    self._progress(current, current.last_progress or "任务仍在执行，尚未报告阶段说明")
-                    current.next_progress = elapsed + 600
-            try:
-                record = await asyncio.wait_for(session.pi.next_event(), timeout=60)
-            except TimeoutError:
-                continue
-            body = record.body
-            if record.type == "message_update":
-                if current.live_text.update(body["assistantMessageEvent"]):
-                    self._notify_live(item.id)
-                continue
-            if record.type in {"tool_execution_update", "bash_execution_update"}:
-                continue
-            self.records.add_event(item.scene, item.id, "native", session.proxy.recorded(body))
-            self.on_update(item.scene)
-            if record.type == "message_start":
-                if current.live_text.start(body["message"]):
-                    self._notify_live(item.id)
-            elif record.type == "message_end" and body["message"]["role"] == "assistant":
-                if current.live_text.finish(body["message"]):
-                    self._notify_live(item.id)
-                final = body["message"]
-            elif record.type == "entry_appended":
-                entry = body["entry"]
-                if entry.get("customType") == "lenbot_progress":
-                    self._progress(current, entry["data"]["text"])
-            elif record.type == "extension_ui_request" and body["method"] in {"input", "confirm", "select", "editor"}:
-                await self._question(current, body)
-            elif record.type in {"auto_retry_start", "summarization_retry_scheduled"}:
-                raise RuntimeError(f"Pi 发起了未启用的重试：{body!r}")
-            elif record.type == "agent_settled":
-                if final is None:
-                    raise RuntimeError("Pi 停止但没有最终助手消息")
-                if final["stopReason"] != "stop":
-                    raise RuntimeError(f"Pi 未正常完成：{json.dumps(final, ensure_ascii=False)}")
-                return "\n".join(part["text"] for part in final["content"] if part["type"] == "text")
-
-    def _progress(self, current: RunningTask, text: str) -> None:
-        text = current.proxy.recorded(text)
-        current.last_progress = text
-        item = current.item
-        self.records.add_event(item.scene, item.id, "progress", {"text": text},
-                               notice=f"[任务进度] #{item.id}；{item.goal}\n{text}")
-        self._notify(item.scene)
-
-    def _pause_input(self, current: RunningTask, question: dict) -> None:
-        loop = asyncio.get_running_loop()
-        deadline = current.timer.when()
-        if deadline is None:
-            raise RuntimeError("任务已有人工等待，不能同时发起另一项")
-        current.remaining = deadline - loop.time()
-        if current.remaining <= 0:
-            raise TimeoutError("任务活动执行时长已达上限")
-        current.timer.reschedule(None)
-        current.input_ready = False
-        self.records.set_question(current.item.scene, current.item.id, question)
-        self._notify(current.item.scene)
-
-    async def _resume_input(self, current: RunningTask) -> None:
-        if current.cancelled or current.job.cancelling():
-            raise asyncio.CancelledError
-        current.input_ready = True
-        self._notify(current.item.scene)
-        while not self._room(current.item.scene, new_container=False):
-            self.changed.clear()
-            await self.changed.wait()
-        if current.cancelled or current.job.cancelling():
-            raise asyncio.CancelledError
-        self.records.set_question(current.item.scene, current.item.id, None)
-        current.input_ready = False
-        current.timer.reschedule(asyncio.get_running_loop().time() + current.remaining)
-        self._notify(current.item.scene)
-
-    async def _question(self, current: RunningTask, body: dict) -> None:
-        item = current.item
-        if (not isinstance(body.get("title"), str)
-                or body["method"] == "confirm" and not isinstance(body.get("message"), str)):
-            raise ValueError(f"Pi 问题缺少原文：{body!r}")
-        if body["method"] == "select" and (not isinstance(body.get("options"), list)
-                or not all(isinstance(option, str) for option in body["options"])):
-            raise ValueError(f"Pi 选择题选项无效：{body!r}")
-        current.answer = asyncio.get_running_loop().create_future()
-        self._pause_input(current, body)
-        self.records.add_event(item.scene, item.id, "question", body,
-            notice=f"[任务{'操作确认' if body['method'] == 'confirm' else '提问'}] #{item.id}；"
-                   f"请求人 QQ {item.requester}\n{json.dumps(body, ensure_ascii=False)}")
-        self._notify(item.scene)
-        try:
-            response = await asyncio.wait_for(current.answer, timeout=self.settings.input_timeout_seconds)
-        except TimeoutError:
-            response = {"confirmed": False} if body["method"] == "confirm" else {"cancelled": True}
-            self.records.add_event(item.scene, item.id, "answer_timeout", response)
-        await self._resume_input(current)
-        await current.session.pi.respond_ui(body["id"], **response)
-        self._notify(item.scene)
-
-    async def _request(self, current: RunningTask, path: str, raw: bytes) -> dict:
-        if path == '/task/mcp':
-            try:
-                call = TaskMCPCall.model_validate_json(raw)
-            except ValidationError as error:
-                raise ValueError(f'Invalid task MCP request: {raw[:500]!r}; {error}') from error
-            if not self.settings.mcp or call.name not in current.mcp_tools:
-                raise PermissionError(f'本次任务未开放MCP工具 {call.name}')
-            if self.mcp is None:
-                raise RuntimeError('任务MCP宿主尚未接入')
-            tools = {tool.name: tool for tool in self.mcp.tools_for(current.item.scene)}
-            if call.name not in tools or tools[call.name] != current.mcp_tools[call.name]:
-                raise RuntimeError(f'MCP工具 {call.name} 当前不可用或定义已变化；未调用，不更新本次工具集合')
-            content = await tools[call.name].call(current.item.scene, call.arguments)
-            return {'content': content}
-        if path == '/task/account-browser':
-            item = self.records.get(current.item.scene, current.item.id)
-            return await self.task_browser.execute(
-                item, raw, pause_input=lambda question: self._pause_input(current, question),
-                resume_input=lambda: self._resume_input(current))
-        if path in {"/task/recall-chat", "/task/memory", "/task/transcribe"}:
-            name = {"/task/recall-chat": "recall_chat", "/task/memory": "memory", "/task/transcribe": "transcribe"}[path]
-            scene = current.item.scene
-            if name not in {tool["name"] for tool in self.data_tools[scene]}:
-                raise PermissionError(f"当前场景的任务未开放 {name}")
-            if name == "transcribe":
-                if self.audio is None:
-                    raise RuntimeError("任务语音服务尚未绑定")
-                arguments = TranscribeArguments.model_validate_json(raw)
-                content = await self.audio.transcribe(scene, arguments)
-            elif name == "recall_chat":
-                try:
-                    arguments = RecallArguments.model_validate_json(raw)
-                except ValidationError as error:
-                    raise ValueError(f"Invalid task recall_chat request: {raw[:500]!r}; {error}") from error
-                content = recall_chat(self.store, scene, self.config.scene_timezone(scene), arguments)
-            else:
-                try:
-                    arguments = json.loads(raw)
-                except (json.JSONDecodeError, UnicodeDecodeError) as error:
-                    raise ValueError(f"Invalid task memory JSON: {raw[:500]!r}; {error}") from error
-                content = await self.memory.execute(scene, arguments)
-            return {"content": content}
-        if path == "/task/network":
-            try:
-                request = json.loads(raw)
-            except ValueError as error:
-                raise ValueError(f"Invalid task network request: {raw[:500]!r}; {error}") from error
-            if request != {}:
-                raise ValueError(f"Task network status expects an empty object: {raw[:500]!r}")
-            return {"task": self.egress.status(current.item.scene, current.item.id),
-                    "scene_today": self.egress.status(current.item.scene)}
-        return await self.files.deliver(current.item, current.session.sandbox, raw)
