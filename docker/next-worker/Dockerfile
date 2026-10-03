@@ -32,6 +32,7 @@ COPY src/len_bot/next/egress_wire.py /opt/lenbot/egress_wire.py
 COPY src/len_bot/next/worker_egress_bridge.py /opt/lenbot/worker_egress_bridge.py
 COPY docker/next-worker/lenbot-extension.ts /opt/lenbot/lenbot-extension.ts
 COPY --chmod=755 docker/next-worker/lenbot-browser.cjs /usr/local/bin/lenbot-browser
+COPY docker/next-worker/browser-files.cjs /opt/lenbot/browser-files.cjs
 COPY --chmod=755 docker/next-worker/lenbot-render.cjs /usr/local/bin/lenbot-render
 
 COPY scripts/collect_python_licenses.py /opt/lenbot/collect_python_licenses.py

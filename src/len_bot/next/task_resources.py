@@ -126,16 +126,20 @@ class TaskResources:
         task = None if location.task_id is None else self.records.get(scene, location.task_id)
         mutable_work = task is not None and task.status in TERMINAL and task.container is None and not task.browser_active
         sources = {} if location.task_id is None else self.records.file_sources(scene, location.task_id)
+        browser_sources = {} if location.task_id is None else self.records.browser_file_sources(scene, location.task_id)
         deleted = {} if location.task_id is None else self.records.file_deletions(scene, location.task_id)
         if location.scope == 'deliveries':
             files = self.records.list_files(scene, location.task_id)
             entries = []
             for file in files[offset:offset + limit]:
                 mime, preview = preview_kind(file.name)
+                source = sources.get(file.id)
                 entries.append({'name': file.name, 'kind': 'file', 'size': file.size, 'modified': file.created,
                     'purpose': 'deliveries', 'mime_type': mime, 'preview': preview, 'exists': Path(file.path).is_file(),
                     'reference': ResourceFileRef(scope='deliveries', task_id=location.task_id, file_id=file.id).model_dump(),
-                    'note': file.note, 'upload': self.records.latest_file_upload(file), 'source': sources.get(file.id),
+                    'note': file.note, 'upload': self.records.latest_file_upload(file), 'source': source,
+                    'browser_source': (browser_sources.get(source['path'])
+                                       if source is not None and source['scope'] == 'workspace' else None),
                     'registrations': [], 'deletion': deleted.get(file.id), 'deletable': True})
             return {'scene': scene, **location.model_dump(), 'exists': root.is_dir(), 'entries': entries,
                     'next_offset': offset + limit if offset + limit < len(files) else None}
@@ -147,6 +151,7 @@ class TaskResources:
             entry.update(name=name, purpose=resource_purpose(location.scope, entry['path']),
                          mime_type=mime, preview=preview, exists=True, note=None, upload=None,
                          source=inputs.get(name), deletion=None,
+                         browser_source=browser_sources.get(entry['path']) if location.scope == 'workspace' else None,
                          deletable=(location.scope == 'shared' or (location.scope == 'workspace' and mutable_work
                                     and resource_purpose(location.scope, entry['path']) != 'session')),
                          registrations=[id for id, source in sources.items() if source is not None

@@ -449,6 +449,12 @@ class TaskStore:
                                "WHERE scene=? AND task_id=? AND kind='file' ORDER BY id", (scene, task_id))
         return {row[0]: None if row[1] is None else json.loads(row[1]) for row in rows}
 
+    def browser_file_sources(self, scene: str, task_id: int) -> dict[str, dict]:
+        rows = self.db.execute("SELECT created,body FROM task_events WHERE scene=? AND task_id=? "
+                               "AND kind='browser_file' ORDER BY id", (scene, task_id))
+        return {body['reference']['path']: {'created': row['created'], **body['source']}
+                for row in rows for body in [json.loads(row['body'])]}
+
     def file_deletions(self, scene: str, task_id: int) -> dict[int, dict]:
         return {row['file_id']: {'created': row['created'], 'requester': row['requester']}
                 for row in self.db.execute("SELECT created,json_extract(body,'$.file_id') AS file_id,"

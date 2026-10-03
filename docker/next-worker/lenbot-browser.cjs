@@ -16,6 +16,7 @@ const fs = require("node:fs");
 const cliModule = "/opt/lenbot/browser/node_modules/playwright-core/lib/tools/cli-client/program";
 const configFile = "/run/lenbot/browser.json";
 const browserBinary = "/usr/local/bin/lenbot-chromium";
+const fileCommands = require("/opt/lenbot/browser-files.cjs");
 const unsupportedCommands = new Set([
   "install", "install-browser", "attach", "detach", "kill-all",
 ]);
@@ -47,6 +48,13 @@ async function main() {
       throw new Error(`lenbot-browser does not accept an override of its fixed browser binding: ${token}`);
     }
   }
+
+  if (fileCommands.commands.has(command)) {
+    if (nativeArgs.includes("--help") || nativeArgs.includes("-h")) console.log(fileCommands.help);
+    else console.log(JSON.stringify(await fileCommands.runFileCommand(nativeArgs), null, 2));
+    return;
+  }
+  if (["--help", "-h"].includes(command)) console.log(fileCommands.help + "\n");
 
   process.argv = [process.execPath, cliModule, "--session=public", "--json",
     ...(command === "open" ? [`--config=${configFile}`] : []), ...nativeArgs];

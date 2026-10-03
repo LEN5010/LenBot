@@ -39,6 +39,7 @@ class ResourceEntry(BaseModel):
     note: str | None
     upload: dict[str, JsonValue] | None
     source: dict[str, JsonValue] | None
+    browser_source: dict[str, JsonValue] | None
     registrations: list[int]
     deletion: dict[str, JsonValue] | None
     deletable: bool
