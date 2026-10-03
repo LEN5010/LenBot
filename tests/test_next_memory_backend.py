@@ -64,3 +64,35 @@ def test_stale_child_summary_is_not_an_input_fact(tmp_path):
         inputs = await backend.summary_inputs('group:80001', '')
         assert inputs['directories'] == [{'name': 'events', 'abstract': None}]
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('remove_source', [False, True])
+def test_offline_reindex_clears_derived_summaries_and_preserves_history(tmp_path, remove_source):
+    async def run():
+        backend = LocalMemory(LocalMemorySettings(directory=tmp_path / 'memory'))
+        scene = 'group:80001'
+        await backend.write(scene, 'events/meeting.md', '读书会在周五。', '已确认安排')
+        await backend.owner_write_public('events/meeting.md', '公开活动在周五。', '已确认安排')
+        history = await backend.history(scene, 'events/meeting.md')
+        for scope in ('scene', 'public'):
+            await backend.write_summary(scene, 'events', '周五活动', '活动在周五。', scope=scope)
+            await backend.write_summary(scene, '', '周五活动', '活动在周五。', scope=scope)
+        source = backend.root / 'groups/80001/events/meeting.md'
+        if remove_source:
+            source.unlink()
+        else:
+            source.write_text('周五活动取消，读书会改到周六。')
+
+        assert backend.reindex() == (1 if remove_source else 2)
+        assert await backend.history(scene, 'events/meeting.md') == history
+        for scope in ('scene', 'public'):
+            assert (await backend.summary(scene, '', scope=scope)).overview is None
+            assert (await backend.summary(scene, 'events', scope=scope)).abstract is None
+            assert (await backend.summary_inputs(scene, '', scope=scope))['directories'] == [
+                {'name': 'events', 'abstract': None}]
+        assert backend.summary_text_sync(scene) is None
+        if not remove_source:
+            assert (await backend.read(scene, 'events/meeting.md')).content == '周五活动取消，读书会改到周六。'
+            await backend.write_summary(scene, '', '周六读书会', '读书会改到周六。')
+            assert backend.summary_text_sync(scene) == '读书会改到周六。'
+    asyncio.run(run())
