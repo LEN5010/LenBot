@@ -20,11 +20,23 @@ def build_deployments(wheel: Path, project: Path, output: Path, requirements: Pa
         with tempfile.TemporaryDirectory() as temporary:
             bundle = Path(temporary) / name
             shutil.copytree(project / 'deploy/package', bundle, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+            guide = (bundle / 'README.md').read_text()
+            (bundle / 'README.md').write_text(guide.replace('](../current/', '](deploy/current/').replace(
+                '](../current)', '](deploy/current)'))
             shutil.copy2(wheel, bundle / wheel.name)
             shutil.copy2(requirements, bundle / 'requirements.txt')
             shutil.copytree(project / 'deploy', bundle / 'deploy', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
             shutil.copytree(project / 'developer', bundle / 'developer')
-            shutil.copy2(project / 'CONTRIBUTING.md', bundle / 'CONTRIBUTING.md')
+            shutil.copytree(project / '.github', bundle / '.github')
+            for resource in ('CONTRIBUTING.md', 'AGENTS.md', 'SECURITY.md'):
+                shutil.copy2(project / resource, bundle / resource)
+            # Keep the published guides' relative links without bundling the whole source tree.
+            for pattern in ('src/len_bot/next/builtin_plugins/*/README.md',
+                            'src/len_bot/next/plugin_catalog.json', 'src/len_bot/prompts/*.md'):
+                for source in project.glob(pattern):
+                    target = bundle / source.relative_to(project)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
             for resource in ('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md'):
                 shutil.copy2(project / resource, bundle / resource)
             (bundle / 'release.json').write_text(json.dumps({
