@@ -587,9 +587,9 @@ class PluginHost:
         try:
             await task
         except asyncio.CancelledError:
+            if record.status != "stopped":
+                await self.stop_plugin(record.name)
             if asyncio.current_task().cancelling():
-                if record.status != "stopped":
-                    await self.stop_plugin(record.name)
                 raise
             return
         except Exception as error:
