@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import shutil
 import stat
 import tempfile
 import uuid
@@ -22,6 +23,7 @@ from urllib.parse import urlsplit
 from .pi_rpc import PiRpc
 from .docker_mounts import require_task_mounts
 from .skills import Skill
+from .task_materials import finish_file_operation
 from .tasks_config import EgressSettings
 from .worker_egress import EgressTransport
 from .worker_model import WorkerModelProxy
@@ -233,9 +235,15 @@ class DockerSandbox:
                   *_mount(control, "/run/lenbot", readonly=True)]
         if input_names:
             mounts.extend(_mount(runtime / 'inputs', '/inputs', readonly=True))
+        skill_root = control / 'skills'
+        if skill_root.exists():
+            await finish_file_operation(shutil.rmtree, skill_root)
         for skill in skills:
             if skill.source != "task":
-                mounts.extend(_mount(skill.host_path, skill.container_path, readonly=True))
+                # Installed and plugin paths may exist only inside the host container.
+                snapshot = skill_root / skill.name
+                await finish_file_operation(shutil.copytree, skill.host_path, snapshot, symlinks=True)
+                mounts.extend(_mount(snapshot, skill.container_path, readonly=True))
         name = f"lenbot-next-{uuid.uuid4().hex}"
         if on_container is not None:
             on_container(name)
@@ -428,6 +436,4 @@ class DockerSandbox:
 
 
 def _clear_control(path: Path) -> None:
-    import shutil
-
     shutil.rmtree(path)

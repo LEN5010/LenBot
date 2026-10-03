@@ -1,0 +1,25 @@
+# Copy this recipe for the instance; set its image and release-specific Python volume.
+services:
+  lenbot:
+    image: lenbot-current:local
+    restart: 'no'
+    stop_grace_period: 180s
+    working_dir: /srv/lenbot
+    environment:
+      HOME: /srv/lenbot
+    ports:
+      - 127.0.0.1:11307:11307
+    volumes:
+      - type: volume
+        source: instance
+        target: /srv/lenbot
+      - type: volume
+        source: python
+        target: /opt/lenbot/.venv
+volumes:
+  instance:
+    external: true
+    name: lenbot-data
+  python:
+    external: true
+    name: lenbot-python-r1

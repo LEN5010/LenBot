@@ -90,7 +90,7 @@ Ollama首次拉取须等待其服务就绪。OpenViking服务密钥与每场景�
 - `worker.docker_binary` 用 Docker CLI 绝对路径，`docker_host` 用 `docker context inspect` 得到的本机 Unix socket；运行身份必须有访问权限。
 - `workspace_root`、`runtime_root`、交付根分开，均为 Docker 主机可见的实际路径。容器 `uid/gid` 必须能读写这些目录；Mac 常用 `id -u`／`id -g`，不照抄 Linux 镜像账号。
 - SnowLuma 在容器中时，将交付根只读挂入，例如 `file_assets` → `/lenbot-files`，并设置 `onebot.upload_visible_root` 为容器内路径。文件登记、本地可读、QQ 上传成功是不同结果。
-- 任务保持 `network=none`、独立工作区与宿主管道；公共浏览走任务镜像 Chromium 和宿主明确出口。独立账号浏览另需专用守护进程、扩展与账号配对，不支持远程文件上传下载。
+- 任务保持 `network=none`、独立工作区与宿主管道；公共浏览走任务镜像 Chromium 和宿主明确出口。独立账号浏览另需专用守护进程、扩展、文件助手与账号配对；远程文件链见 [BrowserSkill 配套服务](browserskill-files.md)。
 - 更新宿主不会自动更新任务镜像。共享资料、环境放弃和归档规则见[任务维护](operations.md#任务资料与环境)。可选的实例级硬上限见[任务存储池](task-storage.md)，目录用量与池配额分别显示。
 
 当前任务 Dockerfile 已从干净源码在 Linux ARM64 完整构建，并以镜像默认非 root 用户、断网环境实际生成中文两页 A4 PDF、手机截图和逐页打印预览；不是仅在旧任务镜像上追加文件。此项证明构建及本地渲染可用，不代表该新镜像已经运行过完整模型任务或完成 QQ 上传。
@@ -123,41 +123,9 @@ sudo journalctl -u lenbot -n 100 --no-pager
 
 ## Docker 宿主与插件环境
 
-镜像内有 Git、SSH 客户端和 uv；默认身份为 `10000:10000`，主页为 `/srv/lenbot`。实例原生数据卷挂载在 `/srv/lenbot`，已初始化的根配置中 `panel.host` 使用 `0.0.0.0`，例如 `panel.port` 为 `11307`。新卷从镜像取得目录属主，实例文件由该身份读写；所有业务地址与路径按容器里的实际位置填写。首次创建根配置可使用上文 wheel 向导，保存退出后再按容器位置调整，最后将新实例的配置和角色导入数据卷。Docker Desktop 的实例库使用原生卷，不放在宿主目录共享挂载上；本机共享挂载已出现进程间锁不生效，原生卷沿现有 SQLite／实例锁工作。Linux 原生文件系统上的绑定目录也可使用。
+[Docker 完整部署](docker.md)提供基础 Compose、可选任务挂载、非 root socket 接入、macOS Desktop 路径与离线升级。镜像带 Git／SSH／uv 和 Docker 客户端；实例数据与版本化 Python 环境分别使用原生卷，普通聊天不挂 socket。
 
-Python 环境挂载到**与当前镜像版本对应的命名卷**。新卷由 Docker 从镜像中的已安装环境填充，文件属主就是运行身份；容器重建复用同一卷，已装插件依赖保持。以下 `r1` 是本次发行的卷名示例：
-
-```sh
-docker build -f deploy/current/Dockerfile -t lenbot-current:local .
-docker volume create lenbot-data
-docker volume create lenbot-python-r1
-# 仅初始化新的实例卷；根配置中的路径采用容器里的位置。
-tar -C /absolute/path/to/new-instance -cf - lenbot.config.json personas | \
-  docker run --rm -i --network none \
-    --mount type=volume,source=lenbot-data,target=/srv/lenbot \
-    --entrypoint tar lenbot-current:local --no-same-owner -xf - -C /srv/lenbot
-docker run --name lenbot --restart=no --stop-timeout 180 \
-  --mount type=volume,source=lenbot-data,target=/srv/lenbot \
-  --mount type=volume,source=lenbot-python-r1,target=/opt/lenbot/.venv \
-  -p 127.0.0.1:11307:11307 lenbot-current:local
-```
-
-入口只启动，不在启动中安装依赖、同步包或转换数据。面板插件安装使用卷里的实际解释器，源码及 KV 分别在实例 `plugins/` 与 `plugin-data/`。私有 Git 使用运行身份的 Git／SSH 凭据配置。
-
-**升级换新环境卷**：停旧容器，采用新镜像和新卷名，然后在同一实例根执行该版本要求的离线数据迁移与插件依赖安装。不要把旧卷挂到新镜像后当作已经升级；旧卷会遮住新镜像的程序。恢复插件依赖只读取已配置插件清单，包含停用插件，不执行插件代码，不拉 Git 或改选版本：
-
-```sh
-docker volume create lenbot-python-r2
-docker run --rm \
-  --mount type=volume,source=lenbot-data,target=/srv/lenbot \
-  --mount type=volume,source=lenbot-python-r2,target=/opt/lenbot/.venv \
-  --entrypoint /opt/lenbot/.venv/bin/python lenbot-current:new \
-  -m len_bot.next.plugin_dependencies
-```
-
-迁移命令使用同样的挂载和解释器，模块名按[升级与文件锁](operations.md#升级与文件锁)选择；完成后以新镜像、新卷启动。该离线依赖命令和宿主共用实例锁，现有宿主依赖保持固定，冲突直接显示原错。旧环境卷只含旧程序及插件包，确认新环境采用后由操作者删除，不删除实例数据卷。
-
-宿主镜像本节提供聊天、面板和插件安装环境。容器内的独立任务还需要 Docker 客户端、daemon 连接以及一致的任务文件路径，发行阶段提供对应接线；浏览器和记忆服务仍是独立组件。
+任务启用时，工作／运行／交付路径在 daemon 主机与宿主容器中一致；本次所选技能复制进任务运行目录，不直接绑定镜像内的 Python 安装路径。应用参数仍只读根配置，复制的 Compose 配方只管进程、端口与挂载。
 
 ## 升级成品
 

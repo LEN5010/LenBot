@@ -1,0 +1,27 @@
+# Optional: merge with host.compose.yaml only when this instance enables work.
+# All three data paths must match the actual worker paths in lenbot.config.json.
+services:
+  lenbot:
+    # Replace with the socket's group as seen inside the host container.
+    group_add: ['0']
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/lenbot/task-workspaces
+        target: /srv/lenbot/task-workspaces
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/lenbot/task-runtime
+        target: /srv/lenbot/task-runtime
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/lenbot/deliveries
+        target: /srv/lenbot/deliveries
+        bind:
+          create_host_path: false
