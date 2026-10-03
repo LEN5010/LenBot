@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from .config import STRICT
 from .network import NetworkRuntime
-from .tasks import file_info
+from .task_files import file_info
 from .tasks_store import TERMINAL, TaskStore
 from .tasks_tools import DelegateArguments, TaskArguments, perform_task_action
 from .task_storage import storage_usage
