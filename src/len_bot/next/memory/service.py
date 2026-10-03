@@ -233,7 +233,7 @@ class MemoryService:
 
     async def search(self, scene: str, query: str, limit: int, *, automatic: bool = False) -> list[dict]:
         if isinstance(self.backend, LocalMemory):
-            hits = await self.backend.search(scene, query, limit, exclude_pending=automatic)
+            hits = await self.backend.search(scene, query, limit, exclude_pending=automatic, automatic=automatic)
             return [{**asdict(hit), "score": None} for hit in hits]
         hits = await self.backend.search(scene, query, limit)
         return [{"scope": hit.scope, "path": hit.path, "preview": hit.abstract,
@@ -346,8 +346,10 @@ class MemoryService:
     async def recall(self, scene: str, messages: list[ChatMessage]) -> dict:
         """Recall from actual chat only; returned text never becomes a native history entry."""
         relevant = [message for message in messages if not message.is_self]
-        # Short replies need the preceding topic and its actual speakers, including our question.
-        queries = [render_message(message, timezone="UTC") for message in messages
+        # Semantic retrieval keeps speakers; literal retrieval must not match timestamps/QQs.
+        text_only = isinstance(self.backend, LocalMemory) and self.backend.embedding is None
+        # Short replies still need the preceding topic, including our question.
+        queries = [plain_text(message) if text_only else render_message(message, timezone="UTC") for message in messages
                    if plain_text(message).strip() and message.send_status in {"received", "sent", "simulated"}]
         budget = self.settings.recall_budget_chars
         items: list[dict] = []
