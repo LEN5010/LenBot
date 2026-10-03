@@ -10,6 +10,7 @@ import AvatarCard from './AvatarCard.vue'
 import StylesEditor from './StylesEditor.vue'
 import ExamplesEditor from './ExamplesEditor.vue'
 import DraftTrial from './DraftTrial.vue'
+import ProfileDraftFile from './ProfileDraftFile.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
@@ -44,14 +45,19 @@ async function submit() {
   notify('已保存，重启后生效')
 }
 const discard = () => { draft.value = clone(saved.data.value.profile) }
-const draftFiles = () => api(`${base.value}/draft`, { method: 'POST',
-  body: JSON.stringify({ directory: saved.data.value.directory, profile: draft.value }) })
+const previewProfile = profile => api(`${base.value}/draft`, { method: 'POST',
+  body: JSON.stringify({ directory: saved.data.value.directory, profile }) })
+async function draftFiles() {
+  const { directory, files } = await previewProfile(draft.value)
+  return { directory, files }
+}
 </script>
 
 <template>
   <ErrorNote v-if="saved.error.value" title="读取角色失败" :error="saved.error.value" />
   <template v-if="draft">
     <p v-if="shared.length" class="muted">这个角色也用在 {{ shared.map(sceneName).join('、') }}，改动会一起生效。</p>
+    <ProfileDraftFile :profile="draft" :preview="previewProfile" :disabled="save.busy.value" @imported="value => draft = value" />
     <form class="profile" @submit.prevent="submit">
       <section class="surface">
         <h2>它是谁</h2>

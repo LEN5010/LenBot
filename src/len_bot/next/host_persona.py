@@ -501,11 +501,11 @@ def register_host_persona(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
         require_persona_target(path, change.directory)
         files = profile_files(read_persona_files(path), change.profile)
         parse_persona_files(path, files)
-        return {'directory': str(path), 'files': files}
+        return {'directory': str(path), 'files': files, 'profile': change.profile.model_dump()}
 
     @app.post('/api/host/scenes/{scene}/persona-profile/draft')
     async def profile_draft(scene: str, change: PersonaProfileChange, _: str = Depends(user)):
-        """The four role files the form would write, for a draft test chat; nothing is saved."""
+        """Return normalized form and role files for import/export or trial; nothing is saved."""
         require_scene(scene)
         try:
             async with write_lock:

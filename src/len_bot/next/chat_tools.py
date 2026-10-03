@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 class SayArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     content: str = Field(min_length=1)
+    end_turn: bool = Field(default=False, description="这是本轮最后一次表达，成功后本轮即可结束；还需查看工具结果或继续行动时保持 false。")
     reply_to: str | None = Field(default=None, description="需要引用时填本场景已有平台消息 ID；直接接话可省略。")
     mention: str | None = Field(default=None, pattern=r"^[0-9]+$",
         description="需要提醒特定对象时填实际 QQ；连续对话中对象清楚时可省略。")
@@ -52,6 +53,7 @@ class SayArguments(BaseModel):
 
 class ReactArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    end_turn: bool = Field(default=False, description="这次表情完成本轮回应，成功后即可结束；还要继续处理时保持 false。")
     emotion: str | None = Field(default=None, min_length=1)
     query: str | None = Field(default=None, min_length=1)
     reply_to: str | None = None
@@ -253,9 +255,10 @@ class SceneTools:
             tool = self.external[call.name]
             return await tool.call(self.config.scene, call.arguments), None, None
         if call.name == "say":
-            expression = await self.expression.express(turn_id, SayArguments.model_validate(call.arguments),
+            arguments = SayArguments.model_validate(call.arguments)
+            expression = await self.expression.express(turn_id, arguments,
                                                        expression_style=expression_style, direct=direct)
-            return self.expression.context.render(expression), Expression(expression), None
+            return self.expression.context.render(expression), Expression(expression, end_turn=arguments.end_turn), None
         if call.name == "react":
             expression = self.expression.react(ReactArguments.model_validate(call.arguments))
             return self.expression.context.render(expression.message), expression, None

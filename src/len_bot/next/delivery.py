@@ -15,6 +15,7 @@ from .sticker_assets import CollectedSticker
 class Expression:
     message: ChatMessage
     sticker: PersonaSticker | CollectedSticker | None = None
+    end_turn: bool = False
 
 
 def split_expression(expression: ChatMessage, max_chars: int) -> list[ChatMessage]:
