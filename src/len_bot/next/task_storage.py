@@ -7,9 +7,64 @@ import stat
 import shutil
 
 from .tasks_config import WorkerSettings
+from .tasks_store import TERMINAL, Task
 
 
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def continuation_state(item: Task, discarded: bool) -> str:
+    if discarded:
+        return 'discarded'
+    if item.status not in TERMINAL or item.container is not None or item.browser_active:
+        return 'active'
+    return 'account_new_task' if item.account_browser else 'retained'
+
+
+def temporary_paths(settings: WorkerSettings, scene: str, task_id: int) -> list[tuple[Path, str]]:
+    workspace = settings.workspace_root / scene / 'tasks' / str(task_id)
+    runtime = settings.runtime_root / scene / str(task_id)
+    return [(runtime / 'control', 'directory'), (workspace / '.playwright', 'directory'),
+            *((workspace / name, 'file') for name in ('pi.stderr', 'model-bridge.stderr', 'egress-bridge.stderr')),
+            (runtime / 'home' / '.pi' / 'agent' / 'models.json', 'file')]
+
+
+def temporary_usage(settings: WorkerSettings, scene: str, task_id: int) -> list[dict]:
+    result = []
+    for path, kind in temporary_paths(settings, scene, task_id):
+        if path.resolve(strict=False) != path:
+            raise ValueError(f'Task temporary path must not traverse a symbolic link: {path}')
+        if kind == 'directory':
+            usage = directory_usage(path)
+            result.append({'path': str(path), 'kind': kind, 'exists': usage is not None,
+                           'file_bytes': 0 if usage is None else usage.file_bytes})
+        else:
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                result.append({'path': str(path), 'kind': kind, 'exists': False, 'file_bytes': 0})
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError(f'Task temporary file is not a regular file: {path}')
+            result.append({'path': str(path), 'kind': kind, 'exists': True, 'file_bytes': info.st_size})
+    return result
+
+
+def clean_temporary_files(settings: WorkerSettings, scene: str, task_id: int, progress: dict) -> None:
+    for item in temporary_usage(settings, scene, task_id):
+        if not item['exists']:
+            progress['absent'].append(item['path'])
+            continue
+        progress['active_root'] = item['path']
+        path = Path(item['path'])
+        if item['kind'] == 'directory':
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        progress['removed'].append(item['path'])
+        progress['removed_file_bytes'] += item['file_bytes']
+    progress['active_root'] = None
+    progress['complete'] = True
 
 
 def output_entries(root: Path, path: str, offset: int, limit: int) -> dict:

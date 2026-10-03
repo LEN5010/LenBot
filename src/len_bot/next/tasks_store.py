@@ -150,17 +150,31 @@ class TaskStore:
         return [TaskFile(**dict(row)) for row in self.db.execute('SELECT * FROM task_files ORDER BY id')]
 
     def list(self, scene: str, *, status: str = "active", offset: int = 0,
-             limit: int = 20) -> list[Task]:
+             limit: int = 20, since: float | None = None, before: float | None = None,
+             environment: Literal['all', 'retained', 'discarded'] = 'all') -> list[Task]:
         if offset < 0 or not 1 <= limit <= 100:
             raise ValueError("task list offset must be nonnegative and limit 1..100")
         if status == "all":
             clause, values = "", ()
         elif status == "active":
             clause, values = " AND status IN ('queued','running','waiting_input')", ()
+        elif status == 'terminal':
+            clause, values = " AND status IN ('done','failed','cancelled')", ()
         elif status in {"queued", "running", "waiting_input", "done", "failed", "cancelled"}:
             clause, values = " AND status=?", (status,)
         else:
             raise ValueError(f"unknown task status filter: {status!r}")
+        if since is not None:
+            clause += ' AND created>=?'
+            values += (since,)
+        if before is not None:
+            clause += ' AND created<?'
+            values += (before,)
+        discarded = "EXISTS(SELECT 1 FROM task_events e WHERE e.scene=tasks.scene AND e.task_id=tasks.id AND e.kind='workspace_discard')"
+        if environment == 'discarded':
+            clause += ' AND ' + discarded
+        elif environment == 'retained':
+            clause += " AND status IN ('done','failed','cancelled') AND account_browser=0 AND container IS NULL AND browser_active=0 AND NOT " + discarded
         rows = self.db.execute(
             "SELECT * FROM tasks WHERE scene=?" + clause + " ORDER BY id DESC LIMIT ? OFFSET ?",
             (scene, *values, limit, offset),
@@ -440,6 +454,12 @@ class TaskStore:
                 for row in self.db.execute("SELECT created,json_extract(body,'$.file_id') AS file_id,"
                     "json_extract(body,'$.requester') AS requester FROM task_events "
                     "WHERE scene=? AND task_id=? AND kind='file_deleted' ORDER BY id", (scene, task_id))}
+
+    def latest_cleanup(self, scene: str, task_id: int) -> dict | None:
+        row = self.db.execute("SELECT kind,created,body FROM task_events WHERE scene=? AND task_id=? "
+                              "AND kind IN ('temporary_cleanup','workspace_discard_result') ORDER BY id DESC LIMIT 1",
+                              (scene, task_id)).fetchone()
+        return None if row is None else {'kind': row['kind'], 'created': row['created'], **json.loads(row['body'])}
 
     def start_egress_connection(self, scene: str, task_id: int, body: dict) -> int:
         return self.add_event(scene, task_id, "egress_connection", body)

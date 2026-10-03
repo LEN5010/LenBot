@@ -7,9 +7,10 @@ import { formatTime } from '../time.js'
 import { resourceLabel } from '../resourceLabels.js'
 import ErrorNote from './ErrorNote.vue'
 
-const props = defineProps({ scene: { type: String, required: true }, taskId: { type: Number, default: null }, operator: { type: String, default: '' } })
+const props = defineProps({ scene: { type: String, required: true }, taskId: { type: Number, default: null }, operator: { type: String, default: '' },
+  initialPath: { type: String, default: '' }, selectable: { type: Boolean, default: true } })
 const emit = defineEmits(['changed', 'select'])
-const scope = ref(props.taskId === null ? 'shared' : 'workspace'), path = ref(''), rows = ref([])
+const scope = ref(props.taskId === null ? 'shared' : 'workspace'), path = ref(props.initialPath), rows = ref([])
 const scopes = computed(() => props.taskId === null ? [['shared', '共享资料']] : [
   ['workspace', '工作区'], ['inputs', '输入快照'], ['deliveries', '登记交付'], ['runtime', '运行目录'],
 ])
@@ -107,7 +108,7 @@ const validOperator = computed(() => /^[1-9][0-9]*$/.test(props.operator))
         <div v-if="entry.kind === 'file' && entry.exists" class="actions">
           <v-btn v-if="entry.preview === 'download'" size="small" variant="text" @click="open({ ...entry, preview: 'text' })">查看文本</v-btn>
           <v-btn size="small" variant="text" :href="resourcesApi.downloadUrl(scene, entry.reference)">下载</v-btn>
-          <v-btn v-if="scope !== 'runtime'" size="small" variant="text" @click="emit('select', entry)">用作任务资料</v-btn>
+          <v-btn v-if="selectable && scope !== 'runtime'" size="small" variant="text" @click="emit('select', entry)">用作任务资料</v-btn>
           <v-btn v-if="scope === 'workspace'" size="small" variant="text" :disabled="!validOperator" @click="chooseCopy(entry, 'register')">登记交付</v-btn>
           <v-btn v-if="['workspace', 'inputs', 'deliveries'].includes(scope)" size="small" variant="text" :disabled="!validOperator" @click="chooseCopy(entry, 'adopt')">采用共享</v-btn>
           <v-btn v-if="entry.deletable" size="small" variant="text" color="error" :disabled="!validOperator || removal.busy.value" @click="remove(entry)">删除</v-btn>

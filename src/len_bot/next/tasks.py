@@ -387,7 +387,38 @@ class WorkTasks:
                 raise ValueError('只可放弃终态、容器/账号会话已关闭且宿主已完成收尾的任务环境')
             progress = await self.files.discard(item, requester=requester, workspace=workspace, runtime=runtime)
             return {'task': self.status(scene, id), 'removal': progress,
-                    'notice': '工作区与运行目录清理已返回；交付副本、共享原件和执行记录保留，不代表安全擦除或配额实际释放。'}
+                    'notice': '工作区与运行目录已释放；交付副本、共享原件和执行记录保留。'}
+
+    async def clean_task_files(self, scene: str, id: int, *, requester: str,
+                               operation: Literal['temporary', 'environment']) -> dict:
+        if operation == 'environment':
+            result = await self.discard_workspace(scene, id, requester=requester,
+                workspace=str(self.settings.workspace_root / scene / 'tasks' / str(id)),
+                runtime=str(self.settings.runtime_root / scene / str(id)), confirmed=True)
+            return result['removal']
+        async with self.file_changes:
+            item = self.records.get(scene, id)
+            self._can_manage(item, requester)
+            if item.status not in TERMINAL or item.container is not None or item.browser_active or id in self.running:
+                raise ValueError('执行与浏览器关闭、宿主完成收尾后再清理临时文件')
+            return await self.files.clean_temporary(item, requester=requester)
+
+    async def close_task_environment(self, scene: str, id: int, *, requester: str) -> dict:
+        async with self.file_changes:
+            item = self.records.get(scene, id)
+            self._can_manage(item, requester)
+            if item.status not in TERMINAL or id in self.running:
+                raise ValueError('活动任务先取消，执行收尾完成后再关闭遗留环境')
+            try:
+                if item.container is not None:
+                    await self.sandbox.stop_recorded(scene, str(id), item.container)
+                    self.records.set_container(scene, id, None)
+                    self.records.add_event(scene, id, 'container_released', {'container': item.container, 'requester': requester})
+                if item.browser_active:
+                    await self.task_browser.stop(item)
+            finally:
+                self._notify(scene)
+            return self.status(scene, id)
 
     async def answer(self, scene: str, id: int, *, requester: str,
                      text: str | None, confirmed: bool | None, question_id: str) -> dict:

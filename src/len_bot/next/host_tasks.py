@@ -6,7 +6,6 @@ from dataclasses import asdict
 import os
 from pathlib import Path
 import stat
-import time
 import traceback
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -20,7 +19,6 @@ from .network import NetworkRuntime
 from .task_files import file_info
 from .tasks_store import TERMINAL, TaskStore
 from .tasks_tools import DelegateArguments, TaskArguments, perform_task_action
-from .task_storage import storage_usage
 
 
 class WorkspaceDiscard(BaseModel):
@@ -115,31 +113,6 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
             return records.event(scene, id, event_id)
         except ValueError as error:
             raise HTTPException(404, str(error)) from error
-
-    @app.get('/api/host/tasks/{id}/storage')
-    async def storage(id: int, scene: str, request: Request, _: str = Depends(user)):
-        scene_exists(scene)
-        try:
-            before = records.get(scene, id)
-        except ValueError as error:
-            raise HTTPException(404, str(error)) from error
-        worker = runtime.config.worker
-        if worker is None:
-            raise HTTPException(409, '当前根配置没有 worker，无法定位原任务存储')
-        started = time.time()
-        try:
-            roots = await run_in_threadpool(storage_usage, worker, scene, id)
-        except ValueError as error:
-            raise HTTPException(409, str(error)) from error
-        user(request)
-        after = records.get(scene, id)
-        return {'scene': scene, 'task_id': id, 'started_at': started, 'ended_at': time.time(),
-                'status_at_start': before.status, 'status_at_end': after.status,
-                'container_at_start': before.container, 'container_at_end': after.container,
-                'roots': roots, 'hard_disk_quota': None,
-                'notice': '本次目录元数据读取不是原子快照。逻辑大小按普通文件目录项计；分配字节按各树实际 '
-                          'dev/inode 去重、计文件系统报告的512字节块，不代表文件独占或底层设备去重后的占用。'
-                          '不跟随链接、不读正文、不删除文件。硬磁盘配额未实现，用量不是配额或剩余额度。'}
 
     @app.post('/api/host/tasks/{id}/workspace-discard')
     async def discard(id: int, scene: str, body: WorkspaceDiscard, request: Request, _: str = Depends(user)):
