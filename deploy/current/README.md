@@ -39,7 +39,7 @@ docker compose -f deploy/current/services.compose.yaml up -d
 
 只用聊天不要求 Docker、OpenViking 或 ASR；只启动根配置实际采用的服务。停止时先 Ctrl-C 停 Bot、再停 ASR，最后 `docker compose -f deploy/current/services.compose.yaml stop`，不删除服务卷。
 
-本机源码实例在配套服务就绪后，可双击 `deploy/current/start.command`，或在实例根执行 `.venv/bin/len-bot`。启动入口只运行现有环境，不安装、不迁移、不覆盖配置；终端 Ctrl-C 停止 Bot。
+本机源码实例在配套服务就绪后，可双击 `deploy/current/start.command`，或在实例根执行 `.venv/bin/len-bot`。启动器只运行现有环境，不安装、不迁移、不覆盖配置；终端 Ctrl-C 停止 Bot。面板明确重启会等待旧宿主退出后启动一次新宿主，异常不自动拉起，见[保存与重启](operations.md#保存与重启)。
 
 | 服务 | 本机部署入口 | 私有数据／配置 |
 |---|---|---|

@@ -204,7 +204,7 @@ async function removeScene() {
           </AdvancedFields>
         </section>
 
-        <SaveBar :dirty="dirty" :saving="save.busy.value" :error="save.error.value" label="保存本群设置"
+        <SaveBar :on-save="submit" :dirty="dirty" :saving="save.busy.value" :error="save.error.value" label="保存本群设置"
           :problem="duplicateQQ ? '和群友的关系里有重复的 QQ' : ''" @discard="adopt" />
       </form>
 

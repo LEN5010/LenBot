@@ -178,7 +178,7 @@ const amounts = value => Object.entries(value || {}).map(([currency, amount]) =>
         </div>
         <v-btn variant="outlined" size="small" @click="draft.prices.push({ provider: providerNames[0] || '', model: '', currency: 'USD', input: '', cache_read: '', output: '' })">添加价格</v-btn>
       </section>
-      <SaveBar :dirty="dirty" :saving="save.busy.value" :error="save.error.value" :problem="problem" label="保存模型设置" @discard="adopt" />
+      <SaveBar :on-save="submit" :dirty="dirty" :saving="save.busy.value" :error="save.error.value" :problem="problem" label="保存模型设置" @discard="adopt" />
     </form>
 
     <section class="surface">

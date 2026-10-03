@@ -19,7 +19,7 @@ async function submit() {
   const result = await save.run(() => api('/api/host/settings/panel', {
     method: 'PUT', body: JSON.stringify({ ...draft.value, password: password.value || null }),
   }))
-  if (result) emit('saved', result)
+  if (result) { password.value = ''; emit('saved', result) }
 }
 </script>
 

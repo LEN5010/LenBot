@@ -11,6 +11,7 @@ import uvicorn
 
 from .config import load_host_config
 from .instance_lock import instance_lock
+from .host_lifecycle import HostLifecycle, RESTART_EXIT
 from .operations import host_logging, credentials, redact
 from .chat_context import PROMPTS
 from .chat_tools import build_tools, tool_catalog
@@ -44,10 +45,12 @@ class HostPanelServer(uvicorn.Server):
         yield
 
 
-async def run_with_panel(runtime: NetworkRuntime, server: HostPanelServer) -> None:
+async def run_with_panel(runtime: NetworkRuntime, server: HostPanelServer, lifecycle: HostLifecycle) -> None:
     def stop() -> None:
         runtime.stop()
         server.should_exit = True
+
+    lifecycle.shutdown = stop
 
     async def serve() -> None:
         try:
@@ -61,6 +64,8 @@ async def run_with_panel(runtime: NetworkRuntime, server: HostPanelServer) -> No
         try:
             await runtime.run(manage_signals=False, manual_connection=True)
         except Exception as error:
+            if lifecycle.intent != 'running':
+                raise
             # The business lifetime has ended; keep only management available.
             # Closed runners and services are not restarted by a connect button.
             runtime.accepting = False
@@ -70,7 +75,7 @@ async def run_with_panel(runtime: NetworkRuntime, server: HostPanelServer) -> No
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop)
+        loop.add_signal_handler(sig, lifecycle.stop)
     tasks = [asyncio.create_task(run_runtime()), asyncio.create_task(serve())]
     errors: list[BaseException] = []
     try:
@@ -85,11 +90,12 @@ async def run_with_panel(runtime: NetworkRuntime, server: HostPanelServer) -> No
         if errors:
             raise BaseExceptionGroup("Multi-scene host stopped with errors", errors)
     finally:
+        lifecycle.shutdown = None
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.remove_signal_handler(sig)
 
 
-async def run() -> None:
+async def run(lifecycle: HostLifecycle) -> None:
     root = Path.cwd()
     if not (root / 'lenbot.config.json').exists():
         from .setup import run_setup
@@ -197,19 +203,22 @@ async def run() -> None:
                 if config.panel is None:
                     await runtime.run()
                 else:
-                    app = create_app(config, runtime, root=Path.cwd())
+                    app = create_app(config, runtime, root=Path.cwd(), lifecycle=lifecycle)
                     server = HostPanelServer(uvicorn.Config(
                         app, host=config.panel.host, port=config.panel.port,
                     ))
-                    await run_with_panel(runtime, server)
+                    await run_with_panel(runtime, server, lifecycle)
             finally:
                 await mcp.close()
 
 
 
-def main() -> None:
+def main(*, restartable: bool = False) -> None:
+    lifecycle = HostLifecycle(restartable=restartable)
     with instance_lock(Path.cwd()):
-        asyncio.run(run())
+        asyncio.run(run(lifecycle))
+    if lifecycle.intent == 'restart':
+        raise SystemExit(RESTART_EXIT)
 
 
 if __name__ == "__main__":

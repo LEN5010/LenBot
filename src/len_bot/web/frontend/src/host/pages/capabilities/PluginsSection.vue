@@ -175,7 +175,7 @@ const errorOf = part => active.value === part ? save.error.value : null
     </form>
     <ErrorNote v-for="error in [...snapshot.discovery_errors, ...snapshot.running.discovery_errors]" :key="error" title="有插件目录读不了" :error="error" />
 
-    <SettingSection :title="`${sceneName(scene)} 用哪些插件`" description="先安装并配置插件，再为本群打开。保存会重载涉及的插件，不重启聊天；全局停用的插件保留群配置但不执行。"
+    <SettingSection :restart="false" :title="`${sceneName(scene)} 用哪些插件`" description="先安装并配置插件，再为本群打开。保存会重载涉及的插件，不重启聊天；全局停用的插件保留群配置但不执行。"
       :dirty="sceneDirty" :saving="save.busy.value && active === 'scene'" :error="errorOf('scene')" @save="saveScene">
       <p v-if="!loaded.length" class="muted">还没有加载任何插件。</p>
       <div class="choice">
@@ -184,7 +184,7 @@ const errorOf = part => active.value === part ? save.error.value : null
       </div>
     </SettingSection>
 
-    <SettingSection v-for="name in names" :id="`plugin-${name}`" :key="name" :title="name" :description="manifest(name)?.description || ''"
+    <SettingSection :restart="false" v-for="name in names" :id="`plugin-${name}`" :key="name" :title="name" :description="manifest(name)?.description || ''"
       :dirty="pluginDirty(name)" :saving="save.busy.value && active === name" :error="errorOf(name)" save-label="保存并应用" @save="savePlugin(name)">
       <div class="plugin-status">
         <span v-if="manifest(name)" class="muted">源码 v{{ manifest(name).version }} · 运行 {{ running[name]?.version ? `v${running[name].version}` : '未加载' }}</span>
