@@ -97,33 +97,71 @@ Ollama首次拉取须等待其服务就绪。OpenViking服务密钥与每场景�
 
 ## Linux 服务部署
 
-源码置于 `/opt/lenbot/source`，实例置于 `/opt/lenbot/instance`。全新主机建立身份与目录，已有属主不递归重写：
+发行文件放 `/opt/lenbot/releases/<版本>`，实例放 `/opt/lenbot/instance`。服务账号拥有实例及其中的 `.venv`，插件依赖安装到这一个环境；程序发行包与业务数据分开。先安装系统 Git，并将 uv 放到 `/usr/local/bin/uv`，再创建新实例：
 
 ```sh
 sudo useradd --system --user-group --home-dir /opt/lenbot/instance --no-create-home lenbot
 sudo install -d -o lenbot -g lenbot -m 0700 /opt/lenbot/instance
-cd /opt/lenbot/source
-./scripts/install.sh
+sudo -H -u lenbot /usr/local/bin/uv venv --python 3.13 /opt/lenbot/instance/.venv
+sudo -H -u lenbot /usr/local/bin/uv pip install --python /opt/lenbot/instance/.venv/bin/python /path/to/len_bot-0.1.0-py3-none-any.whl
 cd /opt/lenbot/instance
-sudo -u lenbot /opt/lenbot/source/.venv/bin/len-bot
+sudo -H -u lenbot .venv/bin/len-bot
 ```
 
-最后一条在无配置时运行首次向导，已有配置时启动 Bot。实例数据与引用的外部目录不放进发布源码；服务模板只允许写实例根，使用外部目录须明确调整 `ReadWritePaths`。升级先按[离线维护](operations.md#升级与文件锁)处理，不在启动中迁移。
+最后一条在无配置时显示首次向导，已有配置时启动 Bot。已有用户和实例继续使用，不重复创建或递归改属主。服务模板允许写实例根；使用外部数据目录时增加相应 `ReadWritePaths`。uv 和 Git 在服务 PATH 中可执行，Python 环境不再放在只读源码目录。
 
-明确配置后安装 systemd 模板；`daemon-reload` 不启动或开机自启：
+明确配置后安装发行包中的 systemd 模板；`daemon-reload` 不启动或开机自启：
 
 ```sh
-sudo install -m 0644 /opt/lenbot/source/deploy/current/lenbot.service /etc/systemd/system/lenbot.service
+sudo install -m 0644 /path/to/release/deploy/current/lenbot.service /etc/systemd/system/lenbot.service
 sudo systemctl daemon-reload
 sudo systemctl start lenbot
 sudo journalctl -u lenbot -n 100 --no-pager
 ```
 
-用 `sudo systemctl stop lenbot` 停止，不与手工进程并行运行。真实发送配置下，启动会连接 OneBot 并恢复已有安排／后台工作，不是纯面板启动。
+用 `sudo systemctl stop lenbot` 停止。面板重启由同一个启动器完成；systemd 配置为 `Restart=no`。真实发送配置下启动会连接 OneBot 并恢复已有安排／后台工作。
+
+## Docker 宿主与插件环境
+
+镜像内有 Git、SSH 客户端和 uv；默认身份为 `10000:10000`，主页为 `/srv/lenbot`。实例原生数据卷挂载在 `/srv/lenbot`，已初始化的根配置中 `panel.host` 使用 `0.0.0.0`，例如 `panel.port` 为 `11307`。新卷从镜像取得目录属主，实例文件由该身份读写；所有业务地址与路径按容器里的实际位置填写。首次创建根配置可使用上文 wheel 向导，保存退出后再按容器位置调整，最后将新实例的配置和角色导入数据卷。Docker Desktop 的实例库使用原生卷，不放在宿主目录共享挂载上；本机共享挂载已出现进程间锁不生效，原生卷沿现有 SQLite／实例锁工作。Linux 原生文件系统上的绑定目录也可使用。
+
+Python 环境挂载到**与当前镜像版本对应的命名卷**。新卷由 Docker 从镜像中的已安装环境填充，文件属主就是运行身份；容器重建复用同一卷，已装插件依赖保持。以下 `r1` 是本次发行的卷名示例：
+
+```sh
+docker build -f deploy/current/Dockerfile -t lenbot-current:local .
+docker volume create lenbot-data
+docker volume create lenbot-python-r1
+# 仅初始化新的实例卷；根配置中的路径采用容器里的位置。
+tar -C /absolute/path/to/new-instance -cf - lenbot.config.json personas | \
+  docker run --rm -i --network none \
+    --mount type=volume,source=lenbot-data,target=/srv/lenbot \
+    --entrypoint tar lenbot-current:local --no-same-owner -xf - -C /srv/lenbot
+docker run --name lenbot --restart=no --stop-timeout 180 \
+  --mount type=volume,source=lenbot-data,target=/srv/lenbot \
+  --mount type=volume,source=lenbot-python-r1,target=/opt/lenbot/.venv \
+  -p 127.0.0.1:11307:11307 lenbot-current:local
+```
+
+入口只启动，不在启动中安装依赖、同步包或转换数据。面板插件安装使用卷里的实际解释器，源码及 KV 分别在实例 `plugins/` 与 `plugin-data/`。私有 Git 使用运行身份的 Git／SSH 凭据配置。
+
+**升级换新环境卷**：停旧容器，采用新镜像和新卷名，然后在同一实例根执行该版本要求的离线数据迁移与插件依赖安装。不要把旧卷挂到新镜像后当作已经升级；旧卷会遮住新镜像的程序。恢复插件依赖只读取已配置插件清单，包含停用插件，不执行插件代码，不拉 Git 或改选版本：
+
+```sh
+docker volume create lenbot-python-r2
+docker run --rm \
+  --mount type=volume,source=lenbot-data,target=/srv/lenbot \
+  --mount type=volume,source=lenbot-python-r2,target=/opt/lenbot/.venv \
+  --entrypoint /opt/lenbot/.venv/bin/python lenbot-current:new \
+  -m len_bot.next.plugin_dependencies
+```
+
+迁移命令使用同样的挂载和解释器，模块名按[升级与文件锁](operations.md#升级与文件锁)选择；完成后以新镜像、新卷启动。该离线依赖命令和宿主共用实例锁，现有宿主依赖保持固定，冲突直接显示原错。旧环境卷只含旧程序及插件包，确认新环境采用后由操作者删除，不删除实例数据卷。
+
+宿主镜像本节提供聊天、面板和插件安装环境。容器内的独立任务还需要 Docker 客户端、daemon 连接以及一致的任务文件路径，发行阶段提供对应接线；浏览器和记忆服务仍是独立组件。
 
 ## 升级成品
 
-停止实例和试聊，按[离线维护](operations.md#升级与文件锁)备份。用 `uv pip install --python .venv/bin/python /path/to/新版本.whl` 替换程序，再从同一实例目录用 `.venv/bin/python -m len_bot.next.migrate` 和 `-m len_bot.next.migrate_memory_jobs` 执行该版本要求的离线转换，最后 `.venv/bin/len-bot` 启动。安装不改根配置与角色；任务镜像单独升级，不自动迁移或重启。
+停止实例和试聊，按[离线维护](operations.md#升级与文件锁)备份。用 `uv pip install --python .venv/bin/python /path/to/新版本.whl` 替换程序，重建 Python 环境时先运行 `.venv/bin/python -m len_bot.next.plugin_dependencies` 安装原插件声明依赖；再从同一实例目录用 `.venv/bin/python -m len_bot.next.migrate` 和 `-m len_bot.next.migrate_memory_jobs` 执行该版本要求的离线转换，最后 `.venv/bin/len-bot` 启动。安装不改根配置与角色；任务镜像单独升级，不自动迁移或重启。
 
 ## 分发
 

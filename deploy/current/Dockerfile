@@ -24,16 +24,20 @@ COPY src ./src
 COPY --from=frontend /build/src/len_bot/web/static/dist ./src/len_bot/web/static/dist
 RUN uv sync --locked --no-dev --no-editable
 RUN .venv/bin/python /build/collect_python_licenses.py /build/licenses/python
+RUN python /build/collect_python_licenses.py /build/licenses/install-tools
 COPY --from=frontend /build/licenses/frontend /build/licenses/frontend
 RUN mkdir /build/licenses/project && cp LICENSE NOTICE THIRD_PARTY_NOTICES.md /build/licenses/project/
 
 FROM python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata util-linux \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata util-linux git openssh-client \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10000 lenbot \
-    && useradd --uid 10000 --gid 10000 --no-create-home --shell /usr/sbin/nologin lenbot \
-    && mkdir -p /srv/lenbot /var/lib/lenbot
-COPY --from=build /opt/lenbot/.venv /opt/lenbot/.venv
+    && useradd --uid 10000 --gid 10000 --home-dir /srv/lenbot --no-create-home --shell /usr/sbin/nologin lenbot \
+    && install -d -o 10000 -g 10000 /srv/lenbot /var/lib/lenbot
+# A release-specific named volume at this path retains plugin packages when
+# the container is recreated. Docker populates a new volume from this image.
+COPY --from=build --chown=10000:10000 /opt/lenbot/.venv /opt/lenbot/.venv
+COPY --from=build /usr/local/bin/uv /usr/local/bin/uv
 COPY --from=build /build/licenses /usr/share/lenbot/licenses
 # This is the deployed instance root. The panel reads and atomically saves
 # lenbot.config.json here; its whole parent directory is mounted read/write.

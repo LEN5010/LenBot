@@ -46,7 +46,7 @@ QQ 聊天还需一个 OneBot v11 服务；可先在面板试聊。Docker、OpenV
 ## 限制与验收
 
 - 双记忆后端历史形式不同；OpenViking 完整遗忘需要[专门的服务扩展](deploy/current/memory-forget.md)，普通删除不清除旧快照。
-- 任务支持实例级 ext4／APFS 存储池硬上限、离线入池、用量查看与文件清理。账号浏览不支持远程文件上传下载。
+- 任务支持实例级 ext4／APFS 存储池硬上限、离线入池、用量查看与文件清理。公共与账号浏览均支持任务文件上传／下载；账号文件传输使用[配套 BrowserSkill 扩展与文件助手](deploy/current/browserskill-files.md)。
 - ASR 处理本场景 QQ 语音，不接受任意本地音视频，也不提供 TTS。
 - 已从 wheel 在 macOS 全新虚拟环境完成试聊和任务文件演示；另在无 Node/npm 的全新 Linux ARM64 容器完成安装、首次配置、真实模型试聊、插件新依赖安装及模拟协议续聊。Linux 使用 CLI／HTTP 接口验证，不是完整桌面或 systemd 部署验证。真实 QQ 交付、浏览器扩展和语音质量仍需现场观察。
 - 仅保留当前运行核心和显式离线历史格式工具，不再支持旧核心启动。

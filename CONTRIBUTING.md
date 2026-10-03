@@ -43,7 +43,7 @@ git diff --check
 git diff --cached --check
 ```
 
-[CI](.github/workflows/ci.yml) 编译、构建并生成 sdist/wheel，不证明运行或页面交互正确。改前端后按 AGENTS.md 实际操作页面；本次明确跳过的检查应记录为未执行。
+[CI](.github/workflows/ci.yml) 编译、构建并生成 sdist/wheel，不证明运行或页面交互正确。页面使用按本轮集中测试阶段安排，构建结果与实际操作分开。
 
 独立打包到源码树外的新目录：
 

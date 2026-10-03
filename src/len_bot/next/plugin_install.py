@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from importlib.metadata import distributions
 import json
 from pathlib import Path
@@ -70,6 +71,18 @@ def read_selection(directory: Path) -> InstallSelection:
         raise ValueError(f'插件安装定位解析失败：{path}: {error}；原文：{raw[:300]!r}') from error
 
 
+async def install_dependencies(requirements: Sequence[str]) -> str:
+    if not requirements:
+        return ''
+    # Keep the host environment fixed while resolving the explicitly requested plugin packages.
+    with tempfile.TemporaryDirectory(prefix='lenbot-plugin-deps-') as temporary:
+        constraints = Path(temporary) / 'installed.txt'
+        constraints.write_text('\n'.join(sorted(
+            f"{item.metadata['Name']}=={item.version}" for item in distributions())) + '\n')
+        return await run_command('uv', 'pip', 'install', '--python', sys.executable,
+                                 '--constraints', str(constraints), '--', *requirements)
+
+
 class PluginInstaller:
     def __init__(self, root: Path):
         self.root = root
@@ -82,15 +95,7 @@ class PluginInstaller:
         return path
 
     async def dependencies(self, manifest: Manifest) -> str:
-        if not manifest.dependencies:
-            return ''
-        # Installing a plugin must not silently replace the running host's packages.
-        with tempfile.TemporaryDirectory(prefix='lenbot-plugin-deps-') as temporary:
-            constraints = Path(temporary) / 'installed.txt'
-            constraints.write_text('\n'.join(sorted(
-                f"{item.metadata['Name']}=={item.version}" for item in distributions())) + '\n')
-            return await run_command('uv', 'pip', 'install', '--python', sys.executable,
-                                     '--constraints', str(constraints), '--', *manifest.dependencies)
+        return await install_dependencies(manifest.dependencies)
 
     async def checkout_ref(self, path: Path, ref: str) -> str:
         revision_ref(ref)
