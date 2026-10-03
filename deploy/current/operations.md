@@ -55,6 +55,8 @@ uv run --no-sync python -m len_bot.next.maintenance.migrate_memory_jobs
 
 历史格式只由 `import_history`、`import_reminders`、`import_media`、`import_legacy_memory` 等显式离线命令读取；当前后端移交用 `transfer_memory`，角色记忆模板见[专门说明](memory-templates.md)。仅在实际需要移交时按模块入口与根配置准备参数，不恢复旧运行时或反写旧库。
 
+本地记忆正文在停机后手工修改时，从实例根执行 `uv run --no-sync python -m len_bot.next.maintenance.memory_reindex`。重建保留正文和历史，清除所有派生目录摘要（`.abstract.md`／`.overview.md`），避免旧概览继续作为当前资料；启用摘要整理后会按新正文重新生成。
+
 ## 记忆删除的范围
 
 普通删除不等于完整遗忘。本地后端的 forget 清除正文、索引、旧版本和派生摘要，并可排除指定原话再次抽取；原聊天与历史模型请求仍保留。OpenViking 需要先安装[完整遗忘扩展](memory-forget.md)，否则调用失败，不转成普通删除。扩展还清理该文件的服务快照与归档历史，以及明确选中的原话副本；未选的其他记忆、宿主原聊天、模型调用记录与外部备份不删除。其上游 MCP 中原有的 forget 仍只是普通删除。
