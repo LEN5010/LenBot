@@ -6,261 +6,59 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
-from pathlib import Path
 from random import choice
 from string import Template
 from typing import Literal, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
 from len_bot.media.images import image_block
+from .chat_context import PROMPTS, build_system, jargon_context, turn_state, voice_prompt
+from .chat_tools import ReactArguments, SayArguments, WaitArguments, build_tools, tool_catalog
 from .config import LabConfig
 from .context import (
     CompactionPlan, ContextBudgetError, estimate_content, estimate_request,
     plan_compaction, project_history,
 )
-from .discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, search_tools
+from .discovery import DEFERRED_NAMES, ToolSearchArguments, search_tools
 from .delivery import Expression, part_length, report_parts, split_expression
 from .expression_selection import ExpressionService
 from .external_tools import ExternalTool
-from .file_delivery import SEND_FILE_TOOL, SendFileArguments, execute_send_file
-from .images import LOOK_TOOL, LookArguments, execute_look
-from .audio import TRANSCRIBE_TOOL, TranscribeArguments, AudioService
+from .file_delivery import SendFileArguments, execute_send_file
+from .images import LookArguments, execute_look
+from .audio import TranscribeArguments, AudioService
 from .audio_store import AudioStore
 from .plugin import Content, Sent
 from .plugin_delivery import prepare_parts
-from .jargon_store import JargonStore
-from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, plain_text, render_message, render_text
+from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, render_message, render_text
 from .model import ChatModel, ModelReply, ToolCall
 from .model_slots import ModelSlots
 from .limits import LimitReached, check_speech
-from .memory import MEMORY_TOOL, MemoryService
-from .persona import Persona, select_examples, select_style
+from .memory import MemoryService
+from .persona import Persona, select_style
 from .persona_stickers import PersonaSticker
 from .sticker_assets import CollectedSticker
 from .sticker_store import StickerStore
-from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
-from .platform_tools import (MEMBER_INFO_TOOL, OPEN_FORWARD_TOOL, MemberInfoArguments, OpenForwardArguments,
+from .persona_knowledge import PersonaKnowledgeArguments, persona_knowledge
+from .platform_tools import (MemberInfoArguments, OpenForwardArguments,
                              PlatformCall, member_info, open_forward)
 from .model_request import request_model
-from .recall import RECALL_TOOL, RecallArguments, recall_chat
+from .recall import RecallArguments, recall_chat
 from .reply_effect_store import ReplyEffectStore
-from .scene_control import SCENE_CONTROL_TOOL, SceneControlArguments
-from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
-from .skills import Skill
+from .scene_control import SceneControlArguments
+from .schedule import execute_schedule
 from .store import ImageAsset, Store, encode
 from .tasks import WorkTasks
 from .tasks_store import TaskStore
-from .tasks_tools import DELEGATE_TOOL, TASK_TOOL, execute_tasks
-from .web_read import WEB_READ_TOOL, WebReadArguments, execute_web_read
-from .web_search import WEB_SEARCH_TOOL, WebSearchArguments, execute_web_search
+from .tasks_tools import execute_tasks
+from .web_read import WebReadArguments, execute_web_read
+from .web_search import WebSearchArguments, execute_web_search
 from .replay_web import RecordedWeb
 from .replay_images import RecordedImages
 
 
-class SayArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    content: str = Field(min_length=1)
-    reply_to: str | None = Field(default=None, description="需要引用时填本场景已有平台消息 ID；直接接话可省略。")
-    mention: str | None = Field(default=None, pattern=r"^[0-9]+$",
-        description="需要提醒特定对象时填实际 QQ；连续对话中对象清楚时可省略。")
-    length: Literal["短", "正常", "长"] = Field(default="正常", description="本次表达的详略意向，所需事实仍完整保留。")
-
-
-class ReactArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    emotion: str | None = Field(default=None, min_length=1)
-    query: str | None = Field(default=None, min_length=1)
-    reply_to: str | None = None
-
-    @model_validator(mode="after")
-    def one_selector(self) -> ReactArguments:
-        if (self.emotion is None) == (self.query is None):
-            raise ValueError("emotion 与 query 必须二选一")
-        if not (self.emotion if self.emotion is not None else self.query).strip():
-            raise ValueError("表情检索内容不能为空白")
-        return self
-
-
 class MessageSender(Protocol):
     def __call__(self, message: ChatMessage, *, image_bytes: bytes | None = None) -> Awaitable[SendResult]: ...
-
-
-class WaitArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    seconds: float = Field(ge=0, allow_inf_nan=False)
-    reason: str
-
-    @field_validator("reason")
-    @classmethod
-    def required_reason(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("reason must not be blank")
-        return value
-
-
-SAY_TOOL = {"type": "function", "function": {
-    "name": "say", "description": "在当前场景表达；隔离环境仅模拟发送。",
-    "parameters": SayArguments.model_json_schema(),
-}}
-REACT_TOOL = {"type": "function", "function": {
-    "name": "react", "description": "在当前场景发送一张表情，角色匹配优先，其次是启用的本群已采用表情；"
-        "emotion 精确匹配情绪标签，或 query 按描述、标签字面检索，二选一；结果返回实际来源与发送状态。",
-    "parameters": ReactArguments.model_json_schema(),
-}}
-WAIT_TOOL = {"type": "function", "function": {
-    "name": "wait", "description": "短时等待群友补充消息，新消息可提前结束；受本轮剩余时限约束。"
-        "后台任务由已有追问和结束事件唤醒，委托后结束本轮，不用此工具轮询任务。",
-    "parameters": WaitArguments.model_json_schema(),
-}}
-PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
-
-
-def tool_catalog(*, platform: bool) -> list[dict]:
-    say = SAY_TOOL if not platform else {"type": "function", "function": {
-        **SAY_TOOL["function"], "description": "在当前场景表达；结果返回实际原文和平台发送状态。",
-    }}
-    return [say, REACT_TOOL, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
-            *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, DELEGATE_TOOL, TASK_TOOL,
-            SEND_FILE_TOOL, OPEN_FORWARD_TOOL, MEMBER_INFO_TOOL, TRANSCRIBE_TOOL, SCENE_CONTROL_TOOL, TOOL_SEARCH]
-
-
-def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> list[str]:
-    reasons = []
-    if persona.tools != "all" and name not in persona.tools:
-        reasons.append("角色没有允许这个工具")
-    if (name == "react" and not persona.stickers
-            and not (config.learning is not None and config.learning.collect_stickers)):
-        reasons.append("角色没有表情素材，本群也没有开启收集表情")
-    if name == "web_read" and config.web_read is None:
-        reasons.append("还没有开启读网页")
-    if name == "web_search" and config.web_search is None:
-        reasons.append("还没有开启搜索网页")
-    if name == "memory" and config.memory is None:
-        reasons.append("还没有设置记忆")
-    if name == "look" and config.models.roles.vision is None:
-        reasons.append("还没有设置看图模型")
-    if name == "transcribe" and config.models.roles.asr is None:
-        reasons.append("还没有设置语音转写模型")
-    if name == "schedule" and not config.schedules.enabled:
-        reasons.append("本群没有开启提醒")
-    if name in {"delegate", "task"} and config.worker is None:
-        reasons.append("还没有启用独立任务")
-    if name == "delegate" and not config.tasks.enabled:
-        reasons.append("本群没有开启任务")
-    if name == "send_file":
-        if config.worker is None:
-            reasons.append("还没有启用独立任务")
-        if config.onebot is None or config.onebot.upload_visible_root is None:
-            reasons.append("还没有设置 NapCat 能看到的文件目录")
-        if config.delivery != "onebot":
-            reasons.append("模拟发送时不能发文件")
-    if name == "persona_knowledge" and not persona.knowledge:
-        reasons.append("角色没有资料文件")
-    if name in {"open_forward", "member_info", "transcribe"} and config.delivery != "onebot":
-        reasons.append("模拟发送时用不了")
-    if name == "member_info" and not config.scene.startswith("group:"):
-        reasons.append("只能在群里用")
-    return reasons
-
-
-def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[dict]:
-    if persona.tools != "all":
-        for name in ("web_read", "web_search", "look", "persona_knowledge", "memory", "react"):
-            if name in persona.tools:
-                reasons = tool_unavailable_reasons(config, persona, name)
-                if reasons:
-                    raise ValueError(f"角色开放 {name} 但无法装配：{'；'.join(reasons)}")
-    allowed = [tool for tool in tool_catalog(platform=platform)
-               if not tool_unavailable_reasons(config, persona, tool["function"]["name"])]
-    names = {tool["function"]["name"] for tool in allowed}
-    if "schedule" in names and not {"schedule_list", "schedule_cancel"} <= names:
-        raise ValueError("角色开放 schedule 时必须同时开放 schedule_list 和 schedule_cancel")
-    if "delegate" in names and "task" not in names:
-        raise ValueError("角色开放 delegate 时必须同时开放 task 管理工具")
-    if names & DEFERRED_NAMES and "tool_search" not in names:
-        raise ValueError("角色开放低频工具时必须同时开放 tool_search")
-    emotions = sorted({value for sticker in persona.stickers.values() for value in sticker.emotions})
-    return [{**tool, "function": {**tool["function"], "description": tool["function"]["description"]
-                 + " 当前角色情绪标签：" + encode(emotions)}}
-            if tool["function"]["name"] == "react" else tool for tool in allowed]
-
-
-def voice_prompt(persona: Persona, *, platform: bool) -> str:
-    return Template((PROMPTS / "next_voice.md").read_text()).substitute(
-        name=persona.name, brief=persona.brief,
-        outlet=(PROMPTS / ("next_platform_outlet.md" if platform else "next_simulated_outlet.md")).read_text().strip(),
-        self_reference="、".join(persona.self_reference), voice=persona.voice,
-        boundaries=persona.boundaries,
-        examples="\n\n".join(f"{e.context}\n台词：{e.line}" for e in select_examples(persona)),
-    )
-
-
-def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, platform: bool,
-                 skills: tuple[Skill, ...] = (), group_profile: str | None = None,
-                 external: list[dict] = ()) -> str:
-    """Render the actual stable mind system text for this scene and outlet."""
-    names = {tool["function"]["name"] for tool in allowed}
-    deferred = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES] + list(external)
-    mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
-    expression_mode = Template((PROMPTS / mode).read_text()).substitute(
-        voice=persona.voice,
-        examples="\n\n".join(f"{e.context}\n台词：{e.line}" for e in select_examples(persona)))
-    system = Template((PROMPTS / "next_mind.md").read_text()).substitute(
-        name=persona.name, scene=config.scene, bot_qq=config.bot_qq,
-        brief=persona.brief, self_reference="、".join(persona.self_reference),
-        aliases="、".join(persona.aliases), behavior=persona.behavior,
-        boundaries=persona.boundaries, expression_mode=expression_mode,
-        outlet=(PROMPTS / ("next_platform_outlet.md" if platform else
-                           "next_simulated_outlet.md")).read_text().strip(),
-    )
-    scene_details = {}
-    if config.persona_aliases:
-        scene_details["本场景对你的称呼"] = config.persona_aliases
-    if config.relationships:
-        scene_details["关系说明（QQ → 描述）"] = dict(sorted(config.relationships.items()))
-    if config.behavior_addendum is not None:
-        scene_details["本场景行为补充"] = config.behavior_addendum
-    if scene_details:
-        system += "\n" + Template((PROMPTS / "next_scene_persona.md").read_text()).substitute(
-            details=encode(scene_details),
-        )
-    if group_profile is not None:
-        system += "\n" + Template((PROMPTS / "next_group_profile.md").read_text()).substitute(
-            profile=group_profile.strip())
-    if "react" in names:
-        system += "\n" + (PROMPTS / "next_react.md").read_text()
-    if "schedule" in names:
-        system += "\n" + (PROMPTS / "next_schedule.md").read_text()
-    if "memory" in names:
-        system += "\n" + Template((PROMPTS / "next_memory.md").read_text()).substitute(
-            backend=config.memory.backend,
-            backend_details=(PROMPTS / f"next_memory_{config.memory.backend}.md").read_text(),
-        )
-    elif config.memory is not None and config.memory.auto_recall:
-        system += "\n" + (PROMPTS / "next_memory_recall.md").read_text()
-    if "task" in names:
-        system += "\n" + Template((PROMPTS / "next_tasks.md").read_text()).substitute(
-            network=encode({"enabled": config.worker.egress.enabled,
-                           "max_task_bytes": (config.worker.egress.max_task_bytes
-                               if config.tasks.egress_max_task_bytes is None else config.tasks.egress_max_task_bytes),
-                           "max_daily_bytes": (config.worker.egress.max_scene_daily_bytes
-                               if config.tasks.egress_max_daily_bytes is None else config.tasks.egress_max_daily_bytes)}),
-        )
-    if "send_file" in names:
-        system += "\n" + (PROMPTS / "next_files.md").read_text()
-    if "delegate" in names and skills:
-        system += "\n" + Template((PROMPTS / "next_skills.md").read_text()).substitute(
-            catalog=encode([{"name": skill.name, "description": skill.description}
-                            for skill in skills if not skill.disable_model_invocation]),
-        )
-    if "tool_search" in names:
-        system += "\n" + Template((PROMPTS / "next_tools.md").read_text()).substitute(
-            catalog="\n".join(f"- {tool['function']['name']}：{tool['function']['description'].split('；')[0]}"
-                              for tool in deferred) or "（当前没有允许发现的低频工具）")
-    return system
 
 
 class Chat:
@@ -443,22 +241,6 @@ class Chat:
         self.system = self.profile_system(profile)
         return [{"role": "system", "content": self.system}] + project_history(recap, entries) + [state]
 
-    def jargon_context(self, messages: list[ChatMessage], *, intent: str | None = None) -> str | None:
-        if self.config.learning is None:
-            return None
-        excluded = (self.config.bot_qq, *self.config.attention.other_bot_qqs)
-        texts = [plain_text(message) for message in messages
-                 if not message.is_self and message.send_status == "received"
-                 and message.sender.uid not in excluded]
-        if intent is not None:
-            texts.append(intent)
-        terms = JargonStore(self.store).matches(self.config.scene, texts, limit=10)
-        if not terms:
-            return None
-        return Template((PROMPTS / "next_jargon_context.md").read_text()).substitute(
-            jargon=encode([{"词": item["term"], "含义": item["meaning"], "来源": item["source"]} for item in terms]),
-        )
-
     async def compact_now(self) -> dict:
         """One explicit operator-requested compaction; caller owns the scene lock."""
         recap, entries = self.store.active_history(self.config.scene)
@@ -494,28 +276,8 @@ class Chat:
             recap, entries = self.store.active_history(self.config.scene)
             # Refresh only between model requests, never midway through a tool group.
             self.discovered_tools = set(self.store.load_discovered_tools(self.config.scene))
-            now = datetime.fromtimestamp(self.now(), ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
-            state = {"role": "user", "content": f"当前时间：{now}"}
-            schedules = self.store.list_schedules(self.config.scene, limit=21)
-            if schedules:
-                state["content"] += "\n<未完成安排>\n" + "\n\n".join(
-                    describe(item, preview=True) for item in schedules[:20]) + "\n</未完成安排>"
-                if len(schedules) > 20:
-                    state["content"] += "\n这里只列前 20 条；schedule_list 可继续查看。"
-            tasks = TaskStore(self.store).list(self.config.scene, limit=21)
-            if tasks:
-                state["content"] += "\n<未完成工作>\n" + encode([
-                    {"id": item.id, "requester": item.requester, "goal": item.goal,
-                     "status": item.status, "question": item.question} for item in tasks[:20]]) + "\n</未完成工作>"
-                if len(tasks) > 20:
-                    state["content"] += "\n这里只列前20项；task可继续查看。"
-            if self.config.voice_mode == "direct" and expression_style is not None:
-                state["content"] += "\n" + expression_style
-            if recalled is not None:
-                state["content"] += "\n<相关长期记忆>\n" + recalled + "\n</相关长期记忆>"
-            jargon = self.jargon_context(self.store.recent_context_messages(self.config.scene))
-            if jargon is not None:
-                state["content"] += "\n" + jargon
+            state = turn_state(self.config, self.store, now=self.now(),
+                               expression_style=expression_style, recalled=recalled)
             messages = await self.project(recap, entries, state)
             if estimate_request(messages, self.tools, binding.max_output_tokens) <= trigger:
                 return messages
@@ -555,7 +317,8 @@ class Chat:
                     "回复对象": None if quote is None else self.render(quote), "平台已负责提及的QQ": arguments.mention}
             if expression_style is not None:
                 messages.append({"role": "user", "content": expression_style})
-            jargon = self.jargon_context(recent + ([] if quote is None else [quote]), intent=arguments.content)
+            jargon = jargon_context(self.config, self.store, recent + ([] if quote is None else [quote]),
+                                    intent=arguments.content)
             if jargon is not None:
                 messages.append({"role": "user", "content": jargon})
             selected = []

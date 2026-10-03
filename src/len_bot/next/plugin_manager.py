@@ -7,7 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 import shutil
 
-from .chat import tool_catalog
+from .chat_tools import tool_catalog
 from .config import HostConfig, PluginSettings
 from .host_settings import _prepare, _read_saved
 from .network import NetworkRuntime

@@ -23,7 +23,8 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 
 from .cases import CaseFile, InitialMemory, ReplayCase, load_cases
 from .memory_snapshot import MemoryBaseline, check_memory, freeze_memory, install_memory, observed_memory, same_memory
-from ..next.chat import PROMPTS, build_tools
+from ..next.chat_context import PROMPTS
+from ..next.chat_tools import build_tools
 from ..next.config import LabConfig, load_config
 from ..next.memory import LocalMemoryConfig, OpenVikingMemoryConfig
 from ..next.replay_web import RecordedWeb
