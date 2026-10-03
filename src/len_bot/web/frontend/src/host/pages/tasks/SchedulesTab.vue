@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { api, queryString } from '../../../api.js'
+import { schedulesApi } from '../../api/schedules.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify } from '../../store.js'
 import { formatTime } from '../../time.js'
@@ -10,11 +10,11 @@ import SchedulePicker from '../../components/SchedulePicker.vue'
 
 const props = defineProps({ scene: { type: String, required: true }, operator: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
-const state = useResource(() => api('/api/host/schedules/state'))
+const state = useResource(() => schedulesApi.state())
 const settings = computed(() => state.data.value?.scenes.find(item => item.scene === props.scene) || null)
 const status = ref('active'), rows = ref([])
-const list = useResource(async more => ({ more: more === true, ...(await api('/api/host/schedules?' + queryString({
-  scene: props.scene, status: status.value, offset: more === true ? list.data.value.next_offset : 0, limit: 20 }))) }))
+const list = useResource(async more => ({ more: more === true, ...(await schedulesApi.list(props.scene, {
+  status: status.value, offset: more === true ? list.data.value.next_offset : 0, limit: 20 })) }))
 watch(() => list.data.value, value => { if (value) rows.value = value.more ? [...rows.value, ...value.items] : value.items })
 watch(status, () => list.reload())
 
@@ -23,8 +23,8 @@ watch(() => adding.value && note.value !== '', value => emit('dirty', value), { 
 const create = useAction(), cancelling = useAction()
 const validQQ = computed(() => /^[1-9][0-9]*$/.test(props.operator))
 async function submit() {
-  const result = await create.run(() => api('/api/host/schedules?' + queryString({ scene: props.scene }), { method: 'POST',
-    body: JSON.stringify({ requester: props.operator, when: when.value, note: note.value, for: forWhom.value === 'self' ? 'self' : other.value.trim() }) }))
+  const result = await create.run(() => schedulesApi.create(props.scene, { requester: props.operator, when: when.value, note: note.value,
+    for: forWhom.value === 'self' ? 'self' : other.value.trim() }))
   if (!result) return
   adding.value = false
   note.value = ''
@@ -33,8 +33,7 @@ async function submit() {
 }
 async function cancel(item) {
   if (!window.confirm(repeats(item) ? `停止这个重复提醒？\n${item.note}` : `取消这个提醒？\n${item.note}`)) return
-  const result = await cancelling.run(() => api(`/api/host/schedules/${item.id}/cancel?` + queryString({ scene: props.scene }),
-    { method: 'POST', body: JSON.stringify({ requester: props.operator }) }))
+  const result = await cancelling.run(() => schedulesApi.cancel(props.scene, item.id, props.operator))
   if (!result) return
   notify('已取消')
   list.reload()

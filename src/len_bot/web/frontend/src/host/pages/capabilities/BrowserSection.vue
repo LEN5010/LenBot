@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { api, sceneName } from '../../../api.js'
+import { sceneName } from '../../../api.js'
+import { browserApi } from '../../api/browser.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify, readPendingRestart } from '../../store.js'
 import { clone, numberOrBlank, same } from '../../forms.js'
@@ -9,7 +10,7 @@ import ErrorNote from '../../components/ErrorNote.vue'
 import DevOnly from '../../components/DevOnly.vue'
 
 const emit = defineEmits(['dirty'])
-const browser = useResource(() => api('/api/host/browser'))
+const browser = useResource(() => browserApi.read())
 const save = useAction(), act = useAction()
 const draft = ref(null), live = ref(null), devices = ref(null), pairing = ref(''), session = ref('')
 const saved = computed(() => browser.data.value?.saved)
@@ -22,7 +23,7 @@ const problem = computed(() => draft.value && [draft.value.socket, draft.value.b
   ? '三个路径都要填写' : '')
 
 async function submit() {
-  const result = await save.run(() => api('/api/host/browser', { method: 'PUT', body: JSON.stringify({ settings: draft.value }) }))
+  const result = await save.run(() => browserApi.save(draft.value))
   if (result) {
     browser.data.value = result
     readPendingRestart()
@@ -31,28 +32,26 @@ async function submit() {
 }
 async function check() {
   const result = await act.run(async () => ({
-    status: await api('/api/host/browser/status', { method: 'POST' }),
-    devices: (await api('/api/host/browser/devices')).devices,
+    status: await browserApi.status(),
+    devices: (await browserApi.devices()).devices,
   }))
   if (result) { live.value = result.status; devices.value = result.devices }
 }
 async function pair() {
-  const result = await act.run(() => api('/api/host/browser/pair', { method: 'POST' }))
+  const result = await act.run(() => browserApi.pair())
   if (result) pairing.value = result.pairing_link
 }
 async function revoke(id) {
   if (!window.confirm('取消这台设备的授权？它正在进行的浏览器操作会断开。')) return
   const result = await act.run(async () => {
-    await api(`/api/host/browser/devices/${encodeURIComponent(id)}`, { method: 'DELETE' })
-    return (await api('/api/host/browser/devices')).devices
+    await browserApi.revoke(id)
+    return (await browserApi.devices()).devices
   })
   if (result) { devices.value = result; notify('已取消授权') }
 }
 async function release(item) {
   if (!window.confirm('关闭这个任务留下的浏览器会话？')) return
-  const result = await act.run(() => api('/api/host/browser/release', {
-    method: 'POST', body: JSON.stringify({ scene: item.scene, task_id: item.id, session_id: session.value || null }),
-  }))
+  const result = await act.run(() => browserApi.release({ scene: item.scene, task_id: item.id, session_id: session.value || null }))
   if (result) { await browser.reload(); notify('已关闭') }
 }
 const finished = status => ['done', 'failed', 'cancelled'].includes(status)

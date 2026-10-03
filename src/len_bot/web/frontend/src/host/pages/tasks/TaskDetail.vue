@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { api, queryString } from '../../../api.js'
+import { tasksApi } from '../../api/tasks.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify } from '../../store.js'
 import { formatTime } from '../../time.js'
@@ -15,7 +15,7 @@ const props = defineProps({
   version: { type: Number, required: true }, service: { type: Object, required: true }, settings: { type: Object, default: null },
 })
 const emit = defineEmits(['dirty', 'changed'])
-const detail = useResource(() => api(`/api/host/tasks/${props.id}?` + queryString({ scene: props.scene, after: 0, limit: 100 })))
+const detail = useResource(() => tasksApi.detail(props.scene, props.id))
 watch(() => props.version, () => detail.reload())
 const task = computed(() => detail.data.value?.task)
 const at = value => formatTime(value, props.settings?.timezone)
@@ -39,8 +39,7 @@ const act = useAction()
 async function send(action, extra = {}) {
   if (action === 'cancel' && !window.confirm(`取消这个任务？\n${task.value.goal}`)) return
   if (typeof extra.confirmed === 'boolean' && !window.confirm(extra.confirmed ? '确定同意？' : '确定拒绝？')) return
-  const result = await act.run(() => api('/api/host/tasks/action?' + queryString({ scene: props.scene }), { method: 'POST',
-    body: JSON.stringify({ action, id: props.id, requester: props.operator, ...extra }) }))
+  const result = await act.run(() => tasksApi.action(props.scene, { action, id: props.id, requester: props.operator, ...extra }))
   if (!result) return
   if (action === 'append') append.value = ''
   if (action === 'continue') followUp.value = ''
@@ -59,8 +58,7 @@ function submitAnswer(confirmed) {
 const live = ref(null), liveState = ref('idle'), liveError = ref('')
 let socket = null
 function connectLive() {
-  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const connection = new WebSocket(`${protocol}//${location.host}/api/host/tasks/${props.id}/live?` + queryString({ scene: props.scene }))
+  const connection = new WebSocket(tasksApi.liveUrl(props.scene, props.id))
   socket = connection
   liveState.value = 'connecting'
   connection.onopen = () => { if (socket === connection) liveState.value = 'connected' }
@@ -78,7 +76,7 @@ onBeforeUnmount(closeLive)
 
 const download = useAction()
 async function save(file) {
-  const blob = await download.run(() => api(`/api/host/tasks/${props.id}/files/${file.id}?` + queryString({ scene: props.scene }), {}, 'blob'))
+  const blob = await download.run(() => tasksApi.download(props.scene, props.id, file.id))
   if (!blob) return
   const url = URL.createObjectURL(blob), link = document.createElement('a')
   link.href = url; link.download = file.name; document.body.appendChild(link); link.click(); link.remove()

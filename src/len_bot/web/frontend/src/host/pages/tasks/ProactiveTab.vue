@@ -1,14 +1,13 @@
 <script setup>
 import { ref, watch } from 'vue'
-import { api, queryString } from '../../../api.js'
+import { schedulesApi } from '../../api/schedules.js'
 import { useResource } from '../../../composables/useResource.js'
 import { formatTime } from '../../time.js'
 import ErrorNote from '../../components/ErrorNote.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
 const rows = ref([])
-const page = useResource(async more => ({ more: more === true, ...(await api('/api/host/schedules/proactive?' + queryString({
-  scene: props.scene, offset: more === true ? page.data.value.next_offset : 0 }))) }))
+const page = useResource(async more => ({ more: more === true, ...(await schedulesApi.proactive(props.scene, more === true ? page.data.value.next_offset : 0)) }))
 watch(() => page.data.value, value => { if (value) rows.value = value.more ? [...rows.value, ...value.items] : value.items })
 const outcomes = { silent: '叫醒后没有开口', answered: '有人接话', ignored: '没人接话', unobserved: '没法判断' }
 const at = value => formatTime(value, page.data.value?.timezone)

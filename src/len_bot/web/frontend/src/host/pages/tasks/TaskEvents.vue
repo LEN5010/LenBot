@@ -1,6 +1,6 @@
 <script setup>
 import { ref, watch } from 'vue'
-import { api, queryString } from '../../../api.js'
+import { tasksApi } from '../../api/tasks.js'
 import { useAction } from '../../../composables/useResource.js'
 import { developerDetails } from '../../../composables/useDeveloperMode.js'
 import { formatTime } from '../../time.js'
@@ -15,14 +15,14 @@ const rows = ref([]), next = ref(null), full = ref({})
 watch(() => props.first, value => { rows.value = value; next.value = value.length === 100 ? props.firstNext : null }, { immediate: true })
 const more = useAction(), reading = useAction()
 async function loadMore() {
-  const page = await more.run(() => api(`/api/host/tasks/${props.taskId}?` + queryString({ scene: props.scene, after: next.value, limit: 100 })))
+  const page = await more.run(() => tasksApi.detail(props.scene, props.taskId, { after: next.value, limit: 100 }))
   if (!page) return
   rows.value = [...rows.value, ...page.events]
   next.value = page.events.length === 100 ? page.next_after : null
 }
 async function open(event) {
   if (full.value[event.id]) { const { [event.id]: _, ...rest } = full.value; full.value = rest; return }
-  const record = await reading.run(() => api(`/api/host/tasks/${props.taskId}/events/${event.id}?` + queryString({ scene: props.scene })))
+  const record = await reading.run(() => tasksApi.event(props.scene, props.taskId, event.id))
   if (record) full.value = { ...full.value, [event.id]: record }
 }
 // Text and images a person can read; everything else is only in developer mode.

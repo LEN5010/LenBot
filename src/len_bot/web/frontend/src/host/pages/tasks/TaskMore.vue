@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { api, queryString } from '../../../api.js'
+import { tasksApi } from '../../api/tasks.js'
+import { materialsApi } from '../../api/materials.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify } from '../../store.js'
 import ErrorNote from '../../components/ErrorNote.vue'
@@ -13,19 +14,18 @@ const props = defineProps({
   service: { type: Object, required: true }, operator: { type: String, required: true },
 })
 const emit = defineEmits(['changed'])
-const q = computed(() => queryString({ scene: props.scene }))
 const stopped = computed(() => props.service.configured && finished(props.task.status) && props.task.container === null)
 const validQQ = computed(() => /^[1-9][0-9]*$/.test(props.operator))
 
 // Keep a delivered file in this group's shared materials, so later tasks can be given it.
-const shared = useResource(() => api('/api/host/materials?' + q.value), { immediate: false })
+const shared = useResource(() => materialsApi.list(props.scene), { immediate: false })
 const keepFile = ref(null), keepName = ref('')
 const keep = useAction()
 async function keepShared() {
   const materials = shared.data.value ?? await shared.reload()
   if (!materials) return
-  const result = await keep.run(() => api('/api/host/materials/adopt?' + q.value, { method: 'POST', body: JSON.stringify({
-    task_id: props.task.id, file_id: keepFile.value, name: keepName.value.trim(), directory: materials.directory, confirmed: true }) }))
+  const result = await keep.run(() => materialsApi.adopt(props.scene, {
+    task_id: props.task.id, file_id: keepFile.value, name: keepName.value.trim(), directory: materials.directory, confirmed: true }))
   if (!result) return
   notify(`已存为共享资料 ${result.name}`)
   keepFile.value = null
@@ -37,11 +37,11 @@ function chooseKeep(id) {
   keepName.value = props.files.find(file => file.id === id)?.name ?? ''
 }
 
-const storage = useResource(() => api(`/api/host/tasks/${props.task.id}/storage?` + q.value), { immediate: false })
+const storage = useResource(() => tasksApi.storage(props.scene, props.task.id), { immediate: false })
 const rootLabel = { workspace: '工作目录', runtime: '运行目录', deliveries: '交付文件' }
 const size = bytes => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${(bytes / 1024).toFixed(1)} KB`
 
-const skills = useResource(() => api(`/api/host/tasks/${props.task.id}/skills?` + q.value), { immediate: false })
+const skills = useResource(() => tasksApi.skills(props.scene, props.task.id), { immediate: false })
 const inspected = ref(null)
 const inspecting = computed({ get: () => inspected.value !== null, set: value => { if (!value) inspected.value = null } })
 function skillMoved() { inspected.value = null; skills.reload() }
@@ -52,10 +52,10 @@ const canDiscard = computed(() => stopped.value && !props.task.browser_active &&
 async function discardEnvironment() {
   if (!window.confirm('清理这个任务的工作目录和会话？清理后不能再接着做，交付的文件会保留。')) return
   const result = await discard.run(async () => {
-    const usage = await api(`/api/host/tasks/${props.task.id}/storage?` + q.value)
+    const usage = await tasksApi.storage(props.scene, props.task.id)
     const path = kind => usage.roots.find(root => root.kind === kind).path
-    return api(`/api/host/tasks/${props.task.id}/workspace-discard?` + q.value, { method: 'POST',
-      body: JSON.stringify({ requester: props.operator, workspace: path('workspace'), runtime: path('runtime'), confirmed: true }) })
+    return tasksApi.discard(props.scene, props.task.id, {
+      requester: props.operator, workspace: path('workspace'), runtime: path('runtime'), confirmed: true })
   })
   if (!result) return
   notify(result.removal.removed.length || result.removal.absent.length ? '已清理' : result.notice)
@@ -68,8 +68,8 @@ async function discardEnvironment() {
     <v-expansion-panel title="更多" elevation="0">
       <v-expansion-panel-text class="more-body">
         <div class="links">
-          <a v-if="stopped" :href="`/api/host/tasks/${task.id}/session?${q}`" target="_blank" rel="noopener">下载任务会话记录</a>
-          <a :href="`/api/host/tasks/${task.id}/export?${q}`">下载诊断包（不含文件）</a>
+          <a v-if="stopped" :href="tasksApi.sessionUrl(scene, task.id)" target="_blank" rel="noopener">下载任务会话记录</a>
+          <a :href="tasksApi.exportUrl(scene, task.id)">下载诊断包（不含文件）</a>
         </div>
 
         <div v-if="files.length && service.configured" class="block">
