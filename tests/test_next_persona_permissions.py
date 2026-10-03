@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from len_bot.next.chat import Chat
+from len_bot.next.chat.session import Chat
 from len_bot.next.config import load_config
-from len_bot.next.model import ChatModel, ToolCall
-from len_bot.next.persona import load_persona
-from len_bot.next.persona_knowledge import PersonaKnowledgeArguments, persona_knowledge
-from len_bot.next.store import Store
+from len_bot.next.models.client import ChatModel, ToolCall
+from len_bot.next.persona.profile import load_persona
+from len_bot.next.persona.knowledge import PersonaKnowledgeArguments, persona_knowledge
+from len_bot.next.storage.store import Store
 
 
 def _package(root: Path, name: str, *, tools: str | list[str], documents: dict[str, str]) -> Path:

@@ -2,7 +2,7 @@
 
 import pytest
 
-from len_bot.next.platform_tools import parse_forward, parse_member
+from len_bot.next.platform.platform_tools import parse_forward, parse_member
 
 
 def _forward_response():

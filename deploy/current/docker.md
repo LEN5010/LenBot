@@ -25,7 +25,7 @@ chmod 600 first-setup.json
 # 编辑 first-setup.json 后，在新卷内离线生成根配置及角色：
 docker compose -f host.compose.yaml run --rm --no-deps -T \
   --entrypoint /opt/lenbot/.venv/bin/python lenbot \
-  -m len_bot.next.initialize < first-setup.json
+  -m len_bot.next.maintenance.initialize < first-setup.json
 ```
 
 此命令只解析初始化资料并生成卷内的 `lenbot.config.json` 和新角色，不监听端口、不调用模型、不连接 QQ。根配置或同名角色目录已存在时直接报错，不覆盖旧实例。输入 JSON 是首次配置资料，不是运行参数；后续启动不再读取它，填过的文件含明文凭据，按本机凭据文件管理。
@@ -126,11 +126,11 @@ Docker Desktop 会处理宿主共享目录与 Linux 虚拟机的映射；应用�
 ```sh
 docker volume create lenbot-python-r2
 docker compose -f host.compose.yaml run --rm --no-deps \
-  --entrypoint /opt/lenbot/.venv/bin/python lenbot -m len_bot.next.migrate
+  --entrypoint /opt/lenbot/.venv/bin/python lenbot -m len_bot.next.maintenance.migrate
 docker compose -f host.compose.yaml run --rm --no-deps \
-  --entrypoint /opt/lenbot/.venv/bin/python lenbot -m len_bot.next.migrate_memory_jobs
+  --entrypoint /opt/lenbot/.venv/bin/python lenbot -m len_bot.next.maintenance.migrate_memory_jobs
 docker compose -f host.compose.yaml run --rm --no-deps \
-  --entrypoint /opt/lenbot/.venv/bin/python lenbot -m len_bot.next.plugin_dependencies
+  --entrypoint /opt/lenbot/.venv/bin/python lenbot -m len_bot.next.maintenance.plugin_dependencies
 ```
 
 有工作目录、存储池或其他外置挂载时，离线命令也合并对应挂载配方。迁移模块按本版说明选用；依赖恢复包含已配置的停用插件，不执行插件代码、不更新 Git ref。确认完成后再明确启动。

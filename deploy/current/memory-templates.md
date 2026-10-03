@@ -19,7 +19,7 @@
 }
 ```
 
-执行 `uv run --no-sync python -m len_bot.next.export_persona_memory_templates`。ID 来自包内 `persona.yaml.id`，不是目录名；每个 ID 只选一份定义，类别名不覆盖已有类别。入口只创建新目录，不改角色、配置或服务，不调用模型；失败保留部分原件。
+执行 `uv run --no-sync python -m len_bot.next.maintenance.export_persona_memory_templates`。ID 来自包内 `persona.yaml.id`，不是目录名；每个 ID 只选一份定义，类别名不覆盖已有类别。入口只创建新目录，不改角色、配置或服务，不调用模型；失败保留部分原件。
 
 输出包含三份共享人物／事件／参与者承诺分类，以及每角色两份固定目录分类；`result.json` 列来源与建议白名单。安装输出的 YAML，不直接安装 `prompts/openviking_persona_memory` 占位蓝图或 result.json。角色路径仍在服务当前 `user_space` 内，不复制到所有 QQ peer；未知历史角色身份保持未知。
 

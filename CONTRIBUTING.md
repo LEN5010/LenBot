@@ -6,23 +6,31 @@
 
 ## 源码职责
 
-| 位置 | 职责 |
-|---|---|
-| `src/len_bot/next/host*.py` | 启动、装配与面板 HTTP 接口 |
-| `next/config.py`、各领域 `*_config.py`、`config_types.py` | 唯一根配置装配、领域类型与共用字段类型 |
-| `next/chat.py`、`attention.py`、`context.py` | 会话执行、唤醒与历史压缩 |
-| `next/chat_context.py`、`chat_tools.py`、`chat_expression.py` | 请求材料、工具发现与分派、表达与场景发送出口 |
-| `next/memory*.py`、`tasks*.py`、`task_execution.py`、`worker*.py` | 双记忆后端、任务生命周期、单次执行与容器通信 |
-| `next/task_files.py`、`task_resources.py`、`task_browser.py`、`task_inputs.py`、`task_materials.py` | 任务文件、资源定位与浏览、账号浏览协作及输入资料 |
-| `next/store.py`、`store_schema.py`、各领域 `*_store.py` | 共享数据库、聊天事务、领域表定义和查询；离线迁移仍统一排序 |
-| `next/import_*.py`、`migrate*.py`、`archive_*.py`、`transfer_memory.py`、`export_persona_memory_templates.py` | 显式离线维护 |
-| `next/audio_synthesis.py` | 未启用的文本／音色输入与音频文件结果契约 |
-| `src/len_bot/prompts/`、`builtin_skills/` | 提示词与任务方法 |
-| `src/len_bot/web/frontend/` | Vue 面板，`src/host/api/` 为业务请求；`web/static/dist/` 为忽略的构建产物 |
-| `src/len_bot/eval/`、`tests/` | 行为回放／边界与迁移检查 |
-| `docker/next-worker/`、`deploy/current/`、`scripts/` | 任务镜像、部署、安装与分发构建 |
+`src/len_bot/next/` 按已有业务职责分包，解决运行、面板、离线命令混放在一个目录中的定位成本；不新增服务层、状态或兼容转发模块。
 
-表中 `next/` 均指 `src/len_bot/next/`。保留命名空间，不为改名搬动模块；历史格式工具不依赖旧运行时。双记忆后端、独立任务和平台边界是当前需求。
+| 位置（相对 `src/len_bot/next/`） | 职责 |
+|---|---|
+| `host.py`、`launcher.py`、`instance_lock.py` | 唯一宿主装配、薄启动器和实例互斥；入口不变 |
+| `config.py`、`configuration/` | 唯一根配置装配、领域配置与字段类型 |
+| `runtime/` | 平台与场景运行装配、生命周期、日志和保留策略 |
+| `chat/` | 群会话、注意力、上下文、表达、工具分派、安排和回想 |
+| `models/`、`platform/` | 模型请求／预算与 OneBot 消息／发送协议 |
+| `persona/`、`learning/` | 人工角色资料与表达／黑话／表情／反馈学习 |
+| `memory/` | 双记忆后端、召回、抽取与处理状态 |
+| `work/` | Pi 生命周期、单次执行、容器通信、任务文件与资料 |
+| `browser/` | 账号浏览协议、字节传输与任务浏览器协作 |
+| `storage/` | 聊天数据库、schema／codec 与真实存储池；领域查询仍归各自包 |
+| `plugins/`、`builtin_plugins/` | 插件运行／安装／目录与随程序分发的内置插件 |
+| `plugin.py`、`text_cards.py`、`image_assets.py` | 已供外部插件使用的公共接口，保留原导入路径 |
+| `tools/`、`media/` | 网页／技能／MCP 等工具与图像／语音处理；TTS 只预留接口 |
+| `panel/app.py`、`panel/routes/` | 面板装配和按业务划分的 HTTP 路由 |
+| `panel/setup.py`、`panel/auth.py`、`panel/task_models.py` | 首次配置、登录与任务响应模型 |
+| `maintenance/` | 显式离线迁移、导入／导出、归档、重建索引、依赖恢复与存储池维护 |
+| `trials/` | 隔离试聊装配、试聊面板和回放适配，不是另一个生产核心 |
+
+包内直接从具体模块导入；`__init__.py` 不集中重导出，不增加旧路径别名。维护命令统一使用 `python -m len_bot.next.maintenance.<模块>`，试聊入口为 `len_bot.next.trials.lab`；部署脚本和操作文档同步使用这些路径。生产入口仍是 `len_bot.next.host`，历史格式工具不依赖旧运行时。
+
+目录之外：`src/len_bot/prompts/` 放提示词，`builtin_skills/` 放任务方法；`web/frontend/` 放 Vue 面板（业务请求在 `src/host/api/`），忽略的构建产物在 `web/static/dist/`。行为回放入口在 `src/len_bot/eval/`，边界与迁移检查在 `tests/`；任务镜像、部署和构建分别在 `docker/next-worker/`、`deploy/`、`scripts/`。
 
 ## 修改与记录
 

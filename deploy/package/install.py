@@ -114,7 +114,7 @@ def main() -> None:
     if args.action == 'upgrade':
         if (instance / 'lenbot.config.json').exists():
             for module in ('migrate', 'migrate_memory_jobs', 'plugin_dependencies'):
-                run(python, '-m', 'len_bot.next.' + module, cwd=instance)
+                run(python, '-m', 'len_bot.next.maintenance.' + module, cwd=instance)
         else:
             print('实例尚无根配置，仅升级程序；首次配置留到明确运行时创建。')
     # Do not switch a currently running instance, including one started during installation.

@@ -23,16 +23,16 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 
 from .cases import CaseFile, InitialMemory, ReplayCase, load_cases
 from .memory_snapshot import MemoryBaseline, check_memory, freeze_memory, install_memory, observed_memory, same_memory
-from ..next.chat_context import PROMPTS
-from ..next.chat_tools import build_tools
+from ..next.chat.context import PROMPTS
+from ..next.chat.tools import build_tools
 from ..next.config import LabConfig, load_config
-from ..next.memory import LocalMemoryConfig, OpenVikingMemoryConfig
-from ..next.replay_web import RecordedWeb
-from ..next.replay_images import RecordedImages
-from ..next.replay_memory import MemoryConsumption, RecordedMemory
-from ..next.persona import Persona, load_persona
-from ..next.pricing import cost_summary
-from ..next.store import FORMAT_VERSION, encode, turn_record
+from ..next.memory.service import LocalMemoryConfig, OpenVikingMemoryConfig
+from ..next.trials.replay_web import RecordedWeb
+from ..next.trials.replay_images import RecordedImages
+from ..next.trials.replay_memory import MemoryConsumption, RecordedMemory
+from ..next.persona.profile import Persona, load_persona
+from ..next.models.pricing import cost_summary
+from ..next.storage.store import FORMAT_VERSION, encode, turn_record
 
 
 LOCAL_TOOLS = {"say", "wait", "recall_chat", "schedule", "schedule_list", "schedule_cancel",
@@ -369,7 +369,7 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
         nonlocal process, reader, output_closed
         output_closed = False
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "len_bot.next.lab", cwd=directory,
+            sys.executable, "-m", "len_bot.next.trials.lab", cwd=directory,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=stderr,
         )
         processes.append({"pid": process.pid, "started": time.time(), "returncode": None})

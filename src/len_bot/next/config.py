@@ -12,21 +12,21 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from .account_browser import AccountBrowserSettings
-from .asr_model import AudioSettings
-from .identity import IdentitySettings, combine_identities
-from .limits import ResourceLimits
-from .mcp_config import MCPService, SERVICE_NAME
-from .memory import MemorySettings, LocalMemoryConfig, OpenVikingMemoryConfig
-from .model import ModelSettings
-from .operations import LoggingSettings
-from .retention import RetentionSettings
-from .tasks_config import WorkerSettings
-from .web_search import WebSearchSettings
-from .config_types import STRICT, _valid_timezone, _valid_scene
-from .onebot_config import OneBotSettings
-from .models_config import Models
-from .chat_config import (
+from .browser.client import AccountBrowserSettings
+from .models.asr import AudioSettings
+from .runtime.identity import IdentitySettings, combine_identities
+from .models.limits import ResourceLimits
+from .configuration.mcp import MCPService, SERVICE_NAME
+from .memory.service import MemorySettings, LocalMemoryConfig, OpenVikingMemoryConfig
+from .models.client import ModelSettings
+from .runtime.operations import LoggingSettings
+from .runtime.retention import RetentionSettings
+from .configuration.tasks import WorkerSettings
+from .tools.web_search import WebSearchSettings
+from .configuration.types import STRICT, _valid_timezone, _valid_scene
+from .configuration.onebot import OneBotSettings
+from .configuration.models import Models
+from .configuration.chat import (
     Compaction,
     TextDelivery,
     WebReadSettings,
@@ -35,8 +35,8 @@ from .chat_config import (
     ScenePersona,
     SceneSettings,
 )
-from .plugin_config import PluginSettings, PluginCatalogSettings
-from .maintenance_config import (
+from .configuration.plugin import PluginSettings, PluginCatalogSettings
+from .configuration.maintenance import (
     PanelSettings,
     HistoryImportSettings,
     MediaImportSettings,

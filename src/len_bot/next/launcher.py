@@ -5,7 +5,7 @@ import signal
 import subprocess
 import sys
 
-from .host_lifecycle import RESTART_EXIT
+from .runtime.lifecycle import RESTART_EXIT
 
 
 def run() -> int:

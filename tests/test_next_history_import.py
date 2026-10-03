@@ -12,9 +12,9 @@ import sqlite3
 import pytest
 
 from len_bot.next.config import load_instance_config
-from len_bot.next.import_history import import_history
-from len_bot.next.messages import ChatMessage, Segment, Sender
-from len_bot.next.store import Store
+from len_bot.next.maintenance.import_history import import_history
+from len_bot.next.platform.messages import ChatMessage, Segment, Sender
+from len_bot.next.storage.store import Store
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "next" / "history" / "legacy-redacted.json"

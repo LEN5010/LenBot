@@ -2,9 +2,10 @@
 !src/
 !src/len_bot/
 !src/len_bot/next/
-!src/len_bot/next/worker_bridge.py
-!src/len_bot/next/egress_wire.py
-!src/len_bot/next/worker_egress_bridge.py
+!src/len_bot/next/work/
+!src/len_bot/next/work/worker_bridge.py
+!src/len_bot/next/work/egress_wire.py
+!src/len_bot/next/work/worker_egress_bridge.py
 !docker/
 !docker/next-worker/
 !docker/next-worker/lenbot-extension.ts

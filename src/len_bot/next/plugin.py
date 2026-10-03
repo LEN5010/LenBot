@@ -16,7 +16,7 @@ from typing import Literal, Protocol
 
 from pydantic import JsonValue
 
-from .messages import ChatMessage, Notice
+from .platform.messages import ChatMessage, Notice
 
 
 INTERFACE = 1

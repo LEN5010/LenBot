@@ -10,7 +10,7 @@ import json
 import os
 import sys
 
-from len_bot.next.pi_rpc import PiRpc
+from len_bot.next.work.pi_rpc import PiRpc
 
 
 def test_prompt_ack_without_data_and_native_completion_frames(tmp_path):

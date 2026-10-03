@@ -4,7 +4,7 @@ import json
 import pytest
 
 from len_bot.next.builtin_plugins.gscore_adapter.protocol import ImageSize, parse_frame
-from len_bot.next.plugin_host import BUILTIN, read_manifest
+from len_bot.next.plugins.host import BUILTIN, read_manifest
 
 
 def frame(**values):

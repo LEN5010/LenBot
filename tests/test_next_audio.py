@@ -6,9 +6,9 @@ import wave
 import pytest
 from pydantic import ValidationError
 
-from len_bot.next.asr_model import ASRBinding, ASRProtocolError, AudioSettings, parse_transcription
-from len_bot.next.audio import TranscribeArguments, parse_record
-from len_bot.next.models_config import Models
+from len_bot.next.models.asr import ASRBinding, ASRProtocolError, AudioSettings, parse_transcription
+from len_bot.next.media.audio import TranscribeArguments, parse_record
+from len_bot.next.configuration.models import Models
 
 
 def wav_bytes():
@@ -128,7 +128,7 @@ def test_automatic_transcription_requires_explicit_runtime_binding(tmp_path):
 ])
 def test_transcription_metering_requires_matching_explicit_rates(price,usage,expected):
     from decimal import Decimal
-    from len_bot.next.asr_model import estimate_transcription
+    from len_bot.next.models.asr import estimate_transcription
     binding=ASRBinding(provider='fixture',model='synthetic',price=price)
     body={'text':'合成识别结果','usage':usage}
     reply=parse_transcription(body)
@@ -155,7 +155,7 @@ def test_asr_price_configuration_never_guesses_a_rate(price):
 
 
 def test_invalid_transcript_retains_independently_valid_usage():
-    from len_bot.next.asr_model import estimate_transcription
+    from len_bot.next.models.asr import estimate_transcription
     body={'text':None,'usage':{'type':'duration','seconds':4}}
     binding=ASRBinding(provider='fixture',model='synthetic',price={
         'type':'duration','currency':'USD','per_second':'0.01'})

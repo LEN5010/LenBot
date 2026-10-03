@@ -6,12 +6,12 @@ import shutil
 import httpx
 
 from len_bot.next.config import load_host_config
-from len_bot.next.host_panel import create_app
-from len_bot.next.model import ChatModel
-from len_bot.next.network import NetworkRuntime
-from len_bot.next.persona import load_persona
-from len_bot.next.setup import FirstSetup, initialize
-from len_bot.next.store import Store
+from len_bot.next.panel.app import create_app
+from len_bot.next.models.client import ChatModel
+from len_bot.next.runtime.network import NetworkRuntime
+from len_bot.next.persona.profile import load_persona
+from len_bot.next.panel.setup import FirstSetup, initialize
+from len_bot.next.storage.store import Store
 
 
 def test_scene_bindings_validate_before_save_and_keep_running_snapshot(tmp_path):

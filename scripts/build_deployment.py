@@ -32,7 +32,7 @@ def build_deployments(wheel: Path, project: Path, output: Path, requirements: Pa
                 shutil.copy2(project / resource, bundle / resource)
             # Keep the published guides' relative links without bundling the whole source tree.
             for pattern in ('src/len_bot/next/builtin_plugins/*/README.md',
-                            'src/len_bot/next/plugin_catalog.json', 'src/len_bot/prompts/*.md'):
+                            'src/len_bot/next/plugins/plugin_catalog.json', 'src/len_bot/prompts/*.md'):
                 for source in project.glob(pattern):
                     target = bundle / source.relative_to(project)
                     target.parent.mkdir(parents=True, exist_ok=True)

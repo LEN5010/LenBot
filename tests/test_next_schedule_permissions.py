@@ -2,8 +2,8 @@
 
 import pytest
 
-from len_bot.next.chat_config import ScheduleSettings
-from len_bot.next.schedule import check_cancellation, check_creation, identity_roles
+from len_bot.next.configuration.chat import ScheduleSettings
+from len_bot.next.chat.schedule import check_cancellation, check_creation, identity_roles
 
 
 BOT = "90001"

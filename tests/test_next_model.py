@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from len_bot.next.model import (
+from len_bot.next.models.client import (
     ChatModel,
     ModelHTTPError,
     ModelProtocolError,
@@ -325,7 +325,7 @@ async def test_loopback_truncated_recorded_json_has_unknown_usage():
 
 
 def test_recorded_summary_code_fence_is_not_silently_repaired():
-    from len_bot.next.memory_summary import parse_summary
+    from len_bot.next.memory.summary import parse_summary
     recorded = json.loads((RECORDED_RESPONSE.parent / 'summary-fenced-response.json').read_text())
     reply = parse_chat_completion({'choices': [recorded]})
     with pytest.raises(ValueError, match='Invalid memory summary response.*response fragment'):

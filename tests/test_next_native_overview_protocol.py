@@ -2,8 +2,8 @@
 
 import pytest
 
-from len_bot.next.memory_overview import parse_overview, parse_refresh
-from len_bot.next.memory_openviking import parse_ingest_task
+from len_bot.next.memory.overview import parse_overview, parse_refresh
+from len_bot.next.memory.openviking import parse_ingest_task
 
 URI = 'viking://user/synthetic-group/memories'
 DOCUMENT = '''---

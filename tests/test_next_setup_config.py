@@ -7,8 +7,8 @@ import httpx
 import pytest
 
 from len_bot.next.config import load_host_config
-from len_bot.next.persona import load_persona
-from len_bot.next.setup import create_setup_app
+from len_bot.next.persona.profile import load_persona
+from len_bot.next.panel.setup import create_setup_app
 from len_bot.web.auth import verify_password
 
 
