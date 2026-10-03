@@ -100,7 +100,7 @@ async def test_web_read_registration_requires_configuration_and_role(tmp_path):
             config.model_settings("voice")
         ) as voice:
             chat = Chat(config, persona, store, mind, voice)
-            assert "web_read" not in {tool["function"]["name"] for tool in chat.tools}
+            assert "web_read" not in {tool["function"]["name"] for tool in chat.toolset.tools}
 
     config, persona = _chat_inputs(tmp_path / "allowed", tools=["web_read"], web_read={})
     with Store(config.database) as store:
@@ -108,7 +108,7 @@ async def test_web_read_registration_requires_configuration_and_role(tmp_path):
             config.model_settings("voice")
         ) as voice:
             chat = Chat(config, persona, store, mind, voice)
-            assert "web_read" in {tool["function"]["name"] for tool in chat.tools}
+            assert "web_read" in {tool["function"]["name"] for tool in chat.toolset.tools}
 
     config, persona = _chat_inputs(tmp_path / "forbidden", tools=[], web_read={})
     with Store(config.database) as store:
@@ -116,12 +116,12 @@ async def test_web_read_registration_requires_configuration_and_role(tmp_path):
             config.model_settings("voice")
         ) as voice:
             chat = Chat(config, persona, store, mind, voice)
-            assert "web_read" not in {tool["function"]["name"] for tool in chat.tools}
+            assert "web_read" not in {tool["function"]["name"] for tool in chat.toolset.tools}
 
             async def wait_for_messages(seconds: float) -> str:
                 return ""
 
             with pytest.raises(ValueError, match="web_read"):
-                await chat.execute_tool("unused-turn", ToolCall(
+                await chat.toolset.execute("unused-turn", ToolCall(
                     id="unused-call", name="web_read", arguments={"document": 1, "offset": 0},
                 ), wait_for_messages)

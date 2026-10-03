@@ -121,30 +121,30 @@ async def test_chat_only_exposes_current_role_documents_after_allowed_discovery(
             config.model_settings("voice")
         ) as voice:
             chat = Chat(config, load_persona(no_docs), store, mind, voice)
-            assert "persona_knowledge" not in chat.tool_names
+            assert "persona_knowledge" not in chat.toolset.tool_names
             with pytest.raises(ValueError, match="persona_knowledge|knowledge"):
                 Chat(config, load_persona(explicit_missing), store, mind, voice)
             with pytest.raises(ValueError, match="tool_search"):
                 Chat(config, load_persona(no_search), store, mind, voice)
 
             chat = Chat(config, load_persona(allowed), store, mind, voice)
-            assert "tool_search" in chat.tool_names and "persona_knowledge" not in chat.tool_names
+            assert "tool_search" in chat.toolset.tool_names and "persona_knowledge" not in chat.toolset.tool_names
             read = ToolCall(id="synthetic-read", name="persona_knowledge",
                             arguments={"action": "read", "filename": "one.md"})
             with pytest.raises(ValueError, match="persona_knowledge"):
-                await chat.execute_tool("unused-turn", read, wait_for_messages)
+                await chat.toolset.execute("unused-turn", read, wait_for_messages)
 
             search = ToolCall(id="synthetic-search", name="tool_search",
                               arguments={"query": "persona_knowledge"})
-            result, expression, discovered = await chat.execute_tool(
+            result, expression, discovered = await chat.toolset.execute(
                 "unused-turn", search, wait_for_messages,
             )
             assert expression is None and "persona_knowledge" in discovered
-            assert "persona_knowledge" not in chat.tool_names  # same request still cannot use it
+            assert "persona_knowledge" not in chat.toolset.tool_names  # same request still cannot use it
             store.complete_tool(config.scene, search.id, result, discovered_tools=discovered)
             chat = Chat(config, load_persona(allowed), store, mind, voice)
-            assert "persona_knowledge" in chat.tool_names
-            content, expression, discovered = await chat.execute_tool(
+            assert "persona_knowledge" in chat.toolset.tool_names
+            content, expression, discovered = await chat.toolset.execute(
                 "unused-turn", read, wait_for_messages,
             )
             assert "获准角色的合成资料" in content
@@ -153,6 +153,6 @@ async def test_chat_only_exposes_current_role_documents_after_allowed_discovery(
 
             # Persisted discovery is not permission: a different loaded role loses access.
             chat = Chat(config, load_persona(forbidden), store, mind, voice)
-            assert "persona_knowledge" not in chat.tool_names
+            assert "persona_knowledge" not in chat.toolset.tool_names
             with pytest.raises(ValueError, match="persona_knowledge"):
-                await chat.execute_tool("unused-turn", read, wait_for_messages)
+                await chat.toolset.execute("unused-turn", read, wait_for_messages)

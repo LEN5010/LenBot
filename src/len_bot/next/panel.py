@@ -85,7 +85,7 @@ class PanelSession:
             "voice_mode": self.config.voice_mode,
             "models": {"mind": self.config.models.roles.mind.model, "voice": self.config.models.roles.voice.model},
             "delivery": "simulated", "running": not self.closing and not self.task.done(), "error": self.error(),
-            "messages": [{"seq": seq, "rendered": self.chat.render(message), "text": self.chat.render_text(message),
+            "messages": [{"seq": seq, "rendered": self.chat.context.render(message), "text": self.chat.context.render_text(message),
                           **asdict(message)}
                          for seq, message in self.store.recent_records(self.config.scene)],
             "turns": self.store.recent_turns(self.config.scene),
@@ -180,8 +180,8 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
                 for filename, document in sorted(persona.knowledge.items())
             ],
             "tools": {
-                "core": sorted(tool["function"]["name"] for tool in chat.core_tools),
-                "deferred": sorted(tool["function"]["name"] for tool in chat.deferred_tools),
+                "core": sorted(tool["function"]["name"] for tool in chat.toolset.core_tools),
+                "deferred": sorted(tool["function"]["name"] for tool in chat.toolset.deferred_tools),
             },
         }
 

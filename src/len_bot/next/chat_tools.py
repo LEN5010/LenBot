@@ -1,27 +1,44 @@
-"""Core chat tool schemas and availability, shared by runtime and configuration callers."""
+"""Core tool schemas, scene capability discovery and direct domain dispatch."""
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .audio import TRANSCRIBE_TOOL
+from len_bot.media.images import image_block
+
+from .audio import TRANSCRIBE_TOOL, AudioService, TranscribeArguments
+from .chat_context import PROMPTS
 from .config import LabConfig
-from .discovery import DEFERRED_NAMES, TOOL_SEARCH
-from .file_delivery import SEND_FILE_TOOL
-from .images import LOOK_TOOL
-from .memory import MEMORY_TOOL
+from .discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, search_tools
+from .delivery import Expression
+from .external_tools import ExternalTool
+from .file_delivery import SEND_FILE_TOOL, SendFileArguments, execute_send_file
+from .images import LOOK_TOOL, LookArguments, execute_look
+from .memory import MEMORY_TOOL, MemoryService
+from .messages import UploadResult
+from .model import ChatModel, ToolCall
+from .model_request import ChatRequest
 from .persona import Persona
-from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL
-from .platform_tools import MEMBER_INFO_TOOL, OPEN_FORWARD_TOOL
-from .recall import RECALL_TOOL
-from .scene_control import SCENE_CONTROL_TOOL
-from .schedule import SCHEDULE_TOOLS
-from .store import encode
-from .tasks_tools import DELEGATE_TOOL, TASK_TOOL
-from .web_read import WEB_READ_TOOL
-from .web_search import WEB_SEARCH_TOOL
+from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
+from .platform_tools import (MEMBER_INFO_TOOL, OPEN_FORWARD_TOOL, MemberInfoArguments,
+                             OpenForwardArguments, PlatformCall, member_info, open_forward)
+from .recall import RECALL_TOOL, RecallArguments, recall_chat
+from .replay_images import RecordedImages
+from .replay_web import RecordedWeb
+from .scene_control import SCENE_CONTROL_TOOL, SceneControlArguments
+from .schedule import SCHEDULE_TOOLS, execute_schedule
+from .store import ImageAsset, Store, encode
+from .tasks_store import TaskStore
+from .tasks_tools import DELEGATE_TOOL, TASK_TOOL, execute_tasks
+from .web_read import WEB_READ_TOOL, WebReadArguments, execute_web_read
+from .web_search import WEB_SEARCH_TOOL, WebSearchArguments, execute_web_search
+
+if TYPE_CHECKING:
+    from .chat_expression import ChatExpression
+    from .tasks import WorkTasks
 
 
 class SayArguments(BaseModel):
@@ -149,3 +166,143 @@ def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[
     return [{**tool, "function": {**tool["function"], "description": tool["function"]["description"]
                  + " 当前角色情绪标签：" + encode(emotions)}}
             if tool["function"]["name"] == "react" else tool for tool in allowed]
+
+
+class SceneTools:
+    """Actual scene capabilities and dispatch; domain services own tool behavior."""
+
+    def __init__(self, config: LabConfig, persona: Persona, store: Store, *,
+                 expression: ChatExpression, request: ChatRequest, vision: ChatModel | None,
+                 memory: MemoryService | None, tasks: WorkTasks | None, audio: AudioService | None,
+                 upload_file: Callable[[str, str, str], Awaitable[UploadResult]] | None,
+                 platform_call: PlatformCall | None, notify: Callable[[], None], now: Callable[[], float]):
+        self.config, self.persona, self.store = config, persona, store
+        self.expression, self.request, self.vision = expression, request, vision
+        self.memory, self.tasks, self.audio = memory, tasks, audio
+        self.upload_file, self.platform_call = upload_file, platform_call
+        self.notify, self.now = notify, now
+        self.scene_control: Callable[[SceneControlArguments], dict] | None = None
+        self.replay_web = None if config.replay_web is None else RecordedWeb(config.replay_web)
+        self.replay_images = (None if config.replay_images is None else
+                              RecordedImages(config.replay_images, max_bytes=config.images.max_bytes))
+
+    def set_external_tools(self, external_tools: list[ExternalTool]) -> list[dict]:
+        """Replace the actual external capability set after service startup/closure."""
+        config, persona = self.config, self.persona
+        send_message, upload_file, platform_call = self.expression.send_message, self.upload_file, self.platform_call
+        allowed = build_tools(config, persona, platform=send_message is not None)
+        if self.scene_control is None:
+            allowed = [tool for tool in allowed if tool["function"]["name"] != "scene_control"]
+        # Plugin and MCP tools are always low-frequency and still need the role's permission.
+        self.external = {tool.name: tool for tool in external_tools
+                         if persona.tools == "all" or tool.name in persona.tools}
+        clashes = sorted({tool["function"]["name"] for tool in tool_catalog(platform=True)} & set(self.external))
+        if clashes:
+            raise ValueError(f"插件或 MCP 工具与核心工具重名：{clashes}")
+        if self.external and "tool_search" not in {tool["function"]["name"] for tool in allowed}:
+            raise ValueError("角色开放插件或 MCP 工具时必须同时开放 tool_search")
+        self.allowed_tool_names = {tool["function"]["name"] for tool in allowed} | set(self.external)
+        if "send_file" in self.allowed_tool_names and upload_file is None:
+            raise ValueError("send_file 配置已启用但未接入实际文件上传出口")
+        if self.allowed_tool_names & {"open_forward", "member_info"} and platform_call is None:
+            raise ValueError("平台查询工具已启用但未接入实际 OneBot 调用")
+        if "transcribe" in self.allowed_tool_names and self.audio is None:
+            raise ValueError("语音工具已启用但未接入实际语音处理服务")
+        self.deferred_names = DEFERRED_NAMES | set(self.external)
+        self.core_tools = [tool for tool in allowed if tool["function"]["name"] not in DEFERRED_NAMES]
+        self.deferred_tools = ([tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
+                               + [tool.definition for tool in self.external.values()])
+        saved = self.store.load_discovered_tools(config.scene)
+        self.discovered_tools = set(saved) & self.allowed_tool_names & self.deferred_names
+        return allowed
+
+    @property
+    def tools(self) -> list[dict]:
+        return self.core_tools + [tool for tool in self.deferred_tools
+                                  if tool["function"]["name"] in self.discovered_tools]
+
+    @property
+    def tool_names(self) -> set[str]:
+        return {tool["function"]["name"] for tool in self.tools}
+
+    async def describe_image(self, turn_id: str, asset: ImageAsset) -> str:
+        messages = [
+            {"role": "system", "content": (PROMPTS / "next_vision.md").read_text()},
+            {"role": "user", "content": [
+                {"type": "text", "text": encode({"width": asset.width, "height": asset.height,
+                                                "animated_first_frame_only": asset.animated})},
+                image_block(asset.jpeg),
+            ]},
+        ]
+        return (await self.request(turn_id, "vision", messages, [])).text
+
+    async def execute(self, turn_id: str, call: ToolCall,
+                      wait_for_messages: Callable[[float], Awaitable[str]], *,
+                      expression_style: str | None = None, direct: bool = False,
+                      ) -> tuple[str, Expression | None, list[str] | None]:
+        if call.name not in self.tool_names:
+            raise ValueError(f"当前请求未开放工具：{call.name}")
+        if call.name == "tool_search":
+            arguments = ToolSearchArguments.model_validate(call.arguments)
+            matched = search_tools(arguments.query, self.deferred_tools)
+            names = [tool["function"]["name"] for tool in matched]
+            discovered = sorted(set(self.store.load_discovered_tools(self.config.scene)) | set(names))
+            return encode({"query": arguments.query, "matched_names": names,
+                           "available_from": "next_model_request", "tools": matched}), None, discovered
+        if call.name in self.external:
+            tool = self.external[call.name]
+            return await tool.call(self.config.scene, call.arguments), None, None
+        if call.name == "say":
+            expression = await self.expression.express(turn_id, SayArguments.model_validate(call.arguments),
+                                                       expression_style=expression_style, direct=direct)
+            return self.expression.context.render(expression), Expression(expression), None
+        if call.name == "react":
+            expression = self.expression.react(ReactArguments.model_validate(call.arguments))
+            return self.expression.context.render(expression.message), expression, None
+        if call.name == "scene_control":
+            return encode(self.scene_control(SceneControlArguments.model_validate(call.arguments))), None, None
+        if call.name == "recall_chat":
+            return recall_chat(self.store, self.config.scene, self.config.timezone,
+                               RecallArguments.model_validate(call.arguments)), None, None
+        if call.name == "persona_knowledge":
+            arguments = PersonaKnowledgeArguments.model_validate(call.arguments)
+            return persona_knowledge(self.persona.id, self.persona.name, self.persona.knowledge,
+                                     arguments), None, None
+        if call.name == "web_read":
+            return await execute_web_read(self.store, self.config.scene, self.config.web_read,
+                                          WebReadArguments.model_validate(call.arguments), recording=self.replay_web), None, None
+        if call.name == "web_search":
+            return await execute_web_search(self.config.web_search,
+                                            WebSearchArguments.model_validate(call.arguments), recording=self.replay_web), None, None
+        if call.name == "memory":
+            return await self.memory.execute(self.config.scene, call.arguments), None, None
+        if call.name in {"delegate", "task"}:
+            return encode(await execute_tasks(self.tasks, self.config.scene, call.name, call.arguments)), None, None
+        if call.name == "send_file":
+            return await execute_send_file(
+                TaskStore(self.store), self.config.scene, SendFileArguments.model_validate(call.arguments),
+                local_root=self.config.worker.delivery_root,
+                visible_root=self.config.onebot.upload_visible_root,
+                upload=self.upload_file, on_update=self.notify,
+            ), None, None
+        if call.name in {"schedule", "schedule_list", "schedule_cancel"}:
+            return execute_schedule(self.store, self.config, call.name, call.arguments, now=self.now), None, None
+        if call.name == "open_forward":
+            return await open_forward(self.store, self.config.scene, self.config.timezone,
+                                      OpenForwardArguments.model_validate(call.arguments), self.platform_call), None, None
+        if call.name == "member_info":
+            return await member_info(self.config.scene, self.config.timezone,
+                                     MemberInfoArguments.model_validate(call.arguments), self.platform_call), None, None
+        if call.name == "look":
+            return await execute_look(
+                self.store, self.config.scene, LookArguments.model_validate(call.arguments), self.config.images,
+                model_name=self.vision.settings.model, describe=lambda asset: self.describe_image(turn_id, asset),
+                recording=self.replay_images,
+            ), None, None
+        if call.name == "transcribe":
+            return await self.audio.transcribe(
+                self.config.scene, TranscribeArguments.model_validate(call.arguments),
+                turn_id=turn_id, direct=direct,
+            ), None, None
+        arguments = WaitArguments.model_validate(call.arguments)
+        return await wait_for_messages(arguments.seconds), None, None

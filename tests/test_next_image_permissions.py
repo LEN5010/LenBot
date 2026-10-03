@@ -151,7 +151,7 @@ async def test_look_registration_requires_role_configuration_and_vision_client(t
             config.model_settings("voice")
         ) as voice:
             chat = Chat(config, persona, store, mind, voice)
-            assert "look" not in chat.tool_names
+            assert "look" not in chat.toolset.tool_names
 
     config, persona = _chat_inputs(tmp_path / "missing-client", tools=["look"], vision=True)
     with Store(config.database) as store:
@@ -167,10 +167,10 @@ async def test_look_registration_requires_role_configuration_and_vision_client(t
             config.model_settings("voice")
         ) as voice, ChatModel(config.model_settings("vision")) as vision:
             chat = Chat(config, persona, store, mind, voice, vision=vision)
-            assert "look" in chat.tool_names
+            assert "look" in chat.toolset.tool_names
             _receive_image(store, config.scene, "500")
             store.save_image(config.scene, "500", 1, _asset("purple", "获准场景的已缓存描述"))
-            content, expression, discovered = await chat.execute_tool(
+            content, expression, discovered = await chat.toolset.execute(
                 "unused-turn", ToolCall(id="look-allowed", name="look",
                                         arguments={"message": "500", "image": 1}),
                 wait_for_messages,
@@ -184,8 +184,8 @@ async def test_look_registration_requires_role_configuration_and_vision_client(t
             config.model_settings("voice")
         ) as voice, ChatModel(config.model_settings("vision")) as vision:
             chat = Chat(config, persona, store, mind, voice, vision=vision)
-            assert "look" not in chat.tool_names
+            assert "look" not in chat.toolset.tool_names
             with pytest.raises(ValueError, match="look"):
-                await chat.execute_tool("unused-turn", ToolCall(
+                await chat.toolset.execute("unused-turn", ToolCall(
                     id="unused-call", name="look", arguments={"message": "400", "image": 1},
                 ), wait_for_messages)

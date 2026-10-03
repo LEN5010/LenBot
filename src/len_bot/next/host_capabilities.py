@@ -97,8 +97,8 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
             tools.append({
                 "name": name, "description": function["description"],
                 "allowed": chat.persona.tools == "all" or name in chat.persona.tools,
-                "registered": name in chat.allowed_tool_names,
-                "discovered": name in chat.discovered_tools,
+                "registered": name in chat.toolset.allowed_tool_names,
+                "discovered": name in chat.toolset.discovered_tools,
                 "deferred": name in DEFERRED_NAMES,
                 "reasons": tool_unavailable_reasons(chat.config, chat.persona, name),
             })
@@ -107,8 +107,8 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
             allowed = chat.persona.tools == "all" or tool.name in chat.persona.tools
             tools.append({
                 "name": tool.name, "description": tool.description, "source": tool.source,
-                "allowed": allowed, "registered": tool.name in chat.allowed_tool_names,
-                "discovered": tool.name in chat.discovered_tools, "deferred": True,
+                "allowed": allowed, "registered": tool.name in chat.toolset.allowed_tool_names,
+                "discovered": tool.name in chat.toolset.discovered_tools, "deferred": True,
                 "reasons": [] if allowed else ["角色没有允许这个工具"],
             })
         return {

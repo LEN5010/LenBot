@@ -38,7 +38,7 @@ def register_host_reply_effects(app: FastAPI, *, runtime: NetworkRuntime,
             message = runtime.store.read_message(scene, seq)
             result.append({"record": seq, "available": message is not None,
                            "received_at": None if arrivals is None else arrivals.get(seq),
-                           "rendered": None if message is None else chat.render(message),
+                           "rendered": None if message is None else chat.context.render(message),
                            "message": None if message is None else asdict(message)})
         return result
 
@@ -47,7 +47,7 @@ def register_host_reply_effects(app: FastAPI, *, runtime: NetworkRuntime,
         chat = chat_for(scene)
         since = runtime.store.now() - days * 86400
         return {"scene": scene, "enabled": active(scene), "days": days,
-                "delivery": "simulated" if chat.send_message is None else "onebot",
+                "delivery": "simulated" if chat.expression.send_message is None else "onebot",
                 "settings": None if chat.config.learning is None else {
                     "reply_effects": chat.config.learning.reply_effects,
                     "max_age_seconds": chat.config.learning.max_age_seconds},
@@ -72,7 +72,7 @@ def register_host_reply_effects(app: FastAPI, *, runtime: NetworkRuntime,
         observed = effect["observed_seqs"] or []
         return {**effect,
                 "expression": rendered(scene, effect["message_seqs"]),
-                "before": [{"record": seq, "rendered": chat_for(scene).render(message)}
+                "before": [{"record": seq, "rendered": chat_for(scene).context.render(message)}
                            for seq, message in records.before(scene, min(effect["message_seqs"]))],
                 "followups": rendered(scene, observed, records.arrivals(scene, observed)),
                 "call": None if effect["call_id"] is None else records.call(scene, effect["call_id"], summary=True)}

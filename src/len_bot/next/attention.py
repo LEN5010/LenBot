@@ -159,8 +159,8 @@ class SceneRunner:
         else:
             self.save_state(restored)
 
-        self.chat.scene_control = self.control
-        self.chat.set_external_tools(list(self.chat.external.values()))
+        self.chat.toolset.scene_control = self.control
+        self.chat.set_external_tools(list(self.chat.toolset.external.values()))
         self.resume = self.chat.restore()
 
     def quiet_period(self, now: float) -> tuple[float, float] | None:
@@ -380,7 +380,7 @@ class SceneRunner:
         scheduled = []
         for item in self.store.due_schedules(self.config.scene, now):
             try:
-                if "schedule" not in self.chat.allowed_tool_names:
+                if "schedule" not in self.chat.toolset.allowed_tool_names:
                     raise PermissionError("当前角色或场景未开放 schedule，安排未交付")
                 if item.requester in self.config.permissions.blacklist:
                     raise PermissionError('安排请求人已在黑名单中')
@@ -500,7 +500,7 @@ class SceneRunner:
     def batch(self, pending: list[tuple[int, ChatMessage, float]], reason: str) -> tuple[int, list[str]]:
         contents = []
         for _, message, _ in pending:
-            content = self.chat.render(message) + f"（平台消息 ID：{message.platform_message_id}）"
+            content = self.chat.context.render(message) + f"（平台消息 ID：{message.platform_message_id}）"
             if message.reply_to is not None:
                 content += f"（回复平台消息 ID：{message.reply_to}）"
             contents.append(content)
@@ -581,12 +581,12 @@ class SceneRunner:
         state.limit_notice_until = error.until
         until = datetime.fromtimestamp(error.until, ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
         text = f"[宿主额度说明] {error} 本时段截至 {until}，未读消息保留。"
-        parts = [self.chat.simulated_message([Segment("text", {"text": text})])]
+        parts = [self.chat.expression.simulated_message([Segment("text", {"text": text})])]
         entry = self.store.prepare_limit_notice(self.config.scene, asdict(state), text + "（尚未发送）")
         self.state = state
         try:
             async with asyncio.timeout(self.config.turn_timeout_seconds):
-                await self.chat.send_prepared_expression(entry, parts, channels={"limit_notice"}, quota_notice=True)
+                await self.chat.expression.send_prepared_expression(entry, parts, channels={"limit_notice"}, quota_notice=True)
         except Exception as failure:
             self.store.expression_error(entry, f"{type(failure).__name__}: {failure}")
             self.emit({"type": "limit_notice", "status": "failed", "error": f"{type(failure).__name__}: {failure}"})
@@ -599,13 +599,13 @@ class SceneRunner:
         state = self.consumed_state()
         parts, note = None, None
         expressions = []
-        prefix = ("[宿主安静时段固定表达；模拟，未发送到 QQ]\n" if self.chat.send_message is None
+        prefix = ("[宿主安静时段固定表达；模拟，未发送到 QQ]\n" if self.chat.expression.send_message is None
                   else "[宿主安静时段固定表达]\n")
         if state.quiet_notice_until != until:
-            expression = self.chat.simulated_message([
+            expression = self.chat.expression.simulated_message([
                 Segment("text", {"text": self.settings.quiet_hours.notice_text})])
             parts = split_expression(expression, self.config.text_delivery.max_chars)
-            note = prefix + report_parts(parts, [], self.chat.render)
+            note = prefix + report_parts(parts, [], self.chat.context.render)
             state.quiet_notice_until = until
         entry_seq = self.store.append_quiet(
             self.config.scene, self.batch(pending, "[安静时段直接消息；本批未调用模型]"),
@@ -616,7 +616,7 @@ class SceneRunner:
         if parts is not None:
             try:
                 async with asyncio.timeout(self.config.turn_timeout_seconds):
-                    content, status = await self.chat.send_prepared_expression(
+                    content, status = await self.chat.expression.send_prepared_expression(
                         entry_seq, parts, prefix=prefix, channels={"quiet_notice"})
             except TimeoutError as error:
                 status, error_text = "timeout", f"{type(error).__name__}: fixed notice time limit"
@@ -628,7 +628,7 @@ class SceneRunner:
             if own_at is not None:
                 state.contact(own_at, self.settings.focus_seconds)
             self.save_state(state)
-        delivery = "none" if parts is None else "simulated" if self.chat.send_message is None else "onebot"
+        delivery = "none" if parts is None else "simulated" if self.chat.expression.send_message is None else "onebot"
         self.emit({"type": "notice", "status": status, "error": error_text,
                    "delivery": delivery, "expressions": expressions,
                    "quiet_until": datetime.fromtimestamp(until, ZoneInfo(self.config.timezone)).isoformat()})

@@ -135,7 +135,7 @@ def register_host_learning(app: FastAPI, *, runtime: NetworkRuntime,
         for record in item["sources"]:
             message = runtime.store.read_message(scene, record)
             sources.append({"record": record, "available": message is not None,
-                            "rendered": None if message is None else chat.render(message),
+                            "rendered": None if message is None else chat.context.render(message),
                             "message": None if message is None else asdict(message)})
         return {**item, "source_messages": sources}
 

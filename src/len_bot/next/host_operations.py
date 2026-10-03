@@ -53,7 +53,7 @@ def register_host_operations(app, *, runtime, user):
                 raise HTTPException(409, '场景还有未结束或等待恢复的轮次，未改变会话')
             if action == 'new-context':
                 through = store.new_context(scene)
-                runner.chat.discovered_tools = set()
+                runner.chat.toolset.discovered_tools = set()
                 runtime.notify()
                 return {'compact_through': through, 'message': '已开启新上下文；原记录、未读输入和后台工作保留'}
             try:
