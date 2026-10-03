@@ -133,7 +133,7 @@ async def publish(self, ctx):
 
 ## 生命周期和错误
 
-`start()` 建立资源，`stop()` 关闭资源；用 `self.ctx.start_task(name, coroutine)` 登记自有后台协程，宿主停止时会取消。它不是容器工作任务。不在 asyncio 主循环里跑阻塞网络请求。
+`start()` 建立资源，`stop()` 关闭资源；启动协程也由宿主拥有，重载或停用会先取消并等待未完成的启动，再串行关闭该实例的资源。用 `self.ctx.start_task(name, coroutine)` 登记自有后台协程，宿主停止时会取消。它不是容器工作任务。不在 asyncio 主循环里跑阻塞网络请求。
 
 一次处理器报错结束该次调用，原错由宿主记录，不自动重试、换服务或停用整个插件。需要特权的具体入口可用 `ctx.plugin.require_owner(ctx.scene, ctx.message.sender.uid)`；不必给普通查询加主人门槛。
 

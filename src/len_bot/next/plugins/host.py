@@ -87,6 +87,7 @@ class Loaded:
     skills: tuple[Skill, ...] = ()
     errors: deque = field(default_factory=lambda: deque(maxlen=ERROR_LIMIT))
     ready: asyncio.Event = field(default_factory=asyncio.Event)
+    stop_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 @dataclass(frozen=True)
@@ -567,29 +568,44 @@ class PluginHost:
             await asyncio.sleep(item.seconds)
 
     async def start_plugin(self, record: Loaded) -> None:
-        try:
+        async def start() -> None:
             await record.instance.start()
+            if record.status != "loaded":
+                return
+            record.status = "running"
+            record.error = None
+            record.ready.set()
+            for item in record.backgrounds:
+                task = asyncio.create_task(self._background(record, item))
+                self.tasks[task] = record.name
+                task.add_done_callback(lambda done: self.tasks.pop(done, None))
+            self._notify()
+
+        task = asyncio.create_task(start(), name=f"{record.name}:start")
+        self.tasks[task] = record.name
+        task.add_done_callback(lambda done: self.tasks.pop(done, None))
+        try:
+            await task
+        except asyncio.CancelledError:
+            if record.status != "stopped":
+                await self.stop_plugin(record.name)
+            if asyncio.current_task().cancelling():
+                raise
+            return
         except Exception as error:
             failure = self._record(record, "启动", error)
+            if record.status == "stopped":
+                return
             try:
                 await self.stop_plugin(record.name)
             except Exception as cleanup:
                 self._record(record, "启动失败后清理", cleanup)
             record.status, record.error = "failed", failure
             record.ready.set()
-            return
-        record.status = "running"
-        record.error = None
-        record.ready.set()
-        for item in record.backgrounds:
-            task = asyncio.create_task(self._background(record, item))
-            self.tasks[task] = record.name
-            task.add_done_callback(lambda done: self.tasks.pop(done, None))
-        self._notify()
 
     async def start(self) -> None:
         self.started = True
-        for record in self.plugins.values():
+        for record in tuple(self.plugins.values()):
             if record.status == "loaded":
                 await self.start_plugin(record)
         self._notify()
@@ -603,25 +619,26 @@ class PluginHost:
 
     async def stop_plugin(self, name: str) -> None:
         record = self.plugins[name]
-        record.status = "stopped"
-        self._remove_entries(record)
-        record.ready.set()
-        owned = [task for task, owner in self.tasks.items() if owner == name]
-        for task in owned:
-            task.cancel()
-        await asyncio.gather(*owned, return_exceptions=True)
-        for task in owned:
-            self.tasks.pop(task, None)
-        record.crons.clear()
-        try:
-            if record.instance is not None:
-                await record.instance.stop()
-        except Exception as error:
-            record.status, record.error = "failed", self._record(record, "停止", error)
-            raise
-        record.instance = None
-        self._unload_module(record)
-        self._notify()
+        async with record.stop_lock:
+            record.status = "stopped"
+            self._remove_entries(record)
+            record.ready.set()
+            owned = [task for task, owner in self.tasks.items() if owner == name]
+            for task in owned:
+                task.cancel()
+            await asyncio.gather(*owned, return_exceptions=True)
+            for task in owned:
+                self.tasks.pop(task, None)
+            record.crons.clear()
+            try:
+                if record.instance is not None:
+                    await record.instance.stop()
+            except Exception as error:
+                record.status, record.error = "failed", self._record(record, "停止", error)
+                raise
+            record.instance = None
+            self._unload_module(record)
+            self._notify()
 
     async def reload(self, name: str, saved: HostConfig) -> None:
         if self.closing:
