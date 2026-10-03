@@ -12,6 +12,8 @@ LenBot 的原生 `forget` 使用 `POST /api/v1/content/forget`。固定上游版
 
 ## 构建与升级
 
+配套提交和补丁路径集中在 [`components.json`](../components.json)，同版镜像与对应源码由[发行流程](../releasing.md)生成。
+
 使用部署说明指定的上游提交 `a09a9d20a8e07d08973aee177802d00e08df29e6`，在独立检出中应用补丁：
 
 ```sh

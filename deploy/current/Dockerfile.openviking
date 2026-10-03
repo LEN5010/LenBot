@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libstdc++6 git \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/LICENSE /usr/share/openviking/LICENSE
 ENV PATH="/app/.venv/bin:${PATH}" HOME=/service
 WORKDIR /service
 LABEL org.opencontainers.image.source="https://github.com/volcengine/OpenViking"
