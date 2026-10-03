@@ -8,6 +8,7 @@ import ErrorNote from '../../components/ErrorNote.vue'
 import DevOnly from '../../components/DevOnly.vue'
 import TaskEvents from './TaskEvents.vue'
 import TaskMore from './TaskMore.vue'
+import TaskBrowserCard from './TaskBrowserCard.vue'
 import ResourceBrowser from '../../components/ResourceBrowser.vue'
 import ResourceTaskDraft from './ResourceTaskDraft.vue'
 import { finished, taskStatus } from './taskLabels.js'
@@ -170,6 +171,8 @@ function created(task) {
       </ul>
     </section>
 
+    <TaskBrowserCard :scene="scene" :task="task" :browser="detail.data.value.browser" :operator="operator" :configured="service.configured"
+      @changed="resourceVersion++; detail.reload(); emit('changed')" />
     <TaskEvents :scene="scene" :task-id="id" :first="detail.data.value.events" :first-next="detail.data.value.next_after" :timezone="settings?.timezone" />
     <TaskMore :scene="scene" :task="task" :files="detail.data.value.files" :service="service" :operator="operator" @changed="resourceVersion++; detail.reload(); emit('changed')" />
     <ResourceTaskDraft v-if="service.configured" :scene="scene" :operator="operator" @dirty="value => resourceDirty = value" @created="created">

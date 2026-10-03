@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import ExitStack
 import json
 
+from pydantic import ValidationError
+
 from .account_browser import AccountBrowser, BrowserAction
+from .account_browser_files import BrowserTransfers, FileTarget, ScreenshotTarget, UploadTarget
 from .config import HostConfig
+from .task_browser_files import BrowserOutput, browser_output_file, record_browser_output
+from .task_materials import finish_file_operation
+from .task_resources import ResourceFileRef, TaskResources
 from .tasks_store import TERMINAL, Task, TaskStore
 
 
@@ -49,9 +56,12 @@ class TaskBrowser:
         self.require_owner(item.requester)
         if not item.browser_active or item.browser_session is None:
             raise RuntimeError('此任务没有已确认的账号浏览会话')
-        action = BrowserAction.model_validate_json(raw)
-        if action.method == 'screenshot' and self.config.worker.input_support != 'text-image':
-            raise ValueError('当前工作模型未配置图像输入，不能向它提供浏览器截图')
+        try:
+            action = BrowserAction.model_validate_json(raw)
+        except ValidationError as error:
+            raise ValueError(f'Invalid browser action: {raw[:500]!r}; {error}') from error
+        if action.method in {'upload', 'download', 'screenshot'}:
+            return await self.file_action(item, action)
         if action.method == 'request_help':
             # The host's existing input wait limit governs human time, not active execution.
             params = {**action.params, 'timeout_ms': int(self.config.worker.input_timeout_seconds * 1000)}
@@ -72,12 +82,70 @@ class TaskBrowser:
                 await resume_input()
         else:
             result = await self.client.execute(item.browser_session, action)
-        if action.method == 'screenshot':
-            if not isinstance(result.get('image_base64'), str):
-                raise ValueError(f'Browser screenshot lacks image_base64: {result!r}')
-            return {'content': json.dumps({k:v for k,v in result.items() if k != 'image_base64'}, ensure_ascii=False),
-                    'image': {'data': result['image_base64'], 'mimeType': 'image/png'}}
         return {'content': json.dumps(result, ensure_ascii=False)}
+
+    async def file_action(self, item: Task, action: BrowserAction) -> dict:
+        settings = self.config.worker
+        images = settings.input_support == 'text-image'
+        if action.method == 'screenshot' and not images and not action.save:
+            raise ValueError('纯文本工作模型使用 screenshot 时设置 save=true，将图片保存到任务资源')
+        target_type = {'upload': UploadTarget, 'download': FileTarget, 'screenshot': ScreenshotTarget}[action.method]
+        try:
+            target = target_type.model_validate(action.params)
+        except ValidationError as error:
+            raise ValueError(f'Invalid browser {action.method} params: {action.params!r}; {error}') from error
+        transfers = BrowserTransfers(self.client)
+        saved, attached = None, None
+        try:
+            async with self.client.lock:
+                page = await transfers.page(item.browser_session, target.tab_id)
+                target = target.model_copy(update={'tab_id': page.tab_id})
+                source = {'page_url': page.url, 'page_title': page.title}
+                if action.method == 'upload':
+                    resources = TaskResources(settings, self.records)
+                    with ExitStack() as streams:
+                        files, references = [], []
+                        for selection in action.files:
+                            reference = ResourceFileRef(task_id=item.id, **selection.model_dump())
+                            opened = resources.open(item.scene, reference)
+                            streams.enter_context(opened.stream)
+                            if opened.size > settings.max_file_bytes:
+                                raise ValueError(f'Browser upload exceeds worker.max_file_bytes: {opened.name}; '
+                                                 f'{opened.size} > {settings.max_file_bytes}')
+                            files.append(opened)
+                            references.append({'name': opened.name, 'size': opened.size, 'mime_type': opened.mime_type,
+                                               'reference': reference.model_dump()})
+                        async with transfers.upload(item.browser_session, target, files) as receipt:
+                            attached = {'status': 'attached', 'files': references, **source, **receipt.model_dump()}
+                            self.records.add_event(item.scene, item.id, 'browser_upload', attached)
+                    return {'content': json.dumps(attached, ensure_ascii=False)}
+                if action.method == 'download':
+                    async with transfers.download(item.browser_session, target, settings.max_file_bytes) as receipt:
+                        with browser_output_file(settings, item, 'download', receipt.suggested_filename) as (path, output):
+                            await transfers.read(receipt, output)
+                        saved = record_browser_output(settings, self.records, item,
+                            BrowserOutput(path=path, kind='download', **source))
+                    result = {'status': 'saved', 'file': saved,
+                              'browser': receipt.model_dump(exclude={'transfer_id'})}
+                    return {'content': json.dumps(result, ensure_ascii=False)}
+                receipt, image = await transfers.screenshot(item.browser_session, target)
+                result = {'status': 'captured', **source, **receipt.model_dump(exclude={'image_base64'})}
+                if action.save:
+                    if len(image) > settings.max_file_bytes:
+                        raise ValueError(f'Browser screenshot exceeds worker.max_file_bytes: {len(image)} > {settings.max_file_bytes}')
+                    with browser_output_file(settings, item, 'screenshot', 'page.png') as (path, output):
+                        await finish_file_operation(output.write, image)
+                    saved = record_browser_output(settings, self.records, item,
+                        BrowserOutput(path=path, kind='screenshot', **source))
+                    result.update(status='saved', file=saved)
+                return {'content': json.dumps(result, ensure_ascii=False), **(
+                    {'image': {'data': receipt.image_base64, 'mimeType': 'image/png'}} if images else {})}
+        except BaseException as error:
+            if saved is not None:
+                error.add_note(f"Browser file already saved: {saved['path']}; reference={saved['reference']!r}")
+            if attached is not None:
+                error.add_note(f"Browser files already attached: {attached['file_names']!r}; tab_id={attached['tab_id']}")
+            raise
 
     async def release(self, item: Task, *, session_id: str | None) -> dict:
         if item.status not in TERMINAL or not item.browser_active:

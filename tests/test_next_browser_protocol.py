@@ -47,7 +47,10 @@ def test_browser_native_frames():
 @pytest.mark.parametrize('body', [
     {'method':'observe','params':{'session_id':'another-task'}},
     {'method':'navigate','params':{'browser_instance_id':'daily-browser'}},
-    {'method':'upload','params':{}}, {'method':'download','params':{}},
+    {'method':'upload','params':{}},
+    {'method':'upload','params':{'ref':'@e1'},'files':[{'scope':'runtime','path':'control/task-api.json'}]},
+    {'method':'upload','params':{'ref':'@e1'},'files':[{'scope':'inputs','path':'../another-task'}]},
+    {'method':'download','params':{'ref':'@e1'},'save':True},
 ])
 def test_browser_bound_arguments(body):
     with pytest.raises(ValidationError):

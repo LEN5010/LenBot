@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 import json
 import os
+import traceback
 from pathlib import Path
 from typing import Mapping
 
@@ -151,7 +152,7 @@ class WorkerTransport:
                     # Its owner already waits on this failure channel.
                     if request["path"] == "/v1/chat/completions":
                         self._fail(error)
-                    detail = f"{type(error).__name__}: {error}".encode("utf-8")
+                    detail = ''.join(traceback.format_exception_only(error)).strip().encode('utf-8')
                     if len(detail) > CHUNK_BYTES:
                         detail = detail[:CHUNK_BYTES - 64].decode(
                             "utf-8", errors="ignore").encode("utf-8") + b"\n[error text truncated at pipe frame limit]"

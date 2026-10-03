@@ -3,7 +3,7 @@ import { api, queryString } from '../../api.js'
 /**
  * @typedef {'workspace'|'inputs'|'deliveries'|'runtime'|'shared'} ResourceScope
  * @typedef {{scope:ResourceScope, task_id:number|null, path:string, file_id?:number|null}} ResourceRef
- * @typedef {{name:string, kind:string, size:number|null, modified:number, purpose:string, mime_type:string, preview:'text'|'image'|'pdf'|'download', exists:boolean, reference:ResourceRef, note:string|null, upload:Object|null, source:Object|null, browser_source:{created:number,kind:string,page_url:string,page_title:string,download_url:string|null}|null, registrations:number[], deletion:{created:number,requester:string}|null, deletable:boolean}} ResourceEntry
+ * @typedef {{name:string, kind:string, size:number|null, modified:number, purpose:string, mime_type:string, preview:'text'|'image'|'pdf'|'download', exists:boolean, reference:ResourceRef, note:string|null, upload:Object|null, source:Object|null, browser_source:{created:number,kind:string,page_url:string|null,page_title:string|null,download_url:string|null}|null, registrations:number[], deletion:{created:number,requester:string}|null, deletable:boolean}} ResourceEntry
  * @typedef {{reference:ResourceRef, name:string}} ResourceInput
  * @typedef {{scene:string, scope:ResourceScope, task_id:number|null, path:string, exists:boolean, entries:ResourceEntry[], next_offset:number|null}} ResourceListing
  */

@@ -60,7 +60,7 @@ const finished = status => ['done', 'failed', 'cancelled'].includes(status)
 <template>
   <ErrorNote v-if="browser.error.value" title="读取账号浏览器设置失败" :error="browser.error.value" />
   <template v-if="browser.data.value">
-    <SettingSection title="账号浏览器" description="主人发起的任务可以用一个已登录账号的专用浏览器。需要先在本机部署浏览器守护进程和扩展。"
+    <SettingSection title="账号浏览器" description="主人发起的任务可以使用专用账号浏览器。宿主连接 daemon；浏览器电脑安装对应扩展，远程文件往返还需 Native Messaging 文件助手。"
       :dirty="dirty" :problem="problem" :saving="save.busy.value" :error="save.error.value" @save="submit">
       <v-switch :model-value="draft !== null" color="primary" label="启用账号浏览器" hide-details
         @update:model-value="value => draft = value ? (saved ? clone(saved) : blank()) : null" />

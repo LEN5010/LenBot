@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .task_resources import ResourceLocation
+
 
 class AccountBrowserSettings(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
@@ -33,13 +35,27 @@ class AccountBrowserSettings(BaseModel):
 Method = Literal['navigate', 'navigate_back', 'navigate_forward', 'reload', 'observe', 'snapshot',
                  'click', 'fill', 'press', 'select', 'wheel', 'scroll_to', 'hover', 'screenshot',
                  'tab_list', 'tab_create', 'tab_select', 'tab_close', 'tab_borrow', 'tab_return',
-                 'request_help', 'get_html']
+                 'request_help', 'get_html', 'upload', 'download']
+
+
+class BrowserInput(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    scope: Literal['inputs', 'workspace']
+    path: str = Field(min_length=1)
+
+    @field_validator('path')
+    @classmethod
+    def relative_path(cls, value: str) -> str:
+        return ResourceLocation.relative_path(value)
 
 
 class BrowserAction(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     method: Method
     params: dict = Field(default_factory=dict)
+    files: list[BrowserInput] = Field(default_factory=list, max_length=20,
+        description='upload 使用的当前任务文件；scope 为 inputs 或 workspace，path 相对于该目录。')
+    save: bool = Field(default=False, description='screenshot 是否同时保存到任务 out/browser/；纯文本模型可用此方式保存截图。')
 
     @field_validator('params')
     @classmethod
@@ -51,6 +67,10 @@ class BrowserAction(BaseModel):
 
     @model_validator(mode='after')
     def native_arguments(self):
+        if (self.method == 'upload') != bool(self.files):
+            raise ValueError('upload requires files; other methods do not accept files')
+        if self.save and self.method != 'screenshot':
+            raise ValueError('save only applies to screenshot; download always saves to the task')
         if self.method == 'select':
             values = self.params.get('values')
             if 'value' in self.params or not isinstance(values, list) or not all(isinstance(v, str) for v in values):
@@ -68,7 +88,10 @@ class BrowserAction(BaseModel):
 
 BROWSER_TOOL = {'name': 'account_browser',
     'description': '在此主人授权的独立账号任务中操作专用浏览器。方法与参数使用原生浏览器协议；'
-                   '先observe取得实际ref再操作。session和browser由宿主绑定。远程上传下载不支持。'
+                   '先observe取得实际ref再操作。session和browser由宿主绑定。'
+                   'upload的files选择当前任务inputs/workspace相对路径，params用ref或selector、可选tab_id/timeout_ms/mode(input或drop)。'
+                   'download的params用ref或selector、可选tab_id/timeout_ms，完成后返回任务文件。'
+                   'screenshot可设save=true保存任务截图。附加文件、网页提交、任务文件登记和平台发送分别进行。'
                    '登录/验证码使用request_help；不可撤回操作先confirm_action。',
     'parameters': BrowserAction.model_json_schema()}
 
