@@ -2,6 +2,8 @@
 
 Embeddings are optional and separately configured; this module does not
 extract facts from a conversation.
+Manual text searches match a literal phrase; automatic text recall ranks
+overlapping literal trigrams from the recent chat, or a shorter literal query.
 """
 
 from __future__ import annotations
@@ -609,10 +611,43 @@ class LocalMemory:
             ORDER BY CASE WHEN scope=? THEN 0 ELSE 1 END, path LIMIT ?
         """, (*scopes, folded, scene, limit)).fetchall()
 
+    @staticmethod
+    def _automatic_rows(db: sqlite3.Connection, scene: str, query: str,
+                        limit: int, include_public: bool, exclude_pending: bool) -> list[sqlite3.Row]:
+        # The existing recall budget also bounds the number of literal query fragments.
+        folded = query.casefold()[-1200:]
+        if len(folded) < 3:
+            return LocalMemory._lexical_rows(db, scene, folded, limit, include_public, exclude_pending)
+        terms = dict.fromkeys(folded[index:index + 3] for index in range(len(folded) - 2))
+        expression = ' OR '.join('"' + term.replace('"', '""') + '"' for term in terms)
+        scopes = (scene, "public") if include_public else (scene,)
+        placeholders = ",".join("?" for _ in scopes)
+        eligible = " AND substr(path,1,14)!='legacy-import/'" if exclude_pending else ""
+        # A short message remains searchable when a following reply adds another line.
+        short = list(dict.fromkeys(line.strip() for line in folded.splitlines() if 0 < len(line.strip()) < 3))
+        short_rows = ""
+        parameters = [expression, *scopes]
+        if short:
+            matches = " OR ".join("instr(content, ?) > 0" for _ in short)
+            short_rows = f"""UNION ALL SELECT scope, path, 0 FROM memory_files
+                WHERE scope IN ({placeholders}) AND ({matches}) {eligible}"""
+            parameters.extend([*scopes, *short])
+        return db.execute(f"""
+            WITH hits AS MATERIALIZED (
+                SELECT m.scope, m.path, memory_fts.rank AS relevance
+                FROM memory_fts JOIN memory_files AS m ON m.id=memory_fts.rowid
+                WHERE memory_fts MATCH ? AND m.scope IN ({placeholders}) {eligible}
+                {short_rows}
+            )
+            SELECT scope, path FROM hits GROUP BY scope, path
+            ORDER BY CASE WHEN scope=? THEN 0 ELSE 1 END, MIN(relevance), path LIMIT ?
+        """, (*parameters, scene, limit)).fetchall()
+
     def _search_sync(self, scene: str, query: str, limit: int,
-                     include_public: bool, exclude_pending: bool) -> list[LocalMemoryHit]:
+                     include_public: bool, exclude_pending: bool, automatic: bool) -> list[LocalMemoryHit]:
         with self._db() as db:
-            rows = self._lexical_rows(db, scene, query, limit, include_public, exclude_pending)
+            search = self._automatic_rows if automatic else self._lexical_rows
+            rows = search(db, scene, query, limit, include_public, exclude_pending)
         hits: list[LocalMemoryHit] = []
         for row in rows:
             content = self._read_sync(row["scope"], row["path"]).content
@@ -659,7 +694,8 @@ class LocalMemory:
         return hits
 
     async def search(self, scene: str, query: str, limit: int = 10, *,
-                     include_public: bool = True, exclude_pending: bool = False) -> list[LocalMemoryHit]:
+                     include_public: bool = True, exclude_pending: bool = False,
+                     automatic: bool = False) -> list[LocalMemoryHit]:
         if not query.strip() or not 1 <= limit <= 100:
             raise ValueError("search requires a nonblank query and limit 1..100")
         source = _scene_scope(scene)
@@ -668,7 +704,8 @@ class LocalMemory:
             if include_public:
                 await locks.enter_async_context(self._lock("public"))
             if self.embedding is None:
-                return await asyncio.to_thread(self._search_sync, source, query, limit, include_public, exclude_pending)
+                return await asyncio.to_thread(self._search_sync, source, query, limit,
+                                               include_public, exclude_pending, automatic)
             dimensions = await asyncio.to_thread(self._vector_preflight)
             if dimensions is None:
                 return []
