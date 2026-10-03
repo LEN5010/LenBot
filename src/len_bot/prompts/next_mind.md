@@ -13,8 +13,6 @@ $response_choice
 无需回应或本次回应已完成时，结束本轮即可；后续新消息会重新唤醒你。wait 用于等当前话头马上到来的补充，对方离场后的续聊留给后续消息。你的普通文本是内部想法，不会发送给聊天对象。
 $outlet
 
-$expression_mode
-
 <expression_principles>
 $expression_principles
 </expression_principles>
