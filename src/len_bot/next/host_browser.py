@@ -5,7 +5,7 @@ import asyncio
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from .account_browser import AccountBrowser, AccountBrowserSettings
 from .host_settings import _prepare, _read_saved
@@ -30,6 +30,11 @@ class BrowserState(BaseModel):
     saved: AccountBrowserSettings | None
     restart_required: bool
     occupied: list[Task]
+
+
+class TaskBrowserConnection(BaseModel):
+    browser: dict[str, JsonValue] | None
+    session: dict[str, JsonValue] | None
 
 
 def register_host_browser(app: FastAPI, *, root: Path, runtime, user, write_lock):
@@ -79,6 +84,29 @@ def register_host_browser(app: FastAPI, *, root: Path, runtime, user, write_lock
         try:
             return await service().rpc('system.status', {})
         except (ValueError, OSError, RuntimeError, TimeoutError) as error:
+            raise HTTPException(502, str(error)) from error
+
+    @app.post('/api/host/tasks/{task_id}/browser/status', response_model=TaskBrowserConnection)
+    async def task_status(task_id: int, scene: str, _: str = Depends(user)):
+        if scene not in runtime.chats:
+            raise HTTPException(404, '当前宿主没有此场景')
+        try:
+            item = records.get(scene, task_id)
+            if not item.account_browser:
+                raise ValueError('公共浏览器属于任务容器，不使用账号浏览 daemon')
+            client = service()
+            state = await client.rpc('system.status', {})
+            try:
+                browsers, sessions = state['browsers'], state['sessions']
+            except KeyError as error:
+                raise ValueError(f'Invalid browser system.status: {state!r}') from error
+            if (not isinstance(browsers, list) or not isinstance(sessions, list)
+                    or any(not isinstance(row, dict) or not isinstance(row.get('instance_id'), str) for row in browsers)
+                    or any(not isinstance(row, dict) or not isinstance(row.get('session_id'), str) for row in sessions)):
+                raise ValueError(f'Invalid browser system.status: {state!r}')
+            return {'browser': next((row for row in browsers if row['instance_id'] == client.settings.browser_instance_id), None),
+                    'session': next((row for row in sessions if row['session_id'] == item.browser_session), None)}
+        except (ValueError, KeyError, OSError, RuntimeError, TimeoutError) as error:
             raise HTTPException(502, str(error)) from error
 
     @app.post('/api/host/browser/pair')

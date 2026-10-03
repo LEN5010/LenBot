@@ -42,9 +42,16 @@ class TaskPage(BaseModel):
     next_offset: int | None
 
 
+class TaskBrowserView(BaseModel):
+    public_enabled: bool
+    binding: dict[str, JsonValue] | None
+    output_count: int
+
+
 class TaskDetail(BaseModel):
     task: TaskView
     events: list[TaskEventPreview]
     network: dict[str, JsonValue] | None
     next_after: int
     files: list[RegisteredFile]
+    browser: TaskBrowserView
