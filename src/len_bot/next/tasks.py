@@ -33,6 +33,7 @@ from .task_browser import TaskBrowser
 from .tasks_store import TERMINAL, Task, TaskStore
 from .worker_model import Limits
 from .task_materials import MaterialName, finish_file_operation, material_directory, save_shared
+from .storage_pool import worker_pool_usage
 from .task_inputs import ResourceInput, copy_inputs, create_stage, publish_inputs, remove_stage
 from .operations import credentials, diagnostic_value, redact, redact_record
 
@@ -197,6 +198,7 @@ class WorkTasks:
     async def upload_resource(self, scene: str, source: BinaryIO, *, requester: str, name: str) -> dict:
         self._can_manage_shared(scene, requester)
         async with self.file_changes:
+            await finish_file_operation(worker_pool_usage, self.settings)
             result = await finish_file_operation(save_shared, source,
                 material_directory(self.settings.workspace_root, scene), name, self.settings.max_file_bytes)
             self._notify(scene)
@@ -208,6 +210,7 @@ class WorkTasks:
         self._can_manage_shared(scene, requester)
         self._inspect_task(scene, reference.task_id, requester)
         async with self.file_changes:
+            await finish_file_operation(worker_pool_usage, self.settings)
             opened = self.resources.open(scene, reference)
             with opened.stream as source:
                 result = await finish_file_operation(save_shared, source,
@@ -291,6 +294,7 @@ class WorkTasks:
                        deliverable: str, context: str, account_browser: bool = False,
                        materials: Sequence[MaterialName] = (), resources: Sequence[ResourceInput] = ()) -> dict:
         self._admit_delegate(scene, requester, account_browser)
+        await finish_file_operation(worker_pool_usage, self.settings)
         selected = (*materials, *(item.name for item in resources))
         stage = create_stage(self.settings, scene) if selected else None
         item: Task | None = None
@@ -305,8 +309,7 @@ class WorkTasks:
                 size = await finish_file_operation(self.resources.copy_opened, opened, stage / selection.name)
                 copies.append({'name': selection.name, 'size': size, 'source_path': str(opened.path),
                                'reference': selection.reference.model_dump(), 'container_path': f'/inputs/{selection.name}'})
-            if stage is not None:
-                self._admit_delegate(scene, requester, account_browser)
+            self._admit_delegate(scene, requester, account_browser)
             item = self._register_delegate(scene, requester, goal, deliverable, context, account_browser, selected)
             if stage is not None:
                 inputs = publish_inputs(stage, self.settings, scene, item.id, selected)
@@ -496,6 +499,7 @@ class WorkTasks:
         self.egress.recover()
 
     async def start(self) -> None:
+        await finish_file_operation(worker_pool_usage, self.settings)
         self.accepting = True
         self._pump = asyncio.create_task(self._schedule())
 

@@ -14,6 +14,7 @@ from .host_materials import failure
 from .network import NetworkRuntime
 from .task_materials import finish_file_operation
 from .task_storage import continuation_state, storage_usage, temporary_usage
+from .storage_pool import worker_pool_usage
 from .tasks_config import WorkerSettings
 from .tasks_store import TERMINAL, Task, TaskStore
 
@@ -51,6 +52,17 @@ def register_host_task_storage(app: FastAPI, *, runtime: NetworkRuntime,
         return (runtime.tasks is not None and item.status in TERMINAL and item.container is None
                 and not item.browser_active and item.id not in runtime.tasks.running)
 
+    @app.get('/api/host/task-storage/pool')
+    async def pool(_: str = Depends(user)):
+        worker = runtime.config.worker
+        if worker is None or worker.storage_pool is None:
+            return {'configured': False, 'usage': None}
+        try:
+            usage = await finish_file_operation(worker_pool_usage, worker)
+        except (ValueError, OSError, RuntimeError) as error:
+            raise HTTPException(409, ''.join(traceback.format_exception_only(error)).strip()) from error
+        return {'configured': True, 'usage': usage}
+
     @app.get('/api/host/task-storage')
     async def listing(scene: str, status: Literal['all', 'active', 'terminal', 'done', 'failed', 'cancelled'] = 'all',
                       since: float | None = Query(None, ge=0), before: float | None = Query(None, ge=0),
@@ -86,9 +98,12 @@ def register_host_task_storage(app: FastAPI, *, runtime: NetworkRuntime,
             before = records.get(scene, id)
             roots = await finish_file_operation(storage_usage, worker, scene, id)
             temporary = await finish_file_operation(temporary_usage, worker, scene, id)
+            quota = await finish_file_operation(worker_pool_usage, worker)
             current = records.get(scene, id)
         except (ValueError, OSError) as error:
             raise failure(error) from error
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from error
         discarded = records.workspace_discarded(scene, id)
         return {'scene': scene, 'task_id': id, 'started_at': started, 'ended_at': time.time(),
                 'status_at_start': before.status, 'status_at_end': current.status,
@@ -96,8 +111,8 @@ def register_host_task_storage(app: FastAPI, *, runtime: NetworkRuntime,
                 'task': asdict(current), 'continuation': continuation_state(current, discarded),
                 'cleanable': cleanable(current), 'roots': roots, 'temporary': temporary,
                 'last_cleanup': records.latest_cleanup(scene, id),
-                'hard_disk_quota': None,
-                'notice': '显示本次读取的文件逻辑大小与文件系统分配字节；运行中目录可继续变化。硬配额尚未接入。'}
+                'hard_disk_quota': quota,
+                'notice': '显示本次读取的文件逻辑大小与文件系统分配字节；运行中目录可继续变化。配额与剩余空间在实例存储池卡片读取。'}
 
     @app.post('/api/host/task-storage/cleanup')
     async def cleanup(scene: str, body: CleanupSelection, _: str = Depends(user)):

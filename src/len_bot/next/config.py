@@ -570,9 +570,14 @@ def _resolve_worker_paths(root: Path, source: dict) -> None:
     if not isinstance(binary, str) or not Path(binary).is_absolute():
         raise ValueError("worker.docker_binary must be an explicit absolute path string")
     worker["docker_binary"] = Path(binary).resolve()
+    pool = worker.get('storage_pool')
+    if isinstance(pool, dict):
+        pool['mount'] = _resolved_path(root, pool.get('mount'), within_root=False, field='worker.storage_pool.mount')
+        if pool.get('kind') == 'ext4':
+            pool['image'] = _resolved_path(root, pool.get('image'), within_root=False, field='worker.storage_pool.image')
     for name in ("workspace_root", "runtime_root", "delivery_root"):
         worker[name] = _resolved_path(
-            root, worker.get(name), within_root=True, field=f"worker.{name}",
+            root, worker.get(name), within_root=pool is None or name == 'delivery_root', field=f"worker.{name}",
         )
     if worker.get("skills_directory") is not None:
         worker["skills_directory"] = _resolved_path(
