@@ -202,6 +202,25 @@ class SharedConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def asr_websocket_capacity(self) -> SharedConfig:
+        if (self.delivery != "onebot" or self.models.roles.asr is None
+                or self.onebot is None or self.onebot.action_transport != "websocket"):
+            return self
+        # get_record returns the complete WAV as base64 plus its JSON envelope.
+        required = 4 * ((self.audio.max_bytes + 2) // 3) + 64 * 1024
+        if "max_frame_bytes" not in self.onebot.model_fields_set:
+            self.onebot = self.onebot.model_copy(update={
+                "max_frame_bytes": max(self.onebot.max_frame_bytes, required),
+            })
+        elif self.onebot.max_frame_bytes < required:
+            raise ValueError(
+                f"ASR WebSocket actions require onebot.max_frame_bytes >= {required} "
+                f"for audio.max_bytes={self.audio.max_bytes}; increase max_frame_bytes, "
+                "lower audio.max_bytes, or explicitly select HTTP actions with http_url"
+            )
+        return self
+
+    @model_validator(mode="after")
     def distinct_history_paths(self) -> SharedConfig:
         importing = self.history_import
         if importing is not None:
