@@ -11,7 +11,8 @@ from collections import deque
 
 from .attention import SceneRunner
 from .audio import AudioService
-from .chat import Chat, tool_catalog
+from .chat import Chat
+from .chat_tools import tool_catalog
 from .skills import select_skills
 from .config import LabConfig, OneBotForward, SharedConfig
 from .operations import credentials, redact, redact_record

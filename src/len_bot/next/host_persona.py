@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Respo
 from pydantic import BaseModel, Field, field_validator
 import yaml
 
-from .chat import build_tools
+from .chat_tools import build_tools
 from .config import STRICT, HostConfig, load_host_config
 from .learning_store import LearningStore
 from .network import NetworkRuntime

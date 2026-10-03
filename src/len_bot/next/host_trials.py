@@ -13,7 +13,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, HTTPException, WebSocket
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .chat import tool_catalog, tool_unavailable_reasons
+from .chat_tools import tool_catalog, tool_unavailable_reasons
 from .config import HostConfig, LabConfig, load_host_config
 from .host_persona import finish_role_write
 from .instance_lock import InstanceBusyError, instance_lock

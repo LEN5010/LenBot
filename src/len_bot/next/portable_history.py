@@ -10,7 +10,8 @@ from pathlib import Path
 from string import Template
 from zoneinfo import ZoneInfo
 
-from .chat import PROMPTS, build_system, build_tools
+from .chat_context import PROMPTS, build_system
+from .chat_tools import build_tools
 from .config import HostConfig, load_host_config
 from .instance_lock import instance_lock
 from .context import complete_boundaries, estimate_request, project_history, recap_source

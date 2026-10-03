@@ -14,7 +14,7 @@ from typing import Annotated, Literal
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
-from .chat import build_tools
+from .chat_tools import build_tools
 from .config import (
     STRICT, Compaction, ImageSettings, Attention, HostConfig, LearningSettings, Proactive, Roles, ScenePersona,
     TextDelivery, WebReadSettings, _load_host_source, _read_root,

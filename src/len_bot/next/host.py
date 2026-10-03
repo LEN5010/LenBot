@@ -12,7 +12,8 @@ import uvicorn
 from .config import load_host_config
 from .instance_lock import instance_lock
 from .operations import host_logging, credentials, redact
-from .chat import PROMPTS, build_tools, tool_catalog
+from .chat_context import PROMPTS
+from .chat_tools import build_tools, tool_catalog
 from .host_panel import create_app
 from .model import ChatModel
 from .model_slots import ModelSlots
