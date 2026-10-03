@@ -20,13 +20,14 @@ def main() -> None:
     args = parser.parse_args()
     version = tomllib.loads((PROJECT / 'pyproject.toml').read_text())['project']['version']
     component = json.loads((PROJECT / 'deploy/components.json').read_text())['browserskill']
+    target = component['targets'][args.platform]
     name = f'browserskill-{version}-{args.platform}'
     args.output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temporary:
         bundle = Path(temporary) / name
         (bundle / 'bin').mkdir(parents=True)
         for binary in ('bsk', 'bsk-file-host'):
-            shutil.copy2(args.source / 'target/release' / binary, bundle / 'bin' / binary)
+            shutil.copy2(args.source / 'target' / target / 'release' / binary, bundle / 'bin' / binary)
         shutil.copytree(args.source / 'apps/extension/dist/chrome-mv3', bundle / 'extension')
         for file in ('LICENSE', 'Cargo.lock', 'pnpm-lock.yaml'):
             shutil.copy2(args.source / file, bundle / file)
@@ -37,7 +38,7 @@ def main() -> None:
         shutil.copy2(args.source / 'crates/bsk-file-host/README.md', bundle / 'source-docs/file-host.md')
         shutil.copy2(PROJECT / component['patch'], bundle / 'browserskill-remote-files.patch')
         (bundle / 'component.json').write_text(json.dumps({**component, 'lenbot_version': version,
-            'platform': args.platform}, ensure_ascii=False, indent=2) + '\n')
+            'platform': args.platform, 'rust_target': target}, ensure_ascii=False, indent=2) + '\n')
         cargo = subprocess.check_output(['cargo', '+' + component['rust'], 'metadata', '--locked', '--format-version', '1'], cwd=args.source)
         (bundle / 'cargo-metadata.json').write_bytes(cargo)
         # Retain the originals available in the dependencies resolved by this build.

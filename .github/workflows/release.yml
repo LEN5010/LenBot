@@ -153,6 +153,8 @@ jobs:
           path: packages
       - name: Read the fixed component tools
         id: tools
+        env:
+          TARGET_PLATFORM: ${{ matrix.target.platform }}
         run: |
           python3 - <<'PYTHON'
           import json, os
@@ -161,6 +163,7 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               for name in ('node', 'pnpm', 'rust'):
                   output.write(f'{name}={component[name]}\n')
+              output.write(f'rust_target={component["targets"][os.environ["TARGET_PLATFORM"]]}\n')
           PYTHON
       - uses: actions/setup-node@v4
         with:
@@ -172,13 +175,14 @@ jobs:
         env:
           VERSION: ${{ needs.packages.outputs.version }}
           RUST_VERSION: ${{ steps.tools.outputs.rust }}
+          RUST_TARGET: ${{ steps.tools.outputs.rust_target }}
           PNPM_VERSION: ${{ steps.tools.outputs.pnpm }}
         run: |
           tar -xzf "packages/browserskill-$VERSION-source.tar.gz" -C "$RUNNER_TEMP"
-          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target "$RUST_TARGET"
           npm install --global "pnpm@$PNPM_VERSION"
           cd "$RUNNER_TEMP/browserskill"
-          cargo +"$RUST_VERSION" build --locked --release -p bsk -p bsk-file-host
+          cargo +"$RUST_VERSION" build --locked --release --target "$RUST_TARGET" -p bsk -p bsk-file-host
           pnpm install --frozen-lockfile
           pnpm --filter @browser-skill/extension build
       - name: Package binaries and extension

@@ -11,6 +11,12 @@
     "patch": "deploy/current/browserskill-remote-files.patch",
     "rust": "1.99.0",
     "node": "26.8.2",
-    "pnpm": "10.17.0"
+    "pnpm": "10.17.0",
+    "targets": {
+      "linux-amd64": "x86_64-unknown-linux-gnu",
+      "linux-arm64": "aarch64-unknown-linux-gnu",
+      "macos-amd64": "x86_64-apple-darwin",
+      "macos-arm64": "aarch64-apple-darwin"
+    }
   }
 }
