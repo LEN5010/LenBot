@@ -25,15 +25,19 @@ function isoWithOffset(day, clock) {
   const [y, m, d] = day.split('-').map(Number), [h, mi] = clock.split(':').map(Number)
   const guess = Date.UTC(y, m - 1, d, h, mi)
   const offset = offsetAt(guess - offsetAt(guess) * 60000)
+  // A skipped local clock must not become a different time after conversion.
+  if (offsetAt(guess - offset * 60000) !== offset) return ''
   const sign = offset < 0 ? '-' : '+', abs = Math.abs(offset)
   const pad = value => String(value).padStart(2, '0')
   return `${day}T${clock}:00${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
 }
+const oneTime = computed(() => /^\d{4}-\d{2}-\d{2}$/.test(date.value) && /^\d{2}:\d{2}$/.test(time.value)
+  ? isoWithOffset(date.value, time.value) : null)
 const value = computed(() => {
   if (mode.value === 'custom') return custom.value.trim()
   if (mode.value === 'every') return every.value > 0 ? `every ${every.value}${unit.value}` : ''
   if (!/^\d{2}:\d{2}$/.test(time.value)) return ''
-  if (mode.value === 'once') return /^\d{4}-\d{2}-\d{2}$/.test(date.value) ? isoWithOffset(date.value, time.value) : ''
+  if (mode.value === 'once') return oneTime.value || ''
   if (!days.value.length) return ''
   const [h, mi] = time.value.split(':').map(Number)
   const week = days.value.length === 7 ? '*' : [...days.value].sort().join(',')
@@ -63,6 +67,7 @@ watch(value, text => emit('update:modelValue', text), { immediate: true })
     </div>
     <v-text-field v-else v-model="custom" label="时间写法" persistent-hint
       hint="例如 2026-10-02T09:00:00+08:00、every 2h，或 cron:30 9 * * 1-5（工作日 9:30）" />
+    <p v-if="mode === 'once' && oneTime === ''" role="alert" class="time-error">{{ timezone }} 在这个日期跳过了所选时间，请选择实际存在的时间，或在“自己写”中填写带明确 UTC 偏移的时间。</p>
     <p class="muted">按 {{ timezone }} 的时间{{ value ? `，保存为 ${value}` : '' }}</p>
   </div>
 </template>
@@ -74,4 +79,5 @@ watch(value, text => emit('update:modelValue', text), { immediate: true })
 .time{max-width:200px}
 .days{display:flex;flex-wrap:wrap;gap:0 4px}
 .picker p{margin:0;font-size:13px}
+.picker .time-error{color:var(--error-text)}
 </style>

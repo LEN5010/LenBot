@@ -26,7 +26,7 @@ export function newPanelUrl() {
   if (panel === null || panel.port === 0) return null
   const hostname = ['0.0.0.0', '::'].includes(panel.host) ? location.hostname : panel.host
   const host = hostname.includes(':') && !hostname.startsWith('[') ? `[${hostname}]` : hostname
-  return `http://${host}:${panel.port}/host/overview`
+  return `http://${host}:${panel.port}/#/host/overview`
 }
 
 export async function waitForRestart() {

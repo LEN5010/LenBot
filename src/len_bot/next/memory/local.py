@@ -303,8 +303,9 @@ class LocalMemory:
             raise ValueError(f"memory path escapes its source scope: {path!r}")
         return target
 
-    def _source_files(self) -> dict[tuple[str, str], str]:
+    def _source_files(self) -> tuple[dict[tuple[str, str], str], list[Path]]:
         files: dict[tuple[str, str], str] = {}
+        summaries: list[Path] = []
         for category in ("public", "groups", "private"):
             directory = self.root / category
             if not directory.exists():
@@ -313,6 +314,7 @@ class LocalMemory:
                 raise ValueError(f"memory source root is a symlink: {directory}")
             for path in directory.rglob("*.md"):
                 if path.name in SUMMARY_FILES:
+                    summaries.append(path)
                     continue
                 if category == "public":
                     scope, relative = "public", path.relative_to(directory).as_posix()
@@ -324,17 +326,19 @@ class LocalMemory:
                     relative = Path(*position[1:]).as_posix()
                 actual = self._target(scope, relative, file=True)
                 files[(scope, relative)] = _source_text(actual)
-        return files
+        return files, summaries
 
     def reindex(self) -> int:
-        """Offline-only text rebuild; turn off any old vector index explicitly."""
+        """Offline text rebuild; clear derived summaries and any old vector index."""
         if self.embedding is not None:
             raise ValueError("configured embedding requires await reindex_embeddings() offline")
-        files = self._source_files()
+        files, summaries = self._source_files()
         with self._db() as db:
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_vec'").fetchone() is not None:
                 self._load_vec(db)
             db.execute("BEGIN EXCLUSIVE")
+            for summary in summaries:
+                summary.unlink()
             if self._vector_table_exists(db):
                 db.execute("DROP TABLE memory_vec")
             db.execute("DELETE FROM memory_vector_binding")
@@ -431,7 +435,7 @@ class LocalMemory:
         """Explicit offline rebuild of text and vector derivations; preserve history."""
         if self.embedding is None:
             raise ValueError("reindex_embeddings requires configured embedding")
-        files = self._source_files()
+        files, summaries = self._source_files()
         ordered = sorted(files.items())
         partitions: dict[str, list[tuple[str, str]]] = {}
         for (scope, path), content in ordered:
@@ -449,6 +453,8 @@ class LocalMemory:
                 vectors[scope, path] = batch.vectors[index]
         with self._db() as db:
             db.execute("BEGIN EXCLUSIVE")
+            for summary in summaries:
+                summary.unlink()
             if self._vector_table_exists(db):
                 db.execute("DROP TABLE memory_vec")
             db.execute("DELETE FROM memory_vector_binding")

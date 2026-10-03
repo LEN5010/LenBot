@@ -410,28 +410,31 @@ class SceneRunner:
     def audio_ready(self) -> bool:
         return self.chat.audio is not None and self.chat.audio.records.results_pending(self.config.scene)
 
-    async def wait_audio(self) -> bool:
+    async def wait_audio(self, *, wait: bool = True) -> bool:
         if self.closing or self.chat.audio is None:
             return False
         remaining = self.chat.audio.wait_remaining(self.config.scene, self.now())
         if remaining <= 0:
             return False
+        if not wait:
+            return True
         try:
             await asyncio.wait_for(self.changed.wait(), timeout=remaining)
         except TimeoutError:
             pass  # Stop holding the input batch at its configured media deadline.
         return True
 
-    async def ready_messages(self, *, continuing: bool = False, in_turn: bool = False
+    async def ready_messages(self, *, continuing: bool = False, in_turn: bool = False, wait: bool = True
                              ) -> tuple[list[tuple[int, ChatMessage, float]], float | None,
                                         list[tuple[int, str]]] | None:
+        """Select current work; wait=False rechecks admission without burst/media waits."""
         while True:
             self.changed.clear()
             now = self.now()
             try:
                 self.chat.check_limits(model=True)
             except LimitReached as error:
-                if in_turn or self.closing:
+                if in_turn or self.closing or not wait:
                     return None
                 quiet = self.quiet_period(now)
                 if (self.state.pending is not None and self.state.pending.channel == "direct"
@@ -464,7 +467,7 @@ class SceneRunner:
                             return None
                         notice_until = period[1]
                 elif direct or resuming:
-                    if in_turn or self.closing:
+                    if in_turn or self.closing or not wait:
                         return None
                     try:
                         await asyncio.wait_for(self.changed.wait(), timeout=period[1] - now)
@@ -474,7 +477,9 @@ class SceneRunner:
                 else:
                     return None
             if (continuing or resuming) and notice_until is None:
-                if await self.wait_audio():
+                if await self.wait_audio(wait=wait):
+                    if not wait:
+                        return None
                     continue
                 pending = self.store.pending_messages(self.config.scene)
                 return (pending, None, []) if pending or resuming else None
@@ -491,9 +496,13 @@ class SceneRunner:
                 deadline = min(deadline, schedule_at)
             delay = deadline - now
             if delay <= 0:
-                if notice_until is None and await self.wait_audio():
+                if notice_until is None and await self.wait_audio(wait=wait):
+                    if not wait:
+                        return None
                     continue
                 return self.store.pending_messages(self.config.scene), notice_until, []
+            if not wait:
+                return None
             try:
                 await asyncio.wait_for(self.changed.wait(), timeout=delay)
             except TimeoutError:
@@ -593,10 +602,6 @@ class SceneRunner:
             self.store.expression_error(entry, f"{type(failure).__name__}: {failure}")
             self.emit({"type": "limit_notice", "status": "failed", "error": f"{type(failure).__name__}: {failure}"})
 
-    async def quiet_notice(self, pending, until):
-        async with self.execution:
-            await self._quiet_notice(pending, until)
-
     async def _quiet_notice(self, pending: list[tuple[int, ChatMessage, float]], until: float) -> None:
         state = self.consumed_state()
         parts, note = None, None
@@ -620,10 +625,14 @@ class SceneRunner:
                 async with asyncio.timeout(self.config.turn_timeout_seconds):
                     content, status = await self.chat.expression.send_prepared_expression(
                         entry_seq, parts, prefix=prefix, channels={"quiet_notice"})
+            except LimitReached as error:
+                status, error_text = "limited", f"{type(error).__name__}: {error}"
             except TimeoutError as error:
                 status, error_text = "timeout", f"{type(error).__name__}: fixed notice time limit"
                 content = self.store.expression_error(entry_seq, error_text)
-            expressions.append(content)
+                expressions.append(content)
+            else:
+                expressions.append(content)
             # Receipt callbacks may have persisted newer attention while sending.
             state = copy.deepcopy(self.state)
             own_at = self.store.last_self_time(self.config.scene)
@@ -634,10 +643,6 @@ class SceneRunner:
         self.emit({"type": "notice", "status": status, "error": error_text,
                    "delivery": delivery, "expressions": expressions,
                    "quiet_until": datetime.fromtimestamp(until, ZoneInfo(self.config.timezone)).isoformat()})
-
-    async def turn(self, channel: str, **turn) -> None:
-        async with self.execution:
-            await self._turn(channel, **turn)
 
     async def _turn(self, channel: str, **turn) -> None:
         state = self.consumed_state()
@@ -681,21 +686,29 @@ class SceneRunner:
         return wake_at, observe_until
 
     async def proactive_turn(self) -> None:
-        now = self.now()
-        idle_since = self.proactive.last_activity(self.config.scene, tuple(self.settings.other_bot_qqs))
-        zone = ZoneInfo(self.config.timezone)
-        local = datetime.fromtimestamp(now, zone)
-        text = Template(PROACTIVE_PROMPT.read_text(encoding="utf-8")).substitute(
-            idle=idle_text(now - idle_since), timezone=self.config.timezone,
-            since=datetime.fromtimestamp(idle_since, zone).isoformat(timespec="minutes"),
-            now=local.isoformat(timespec="minutes"),
-        ).strip()
-        pending = self.store.pending_messages(self.config.scene)
-        batch = self.batch(pending, "[安静前未触发唤醒的消息]") if pending else None
-        events = PluginStore(self.store).pending_plugin_events(self.config.scene)
-        await self.turn("proactive", batch=batch, channels={"proactive", "plugin"} if events else {"proactive"},
-                        plugin_events=events or None,
-                        proactive=(text, local.date().isoformat(), idle_since))
+        async with self.execution:
+            if self.ready_for_turn is not None and not await self.ready_for_turn(False):
+                return
+            if await self.ready_messages(wait=False) is not None:
+                return
+            wake_at, _ = self.proactive_times()
+            now = self.now()
+            if wake_at is None or wake_at > now:
+                return
+            idle_since = self.proactive.last_activity(self.config.scene, tuple(self.settings.other_bot_qqs))
+            zone = ZoneInfo(self.config.timezone)
+            local = datetime.fromtimestamp(now, zone)
+            text = Template(PROACTIVE_PROMPT.read_text(encoding="utf-8")).substitute(
+                idle=idle_text(now - idle_since), timezone=self.config.timezone,
+                since=datetime.fromtimestamp(idle_since, zone).isoformat(timespec="minutes"),
+                now=local.isoformat(timespec="minutes"),
+            ).strip()
+            pending = self.store.pending_messages(self.config.scene)
+            batch = self.batch(pending, "[安静前未触发唤醒的消息]") if pending else None
+            events = PluginStore(self.store).pending_plugin_events(self.config.scene)
+            await self._turn("proactive", batch=batch, channels={"proactive", "plugin"} if events else {"proactive"},
+                            plugin_events=events or None,
+                            proactive=(text, local.date().isoformat(), idle_since))
 
     async def run(self) -> None:
         while True:
@@ -703,36 +716,40 @@ class SceneRunner:
                 return
             ready = await self.ready_messages()
             if ready is not None:
-                # Merging may await beyond a disconnect. Re-enter admission without
-                # consuming this snapshot, rather than resume it after a reconnect.
-                if self.ready_for_turn is not None and not await self.ready_for_turn(False):
-                    continue
-                pending, notice_until, scheduled = ready
-                if notice_until is not None:
-                    await self.quiet_notice(pending, notice_until)
-                    continue
-                quiet = self.quiet_period(self.now()) is not None
-                notices = (self.chat.tasks.records.pending_notices(self.config.scene)
-                           if self.chat.tasks is not None and not quiet else [])
-                events = PluginStore(self.store).pending_plugin_events(self.config.scene, include_events=not quiet)
-                audio = not quiet and self.audio_ready()
-                channel = ("system" if scheduled or notices or events or audio
-                           else self.state.pending.channel if self.state.pending else "resume")
-                channels = {name for name, present in (
-                    ("schedule", scheduled), ("task", notices), ("plugin", events), ("audio", audio), ("resume", self.resume))
-                    if present}
-                if self.state.pending is not None:
-                    channels.add(self.state.pending.channel)
-                reason = ("[恢复未结束的对话]" if self.resume
-                          else "[此前未触发唤醒的消息]" if channel == "system" and self.state.pending is None
-                          else self.wake_reason())
-                batch = self.batch(pending, reason) if pending else None
-                direct = self.state.pending is not None and self.state.pending.channel == "direct"
-                wake_received_at = (self.state.pending.first_at
-                                    if not scheduled and self.state.pending is not None else None)
-                await self.turn(channel, batch=batch, scheduled=scheduled, task_notices=notices,
-                                plugin_events=events or None,
-                                direct=direct, wake_received_at=wake_received_at, channels=channels)
+                async with self.execution:
+                    # Merging and lock acquisition may both await beyond a disconnect.
+                    if self.ready_for_turn is not None and not await self.ready_for_turn(False):
+                        continue
+                    # Re-read after acquisition: a lock handoff can suspend even when unlocked.
+                    ready = await self.ready_messages(wait=False)
+                    if ready is None:
+                        continue
+                    pending, notice_until, scheduled = ready
+                    if notice_until is not None:
+                        await self._quiet_notice(pending, notice_until)
+                        continue
+                    quiet = self.quiet_period(self.now()) is not None
+                    notices = (self.chat.tasks.records.pending_notices(self.config.scene)
+                               if self.chat.tasks is not None and not quiet else [])
+                    events = PluginStore(self.store).pending_plugin_events(self.config.scene, include_events=not quiet)
+                    audio = not quiet and self.audio_ready()
+                    channel = ("system" if scheduled or notices or events or audio
+                               else self.state.pending.channel if self.state.pending else "resume")
+                    channels = {name for name, present in (
+                        ("schedule", scheduled), ("task", notices), ("plugin", events), ("audio", audio), ("resume", self.resume))
+                        if present}
+                    if self.state.pending is not None:
+                        channels.add(self.state.pending.channel)
+                    reason = ("[恢复未结束的对话]" if self.resume
+                              else "[此前未触发唤醒的消息]" if channel == "system" and self.state.pending is None
+                              else self.wake_reason())
+                    batch = self.batch(pending, reason) if pending else None
+                    direct = self.state.pending is not None and self.state.pending.channel == "direct"
+                    wake_received_at = (self.state.pending.first_at
+                                        if not scheduled and self.state.pending is not None else None)
+                    await self._turn(channel, batch=batch, scheduled=scheduled, task_notices=notices,
+                                    plugin_events=events or None,
+                                    direct=direct, wake_received_at=wake_received_at, channels=channels)
                 continue
             if self.closing:
                 return
