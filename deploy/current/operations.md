@@ -53,6 +53,19 @@ uv run --no-sync python -m len_bot.next.maintenance.migrate_memory_jobs
 
 当前业务格式36、记忆处理格式5；已有当前格式不重复转换。35→36 让插件单次生成记录真实场景和插件来源，不再伪造聊天轮，旧调用从原 turn 回填场景并保留原始内容。运行与维护共用 `.lenbot-instance.lock`，占用就停止本次操作；不要删锁文件解锁。启动不会自动迁移数据。
 
+### 上下文 token 预算升级
+
+此版本把根配置 `compaction.keep_recent_entries` 替换为 `compaction.keep_recent_tokens`，并为每个 `scenes.<场景>` 增加 `voice_context_tokens`。这是配置更新，不改变数据库格式、不重写原聊天，也不自动转换旧字段。
+
+1. 停止实例并备份原程序与 `lenbot.config.json`。记录旧 `keep_recent_entries`、mind／voice 窗口和输出额度；不要把“30 条”直接换算成某个 token 数。
+2. 删除旧字段，明确选择 `keep_recent_tokens`。新实例缺省 20000；这是近期完整消息／工具组的目标预算，实际还受 system、tools、参考、回想及输出的可用空间限制。保留原 `trigger_ratio` 和 `max_output_tokens`，除非本次明确决定调整它们。
+3. 按场景填写 `voice_context_tokens`（新实例缺省 6000），并记录所选值。voice 会先保留最近已消费原话、显式提及／引用及其直接引用背景，再填近期材料；必要材料超预算时报错，不截断引用。窗口还需容纳完整人工角色、意图和输出。
+4. 从实例根执行 `uv run --no-sync python -c 'from pathlib import Path; from len_bot.next.config import load_instance_config; load_instance_config(Path.cwd()); print("配置有效")'`。这只检查配置，不代表运行验收。按正常步骤显式启动。
+
+例如本次人工选择的片段可以是 `"compaction":{"trigger_ratio":0.6,"keep_recent_tokens":12000,"max_output_tokens":1024}`，每个场景选择 `"voice_context_tokens":4000`；这些不是对旧条数的等价转换。面板“上下文压缩”和场景“回复方式”可在升级后保存新预算。
+
+升级后 system 不再包含滚动群概览；概览按请求读取并放在末尾参考，已存在的旧会话呈现保持原样直到正常压缩。一次性前缀变化可能影响提供方缓存。需回退时停机恢复备份程序及对应配置，不恢复覆盖升级后新增聊天的旧数据库；不自动回退。
+
 历史格式只由 `import_history`、`import_reminders`、`import_media`、`import_legacy_memory` 等显式离线命令读取；当前后端移交用 `transfer_memory`，角色记忆模板见[专门说明](memory-templates.md)。仅在实际需要移交时按模块入口与根配置准备参数，不恢复旧运行时或反写旧库。
 
 本地记忆正文在停机后手工修改时，从实例根执行 `uv run --no-sync python -m len_bot.next.maintenance.memory_reindex`。重建保留正文和历史，清除所有派生目录摘要（`.abstract.md`／`.overview.md`），避免旧概览继续作为当前资料；启用摘要整理后会按新正文重新生成。

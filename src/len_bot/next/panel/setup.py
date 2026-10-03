@@ -19,6 +19,7 @@ import uvicorn
 import yaml
 
 from ..configuration.models import Binding, Provider
+from ..configuration.chat import Compaction
 from ..config import HostConfig
 from ..configuration.onebot import OneBotSettings
 from ..persona.profile import Persona, load_persona
@@ -36,6 +37,8 @@ class FirstSetup(BaseModel):
     mind: Binding
     voice: Binding
     voice_mode: Literal['voice', 'direct'] = 'voice'
+    voice_context_tokens: int = Field(default=6000, gt=0, strict=True)
+    compaction: Compaction = Field(default_factory=Compaction)
     scene: str
     persona_id: str = Field(pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$', max_length=64)
     persona_name: str = Field(min_length=1)
@@ -63,11 +66,13 @@ def initialize(root: Path, item: FirstSetup) -> dict:
         'mode': 'isolated-multi', 'bot_qq': item.bot_qq, 'owner_qq': item.owner_qq,
         'timezone': item.timezone, 'delivery': item.delivery, 'database': 'state/lenbot.sqlite3',
         'onebot': item.onebot.model_dump(mode='json'),
+        'compaction': item.compaction.model_dump(mode='json'),
         'models': {'providers': {'primary': item.provider.model_dump(mode='json')},
                    'roles': {'mind': item.mind.model_dump(mode='json'), 'voice': item.voice.model_dump(mode='json')}},
         'panel': {'host': item.panel_host, 'port': item.panel_port, 'username': item.username,
                   'password_hash': hash_password(item.password)},
         'scenes': {item.scene: {'persona': f'personas/{item.persona_id}', 'voice_mode': item.voice_mode,
+                                'voice_context_tokens': item.voice_context_tokens,
                                 'attention': {'only_direct': True}}},
     }
     # Validate all cross-field requirements before creating any role/config files.

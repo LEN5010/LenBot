@@ -16,14 +16,14 @@ from .context import ChatContext, PROMPTS, turn_state
 from .expression import ChatExpression, MessageSender
 from .tools import SceneTools
 from ..config import LabConfig
-from .recap import CompactionPlan, ContextBudgetError, estimate_content, estimate_request, plan_compaction
+from .recap import CompactionPlan, ContextBudgetError, estimate_content, plan_compaction
 from ..learning.expression_selection import ExpressionService
 from ..tools.external_tools import ExternalTool
 from ..models.limits import LimitReached, check_speech
 from ..memory.service import MemoryService
 from ..platform.messages import UploadResult
 from ..models.client import ChatModel, ModelReply
-from ..models.request import request_model
+from ..models.request import request_estimate, request_model
 from ..models.slots import ModelSlots
 from ..persona.profile import Persona, select_style
 from ..platform.platform_tools import PlatformCall
@@ -103,7 +103,7 @@ class Chat:
             self.store.save_discovered_tools(self.config.scene, sorted(self.toolset.discovered_tools))
         if previous is not None and previous["messages"][0]["content"] != self.context.system:
             self.store.append(self.config.scene, {"role": "user", "content":
-                "本次启动已更新角色、表达模式或本群记忆概览；当前系统设定生效，已有聊天原文保留。"})
+                "本次启动已更新角色、表达模式或工具能力；当前系统设定生效，已有聊天原文保留。"})
         history = self.store.recent(self.config.scene, 1)
         if history:
             last = datetime.fromtimestamp(history[-1].time, ZoneInfo(self.config.timezone)).isoformat()
@@ -142,12 +142,13 @@ class Chat:
         """One explicit operator-requested compaction; caller owns the scene lock."""
         recap, entries = self.store.active_history(self.config.scene)
         binding = self.config.models.roles.mind
-        state = {"role": "user", "content": "运营者请求压缩已有完整对话，原始记录保留。"}
+        state = turn_state(self.config, self.store, now=self.now())
+        projection = await self.context.project(recap, entries, state)
         plan = plan_compaction(
-            entries, system={"role": "system", "content": self.context.system}, state=state,
+            entries, system=projection[0], state=projection[-1],
             tools=self.toolset.core_tools, output_tokens=binding.max_output_tokens,
             trigger_tokens=int(binding.context_window_tokens * self.config.compaction.trigger_ratio),
-            keep_recent_entries=self.config.compaction.keep_recent_entries,
+            keep_recent_tokens=self.config.compaction.keep_recent_tokens,
             summary_output_tokens=self.config.compaction.max_output_tokens, recap=recap,
             summary_template=(PROMPTS / "next_recap.md").read_text(), window_tokens=binding.context_window_tokens,
         )
@@ -164,7 +165,7 @@ class Chat:
         self.notify()
         return {"turn_id": turn_id, "compact_through": plan.through, "recap": reply.text}
 
-    async def prepare_context(self, turn_id: str, *, expression_style: str | None = None,
+    async def prepare_context(self, turn_id: str, *, observed_at: float, expression_style: str | None = None,
                               recalled: str | None = None) -> list[dict]:
         binding = self.config.models.roles.mind
         trigger = int(binding.context_window_tokens * self.config.compaction.trigger_ratio)
@@ -173,15 +174,18 @@ class Chat:
             recap, entries = self.store.active_history(self.config.scene)
             # Refresh only between model requests, never midway through a tool group.
             self.toolset.discovered_tools = set(self.store.load_discovered_tools(self.config.scene))
-            state = turn_state(self.config, self.store, now=self.now(),
+            state = turn_state(self.config, self.store, now=observed_at,
                                expression_style=expression_style, recalled=recalled)
             messages = await self.context.project(recap, entries, state)
-            if estimate_request(messages, self.toolset.tools, binding.max_output_tokens) <= trigger:
+            estimated, _ = request_estimate(self.config, self.store, self.mind, scene=self.config.scene,
+                                            role='mind', messages=messages, tools=self.toolset.tools,
+                                            output_tokens=binding.max_output_tokens)
+            if estimated <= trigger:
                 return messages
             plan = plan_compaction(
-                entries, system=messages[0], state=state, tools=self.toolset.core_tools,
+                entries, system=messages[0], state=messages[-1], tools=self.toolset.core_tools,
                 output_tokens=binding.max_output_tokens, trigger_tokens=trigger,
-                keep_recent_entries=self.config.compaction.keep_recent_entries,
+                keep_recent_tokens=self.config.compaction.keep_recent_tokens,
                 summary_output_tokens=self.config.compaction.max_output_tokens,
                 recap=recap, summary_template=(PROMPTS / "next_recap.md").read_text(),
                 window_tokens=binding.context_window_tokens,
@@ -205,6 +209,7 @@ class Chat:
                        channels: set[str] | None = None,
                        proactive: tuple[str, str, float] | None = None) -> dict:
         self.direct_request = direct
+        observed_at = self.now()
         self.turn_channels = set() if channels is None else set(channels)
         scene = self.config.scene
         turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state,
@@ -231,7 +236,8 @@ class Chat:
                     )
                 for step in range(self.config.max_steps):
                     self.check_limits()
-                    messages = await self.prepare_context(turn_id, expression_style=expression_style, recalled=recalled)
+                    messages = await self.prepare_context(turn_id, observed_at=observed_at,
+                                                          expression_style=expression_style, recalled=recalled)
                     reply = await self.request(turn_id, "mind", messages, self.toolset.tools)
                     end_turn, group_failed = False, False
                     for call in reply.tool_calls:

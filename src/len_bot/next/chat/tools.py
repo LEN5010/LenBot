@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+import json
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -12,7 +13,7 @@ from len_bot.media.images import image_block
 from ..media.audio import TRANSCRIBE_TOOL, AudioService, TranscribeArguments
 from .context import PROMPTS
 from ..config import LabConfig
-from ..tools.discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, search_tools
+from ..tools.discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, model_schema, search_tools
 from ..platform.delivery import Expression
 from ..tools.external_tools import ExternalTool
 from ..platform.file_delivery import SEND_FILE_TOOL, SendFileArguments, execute_send_file
@@ -104,9 +105,16 @@ def tool_catalog(*, platform: bool) -> list[dict]:
     say = SAY_TOOL if not platform else {"type": "function", "function": {
         **SAY_TOOL["function"], "description": "在当前场景表达；结果返回实际原文和平台发送状态。",
     }}
-    return [say, REACT_TOOL, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
+    catalog = [say, REACT_TOOL, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
             *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, DELEGATE_TOOL, TASK_TOOL,
             SEND_FILE_TOOL, OPEN_FORWARD_TOOL, MEMBER_INFO_TOOL, TRANSCRIBE_TOOL, SCENE_CONTROL_TOOL, TOOL_SEARCH]
+    return [{**tool, "function": {**tool["function"],
+             "parameters": model_schema(tool["function"]["parameters"])}} for tool in catalog]
+
+
+def tool_result(value: object) -> str:
+    """Compact model-visible JSON only; storage and external tool text are unchanged."""
+    return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
 
 
 def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> list[str]:
@@ -204,7 +212,7 @@ class SceneTools:
         if self.scene_control is None:
             allowed = [tool for tool in allowed if tool["function"]["name"] != "scene_control"]
         # Plugin and MCP tools are always low-frequency and still need the role's permission.
-        self.external = {tool.name: tool for tool in external_tools
+        self.external = {tool.name: tool for tool in sorted(external_tools, key=lambda tool: tool.name)
                          if persona.tools == "all" or tool.name in persona.tools}
         clashes = sorted({tool["function"]["name"] for tool in tool_catalog(platform=True)} & set(self.external))
         if clashes:
@@ -257,8 +265,10 @@ class SceneTools:
             matched = search_tools(arguments.query, self.deferred_tools)
             names = [tool["function"]["name"] for tool in matched]
             discovered = sorted(set(self.store.load_discovered_tools(self.config.scene)) | set(names))
-            return encode({"query": arguments.query, "matched_names": names,
-                           "available_from": "next_model_request", "tools": matched}), None, discovered
+            return tool_result({"available_from": "next_model_request", "tools": [
+                {"name": tool["function"]["name"],
+                 "description": tool["function"]["description"].split("。", 1)[0]}
+                for tool in matched]}), None, discovered
         if call.name in self.external:
             tool = self.external[call.name]
             return await tool.call(self.config.scene, call.arguments), None, None
@@ -271,7 +281,7 @@ class SceneTools:
             expression = self.expression.react(ReactArguments.model_validate(call.arguments))
             return self.expression.context.render(expression.message), expression, None
         if call.name == "scene_control":
-            return encode(self.scene_control(SceneControlArguments.model_validate(call.arguments))), None, None
+            return tool_result(self.scene_control(SceneControlArguments.model_validate(call.arguments))), None, None
         if call.name == "recall_chat":
             return recall_chat(self.store, self.config.scene, self.config.timezone,
                                RecallArguments.model_validate(call.arguments)), None, None
@@ -288,7 +298,7 @@ class SceneTools:
         if call.name == "memory":
             return await self.memory.execute(self.config.scene, call.arguments), None, None
         if call.name in {"delegate", "task"}:
-            return encode(await execute_tasks(self.tasks, self.config.scene, call.name, call.arguments)), None, None
+            return tool_result(await execute_tasks(self.tasks, self.config.scene, call.name, call.arguments)), None, None
         if call.name == "send_file":
             return await execute_send_file(
                 TaskStore(self.store), self.config.scene, SendFileArguments.model_validate(call.arguments),
