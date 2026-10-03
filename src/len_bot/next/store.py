@@ -12,19 +12,18 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from .messages import Notice, ChatMessage, Segment, Sender, plain_text
+from .messages import Notice, ChatMessage, plain_text
 from .persona_stickers import PersonaSticker
 from .sticker_assets import CollectedSticker
 from .image_assets import OriginalImage
 from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_cron, parse_cron
+from .store_codec import decode_message, encode
+from .store_schema import create_database
+from .schedule_store import ScheduleStore
 
 
 FORMAT_VERSION = 36
-
-
-def encode(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, allow_nan=False)
 
 
 def turn_record(row: sqlite3.Row) -> dict:
@@ -33,24 +32,6 @@ def turn_record(row: sqlite3.Row) -> dict:
     turn["turn_to_first_expression_seconds"] = None if first is None else first - turn["started"]
     turn["wake_to_first_expression_seconds"] = None if first is None or wake is None else first - wake
     return turn
-
-
-@dataclass(frozen=True)
-class Schedule:
-    id: int
-    scene: str
-    created: float
-    due_at: float
-    timezone: str
-    note: str
-    target: str
-    requester: str | None
-    status: str
-    delivered_at: float | None
-    reason: str | None
-    interval_seconds: int | None = None
-    cron: str | None = None
-    legacy_source: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -94,263 +75,7 @@ class Store:
                 if application_id != 0x4C424E31 or version != FORMAT_VERSION:
                     raise ValueError(f"Not a supported next-core database: {path}")
             else:
-                self.db.executescript(f"""
-                    BEGIN;
-                    PRAGMA application_id = 1279413809;
-                    PRAGMA user_version = {FORMAT_VERSION};
-                    CREATE TABLE messages (
-                        seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
-                        platform_id TEXT, body TEXT NOT NULL, raw TEXT,
-                        received_at REAL, persona_id TEXT
-                    );
-                    CREATE UNIQUE INDEX platform_messages ON messages(scene, platform_id)
-                        WHERE platform_id IS NOT NULL;
-                    CREATE VIRTUAL TABLE message_search USING fts5(
-                        search_text, tokenize='trigram case_sensitive 1'
-                    );
-                    CREATE TABLE notices (
-                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, kind TEXT NOT NULL,
-                        platform_id TEXT, time REAL NOT NULL, received_at REAL NOT NULL, raw TEXT NOT NULL
-                    );
-                    CREATE INDEX scene_notices ON notices(scene,id);
-                    CREATE INDEX recalled_messages ON notices(scene,platform_id)
-                        WHERE kind IN ('group_recall','friend_recall');
-                    CREATE TABLE mind_entries (
-                        seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
-                        message TEXT NOT NULL, created REAL NOT NULL
-                    );
-                    CREATE INDEX scene_entries ON mind_entries(scene, seq);
-                    CREATE TABLE mind_sessions (
-                        scene TEXT PRIMARY KEY,
-                        compact_through INTEGER NOT NULL DEFAULT 0,
-                        recap TEXT,
-                        last_message_seq INTEGER NOT NULL DEFAULT 0,
-                        attention_state TEXT,
-                        discovered_tools TEXT NOT NULL DEFAULT '[]'
-                    );
-                    CREATE TABLE turns (
-                        id TEXT PRIMARY KEY, scene TEXT NOT NULL, started REAL NOT NULL,
-                        ended REAL, status TEXT NOT NULL, error TEXT,
-                        wake_received_at REAL, first_expression_at REAL, first_expression_delivery TEXT
-                    );
-                    CREATE TABLE model_calls (
-                        id INTEGER PRIMARY KEY, turn_id TEXT, role TEXT NOT NULL,
-                        started REAL NOT NULL, ended REAL, request TEXT NOT NULL,
-                        response TEXT, usage TEXT, error TEXT, mind_entry_seq INTEGER, cost TEXT,
-                        scene TEXT NOT NULL, plugin TEXT
-                    );
-                    CREATE INDEX turn_calls ON model_calls(turn_id, id);
-                    CREATE TABLE schedules (
-                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL,
-                        created REAL NOT NULL, due_at REAL NOT NULL,
-                        timezone TEXT NOT NULL, note TEXT NOT NULL,
-                        target TEXT NOT NULL, requester TEXT,
-                        status TEXT NOT NULL, delivered_at REAL, reason TEXT,
-                        interval_seconds INTEGER CHECK(interval_seconds BETWEEN 60 AND 31536000),
-                        cron TEXT CHECK(cron IS NULL OR interval_seconds IS NULL),
-                        legacy_source TEXT
-                    );
-                    CREATE INDEX schedules_status_due ON schedules(scene,status,due_at,id);
-                    CREATE UNIQUE INDEX schedules_legacy_identity ON schedules(scene,json_extract(legacy_source,'$.task.id'))
-                        WHERE legacy_source IS NOT NULL;
-                    CREATE TABLE tasks (
-                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, requester TEXT NOT NULL,
-                        goal TEXT NOT NULL, deliverable TEXT NOT NULL, context TEXT NOT NULL,
-                        input TEXT NOT NULL, materials TEXT NOT NULL DEFAULT '[]',
-                        status TEXT NOT NULL CHECK(status IN
-                            ('queued','running','waiting_input','done','failed','cancelled')),
-                        created REAL NOT NULL, started REAL, ended REAL,
-                        container TEXT, question TEXT, summary TEXT, error TEXT,
-                        account_browser INTEGER NOT NULL DEFAULT 0 CHECK(account_browser IN (0,1)),
-                        browser_active INTEGER NOT NULL DEFAULT 0 CHECK(browser_active IN (0,1)),
-                        browser_session TEXT
-                    );
-                    CREATE INDEX tasks_scene_status ON tasks(scene,status,id);
-                    CREATE INDEX tasks_status ON tasks(status,id);
-                    CREATE INDEX tasks_containers ON tasks(id) WHERE container IS NOT NULL;
-                    CREATE INDEX tasks_requester_created ON tasks(scene,requester,created);
-                    CREATE TABLE task_events (
-                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, task_id INTEGER NOT NULL,
-                        kind TEXT NOT NULL, body TEXT NOT NULL, notice TEXT,
-                        created REAL NOT NULL, delivered_at REAL
-                    );
-                    CREATE INDEX task_events_task ON task_events(scene,task_id,id);
-                    CREATE INDEX task_events_pending_notice ON task_events(scene,id)
-                        WHERE notice IS NOT NULL AND delivered_at IS NULL;
-                    CREATE TABLE task_files (
-                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, task_id INTEGER NOT NULL,
-                        name TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL,
-                        note TEXT, created REAL NOT NULL
-                    );
-                    CREATE INDEX task_files_task ON task_files(scene,task_id,id);
-                    CREATE TABLE web_documents (
-                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, body TEXT NOT NULL
-                    );
-                    CREATE TABLE image_cache (
-                        scene TEXT NOT NULL, platform_id TEXT NOT NULL,
-                        image_index INTEGER NOT NULL, jpeg BLOB NOT NULL,
-                        width INTEGER NOT NULL, height INTEGER NOT NULL,
-                        animated INTEGER NOT NULL, fetched_at REAL NOT NULL,
-                        description TEXT, description_model TEXT, described_at REAL,
-                        PRIMARY KEY(scene, platform_id, image_index)
-                    );
-                    CREATE TABLE audio_cache (
-                        scene TEXT NOT NULL, platform_id TEXT NOT NULL, audio_index INTEGER NOT NULL,
-                        wav BLOB, duration REAL, fetched_at REAL,
-                        transcript TEXT, provider TEXT, model TEXT, transcribed_at REAL,
-                        status TEXT NOT NULL CHECK(status IN ('idle','queued','running','complete','failed','interrupted')),
-                        created REAL NOT NULL, updated REAL NOT NULL, error TEXT, announced_at REAL,
-                        PRIMARY KEY(scene, platform_id, audio_index)
-                    );
-                    CREATE INDEX audio_queued ON audio_cache(scene,created) WHERE status='queued';
-                    CREATE INDEX audio_results ON audio_cache(scene,transcribed_at)
-                        WHERE announced_at IS NULL AND transcript IS NOT NULL;
-                    CREATE TABLE audio_calls (
-                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, platform_id TEXT NOT NULL,
-                        audio_index INTEGER NOT NULL, started REAL NOT NULL, ended REAL,
-                        request TEXT NOT NULL, response TEXT, usage TEXT, error TEXT, cost TEXT
-                    );
-                    CREATE INDEX audio_calls_source ON audio_calls(scene,platform_id,audio_index,id);
-                    CREATE TABLE media (
-                        id INTEGER PRIMARY KEY, persona_id TEXT, file TEXT,
-                        source_message_seq INTEGER, source_image_index INTEGER,
-                        mime_type TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL,
-                        animated INTEGER NOT NULL, data BLOB NOT NULL,
-                        CHECK ((persona_id IS NOT NULL AND file IS NOT NULL AND
-                                source_message_seq IS NULL AND source_image_index IS NULL) OR
-                               (persona_id IS NULL AND file IS NULL AND
-                                source_message_seq IS NOT NULL AND source_image_index IS NOT NULL)),
-                        UNIQUE(source_message_seq,source_image_index)
-                    );
-                    CREATE INDEX media_persona_file ON media(persona_id,file,id);
-                    CREATE TABLE message_media (
-                        message_seq INTEGER NOT NULL, image_index INTEGER NOT NULL,
-                        media_id INTEGER NOT NULL, description TEXT NOT NULL,
-                        emotions TEXT NOT NULL, tags TEXT NOT NULL,
-                        PRIMARY KEY(message_seq,image_index)
-                    );
-                    CREATE INDEX message_media_media ON message_media(media_id,message_seq);
-                    CREATE TABLE learning_state (
-                        scene TEXT PRIMARY KEY, after_seq INTEGER NOT NULL
-                    );
-                    CREATE TABLE learning_batches (
-                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL,
-                        after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL,
-                        started REAL NOT NULL, ended REAL, model_started REAL,
-                        status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
-                        request TEXT NOT NULL, response TEXT, usage TEXT, cost TEXT, error TEXT
-                    );
-                    CREATE INDEX learning_batches_scene ON learning_batches(scene,id);
-                    CREATE TABLE expressions (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL, situation TEXT NOT NULL,
-                        style TEXT NOT NULL, sources TEXT NOT NULL,
-                        status TEXT NOT NULL CHECK(status IN ('pending','adopted','rejected')),
-                        updated REAL NOT NULL, vector BLOB, vector_binding TEXT,
-                        vector_dimensions INTEGER, UNIQUE(scene,situation,style)
-                    );
-                    CREATE INDEX expressions_scene_status ON expressions(scene,status,id);
-                    CREATE TABLE expression_embedding_calls (
-                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, turn_id TEXT,
-                        purpose TEXT NOT NULL CHECK(purpose IN ('query','index','reindex')),
-                        started REAL NOT NULL, ended REAL, request TEXT NOT NULL,
-                        response TEXT, usage TEXT, cost TEXT, error TEXT
-                    );
-                    CREATE INDEX expression_embedding_scene ON expression_embedding_calls(scene,id);
-                    CREATE TABLE jargon_state (
-                        scene TEXT PRIMARY KEY, start_seq INTEGER NOT NULL, after_seq INTEGER NOT NULL
-                    );
-                    CREATE TABLE jargon (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL, term TEXT NOT NULL,
-                        count INTEGER NOT NULL, sample_seqs TEXT NOT NULL,
-                        latest_meaning TEXT, confidence REAL, meaning TEXT,
-                        last_inference_count INTEGER NOT NULL DEFAULT 0,
-                        status TEXT NOT NULL CHECK(status IN ('pending','adopted','rejected')),
-                        updated REAL NOT NULL, UNIQUE(scene,term)
-                    );
-                    CREATE INDEX jargon_scene_status ON jargon(scene,status,id);
-                    CREATE TABLE jargon_calls (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
-                        purpose TEXT NOT NULL CHECK(purpose IN ('discovery','meaning')),
-                        after_seq INTEGER, through_seq INTEGER, term_id INTEGER, inference_count INTEGER,
-                        started REAL NOT NULL, ended REAL,
-                        status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
-                        model_started REAL, request TEXT NOT NULL,
-                        response TEXT, usage TEXT, cost TEXT, error TEXT
-                    );
-                    CREATE INDEX jargon_calls_scene ON jargon_calls(scene,id);
-                    CREATE TABLE sticker_candidates (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
-                        source_message_seq INTEGER NOT NULL, image_index INTEGER NOT NULL,
-                        media_id INTEGER, status TEXT NOT NULL CHECK(status IN
-                            ('queued','running','complete','failed','interrupted')),
-                        review TEXT NOT NULL CHECK(review IN ('pending','adopted','rejected')),
-                        description TEXT, text TEXT, emotions TEXT NOT NULL DEFAULT '[]',
-                        tags TEXT NOT NULL DEFAULT '[]', is_sticker INTEGER,
-                        created REAL NOT NULL, updated REAL NOT NULL, error TEXT,
-                        UNIQUE(scene,source_message_seq,image_index)
-                    );
-                    CREATE INDEX sticker_candidates_status ON sticker_candidates(scene,status,review,id);
-                    CREATE INDEX sticker_candidates_review ON sticker_candidates(scene,review,id);
-                    CREATE TABLE sticker_calls (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
-                        candidate_id INTEGER NOT NULL, source_message_seq INTEGER NOT NULL,
-                        image_index INTEGER NOT NULL, started REAL NOT NULL, ended REAL,
-                        status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
-                        model_started REAL, request TEXT, response TEXT, usage TEXT, cost TEXT, error TEXT
-                    );
-                    CREATE INDEX sticker_calls_scene ON sticker_calls(scene,id);
-                    CREATE TABLE reply_effects (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
-                        entry_seq INTEGER NOT NULL UNIQUE, turn_id TEXT, channels TEXT NOT NULL,
-                        message_seqs TEXT NOT NULL, planned_parts INTEGER NOT NULL,
-                        first_sent_at REAL NOT NULL, last_sent_at REAL NOT NULL, deadline REAL NOT NULL,
-                        observed_seqs TEXT, closed_at REAL, input_gap INTEGER, call_id INTEGER,
-                        reaction TEXT CHECK(reaction IS NULL OR reaction IN
-                            ('agree','continue','correct','negative','unrelated','uncertain')),
-                        reason TEXT
-                    );
-                    CREATE INDEX reply_effects_scene ON reply_effects(scene,id);
-                    CREATE INDEX reply_effects_turn ON reply_effects(scene,turn_id);
-                    CREATE INDEX reply_effects_open ON reply_effects(scene,id) WHERE closed_at IS NULL;
-                    CREATE TABLE reply_effect_calls (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
-                        effect_ids TEXT NOT NULL, started REAL NOT NULL, ended REAL,
-                        status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
-                        model_started REAL, request TEXT NOT NULL,
-                        response TEXT, usage TEXT, cost TEXT, error TEXT
-                    );
-                    CREATE INDEX reply_effect_calls_scene ON reply_effect_calls(scene,id);
-                    CREATE TABLE proactive_wakes (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
-                        turn_id TEXT NOT NULL UNIQUE, woke_at REAL NOT NULL,
-                        local_date TEXT NOT NULL, idle_since REAL NOT NULL,
-                        assessment TEXT NOT NULL DEFAULT 'reply_effects'
-                            CHECK(assessment IN ('arrival_count','reply_effects')),
-                        outcome TEXT CHECK(outcome IS NULL OR outcome IN ('silent','answered','ignored','unobserved')),
-                        closed_at REAL, UNIQUE(scene,local_date)
-                    );
-                    CREATE TABLE plugin_events (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL, plugin TEXT NOT NULL,
-                        kind TEXT NOT NULL CHECK(kind IN ('event','reply')),
-                        content TEXT NOT NULL, created REAL NOT NULL, delivered_at REAL
-                    );
-                    CREATE INDEX plugin_events_pending ON plugin_events(scene,id) WHERE delivered_at IS NULL;
-                    CREATE INDEX message_send_window ON messages(scene,json_extract(body,'$.time'))
-                        WHERE json_extract(body,'$.is_self')=1;
-                    CREATE INDEX message_retention ON messages(scene,COALESCE(received_at,json_extract(body,'$.time')),seq);
-                    CREATE INDEX model_call_usage ON model_calls(started,turn_id);
-                    CREATE INDEX model_call_expiry ON model_calls(ended,id);
-                    CREATE INDEX turns_scene_time ON turns(scene,started);
-                    CREATE INDEX turns_expiry ON turns(ended,id);
-                    CREATE INDEX task_model_usage ON task_events(scene,created) WHERE kind='model_call';
-                    CREATE INDEX audio_calls_usage ON audio_calls(started,scene);
-                    CREATE INDEX learning_batches_usage ON learning_batches(model_started,scene);
-                    CREATE INDEX jargon_calls_usage ON jargon_calls(model_started,scene);
-                    CREATE INDEX sticker_calls_usage ON sticker_calls(model_started,scene);
-                    CREATE INDEX reply_effect_calls_usage ON reply_effect_calls(model_started,scene);
-                    CREATE INDEX expression_embedding_calls_usage ON expression_embedding_calls(started,scene);
-                    COMMIT;
-                """)
+                create_database(self.db, FORMAT_VERSION)
         except BaseException:
             self.db.close()
             raise
@@ -770,7 +495,7 @@ class Store:
             "ORDER BY seq",
             (scene, scene),
         )
-        return [(row[0], self._message(row[1]), row[2]) for row in rows]
+        return [(row[0], decode_message(row[1]), row[2]) for row in rows]
 
     def pending_attention_sample(self, scene: str, exclude_uids: Sequence[str],
                                  limit: int = 20) -> list[tuple[ChatMessage, float]]:
@@ -787,7 +512,7 @@ class Store:
             "AND json_extract(body,'$.is_self')=0" + exclude_clause + " ORDER BY seq DESC LIMIT ?",
             (scene, scene, *excluded, limit),
         ).fetchall()
-        return [(self._message(body), received_at) for body, received_at in reversed(rows)]
+        return [(decode_message(body), received_at) for body, received_at in reversed(rows)]
 
     def last_pending_arrival(self, scene: str, exclude_uids: Sequence[str]) -> float | None:
         """Latest unbatched arrival eligible for merging into the next input."""
@@ -921,7 +646,7 @@ class Store:
                 (expression.scene, expression.platform_message_id),
             ).fetchone())
             if echo is not None:
-                received = self._message(echo[1])
+                received = decode_message(echo[1])
                 if (not received.is_self or received.sender.uid != expression.sender.uid
                         or echo[0] <= message_seq or received.send_status != "received"):
                     raise ValueError(f"Send receipt conflicts with an existing message: {expression.platform_message_id}")
@@ -951,7 +676,7 @@ class Store:
         with self.db:
             row = self.db.execute("SELECT seq,body,raw FROM messages WHERE scene=? AND platform_id=?",
                                   (message.scene, message.platform_message_id)).fetchone()
-            saved = self._message(row[1])
+            saved = decode_message(row[1])
             if not message.is_self or message.sender.uid != saved.sender.uid:
                 raise ValueError(f"Own message echo conflicts with another sender: {message.platform_message_id}")
             if row[2] is not None:
@@ -966,7 +691,7 @@ class Store:
         rows = self.db.execute(
             "SELECT body FROM messages WHERE scene=? ORDER BY seq DESC LIMIT ?", (scene, limit)
         ).fetchall()
-        return [self._message(row[0]) for row in reversed(rows)]
+        return [decode_message(row[0]) for row in reversed(rows)]
 
     def recent_records(self, scene: str, limit: int = 50, *, snapshot: int | None = None,
                        offset: int = 0) -> list[tuple[int, ChatMessage]]:
@@ -976,7 +701,7 @@ class Store:
             f"SELECT seq,body FROM messages WHERE {conditions} ORDER BY seq DESC LIMIT ? OFFSET ?",
             (*values, limit, offset),
         ).fetchall()
-        return [(row[0], self._message(row[1])) for row in reversed(rows)]
+        return [(row[0], decode_message(row[1])) for row in reversed(rows)]
 
     def recent_turns(self, scene: str, limit: int = 20) -> list[dict]:
         return [turn_record(row) for row in self.db.execute(
@@ -1024,7 +749,7 @@ class Store:
             "ORDER BY seq DESC LIMIT ?",
             (scene, scene, limit),
         ).fetchall()
-        return [self._message(row[0]) for row in reversed(rows)]
+        return [decode_message(row[0]) for row in reversed(rows)]
 
     def attention_sample(self, scene: str, limit: int = 20, *,
                          exclude_uids: Sequence[str] = ()) -> list[tuple[ChatMessage, float]]:
@@ -1042,7 +767,7 @@ class Store:
         ).fetchall()
         sample = []
         for body, received_at, raw in reversed(rows):
-            message = self._message(body)
+            message = decode_message(body)
             sample.append((message, message.time if raw is None else received_at))
         return sample
 
@@ -1058,18 +783,12 @@ class Store:
         ).fetchone()
         return None if row is None else float(row[0])
 
-    @staticmethod
-    def _message(body: str) -> ChatMessage:
-        value = json.loads(body)
-        value["sender"] = Sender(**value["sender"])
-        value["segments"] = [Segment(**segment) for segment in value["segments"]]
-        return ChatMessage(**value)
 
     def find_message(self, scene: str, platform_id: str) -> ChatMessage | None:
         row = self.db.execute(
             "SELECT body FROM messages WHERE scene=? AND platform_id=?", (scene, platform_id)
         ).fetchone()
-        return None if row is None else self._message(row[0])
+        return None if row is None else decode_message(row[0])
 
     def messages_after(self, scene: str, platform_id: str) -> int:
         """Count actual visible messages after a known reply target in this scene."""
@@ -1102,7 +821,7 @@ class Store:
             "SELECT seq,body,CASE WHEN raw IS NULL THEN json_extract(body,'$.time') ELSE received_at END,persona_id "
             "FROM messages WHERE " + " AND ".join(conditions) + " ORDER BY seq LIMIT ?", [*values, limit],
         ).fetchall()
-        return [(row[0], self._message(row[1]), row[2], row[3]) for row in rows]
+        return [(row[0], decode_message(row[1]), row[2], row[3]) for row in rows]
 
     def message_persona_ids(self, scene: str) -> set[str]:
         """Loaded role identities actually recorded for this scene, including unsent expressions."""
@@ -1161,13 +880,13 @@ class Store:
             + " ORDER BY json_extract(m.body,'$.time'),m.seq LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ).fetchall()
-        return [(row[0], self._message(row[1])) for row in rows]
+        return [(row[0], decode_message(row[1])) for row in rows]
 
     def read_message(self, scene: str, record: int) -> ChatMessage | None:
         row = self.db.execute(
             "SELECT body FROM messages WHERE scene=? AND seq=?", (scene, record)
         ).fetchone()
-        return None if row is None else self._message(row[0])
+        return None if row is None else decode_message(row[0])
 
     def context_messages(self, scene: str, record: int) -> list[tuple[int, ChatMessage]]:
         center = self.db.execute(
@@ -1175,7 +894,7 @@ class Store:
         ).fetchone()
         if center is None:
             raise ValueError(f"Scene {scene} has no message {record}")
-        message = self._message(center[0])
+        message = decode_message(center[0])
         earlier = self.db.execute(
             "SELECT seq,body FROM messages WHERE scene=? AND "
             "(json_extract(body,'$.time')<? OR "
@@ -1190,9 +909,9 @@ class Store:
             "ORDER BY json_extract(body,'$.time'),seq LIMIT 3",
             (scene, message.time, message.time, record),
         ).fetchall()
-        return ([(row[0], self._message(row[1])) for row in reversed(earlier)]
+        return ([(row[0], decode_message(row[1])) for row in reversed(earlier)]
                 + [(record, message)]
-                + [(row[0], self._message(row[1])) for row in later])
+                + [(row[0], decode_message(row[1])) for row in later])
 
     def own_ids(self, scene: str) -> set[str]:
         return {row[0] for row in self.db.execute(
@@ -1200,96 +919,6 @@ class Store:
             "AND json_extract(body,'$.is_self')=1", (scene,)
         )}
 
-    @staticmethod
-    def _schedule(row: sqlite3.Row) -> Schedule:
-        values = dict(row)
-        if values['legacy_source'] is not None:
-            raw = values['legacy_source']
-            try:
-                values['legacy_source'] = json.loads(raw)
-            except ValueError as error:
-                raise ValueError(f'Invalid original reminder source: {error}; raw={raw[:500]!r}') from error
-        return Schedule(**values)
-
-    def create_schedule(self, scene: str, *, due_at: float, timezone: str,
-                        note: str, target: str, requester: str | None,
-                        limit: int, interval_seconds: int | None = None,
-                        cron: str | None = None) -> Schedule:
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
-            unfinished = self.db.execute(
-                "SELECT COUNT(*) FROM schedules WHERE scene=? AND status IN ('pending','blocked')",
-                (scene,),
-            ).fetchone()[0]
-            if unfinished >= limit:
-                raise ValueError(f"Scene {scene} has reached its unfinished schedule limit {limit}")
-            cursor = self.db.execute(
-                "INSERT INTO schedules(scene,created,due_at,timezone,note,target,requester,status,"
-                "interval_seconds,cron) VALUES (?,?,?,?,?,?,?,'pending',?,?)",
-                (scene, self.now(), due_at, timezone, note, target, requester,
-                 interval_seconds, cron),
-            )
-            row = self.db.execute(
-                "SELECT * FROM schedules WHERE id=?", (cursor.lastrowid,)
-            ).fetchone()
-        return self._schedule(row)
-
-    def get_schedule(self, scene: str, id: int) -> Schedule:
-        row = self.db.execute(
-            "SELECT * FROM schedules WHERE scene=? AND id=?", (scene, id)
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"Scene {scene} has no schedule {id}")
-        return self._schedule(row)
-
-    def list_schedules(self, scene: str, *, status: str = "active", offset: int = 0,
-                       limit: int = 20) -> list[Schedule]:
-        if status == "all":
-            where, parameters = "", ()
-        elif status == "active":
-            where, parameters = " AND status IN ('pending','blocked')", ()
-        else:
-            where, parameters = " AND status=?", (status,)
-        rows = self.db.execute(
-            "SELECT * FROM schedules WHERE scene=?" + where + " ORDER BY due_at,id LIMIT ? OFFSET ?",
-            (scene, *parameters, limit, offset),
-        ).fetchall()
-        return [self._schedule(row) for row in rows]
-
-    def next_schedule_at(self, scene: str) -> float | None:
-        return self.db.execute(
-            "SELECT MIN(due_at) FROM schedules WHERE scene=? AND status='pending'", (scene,)
-        ).fetchone()[0]
-
-    def due_schedules(self, scene: str, now: float) -> list[Schedule]:
-        rows = self.db.execute(
-            "SELECT * FROM schedules WHERE scene=? AND status='pending' AND due_at<=? "
-            "ORDER BY due_at,id", (scene, now),
-        ).fetchall()
-        return [self._schedule(row) for row in rows]
-
-    def cancel_schedule(self, scene: str, id: int) -> Schedule:
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
-            current = self.get_schedule(scene, id)
-            if current.status not in {"pending", "blocked"}:
-                raise ValueError(f"Schedule {id} is {current.status}, not pending or blocked")
-            self.db.execute(
-                "UPDATE schedules SET status='cancelled' WHERE scene=? AND id=?", (scene, id)
-            )
-            result = self.get_schedule(scene, id)
-        return result
-
-    def block_schedule(self, scene: str, id: int, reason: str) -> None:
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
-            current = self.get_schedule(scene, id)
-            if current.status != "pending":
-                raise ValueError(f"Schedule {id} is {current.status}, not pending")
-            self.db.execute(
-                "UPDATE schedules SET status='blocked',reason=? WHERE scene=? AND id=?",
-                (reason, scene, id),
-            )
 
     def latest_sender_role(self, scene: str, uid: str) -> str | None:
         row = self.db.execute(
@@ -1339,7 +968,7 @@ class Store:
 
     def _append_schedules(self, scene: str, scheduled: list[tuple[int, str]]) -> None:
         for id, content in scheduled:
-            item = self.get_schedule(scene, id)
+            item = ScheduleStore(self).get_schedule(scene, id)
             delivered_at = self.now()
             due_at, status = item.due_at, "delivered"
             reason = None
@@ -1396,23 +1025,6 @@ class Store:
                 raise ValueError(f"No active turn {turn_id} in scene {scene}")
             self._append_task_notices(scene, notices)
 
-    def add_plugin_event(self, scene: str, plugin: str, kind: Literal["event", "reply"], content: str) -> int:
-        with self.db:
-            return self.db.execute(
-                "INSERT INTO plugin_events(scene,plugin,kind,content,created) VALUES (?,?,?,?,?)",
-                (scene, plugin, kind, content, self.now()),
-            ).lastrowid
-
-    def pending_plugin_events(self, scene: str, *, include_events: bool = True) -> list[tuple[int, str]]:
-        return [(row[0], row[1]) for row in self.db.execute(
-            "SELECT id,content FROM plugin_events WHERE scene=? AND delivered_at IS NULL "
-            "AND (? OR kind='reply') ORDER BY id", (scene, include_events))]
-
-    def plugin_wake_pending(self, scene: str) -> bool:
-        """Only ``event`` rows wake the mind; ``reply`` rows wait for the next turn."""
-        return self.db.execute(
-            "SELECT 1 FROM plugin_events WHERE scene=? AND delivered_at IS NULL AND kind='event' LIMIT 1",
-            (scene,)).fetchone() is not None
 
     def _append_plugin_events(self, scene: str, events: list[tuple[int, str]]) -> None:
         for event_id, content in events:
@@ -1434,10 +1046,6 @@ class Store:
                 raise ValueError(f"No active turn {turn_id} in scene {scene}")
             self._append_plugin_events(scene, events)
 
-    def plugin_events(self, scene: str, *, limit: int = 20) -> list[dict]:
-        return [dict(row) for row in self.db.execute(
-            "SELECT id,plugin,kind,content,created,delivered_at FROM plugin_events "
-            "WHERE scene=? ORDER BY id DESC LIMIT ?", (scene, limit))]
 
     def start_outgoing(self, message: ChatMessage, *, persona_id: str, image: tuple[OriginalImage, str] | None = None) -> int:
         """Save a host-originated part (not a mind expression) before sending it."""
@@ -1487,25 +1095,6 @@ class Store:
             )
         return cursor.lastrowid
 
-    def start_plugin_call(self, scene: str, plugin: str, role: str, request: dict) -> int:
-        with self.db:
-            cursor = self.db.execute(
-                "INSERT INTO model_calls(scene,plugin,role,started,request) VALUES (?,?,?,?,?)",
-                (scene, plugin, role, self.now(), encode(request)),
-            )
-        return cursor.lastrowid
-
-    def plugin_calls(self, plugin: str, limit: int = 20) -> list[dict]:
-        return [{**dict(row), "usage": None if row["usage"] is None else json.loads(row["usage"]),
-                 "cost": None if row["cost"] is None else json.loads(row["cost"])}
-                for row in self.db.execute(
-                    "SELECT id,scene,role,started,ended,usage,cost,error FROM model_calls "
-                    "WHERE plugin=? ORDER BY id DESC LIMIT ?", (plugin, limit))]
-
-    def recover_plugin_calls(self) -> None:
-        with self.db:
-            self.db.execute("UPDATE model_calls SET ended=?,error=? WHERE plugin IS NOT NULL AND ended IS NULL",
-                            (self.now(), "宿主在插件模型请求完成前结束；未重发。"))
 
     def end_call(self, call_id: int, response: dict | None, usage: dict | None,
                  error: str | None = None, *, cost: dict | None = None, append_to_scene: str | None = None,

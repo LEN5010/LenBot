@@ -12,6 +12,7 @@ from .config import load_instance_config
 from .instance_lock import instance_lock
 from .messages import plain_text
 from .store import FORMAT_VERSION, Store, encode
+from .store_codec import decode_message
 
 
 APPLICATION_ID = 0x4C424E31
@@ -70,7 +71,7 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
             for seq, body in db.execute("SELECT seq,body FROM messages ORDER BY seq"):
                 db.execute(
                     "INSERT INTO message_search(rowid,search_text) VALUES (?,?)",
-                    (seq, plain_text(Store._message(body)).casefold()),
+                    (seq, plain_text(decode_message(body)).casefold()),
                 )
         elif version == 5:
             for scene, raw_state in db.execute(

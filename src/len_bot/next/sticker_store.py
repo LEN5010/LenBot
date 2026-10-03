@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
 
 from .sticker_assets import CollectedSticker
-from .store import Store, encode
+from .store_codec import encode
+
+if TYPE_CHECKING:
+    from .store import Store
 
 
 CALL_SUMMARY = (
@@ -17,6 +20,32 @@ CANDIDATE_SELECT = (
     "FROM sticker_candidates c LEFT JOIN media m ON m.id=c.media_id "
 )
 ORIGINAL_NOTICE = "群友原图（暂无描述）"
+
+
+SCHEMA = """
+CREATE TABLE sticker_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
+    source_message_seq INTEGER NOT NULL, image_index INTEGER NOT NULL,
+    media_id INTEGER, status TEXT NOT NULL CHECK(status IN
+        ('queued','running','complete','failed','interrupted')),
+    review TEXT NOT NULL CHECK(review IN ('pending','adopted','rejected')),
+    description TEXT, text TEXT, emotions TEXT NOT NULL DEFAULT '[]',
+    tags TEXT NOT NULL DEFAULT '[]', is_sticker INTEGER,
+    created REAL NOT NULL, updated REAL NOT NULL, error TEXT,
+    UNIQUE(scene,source_message_seq,image_index)
+);
+CREATE INDEX sticker_candidates_status ON sticker_candidates(scene,status,review,id);
+CREATE INDEX sticker_candidates_review ON sticker_candidates(scene,review,id);
+CREATE TABLE sticker_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
+    candidate_id INTEGER NOT NULL, source_message_seq INTEGER NOT NULL,
+    image_index INTEGER NOT NULL, started REAL NOT NULL, ended REAL,
+    status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
+    model_started REAL, request TEXT, response TEXT, usage TEXT, cost TEXT, error TEXT
+);
+CREATE INDEX sticker_calls_scene ON sticker_calls(scene,id);
+CREATE INDEX sticker_calls_usage ON sticker_calls(model_started,scene);
+"""
 
 
 class StickerStore:

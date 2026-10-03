@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 from collections import deque
 from collections.abc import Iterator, Sequence
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
 
 from .learning_store import LearningStore
 from .messages import ChatMessage, plain_text
-from .store import Store, encode
+from .store_codec import encode, decode_message
+
+if TYPE_CHECKING:
+    from .store import Store
 
 
 THRESHOLDS = (4, 8, 25, 100)
@@ -17,6 +20,33 @@ SUMMARY_COLUMNS = (
     "id,scene,purpose,after_seq,through_seq,term_id,inference_count,started,ended,"
     "status,model_started,usage,cost,error"
 )
+
+
+SCHEMA = """
+CREATE TABLE jargon_state (
+    scene TEXT PRIMARY KEY, start_seq INTEGER NOT NULL, after_seq INTEGER NOT NULL
+);
+CREATE TABLE jargon (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL, term TEXT NOT NULL,
+    count INTEGER NOT NULL, sample_seqs TEXT NOT NULL,
+    latest_meaning TEXT, confidence REAL, meaning TEXT,
+    last_inference_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL CHECK(status IN ('pending','adopted','rejected')),
+    updated REAL NOT NULL, UNIQUE(scene,term)
+);
+CREATE INDEX jargon_scene_status ON jargon(scene,status,id);
+CREATE TABLE jargon_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK(purpose IN ('discovery','meaning')),
+    after_seq INTEGER, through_seq INTEGER, term_id INTEGER, inference_count INTEGER,
+    started REAL NOT NULL, ended REAL,
+    status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
+    model_started REAL, request TEXT NOT NULL,
+    response TEXT, usage TEXT, cost TEXT, error TEXT
+);
+CREATE INDEX jargon_calls_scene ON jargon_calls(scene,id);
+CREATE INDEX jargon_calls_usage ON jargon_calls(model_started,scene);
+"""
 
 
 class JargonStore:
@@ -287,7 +317,7 @@ class JargonStore:
                 for row in rows:
                     if row["received_at"] is None:
                         continue
-                    message = Store._message(row["body"])
+                    message = decode_message(row["body"])
                     if (message.send_status == "received" and not message.is_self
                             and message.sender.uid not in excluded and plain_text(message).strip()):
                         selected.append((row["seq"], message, row["received_at"]))

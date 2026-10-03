@@ -5,17 +5,55 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import sqlite3
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .messages import UploadResult
-from .store import Store, encode
+from .store_codec import encode
 from .task_materials import MATERIALS
 from .memory_embeddings import _reject_constant
+
+if TYPE_CHECKING:
+    from .store import Store
 
 
 TaskStatus = Literal["queued", "running", "waiting_input", "done", "failed", "cancelled"]
 TERMINAL = frozenset({"done", "failed", "cancelled"})
+
+
+SCHEMA = """
+CREATE TABLE tasks (
+    id INTEGER PRIMARY KEY, scene TEXT NOT NULL, requester TEXT NOT NULL,
+    goal TEXT NOT NULL, deliverable TEXT NOT NULL, context TEXT NOT NULL,
+    input TEXT NOT NULL, materials TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL CHECK(status IN
+        ('queued','running','waiting_input','done','failed','cancelled')),
+    created REAL NOT NULL, started REAL, ended REAL,
+    container TEXT, question TEXT, summary TEXT, error TEXT,
+    account_browser INTEGER NOT NULL DEFAULT 0 CHECK(account_browser IN (0,1)),
+    browser_active INTEGER NOT NULL DEFAULT 0 CHECK(browser_active IN (0,1)),
+    browser_session TEXT
+);
+CREATE INDEX tasks_scene_status ON tasks(scene,status,id);
+CREATE INDEX tasks_status ON tasks(status,id);
+CREATE INDEX tasks_containers ON tasks(id) WHERE container IS NOT NULL;
+CREATE INDEX tasks_requester_created ON tasks(scene,requester,created);
+CREATE TABLE task_events (
+    id INTEGER PRIMARY KEY, scene TEXT NOT NULL, task_id INTEGER NOT NULL,
+    kind TEXT NOT NULL, body TEXT NOT NULL, notice TEXT,
+    created REAL NOT NULL, delivered_at REAL
+);
+CREATE INDEX task_events_task ON task_events(scene,task_id,id);
+CREATE INDEX task_events_pending_notice ON task_events(scene,id)
+    WHERE notice IS NOT NULL AND delivered_at IS NULL;
+CREATE TABLE task_files (
+    id INTEGER PRIMARY KEY, scene TEXT NOT NULL, task_id INTEGER NOT NULL,
+    name TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL,
+    note TEXT, created REAL NOT NULL
+);
+CREATE INDEX task_files_task ON task_files(scene,task_id,id);
+CREATE INDEX task_model_usage ON task_events(scene,created) WHERE kind='model_call';
+"""
 
 
 class TaskInput(BaseModel):

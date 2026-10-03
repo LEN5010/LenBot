@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
 
 from .messages import ChatMessage
-from .store import Store, encode
+from .store_codec import encode, decode_message
+
+if TYPE_CHECKING:
+    from .store import Store
 
 
 OBSERVE_SECONDS = 180.0
@@ -24,6 +27,32 @@ STATE_SQL = (
     "WHEN e.observed_seqs='[]' THEN 'no_messages' "
     "WHEN c.status IN ('failed','interrupted') THEN 'failed' ELSE 'waiting' END"
 )
+
+
+SCHEMA = """
+CREATE TABLE reply_effects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
+    entry_seq INTEGER NOT NULL UNIQUE, turn_id TEXT, channels TEXT NOT NULL,
+    message_seqs TEXT NOT NULL, planned_parts INTEGER NOT NULL,
+    first_sent_at REAL NOT NULL, last_sent_at REAL NOT NULL, deadline REAL NOT NULL,
+    observed_seqs TEXT, closed_at REAL, input_gap INTEGER, call_id INTEGER,
+    reaction TEXT CHECK(reaction IS NULL OR reaction IN
+        ('agree','continue','correct','negative','unrelated','uncertain')),
+    reason TEXT
+);
+CREATE INDEX reply_effects_scene ON reply_effects(scene,id);
+CREATE INDEX reply_effects_turn ON reply_effects(scene,turn_id);
+CREATE INDEX reply_effects_open ON reply_effects(scene,id) WHERE closed_at IS NULL;
+CREATE TABLE reply_effect_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
+    effect_ids TEXT NOT NULL, started REAL NOT NULL, ended REAL,
+    status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
+    model_started REAL, request TEXT NOT NULL,
+    response TEXT, usage TEXT, cost TEXT, error TEXT
+);
+CREATE INDEX reply_effect_calls_scene ON reply_effect_calls(scene,id);
+CREATE INDEX reply_effect_calls_usage ON reply_effect_calls(model_started,scene);
+"""
 
 
 class ReplyEffectStore:
@@ -222,7 +251,7 @@ class ReplyEffectStore:
             "AND json_extract(body,'$.send_status') IN ('received','sent') ORDER BY seq DESC LIMIT ?",
             (scene, seq, limit),
         ).fetchall()
-        return [(row[0], Store._message(row[1])) for row in reversed(rows)]
+        return [(row[0], decode_message(row[1])) for row in reversed(rows)]
 
     def arrivals(self, scene: str, seqs: Sequence[int]) -> dict[int, float | None]:
         return {row[0]: row[1] for row in self.db.execute(

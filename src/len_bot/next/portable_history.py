@@ -21,6 +21,7 @@ from .memory_local import scene_overview
 from .persona import Persona, load_persona
 from .schedule import describe
 from .store import FORMAT_VERSION, Store, encode
+from .schedule_store import ScheduleStore
 
 
 def _binding(config: HostConfig) -> tuple[str, str, str]:
@@ -48,7 +49,7 @@ def _state(store: Store, config: HostConfig, scene: str, persona: Persona) -> di
     local = config.scene_config(scene)
     now = datetime.now(ZoneInfo(config.timezone)).isoformat(timespec="seconds")
     content = f"当前时间：{now}"
-    schedules = store.list_schedules(scene, limit=21)
+    schedules = ScheduleStore(store).list_schedules(scene, limit=21)
     if schedules:
         content += "\n<未完成安排>\n" + "\n\n".join(
             describe(item, preview=True) for item in schedules[:20]) + "\n</未完成安排>"

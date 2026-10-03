@@ -4,8 +4,34 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from string import Template
+from typing import TYPE_CHECKING
 
-from .store import Store, encode
+from .store_codec import encode
+
+if TYPE_CHECKING:
+    from .store import Store
+
+
+SCHEMA = """
+CREATE TABLE audio_cache (
+    scene TEXT NOT NULL, platform_id TEXT NOT NULL, audio_index INTEGER NOT NULL,
+    wav BLOB, duration REAL, fetched_at REAL,
+    transcript TEXT, provider TEXT, model TEXT, transcribed_at REAL,
+    status TEXT NOT NULL CHECK(status IN ('idle','queued','running','complete','failed','interrupted')),
+    created REAL NOT NULL, updated REAL NOT NULL, error TEXT, announced_at REAL,
+    PRIMARY KEY(scene, platform_id, audio_index)
+);
+CREATE INDEX audio_queued ON audio_cache(scene,created) WHERE status='queued';
+CREATE INDEX audio_results ON audio_cache(scene,transcribed_at)
+    WHERE announced_at IS NULL AND transcript IS NOT NULL;
+CREATE TABLE audio_calls (
+    id INTEGER PRIMARY KEY, scene TEXT NOT NULL, platform_id TEXT NOT NULL,
+    audio_index INTEGER NOT NULL, started REAL NOT NULL, ended REAL,
+    request TEXT NOT NULL, response TEXT, usage TEXT, error TEXT, cost TEXT
+);
+CREATE INDEX audio_calls_source ON audio_calls(scene,platform_id,audio_index,id);
+CREATE INDEX audio_calls_usage ON audio_calls(started,scene);
+"""
 
 
 class AudioStore:

@@ -10,6 +10,7 @@ from .model import ChatModel, ModelProtocolError, ModelReply
 from .model_slots import ModelSlots
 from .pricing import estimate_cost
 from .store import Store
+from .plugin_store import PluginStore
 
 
 class ChatRequest(Protocol):
@@ -48,7 +49,7 @@ async def request_model(config: SharedConfig, store: Store, model: ChatModel,
                       else {"estimated_total_tokens": estimated}),
                    "context_window_tokens": binding.context_window_tokens}
         call_id = (store.start_call(turn_id, role, request) if plugin is None
-                   else store.start_plugin_call(scene, plugin, role, request))
+                   else PluginStore(store).start_plugin_call(scene, plugin, role, request))
         if notify is not None:
             notify()
         reply = None

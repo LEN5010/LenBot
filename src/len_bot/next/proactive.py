@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from .config import Proactive, QuietHours
 from .quiet import local_period, next_local_start, quiet_period
 from .reply_effect_store import ReplyEffectStore
-from .store import Store
+
+if TYPE_CHECKING:
+    from .store import Store
 
 
 PROMPT = Path(__file__).resolve().parents[1] / "prompts" / "next_proactive.md"
@@ -17,6 +20,19 @@ PAUSE_SECONDS = 7 * 86400.0
 OUTCOMES = ("silent", "answered", "ignored", "unobserved")
 # Enough steps to pass a week-long pause, skipped days and quiet intervals.
 _SEARCH_STEPS = 64
+
+
+SCHEMA = """
+CREATE TABLE proactive_wakes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
+    turn_id TEXT NOT NULL UNIQUE, woke_at REAL NOT NULL,
+    local_date TEXT NOT NULL, idle_since REAL NOT NULL,
+    assessment TEXT NOT NULL DEFAULT 'reply_effects'
+        CHECK(assessment IN ('arrival_count','reply_effects')),
+    outcome TEXT CHECK(outcome IS NULL OR outcome IN ('silent','answered','ignored','unobserved')),
+    closed_at REAL, UNIQUE(scene,local_date)
+);
+"""
 
 
 def idle_text(seconds: float) -> str:
