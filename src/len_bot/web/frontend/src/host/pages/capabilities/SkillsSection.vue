@@ -29,7 +29,7 @@ const inspecting = computed({ get: () => inspected.value !== null, set: value =>
 
 async function submit() {
   const result = await save.run(() => api(`/api/host/scenes/${encodeURIComponent(props.scene)}/role-skills`, {
-    method: 'PUT', body: JSON.stringify({ skills: draft.value }),
+    method: 'PUT', body: JSON.stringify({ directory: skills.data.value.role_skills.directory, skills: draft.value }),
   }))
   if (result) {
     skills.data.value = { ...skills.data.value, role_skills: result }
@@ -46,7 +46,7 @@ function changed() {
 <template>
   <ErrorNote v-if="skills.error.value" title="读取技能失败" :error="skills.error.value" />
   <SettingSection v-if="skills.data.value && draft !== null" title="技能"
-    :description="'技能是独立任务可以照着做的操作说明。' + (shared.length ? `这个角色也用在 ${shared.map(sceneName).join('、')}，修改会一起生效。` : '')"
+    :description="`已保存角色 ${skills.data.value.role_skills.persona.name} 的独立任务可以使用的技能。` + (shared.length ? `这个角色也用在 ${shared.map(sceneName).join('、')}，修改会一起生效。` : '')"
     :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
     <p v-if="skills.data.value.directory === null && !items.length" class="muted">还没有可用技能，可启用附带技能的插件或在任务环境设置技能目录。</p>
     <template v-else>

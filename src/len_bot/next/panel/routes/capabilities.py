@@ -11,7 +11,7 @@ import tempfile
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import field_validator
 import yaml
 
 from ...chat.tools import build_tools, tool_catalog, tool_unavailable_reasons
@@ -19,7 +19,7 @@ from ...configuration.types import STRICT
 from ...config import load_host_config
 from ...tools.discovery import DEFERRED_NAMES
 from ...runtime.network import NetworkRuntime
-from ...persona.profile import load_persona, select_examples
+from ...persona.profile import PersonaTarget, load_persona, require_persona_target, select_examples
 from ...tools.skills import Skill, select_skills
 from ...plugins.manifest import scene_skill_catalog
 
@@ -27,7 +27,7 @@ from ...plugins.manifest import scene_skill_catalog
 logger = logging.getLogger(__name__)
 
 
-class RoleTools(BaseModel):
+class RoleTools(PersonaTarget):
     model_config = STRICT
     tools: Literal["all"] | list[str]
 
@@ -42,7 +42,7 @@ class RoleTools(BaseModel):
         return value
 
 
-class RoleSkills(BaseModel):
+class RoleSkills(PersonaTarget):
     model_config = STRICT
     skills: Literal["all"] | list[str]
 
@@ -76,8 +76,9 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
         path = saved.scenes[scene].persona
         persona = load_persona(path)
         return {
+            "directory": str(path), "persona": {"id": persona.id, "name": persona.name},
             "saved": persona.tools, "running": chat.persona.tools,
-            "restart_required": persona.tools != chat.persona.tools,
+            "restart_required": persona.tools != chat.persona.tools or path != chat.config.persona,
             "affected_scenes": [key for key, value in saved.scenes.items() if value.persona == path],
         }
 
@@ -152,8 +153,9 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
         return {
             "scene": scene, "directory": None if directory is None else str(directory),
             "running_directory": None if running_directory is None else str(running_directory),
-            "role_skills": {"saved": persona.skills, "running": chat.persona.skills,
-                            "restart_required": persona.skills != chat.persona.skills,
+            "role_skills": {"directory": str(path), "persona": {"id": persona.id, "name": persona.name},
+                            "saved": persona.skills, "running": chat.persona.skills,
+                            "restart_required": persona.skills != chat.persona.skills or path != chat.config.persona,
                             "affected_scenes": [key for key, value in saved.scenes.items()
                                                 if value.persona == path]},
             "catalog": [{**skill_info(skill), "selected": skill in selected} for skill in catalog],
@@ -180,11 +182,12 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                           for name, item in sorted(loaded.knowledge.items())],
         }
 
-    def save_role(scene: str, field: Literal["tools", "skills"], value: str | list[str]) -> dict:
+    def save_role(scene: str, directory: str, field: Literal["tools", "skills"], value: str | list[str]) -> dict:
         saved = load_host_config(root)
         if scene not in saved.scenes:
             raise ValueError("此场景已从保存配置移除，不能读取或编辑保存的角色许可")
         path = saved.scenes[scene].persona
+        require_persona_target(path, directory)
         persona = load_persona(path).model_copy(update={field: value})
         affected = [key for key, value in saved.scenes.items() if value.persona == path]
         for key in affected:
@@ -200,16 +203,18 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
             temporary.replace(path / "persona.yaml")
         finally:
             temporary.unlink(missing_ok=True)
-        current = getattr(chat_for(scene).persona, field)
-        return {"saved": value, "running": current,
-                "restart_required": value != current, "affected_scenes": affected}
+        chat = chat_for(scene)
+        current = getattr(chat.persona, field)
+        return {"directory": str(path), "persona": {"id": persona.id, "name": persona.name},
+                "saved": value, "running": current,
+                "restart_required": value != current or path != chat.config.persona, "affected_scenes": affected}
 
     @app.put("/api/host/scenes/{scene}/role-tools")
     async def save(scene: str, changes: RoleTools, _: str = Depends(user)):
         chat_for(scene)
         try:
             async with write_lock:
-                return await asyncio.to_thread(save_role, scene, "tools", changes.tools)
+                return await asyncio.to_thread(save_role, scene, changes.directory, "tools", changes.tools)
         except (ValueError, OSError) as error:
             logger.exception("保存角色工具设置失败：%s", error)
             raise HTTPException(422 if isinstance(error, ValueError) else 500,
@@ -220,7 +225,7 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
         chat_for(scene)
         try:
             async with write_lock:
-                return await asyncio.to_thread(save_role, scene, "skills", changes.skills)
+                return await asyncio.to_thread(save_role, scene, changes.directory, "skills", changes.skills)
         except (ValueError, OSError) as error:
             raise HTTPException(422 if isinstance(error, ValueError) else 500,
                                 f"{type(error).__name__}: {error}") from error
