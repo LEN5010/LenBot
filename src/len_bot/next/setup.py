@@ -42,6 +42,7 @@ class FirstSetup(BaseModel):
     brief: str = Field(min_length=1)
     voice_text: str = Field(min_length=1)
     boundaries: str
+    panel_host: str = "127.0.0.1"
     panel_port: int = Field(ge=1, le=65535)
     username: str = Field(min_length=1)
     password: str = Field(min_length=8, repr=False)
@@ -64,7 +65,7 @@ def initialize(root: Path, item: FirstSetup) -> dict:
         'onebot': item.onebot.model_dump(mode='json'),
         'models': {'providers': {'primary': item.provider.model_dump(mode='json')},
                    'roles': {'mind': item.mind.model_dump(mode='json'), 'voice': item.voice.model_dump(mode='json')}},
-        'panel': {'host': '127.0.0.1', 'port': item.panel_port, 'username': item.username,
+        'panel': {'host': item.panel_host, 'port': item.panel_port, 'username': item.username,
                   'password_hash': hash_password(item.password)},
         'scenes': {item.scene: {'persona': f'personas/{item.persona_id}', 'voice_mode': item.voice_mode,
                                 'attention': {'only_direct': True}}},
@@ -94,7 +95,7 @@ def initialize(root: Path, item: FirstSetup) -> dict:
     return {'saved': True, 'config': str(config_path), 'persona': str(role_path),
             'panel_url': f'http://127.0.0.1:{item.panel_port}', 'delivery': item.delivery,
             'voice_mode': item.voice_mode,
-            'next': '现在从此实例目录重新执行刚才的启动命令，然后登录面板，先到对话测试里聊几句。'}
+            'next': '配置已保存，尚未启动业务。使用 len-bot 或容器默认入口启动当前实例，再登录面板进行试聊。'}
 
 
 def create_setup_app(root: Path, token: str, completed: asyncio.Event) -> FastAPI:

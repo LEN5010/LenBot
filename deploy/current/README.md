@@ -125,7 +125,7 @@ sudo journalctl -u lenbot -n 100 --no-pager
 
 ## Docker 宿主与插件环境
 
-[Docker 完整部署](docker.md)提供基础 Compose、可选任务挂载、非 root socket 接入、macOS Desktop 路径与离线升级。镜像带 Git／SSH／uv 和 Docker 客户端；实例数据与版本化 Python 环境分别使用原生卷，普通聊天不挂 socket。
+[Docker 完整部署](docker.md)提供基础 Compose、可选任务挂载、新卷离线初始化、非 root socket 接入、macOS Desktop 路径与离线升级。镜像带 Git／SSH／uv 和 Docker 客户端；实例数据与版本化 Python 环境分别使用原生卷，普通聊天不挂 socket。
 
 任务启用时，工作／运行／交付路径在 daemon 主机与宿主容器中一致；本次所选技能复制进任务运行目录，不直接绑定镜像内的 Python 安装路径。应用参数仍只读根配置，复制的 Compose 配方只管进程、端口与挂载。
 

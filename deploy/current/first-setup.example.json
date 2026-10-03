@@ -1,0 +1,39 @@
+{
+  "bot_qq": "90001",
+  "owner_qq": "70001",
+  "timezone": "Asia/Shanghai",
+  "delivery": "simulated",
+  "onebot": {
+    "mode": "reverse_ws",
+    "listen_host": "0.0.0.0",
+    "listen_port": 8080
+  },
+  "provider": {
+    "api": "openai-chat",
+    "base_url": "https://example.invalid/v1",
+    "api_key": "填入实际模型密钥"
+  },
+  "mind": {
+    "provider": "primary",
+    "model": "填入实际模型名",
+    "context_window_tokens": 65536,
+    "max_output_tokens": 4096
+  },
+  "voice": {
+    "provider": "primary",
+    "model": "填入与 mind 相同的实际模型名",
+    "context_window_tokens": 65536,
+    "max_output_tokens": 4096
+  },
+  "voice_mode": "direct",
+  "scene": "group:80001",
+  "persona_id": "companion",
+  "persona_name": "群聊伙伴",
+  "brief": "和群友聊天、记事和做事的群聊伙伴。",
+  "voice_text": "自然白话，按问题说清楚；闲聊说到点上就停。",
+  "boundaries": "不编造群友的经历、已经执行的任务或发送结果。",
+  "panel_host": "0.0.0.0",
+  "panel_port": 11307,
+  "username": "owner",
+  "password": "请替换为自己的面板密码"
+}
