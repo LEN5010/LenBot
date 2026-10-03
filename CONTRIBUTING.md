@@ -52,3 +52,5 @@ uv run --no-sync python scripts/build_release.py /tmp/lenbot-release
 ```
 
 该命令在副本中重建面板、核对源码包和 wheel，再从同一 wheel 生成 Linux／macOS 部署包，可能联网取依赖；不替换运行面板、不启动服务，不执行安装、镜像构建、上传或发布。分发边界见 `pyproject.toml` 与 `scripts/build_release.py`，修改时同步所需组件和说明。
+
+完整候选／发布使用 [Release 工作流](.github/workflows/release.yml)，参数、组件版本及发布动作见[发行说明](deploy/releasing.md)。默认手动候选不推镜像或创建 Release；推送版本标签会真正发布预发布版本。

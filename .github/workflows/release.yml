@@ -1,0 +1,240 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Push versioned images and create a Release (requires the matching existing tag)
+        type: boolean
+        default: false
+      prerelease:
+        description: Mark the Release as a prerelease
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  packages:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      image: ${{ steps.version.outputs.image }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: '0.12.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Resolve the one release version
+        id: version
+        env:
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+        run: |
+          uv python install 3.13
+          uv run --no-project --python 3.13 python - <<'PY'
+          import os, tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
+          publish = os.environ['PUBLISH'] == 'true'
+          if publish and os.environ['GITHUB_REF'] != 'refs/tags/v' + version:
+              raise ValueError('Publishing requires the checked-out tag v' + version)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'version={version}\nimage=ghcr.io/{os.environ["GITHUB_REPOSITORY"].lower()}\npublish={str(publish).lower()}\n')
+          PY
+      - name: Build corresponding packages and deployment bundles
+        run: uv run --no-project --python 3.13 python scripts/build_release.py "$RUNNER_TEMP/release"
+      - name: Include the exact patched component sources
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for component in openviking browserskill; do
+            uv run --no-project --python 3.13 python scripts/prepare_component.py "$component" "$RUNNER_TEMP/$component" \
+              --source-archive "$RUNNER_TEMP/release/artifacts/$component-$VERSION-source.tar.gz"
+          done
+          cp deploy/components.json "$RUNNER_TEMP/release/artifacts/components.json"
+          cp deploy/release-notes.md "$RUNNER_TEMP/release/artifacts/release-notes.md"
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/release/artifacts/source-revision.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-packages
+          path: ${{ runner.temp }}/release/artifacts/*
+          if-no-files-found: error
+
+  images:
+    needs: packages
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [host, worker, openviking]
+        target:
+          - {runner: ubuntu-24.04, platform: linux/amd64, arch: amd64}
+          - {runner: ubuntu-24.04-arm, platform: linux/arm64, arch: arm64}
+    runs-on: ${{ matrix.target.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        if: matrix.component == 'openviking'
+        with:
+          name: release-packages
+          path: packages
+      - name: Select the matching source and recipe
+        id: recipe
+        env:
+          COMPONENT: ${{ matrix.component }}
+          VERSION: ${{ needs.packages.outputs.version }}
+          IMAGE: ${{ needs.packages.outputs.image }}
+        run: |
+          case "$COMPONENT" in
+            host) CONTEXT=.; FILE=deploy/current/Dockerfile; TAG="$IMAGE" ;;
+            worker) CONTEXT=.; FILE=docker/next-worker/Dockerfile; TAG="$IMAGE-worker" ;;
+            openviking)
+              tar -xzf "packages/openviking-$VERSION-source.tar.gz" -C "$RUNNER_TEMP"
+              CONTEXT="$RUNNER_TEMP/openviking"; FILE=deploy/current/Dockerfile.openviking; TAG="$IMAGE-openviking" ;;
+          esac
+          printf 'context=%s\nfile=%s\ntag=%s\n' "$CONTEXT" "$FILE" "$TAG" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        if: needs.packages.outputs.publish == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ steps.recipe.outputs.context }}
+          file: ${{ steps.recipe.outputs.file }}
+          platforms: ${{ matrix.target.platform }}
+          tags: ${{ steps.recipe.outputs.tag }}:${{ needs.packages.outputs.version }}-${{ matrix.target.arch }}
+          push: ${{ needs.packages.outputs.publish == 'true' }}
+          outputs: ${{ needs.packages.outputs.publish != 'true' && format('type=docker,dest={0}/image.tar', runner.temp) || '' }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.packages.outputs.version }}
+            io.lenbot.release.revision=${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        if: needs.packages.outputs.publish != 'true'
+        with:
+          name: image-${{ matrix.component }}-${{ matrix.target.arch }}
+          path: ${{ runner.temp }}/image.tar
+          compression-level: 0
+          if-no-files-found: error
+
+  browser:
+    needs: packages
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - {runner: ubuntu-24.04, platform: linux-amd64}
+          - {runner: ubuntu-24.04-arm, platform: linux-arm64}
+          - {runner: macos-15-intel, platform: macos-amd64}
+          - {runner: macos-14, platform: macos-arm64}
+    runs-on: ${{ matrix.target.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages
+          path: packages
+      - name: Read the fixed component tools
+        id: tools
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          component = json.loads(Path('deploy/components.json').read_text())['browserskill']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for name in ('node', 'pnpm', 'rust'):
+                  output.write(f'{name}={component[name]}\n')
+          PYTHON
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.tools.outputs.node }}
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: '0.12.13'
+      - name: Build the exact patched source
+        env:
+          VERSION: ${{ needs.packages.outputs.version }}
+          RUST_VERSION: ${{ steps.tools.outputs.rust }}
+          PNPM_VERSION: ${{ steps.tools.outputs.pnpm }}
+        run: |
+          tar -xzf "packages/browserskill-$VERSION-source.tar.gz" -C "$RUNNER_TEMP"
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          npm install --global "pnpm@$PNPM_VERSION"
+          cd "$RUNNER_TEMP/browserskill"
+          cargo +"$RUST_VERSION" build --locked --release -p bsk -p bsk-file-host
+          pnpm install --frozen-lockfile
+          pnpm --filter @browser-skill/extension build
+      - name: Package binaries and extension
+        env:
+          TARGET_PLATFORM: ${{ matrix.target.platform }}
+        run: |
+          uv run --no-project --python 3.13 python scripts/package_browser.py \
+            "$RUNNER_TEMP/browserskill" "$RUNNER_TEMP/browser-artifacts" --platform "$TARGET_PLATFORM"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: browser-${{ matrix.target.platform }}
+          path: ${{ runner.temp }}/browser-artifacts/*.tar.gz
+          if-no-files-found: error
+
+
+  publish:
+    needs: [packages, images, browser]
+    if: needs.packages.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: browser-*
+          merge-multiple: true
+          path: artifacts
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Assemble architecture manifests
+        env:
+          IMAGE: ${{ needs.packages.outputs.image }}
+          VERSION: ${{ needs.packages.outputs.version }}
+        run: |
+          for suffix in '' '-worker' '-openviking'; do
+            docker buildx imagetools create -t "$IMAGE$suffix:$VERSION" \
+              "$IMAGE$suffix:$VERSION-amd64" "$IMAGE$suffix:$VERSION-arm64"
+          done
+          printf '宿主：`%s:%s`\n\n任务：`%s-worker:%s`\n\n记忆：`%s-openviking:%s`\n' \
+            "$IMAGE" "$VERSION" "$IMAGE" "$VERSION" "$IMAGE" "$VERSION" > artifacts/images.md
+      - name: Publish the existing tag and its files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.packages.outputs.version }}
+          PRERELEASE: ${{ github.event_name == 'push' || inputs.prerelease }}
+        run: |
+          cat artifacts/release-notes.md artifacts/images.md > "$RUNNER_TEMP/notes.md"
+          args=()
+          if [ "$PRERELEASE" = true ]; then args+=(--prerelease); fi
+          gh release create "v$VERSION" --verify-tag --title "LenBot $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" "${args[@]}" artifacts/*

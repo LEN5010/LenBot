@@ -20,6 +20,8 @@ REQUIRED_SOURCE = (
     'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md', 'uv.lock', '.dockerignore',
     'scripts/install.sh', 'scripts/build_release.py', 'scripts/build_deployment.py',
     'deploy/package/install.sh', 'deploy/package/install.py', 'deploy/package/README.md',
+    'deploy/components.json', 'deploy/release-notes.md', 'deploy/releasing.md',
+    '.github/workflows/release.yml', 'scripts/prepare_component.py', 'scripts/package_browser.py',
     'scripts/collect_python_licenses.py',
     'scripts/collect_frontend_licenses.cjs', 'deploy/current/README.md',
     'deploy/current/lenbot.service', 'deploy/current/Dockerfile', 'deploy/current/memory-templates.md',

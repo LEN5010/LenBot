@@ -1,0 +1,16 @@
+{
+  "openviking": {
+    "repository": "https://github.com/volcengine/OpenViking.git",
+    "revision": "a09a9d20a8e07d08973aee177802d00e08df29e6",
+    "patch": "deploy/current/openviking-forget.patch",
+    "dockerfile": "deploy/current/Dockerfile.openviking"
+  },
+  "browserskill": {
+    "repository": "https://github.com/Tencent/BrowserSkill.git",
+    "revision": "147727a0e2ded65a7d0f364beea8cc2ebcdec8af",
+    "patch": "deploy/current/browserskill-remote-files.patch",
+    "rust": "1.99.0",
+    "node": "26.8.2",
+    "pnpm": "10.17.0"
+  }
+}

@@ -11,6 +11,8 @@ BrowserSkill 在专用环境独立部署。LenBot 保存服务扩展补丁与构
 
 这一服务扩展与 LenBot 任务文件工具、会话面板已接通。安装此服务不会自动改变宿主配置，根配置仍明确指定 daemon 的 socket、home、binary 与实际设备 ID。
 
+发行组件提交与工具版本集中在 [`components.json`](../components.json)，自动打包路径见[发行说明](../releasing.md)。
+
 ## 构建
 
 在单独的构建目录展开上游基线，再应用补丁；`LENBOT_SOURCE` 指向当前 LenBot 源码，`BSK_SOURCE` 指向上游 Git 仓库，`BUILD` 为新建空目录。
