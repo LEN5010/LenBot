@@ -13,14 +13,13 @@ from pathlib import Path
 from string import Template
 import traceback
 from typing import Literal, TYPE_CHECKING
-from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from .config import HostConfig
 from .audio import AudioService, TranscribeArguments
-from .account_browser import AccountBrowser, BrowserAction, BROWSER_TOOL
+from .account_browser import AccountBrowser, BROWSER_TOOL
 from .identity import roles_for
 from .egress_usage import EgressUsage
 from .model_slots import ModelSlots
@@ -31,12 +30,13 @@ from .sandbox import DockerSandbox, DockerSettings
 from .skills import Skill, load_task_skills, merge_task_skills
 from .store import Store
 from .task_live import TaskLiveText
-from .tasks_store import TERMINAL, Task, TaskFile, TaskStore
+from .task_files import TaskFiles, file_info
+from .task_browser import TaskBrowser
+from .tasks_store import TERMINAL, Task, TaskStore
 from .worker_model import Limits, WorkerModelProxy
 from .worker_session import WorkerSession, worker_session
 from .task_materials import MaterialName, finish_file_operation
 from .task_inputs import copy_inputs, create_stage, publish_inputs, remove_stage, require_inputs
-from .task_storage import discard_task_trees, output_entries
 from .operations import credentials, diagnostic_value, redact, redact_record
 
 if TYPE_CHECKING:
@@ -45,20 +45,6 @@ if TYPE_CHECKING:
 
 
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
-
-
-class DeliverFile(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    path: str = Field(min_length=1)
-    name: str = Field(min_length=1, max_length=240)
-    note: str
-
-    @field_validator("name")
-    @classmethod
-    def filename(cls, value: str) -> str:
-        if value in {".", ".."} or any(char in value for char in ("/", "\\", "\x00", "\r", "\n")):
-            raise ValueError("name must be a filename, not a path")
-        return value
 
 
 class TaskMCPCall(BaseModel):
@@ -84,12 +70,6 @@ class RunningTask:
     live_text: TaskLiveText = field(default_factory=TaskLiveText)
     skills: tuple[Skill, ...] = ()
     mcp_tools: dict[str, ExternalTool] = field(default_factory=dict)
-
-
-def file_info(file: TaskFile, records: TaskStore) -> dict:
-    return {"id": file.id, "task_id": file.task_id, "name": file.name,
-            "size": file.size, "note": file.note, "status": "registered",
-            "upload": records.latest_file_upload(file)}
 
 
 class WorkTasks:
@@ -120,6 +100,8 @@ class WorkTasks:
             tmpfs_size=settings.tmpfs_size,
             command_timeout_seconds=settings.command_timeout_seconds,
         ))
+        self.files = TaskFiles(settings, self.records, self.sandbox, self._notify)
+        self.task_browser = TaskBrowser(config, self.records, self.browser)
         self.running: dict[int, RunningTask] = {}
         self.file_changes = asyncio.Lock()
         self.live_listeners: dict[int, set[asyncio.Event]] = {}
@@ -157,7 +139,7 @@ class WorkTasks:
         if requester != item.requester and requester in self.config.scene_config(item.scene).permissions.blacklist:
             raise PermissionError('黑名单账号只能取消本人的任务，不能管理他人任务')
         if item.account_browser:
-            self._browser_owner(requester)
+            self.task_browser.require_owner(requester)
         roles = self._roles(item.scene, requester)
         if requester != item.requester and not roles.intersection(
                 self.config.scenes[item.scene].tasks.manage_roles):
@@ -210,11 +192,7 @@ class WorkTasks:
     async def outputs(self, scene: str, id: int, *, requester: str,
                       path: str, offset: int, limit: int) -> dict:
         item = self._inspect_task(scene, id, requester)
-        root = self.settings.workspace_root / scene / 'tasks' / str(id) / 'out'
-        entries = await asyncio.to_thread(output_entries, root, path, offset, limit)
-        return {'task_id': item.id, 'root': 'out', 'path': path, **entries,
-                'registered_files': [file_info(file, self.records) for file in self.records.list_files(scene, id)],
-                'notice': 'entries 是当前磁盘元数据，不是内容验证；registered_files 才是可下载交付，上传状态另列。'}
+        return await self.files.outputs(item, path=path, offset=offset, limit=limit)
 
     def _event_result(self, item: Task, value: dict) -> dict:
         content = Template((PROMPTS / 'next_task_history.md').read_text()).substitute(
@@ -251,16 +229,10 @@ class WorkTasks:
         return {"items": [asdict(item) for item in items[:limit]],
                 "next_offset": offset + limit if len(items) > limit else None}
 
-    def _browser_owner(self, requester: str) -> None:
-        if self.config.owner_qq is None or requester != self.config.owner_qq:
-            raise PermissionError('账号浏览仅允许根配置的主人QQ')
-        if self.browser is None or self.browser.settings.browser_instance_id is None:
-            raise ValueError('账号浏览服务尚未配置或未明确绑定专用浏览器')
-
     def _admit_delegate(self, scene: str, requester: str, account_browser: bool) -> None:
         self._can_delegate(scene, requester)
         if account_browser:
-            self._browser_owner(requester)
+            self.task_browser.require_owner(requester)
             if self.records.browser_in_use():
                 raise ValueError('专用账号浏览器仍被任务占用；先结束或明确清理原会话')
         timezone = self.config.scene_timezone(scene)
@@ -361,40 +333,7 @@ class WorkTasks:
                 raise ValueError('须明确确认放弃本任务工作环境及原生会话；交付副本和执行记录保留')
             if (item.status not in TERMINAL or item.container is not None or item.browser_active or id in self.running):
                 raise ValueError('只可放弃终态、容器/账号会话已关闭且宿主已完成收尾的任务环境')
-            expected_workspace = self.settings.workspace_root / scene / 'tasks' / str(id)
-            expected_runtime = self.settings.runtime_root / scene / str(id)
-            if workspace != str(expected_workspace) or runtime != str(expected_runtime):
-                raise ValueError(f'Task removal roots differ from the current worker; expected='
-                                 f'{(str(expected_workspace), str(expected_runtime))!r}; received={(workspace, runtime)!r}')
-            for file in self.records.registered_files():
-                recorded = Path(file.path)
-                actual = recorded.resolve(strict=False)
-                if any(path.is_relative_to(root) for path in (recorded, actual)
-                       for root in (expected_workspace, expected_runtime)):
-                    raise ValueError(f'Registered delivery would be removed by these current task roots; '
-                                     f'scene={file.scene!r}, task={file.task_id}, file={file.id}, path={file.path!r}; '
-                                     'retain/move the actual delivery explicitly before discarding this environment')
-            self.records.add_event(scene, id, 'workspace_discard', {'requester': requester,
-                'workspace': workspace, 'runtime': runtime, 'notice': '明确放弃此任务环境，不再续接；不是物理删除成功回执'})
-            self._notify(scene)
-            progress = {'complete': False, 'removed': [], 'absent': [], 'active_root': None, 'error': None}
-            original_error: BaseException | None = None
-            try:
-                await finish_file_operation(discard_task_trees, expected_workspace, expected_runtime, progress)
-            except BaseException as error:
-                original_error = error
-                progress['error'] = ''.join(traceback.format_exception_only(error)).strip()
-                error.add_note(f'Task #{id} environment is permanently discarded; partial removal={progress!r}')
-                raise
-            finally:
-                try:
-                    self.records.add_event(scene, id, 'workspace_discard_result', progress)
-                    self._notify(scene)
-                except BaseException as record_error:
-                    if original_error is None:
-                        record_error.add_note(f'Task #{id} environment is discarded; filesystem result={progress!r}')
-                        raise
-                    original_error.add_note(f'Workspace removal result recording also failed: {type(record_error).__name__}: {record_error}')
+            progress = await self.files.discard(item, requester=requester, workspace=workspace, runtime=runtime)
             return {'task': self.status(scene, id), 'removal': progress,
                     'notice': '工作区与运行目录清理已返回；交付副本、共享原件和执行记录保留，不代表安全擦除或配额实际释放。'}
 
@@ -410,7 +349,7 @@ class WorkTasks:
         if item.status != "waiting_input":
             raise ValueError("任务当前没有等待回答的问题")
         if item.account_browser:
-            self._browser_owner(requester)
+            self.task_browser.require_owner(requester)
         if item.question["method"] == "request_help":
             raise ValueError("请在专用浏览器完成当前人工接手；此处不能代答")
         if item.question["id"] != question_id:
@@ -605,15 +544,7 @@ class WorkTasks:
                 current.timer = timer
                 current.skills = self.skills[item.scene]
                 if item.account_browser:
-                    self._browser_owner(item.requester)
-                    async with self.browser.lock:
-                        if self.records.browser_in_use() or await self.browser.sessions():
-                            raise ValueError('专用账号浏览器仍被占用，未启动本任务')
-                        self.records.browser_binding(item.scene, item.id, active=True, session=None)
-                        session_id = await self.browser.start()
-                        self.records.browser_binding(item.scene, item.id, active=True, session=session_id)
-                    self.records.add_event(item.scene, item.id, 'browser_started', {'session_id': session_id,
-                        'socket': str(self.browser.settings.socket), 'browser_instance_id': self.browser.settings.browser_instance_id})
+                    await self.task_browser.start(item)
                     current.skills = tuple(skill for skill in current.skills if skill.source == 'builtin')
                 if (not item.account_browser and self.settings.skills_directory is not None
                         and self.skill_permissions[item.scene] == "all"):
@@ -700,11 +631,7 @@ class WorkTasks:
             actual = self.records.get(item.scene, item.id)
             if actual.browser_active:
                 try:
-                    if actual.browser_session is None:
-                        raise RuntimeError('浏览器创建结果未知，保留配置占用；请从能力页检查实际会话并明确清理')
-                    result = await self.browser.stop(actual.browser_session)
-                    self.records.browser_binding(item.scene, item.id, active=False, session=None)
-                    self.records.add_event(item.scene, item.id, 'browser_stopped', result)
+                    await self.task_browser.stop(actual)
                 except Exception as error:
                     status = 'failed'
                     error_text = f'{error_text or ""}\n浏览器清理失败：{type(error).__name__}: {error}'
@@ -878,40 +805,9 @@ class WorkTasks:
             return {'content': content}
         if path == '/task/account-browser':
             item = self.records.get(current.item.scene, current.item.id)
-            if not item.account_browser:
-                raise PermissionError('普通任务不能获得账号浏览能力，请另建主人授权任务')
-            self._browser_owner(item.requester)
-            if not item.browser_active or item.browser_session is None:
-                raise RuntimeError('此任务没有已确认的账号浏览会话')
-            action = BrowserAction.model_validate_json(raw)
-            if action.method == 'screenshot' and self.settings.input_support != 'text-image':
-                raise ValueError('当前工作模型未配置图像输入，不能向它提供浏览器截图')
-            if action.method == 'request_help':
-                # The host's existing input wait limit governs human time, not active execution.
-                params = {**action.params, 'timeout_ms': int(self.settings.input_timeout_seconds * 1000)}
-                action = BrowserAction(method=action.method, params=params)
-                question = {'method': 'request_help', 'title': params['prompt'], 'params': params}
-                self._pause_input(current, question)
-                self.records.add_event(item.scene, item.id, 'question', question,
-                    notice=f"[任务浏览器接手] #{item.id}；请在专用浏览器完成：{params['prompt']}")
-                try:
-                    result = await self.browser.execute(item.browser_session, action)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    await self._resume_input(current)
-                    raise
-                else:
-                    self.records.add_event(item.scene, item.id, 'answer', result)
-                    await self._resume_input(current)
-            else:
-                result = await self.browser.execute(item.browser_session, action)
-            if action.method == 'screenshot':
-                if not isinstance(result.get('image_base64'), str):
-                    raise ValueError(f'Browser screenshot lacks image_base64: {result!r}')
-                return {'content': json.dumps({k:v for k,v in result.items() if k != 'image_base64'}, ensure_ascii=False),
-                        'image': {'data': result['image_base64'], 'mimeType': 'image/png'}}
-            return {'content': json.dumps(result, ensure_ascii=False)}
+            return await self.task_browser.execute(
+                item, raw, pause_input=lambda question: self._pause_input(current, question),
+                resume_input=lambda: self._resume_input(current))
         if path in {"/task/recall-chat", "/task/memory", "/task/transcribe"}:
             name = {"/task/recall-chat": "recall_chat", "/task/memory": "memory", "/task/transcribe": "transcribe"}[path]
             scene = current.item.scene
@@ -944,19 +840,4 @@ class WorkTasks:
                 raise ValueError(f"Task network status expects an empty object: {raw[:500]!r}")
             return {"task": self.egress.status(current.item.scene, current.item.id),
                     "scene_today": self.egress.status(current.item.scene)}
-        arguments = DeliverFile.model_validate_json(raw)
-        item = current.item
-        destination = self.settings.delivery_root / item.scene / str(item.id)
-        destination.mkdir(parents=True, exist_ok=True)
-        target = destination / uuid4().hex
-        try:
-            await self.sandbox.copy_out(current.session.sandbox, arguments.path, target,
-                                        max_bytes=self.settings.max_file_bytes)
-            file = self.records.add_file(item.scene, item.id, name=arguments.name, path=str(target),
-                                         size=target.stat().st_size, note=arguments.note)
-        except BaseException:
-            target.unlink(missing_ok=True)
-            raise
-        self.records.add_event(item.scene, item.id, "file", file_info(file, self.records))
-        self._notify(item.scene)
-        return file_info(file, self.records)
+        return await self.files.deliver(current.item, current.session.sandbox, raw)

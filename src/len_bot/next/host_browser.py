@@ -10,7 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .account_browser import AccountBrowser, AccountBrowserSettings
 from .host_settings import _prepare, _read_saved
-from .tasks_store import TaskStore, TERMINAL
+from .task_browser import TaskBrowser
+from .tasks_store import TaskStore
 
 
 class BrowserChange(BaseModel):
@@ -106,24 +107,6 @@ def register_host_browser(app: FastAPI, *, root: Path, runtime, user, write_lock
                 raise HTTPException(404, '当前宿主没有此场景')
             try:
                 item = records.get(body.scene, body.task_id)
-                if item.status not in TERMINAL or not item.browser_active:
-                    raise ValueError('只清理已结束但仍占用浏览器的任务；活动任务应先取消')
-                sessions = await client.sessions(bound=False)
-                own = [row['session_id'] for row in sessions if row['browser_instance_id'] == running.browser_instance_id]
-                target = item.browser_session if body.session_id is None else body.session_id
-                if item.browser_session is not None and target != item.browser_session:
-                    raise ValueError('只能关闭此任务已绑定的实际会话')
-                if target is not None and any(row['session_id'] == target and row['browser_instance_id'] != running.browser_instance_id for row in sessions):
-                    raise ValueError('原任务会话仍在其他浏览器绑定上；恢复原配置清理，不能按当前空配置释放')
-                if target is not None and target in own:
-                    await client.stop(target)
-                    own.remove(target)
-                elif target is not None and target != item.browser_session:
-                    raise ValueError('所选会话不属于当前专用浏览器')
-                if own:
-                    raise ValueError(f'专用浏览器仍有会话：{own!r}；请明确选择实际会话清理')
-                records.browser_binding(item.scene, item.id, active=False, session=None)
-                records.add_event(item.scene, item.id, 'browser_released', {'session_id': target, 'confirmed_empty': True})
-                return {'released': True}
+                return await TaskBrowser(runtime.config, records, client).release(item, session_id=body.session_id)
             except (ValueError, KeyError, OSError, RuntimeError, TimeoutError) as error:
                 raise HTTPException(409, str(error)) from error
