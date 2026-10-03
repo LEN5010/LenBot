@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import { mdiViewDashboardOutline, mdiChatProcessingOutline, mdiForumOutline, mdiAccountOutline, mdiBookOpenPageVariantOutline,
-  mdiBriefcaseOutline, mdiToolboxOutline, mdiChip, mdiTimelineTextOutline, mdiCogOutline, mdiMenu, mdiLogout } from '@mdi/js'
+  mdiBriefcaseOutline, mdiFolderOutline, mdiToolboxOutline, mdiChip, mdiTimelineTextOutline, mdiCogOutline, mdiMenu, mdiLogout } from '@mdi/js'
 import { logout, useAuth } from '../composables/useAuth.js'
 import { host, readHostState, readPendingRestart } from '../host/store.js'
 import { runtimeLabel, sectionLabel } from '../host/labels.js'
@@ -15,7 +15,7 @@ import markUrl from '../assets/lenbot-mark.svg'
 const route = useRoute(), router = useRouter(), { mobile } = useDisplay()
 const drawer = ref(!mobile.value), leaving = ref(false), logoutError = ref(null)
 const icons = { home: mdiViewDashboardOutline, trial: mdiChatProcessingOutline, scenes: mdiForumOutline, persona: mdiAccountOutline,
-  memory: mdiBookOpenPageVariantOutline, tasks: mdiBriefcaseOutline, capabilities: mdiToolboxOutline, models: mdiChip,
+  memory: mdiBookOpenPageVariantOutline, tasks: mdiBriefcaseOutline, resources: mdiFolderOutline, capabilities: mdiToolboxOutline, models: mdiChip,
   logs: mdiTimelineTextOutline, settings: mdiCogOutline }
 const area = computed(() => hostAreas.find(item => item.pages.includes(route.name)))
 const status = computed(() => {

@@ -26,6 +26,7 @@ const router = createRouter({
       component:()=>import('../host/pages/tasks/TasksPage.vue'),
       meta:{title:'任务'}
     },
+    { path:'/host/resources', name:'host-resources', component:()=>import('../host/pages/resources/ResourcesPage.vue'), meta:{title:'资源'} },
     {
       path:'/host/memory',
       name:'host-memory',

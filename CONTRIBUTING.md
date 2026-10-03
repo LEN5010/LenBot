@@ -13,7 +13,7 @@
 | `next/chat.py`、`attention.py`、`context.py` | 会话执行、唤醒与历史压缩 |
 | `next/chat_context.py`、`chat_tools.py`、`chat_expression.py` | 请求材料、工具发现与分派、表达与场景发送出口 |
 | `next/memory*.py`、`tasks*.py`、`task_execution.py`、`worker*.py` | 双记忆后端、任务生命周期、单次执行与容器通信 |
-| `next/task_files.py`、`task_browser.py`、`task_inputs.py`、`task_materials.py` | 任务文件、账号浏览协作与输入资料 |
+| `next/task_files.py`、`task_resources.py`、`task_browser.py`、`task_inputs.py`、`task_materials.py` | 任务文件、资源定位与浏览、账号浏览协作及输入资料 |
 | `next/store.py`、`store_schema.py`、各领域 `*_store.py` | 共享数据库、聊天事务、领域表定义和查询；离线迁移仍统一排序 |
 | `next/import_*.py`、`migrate*.py`、`archive_*.py`、`transfer_memory.py`、`export_persona_memory_templates.py` | 显式离线维护 |
 | `next/audio_synthesis.py` | 未启用的文本／音色输入与音频文件结果契约 |

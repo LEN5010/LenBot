@@ -28,6 +28,7 @@ from .host_operations import register_host_operations
 from .host_memory import register_host_memory
 from .host_tasks import register_host_tasks
 from .host_materials import register_host_materials
+from .host_resources import register_host_resources
 from .host_skills import register_host_skills
 from .host_schedules import register_host_schedules
 from .host_learning import register_host_learning
@@ -80,6 +81,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
     register_host_memory(app, runtime=runtime, user=user)
     register_host_tasks(app, runtime=runtime, user=user, host_changes=listeners, write_lock=write_lock)
     register_host_materials(app, runtime=runtime, user=user)
+    register_host_resources(app, runtime=runtime, user=user)
     register_host_skills(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_schedules(app, runtime=runtime, user=user)
     register_host_learning(app, runtime=runtime, user=user)
