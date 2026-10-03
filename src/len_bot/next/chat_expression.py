@@ -11,7 +11,7 @@ from typing import Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from .chat_context import ChatContext, PROMPTS, jargon_context, voice_prompt
+from .chat_context import ChatContext, PROMPTS
 from .chat_tools import ReactArguments, SayArguments
 from .config import LabConfig
 from .delivery import Expression, part_length, report_parts, split_expression
@@ -59,30 +59,13 @@ class ChatExpression:
         if self.config.voice_mode == "direct":
             text = arguments.content
         else:
-            messages = [{"role": "system", "content": voice_prompt(self.persona, platform=self.config.delivery == "onebot")}]
-            recent = self.store.recent_context_messages(self.config.scene)
-            messages.append({"role": "user", "content": "<群聊对话稿>\n"
-                             + "\n".join(self.context.render(message) for message in recent) + "\n</群聊对话稿>"})
-            task = {"表达意图": arguments.content, "长度": arguments.length,
-                    "回复对象": None if quote is None else self.context.render(quote), "平台已负责提及的QQ": arguments.mention}
-            if expression_style is not None:
-                messages.append({"role": "user", "content": expression_style})
-            jargon = jargon_context(self.config, self.store, recent + ([] if quote is None else [quote]),
-                                    intent=arguments.content)
-            if jargon is not None:
-                messages.append({"role": "user", "content": jargon})
             selected = []
             if self.expression_service is not None and self.config.scene in self.expression_service.scenes:
                 selected = await self.expression_service.select(
                     self.config.scene, arguments.content, turn_id=turn_id, direct=direct,
                 )
-            if selected:
-                messages.append({"role": "user", "content": Template(
-                    (PROMPTS / "next_learned_expressions.md").read_text(),
-                ).substitute(expressions=encode([
-                    {"情境": item["situation"], "说法": item["style"]} for item in selected
-                ]))})
-            messages.append({"role": "user", "content": encode(task)})
+            messages = self.context.voice_messages(arguments, quote=quote,
+                                                   expression_style=expression_style, selected=selected)
             reply = await self.request(turn_id, "voice", messages, [],
                                        expression_ids=[item["id"] for item in selected])
             text = reply.text

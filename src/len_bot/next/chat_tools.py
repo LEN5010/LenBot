@@ -47,7 +47,7 @@ class SayArguments(BaseModel):
     reply_to: str | None = Field(default=None, description="需要引用时填本场景已有平台消息 ID；直接接话可省略。")
     mention: str | None = Field(default=None, pattern=r"^[0-9]+$",
         description="需要提醒特定对象时填实际 QQ；连续对话中对象清楚时可省略。")
-    length: Literal["短", "正常", "长"] = Field(default="正常", description="本次表达的详略意向，所需事实仍完整保留。")
+    length: Literal["短", "正常", "长"] = Field(default="正常", description="本次表达的详略倾向；范围由实际请求决定，不代表固定字数。")
 
 
 class ReactArguments(BaseModel):

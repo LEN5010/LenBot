@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from math import ceil
+from pathlib import Path
 from string import Template
 
 from .store import encode
@@ -36,7 +37,9 @@ def estimate_text_request(messages: list[dict], tools: list[dict], output_tokens
 
 
 def project_history(recap: str | None, entries: list[Entry]) -> list[dict]:
-    messages = [] if recap is None else [{"role": "user", "content": recap}]
+    messages = [] if recap is None else [{"role": "user", "content": Template(
+        (Path(__file__).resolve().parents[1] / "prompts" / "next_recap_context.md").read_text()
+    ).substitute(recap=recap)}]
     return messages + [message for _, message in entries]
 
 
