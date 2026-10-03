@@ -620,10 +620,14 @@ class SceneRunner:
                 async with asyncio.timeout(self.config.turn_timeout_seconds):
                     content, status = await self.chat.expression.send_prepared_expression(
                         entry_seq, parts, prefix=prefix, channels={"quiet_notice"})
+            except LimitReached as error:
+                status, error_text = "limited", f"{type(error).__name__}: {error}"
             except TimeoutError as error:
                 status, error_text = "timeout", f"{type(error).__name__}: fixed notice time limit"
                 content = self.store.expression_error(entry_seq, error_text)
-            expressions.append(content)
+                expressions.append(content)
+            else:
+                expressions.append(content)
             # Receipt callbacks may have persisted newer attention while sending.
             state = copy.deepcopy(self.state)
             own_at = self.store.last_self_time(self.config.scene)
