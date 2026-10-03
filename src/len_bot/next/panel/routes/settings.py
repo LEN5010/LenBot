@@ -88,6 +88,7 @@ class ScheduleSwitches(BaseModel):
 class SceneChange(ScenePersona):
     timezone: str | None
     voice_mode: Literal["voice", "direct"]
+    voice_context_tokens: int = Field(gt=0, strict=True)
     attention: Attention
     schedules: ScheduleSwitches
     proactive: Proactive | None
@@ -281,6 +282,7 @@ def _project(config: HostConfig) -> dict:
                 "persona": str(settings.persona),
                 "timezone": settings.timezone,
                 "voice_mode": settings.voice_mode,
+                "voice_context_tokens": settings.voice_context_tokens,
                 "attention": settings.attention.model_dump(mode="json"),
                 "schedules": settings.schedules.model_dump(mode="json"),
                 "proactive": None if settings.proactive is None else settings.proactive.model_dump(mode="json"),

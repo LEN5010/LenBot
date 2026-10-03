@@ -54,7 +54,7 @@ def complete_boundaries(entries: list[Entry]) -> list[int]:
                 pending.update(call["id"] for call in calls)
         elif message["role"] == "tool":
             pending.remove(message["tool_call_id"])
-        if not pending and (index == len(entries) or entries[index][1]["role"] == "user"):
+        if not pending:
             boundaries.append(index)
     if pending:
         raise ContextBudgetError("当前会话存在尚未取得结果的工具组，不能压缩")
@@ -70,14 +70,25 @@ class CompactionPlan:
 
 def plan_compaction(entries: list[Entry], *, system: dict, state: dict,
                     tools: list[dict], output_tokens: int, trigger_tokens: int,
-                    keep_recent_entries: int, summary_output_tokens: int,
+                    keep_recent_tokens: int, summary_output_tokens: int,
                     recap: str | None, summary_template: str, window_tokens: int) -> CompactionPlan:
     boundaries = [cut for cut in complete_boundaries(entries) if cut < len(entries)]
     if not boundaries:
-        raise ContextBudgetError("没有可压缩的旧完整对话段；当前消息或单个工具组超过输入预算")
-    preferred = len(entries) - keep_recent_entries
-    start = max((cut for cut in boundaries if cut <= preferred), default=boundaries[0])
-    for desired_index, cut in enumerate(boundaries):
+        required = estimate_request([system] + project_history(recap, entries) + [state], tools, output_tokens)
+        raise ContextBudgetError(
+            f"没有可压缩的旧完整对话段；含 system、tools、参考与输出 {output_tokens} 的请求估算 "
+            f"{required} token，压缩阈值 {trigger_tokens}、窗口 {window_tokens}；原文与工具组未拆分")
+    # Start from the newest complete units, not an arbitrary message count.
+    sizes = [ceil(len(encode(message).encode('utf-8')) / 3) for _, message in entries]
+    recent = 0
+    preferred = len(entries)
+    for index in range(len(entries) - 1, -1, -1):
+        recent += sizes[index]
+        if recent > keep_recent_tokens:
+            break
+        preferred = index
+    start = min((cut for cut in boundaries if cut >= preferred), default=boundaries[-1])
+    for cut in boundaries:
         if cut < start:
             continue
         kept = entries[cut:]
@@ -86,31 +97,21 @@ def plan_compaction(entries: list[Entry], *, system: dict, state: dict,
         if available >= summary_output_tokens:
             break
     else:
-        raise ContextBudgetError("系统、工具与最新完整对话段没有给回想留下预算；原文未裁剪")
+        raise ContextBudgetError(
+            f"system、tools、参考与最新完整单位（含输出 {output_tokens}）估算 "
+            f"{trigger_tokens - available} token，加回想预留 {summary_output_tokens} "
+            f"超过压缩阈值 {trigger_tokens}（窗口 {window_tokens}）；原文未裁剪")
 
     prompt = Template(summary_template).substitute(summary_budget_tokens=available)
 
-    def request_at(cut: int) -> list[dict]:
-        return [{"role": "system", "content": prompt},
-                {"role": "user", "content": recap_source(recap, entries[:cut])}]
-
-    # Prefix size grows monotonically. Search complete boundaries, not raw tokens.
-    low, high = 0, desired_index
-    selected = None
-    while low <= high:
-        middle = (low + high) // 2
-        cut = boundaries[middle]
-        request = request_at(cut)
-        if estimate_request(request, [], summary_output_tokens) <= window_tokens:
-            selected = CompactionPlan(entries[cut - 1][0], available, request)
-            low = middle + 1
-        else:
-            high = middle - 1
-    if selected is None:
-        required = estimate_request(request_at(boundaries[0]), [], summary_output_tokens)
+    request = [{"role": "system", "content": prompt},
+               {"role": "user", "content": recap_source(recap, entries[:cut])}]
+    required = estimate_request(request, [], summary_output_tokens)
+    if required > window_tokens:
         raise ContextBudgetError(
-            f"最早完整旧段的回想请求估算 {required} token，超过配置窗口 {window_tokens}；原文与工具组未拆分")
-    return selected
+            f"待压缩段的回想请求估算 {required} token，超过配置窗口 {window_tokens}；"
+            "原文与工具组未拆分，未调用模型")
+    return CompactionPlan(entries[cut - 1][0], available, request)
 
 
 def recap_source(recap: str | None, entries: list[Entry]) -> str:

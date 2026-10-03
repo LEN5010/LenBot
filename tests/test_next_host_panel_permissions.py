@@ -153,7 +153,7 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                     assert {'permissions', 'account_browser'} <= set(pending['sections'])
                     assert pending['scenes'] == ['group:80001'] and pending['personas'] == []
                     scene_saved = (await client.get('/api/host/settings')).json()['saved']['scenes']['group:80001']
-                    scene_body = {'timezone': None, 'voice_mode': 'direct', 'attention': scene_saved['attention'],
+                    scene_body = {'timezone': None, 'voice_mode': 'direct', 'voice_context_tokens': scene_saved['voice_context_tokens'], 'attention': scene_saved['attention'],
                                   'schedules': {'enabled': True, 'max_pending': 9, 'autonomous': False},
                                   'proactive': None, 'transcribe_audio': False, 'persona_aliases': [],
                                   'relationships': {}, 'behavior_addendum': None}

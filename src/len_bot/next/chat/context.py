@@ -11,11 +11,11 @@ from zoneinfo import ZoneInfo
 
 from ..media.audio_store import AudioStore
 from ..config import LabConfig
-from .recap import project_history
+from .recap import ContextBudgetError, estimate_content, estimate_request, project_history
 from ..tools.discovery import DEFERRED_NAMES
 from ..learning.jargon_store import JargonStore
 from ..memory.service import MemoryService
-from ..platform.messages import ChatMessage, plain_text, render_message, render_text
+from ..platform.messages import ChatMessage, plain_text, render_batch, render_message, render_text
 from ..persona.profile import Persona, select_examples
 from .schedule import describe
 from ..tools.skills import Skill
@@ -63,7 +63,7 @@ def voice_prompt(config: LabConfig, persona: Persona, *, platform: bool) -> str:
 
 
 def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, platform: bool,
-                 skills: tuple[Skill, ...] = (), group_profile: str | None = None,
+                 skills: tuple[Skill, ...] = (),
                  external: list[dict] = ()) -> str:
     """Render the actual stable mind system text for this scene and outlet."""
     names = {tool["function"]["name"] for tool in allowed}
@@ -76,9 +76,6 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
         outlet=(PROMPTS / ("next_platform_outlet.md" if platform else
                            "next_simulated_outlet.md")).read_text().strip(),
     )
-    if group_profile is not None:
-        system += "\n" + Template((PROMPTS / "next_group_profile.md").read_text()).substitute(
-            profile=group_profile.strip())
     if "react" in names:
         system += "\n" + (PROMPTS / "next_react.md").read_text()
     if "schedule" in names:
@@ -134,7 +131,7 @@ def turn_state(config: LabConfig, store: Store, *, now: float,
                expression_style: str | None = None, recalled: str | None = None) -> dict:
     """Read the current scene's pending work and per-request reference material."""
     moment = datetime.fromtimestamp(now, ZoneInfo(config.timezone)).isoformat(timespec="seconds")
-    state = {"role": "user", "content": f"当前时间：{moment}"}
+    state = {"role": "user", "content": f"本轮开始时间：{moment}"}
     schedules = ScheduleStore(store).list_schedules(config.scene, limit=21)
     if schedules:
         state["content"] += "\n<未完成安排>\n" + "\n\n".join(
@@ -144,8 +141,9 @@ def turn_state(config: LabConfig, store: Store, *, now: float,
     tasks = TaskStore(store).list(config.scene, limit=21)
     if tasks:
         state["content"] += "\n<未完成工作>\n" + encode([
-            {"id": item.id, "requester": item.requester, "goal": item.goal,
-             "status": item.status, "question": item.question} for item in tasks[:20]]) + "\n</未完成工作>"
+            {"id": item.id, "requester": item.requester, "status": item.status,
+             **({"question": item.question} if item.question is not None else {})}
+            for item in tasks[:20]]) + "\n</未完成工作>"
         if len(tasks) > 20:
             state["content"] += "\n这里只列前20项；task可继续查看。"
     if config.voice_mode == "direct" and expression_style is not None:
@@ -168,43 +166,65 @@ class ChatContext:
         self.platform, self.memory = platform, memory
         self.voice_system = voice_prompt(config, persona, platform=platform)
         self.system: str
-        self._base_system: str
 
     def configure_tools(self, allowed: list[dict], external: list[dict], *, skills: tuple[Skill, ...]) -> None:
-        self._base_system = build_system(self.config, self.persona, allowed, platform=self.platform,
-                                         skills=skills, external=external)
-        self.system = self.profile_system(
-            None if self.memory is None else self.memory.group_profile(self.config.scene))
-
-    def profile_system(self, profile: str | None) -> str:
-        if profile is None:
-            return self._base_system
-        return self._base_system + "\n" + Template((PROMPTS / "next_group_profile.md").read_text()).substitute(
-            profile=profile.strip())
+        self.system = build_system(self.config, self.persona, allowed, platform=self.platform,
+                                   skills=skills, external=external)
 
     def voice_messages(self, arguments: SayArguments, *, quote: ChatMessage | None,
                        expression_style: str | None, selected: Sequence[dict]) -> list[dict]:
-        recent = self.store.recent_context_messages(self.config.scene)
-        messages = [{"role": "system", "content": self.voice_system},
-                    {"role": "user", "content": "<群聊对话稿>\n"
-                     + "\n".join(self.render(message) for message in recent) + "\n</群聊对话稿>"}]
+        scene = self.config.scene
+        required = {}
+        latest = next((message for message in self.store.iter_recent_context(scene) if not message.is_self), None)
+        mentioned = (None if arguments.mention is None else
+                     next(self.store.iter_recent_context(scene, sender=arguments.mention), None))
+        for message in (latest, mentioned, quote):
+            if message is None:
+                continue
+            required[message.id] = message
+            if message.reply_to is not None:
+                reply = self.store.find_message(scene, message.reply_to)
+                if reply is not None:
+                    required[reply.id] = reply
+        reference = []
         if expression_style is not None:
-            messages.append({"role": "user", "content": expression_style})
-        jargon = jargon_context(self.config, self.store, recent + ([] if quote is None else [quote]),
-                                intent=arguments.content)
-        if jargon is not None:
-            messages.append({"role": "user", "content": jargon})
+            reference.append({"role": "user", "content": expression_style})
         if selected:
-            messages.append({"role": "user", "content": Template(
+            reference.append({"role": "user", "content": Template(
                 (PROMPTS / "next_learned_expressions.md").read_text(),
             ).substitute(expressions=encode([
                 {"情境": item["situation"], "说法": item["style"]} for item in selected
             ]))})
-        messages.append({"role": "user", "content": encode({
+        intent = {"role": "user", "content": encode({
             "本轮表达意图与必要背景": arguments.content, "详略倾向": arguments.length,
-            "引用的实际原话": None if quote is None else self.render(quote),
+            "引用平台消息ID": arguments.reply_to,
             "平台已负责提及的QQ": arguments.mention,
-        })})
+        })}
+        binding = self.config.models.roles.voice
+
+        def assemble(chosen: dict[str, ChatMessage]) -> tuple[list[dict], int, int]:
+            recent = self.store.ordered_messages(scene, list(chosen))
+            transcript = self.batch(recent)
+            jargon = jargon_context(self.config, self.store, recent, intent=arguments.content)
+            messages = [{"role": "system", "content": self.voice_system},
+                        {"role": "user", "content": "<群聊对话稿>\n" + transcript + "\n</群聊对话稿>"},
+                        *reference, *([] if jargon is None else [{"role": "user", "content": jargon}]), intent]
+            return messages, estimate_content(transcript), estimate_request(messages, [], binding.max_output_tokens)
+
+        messages, recent_tokens, total = assemble(required)
+        if recent_tokens > self.config.voice_context_tokens or total > binding.context_window_tokens:
+            raise ContextBudgetError(
+                f"voice 必要原话估算 {recent_tokens}/{self.config.voice_context_tokens} token；"
+                f"含角色、意图、参考和输出的请求估算 {total}/{binding.context_window_tokens} token；"
+                "引用及回应材料未截断，未调用表达模型")
+        for message in self.store.iter_recent_context(scene):
+            if message.id in required:
+                continue
+            chosen = {**required, message.id: message}
+            candidate, recent_tokens, total = assemble(chosen)
+            if recent_tokens > self.config.voice_context_tokens or total > binding.context_window_tokens:
+                break
+            required, messages = chosen, candidate
         return messages
 
     def render(self, message: ChatMessage) -> str:
@@ -212,6 +232,14 @@ class ChatContext:
                  self.store.find_message(message.scene, message.reply_to))
         return render_message(message, timezone=self.config.timezone, reply=quote,
                               audio=AudioStore(self.store).captions(message.scene, message.platform_message_id))
+
+    def batch(self, messages: Sequence[ChatMessage], *, reason: str | None = None) -> str:
+        records = AudioStore(self.store)
+        return render_batch([
+            (message, None if message.reply_to is None else
+             self.store.find_message(message.scene, message.reply_to),
+             records.captions(message.scene, message.platform_message_id)) for message in messages
+        ], timezone=self.config.timezone, reason=reason)
 
     def render_text(self, message: ChatMessage) -> str:
         quote = (None if message.reply_to is None else
@@ -221,5 +249,7 @@ class ChatContext:
 
     async def project(self, recap: str | None, entries: list[tuple[int, dict]], state: dict) -> list[dict]:
         profile = None if self.memory is None else await self.memory.read_group_profile(self.config.scene)
-        self.system = self.profile_system(profile)
+        if profile is not None:
+            state = {**state, "content": state["content"] + "\n" + Template(
+                (PROMPTS / "next_group_profile.md").read_text()).substitute(profile=profile.strip())}
         return [{"role": "system", "content": self.system}] + project_history(recap, entries) + [state]

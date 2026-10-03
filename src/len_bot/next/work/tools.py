@@ -137,15 +137,48 @@ async def execute_tasks(service: WorkTasks, scene: str, name: str, args: dict) -
     """Validate one native call, then let the owning service check permissions."""
     if name == "delegate":
         parsed = DelegateArguments.model_validate(args)
-        return await service.delegate(
+        result = await service.delegate(
             scene, requester=parsed.requester, goal=parsed.goal,
             deliverable=parsed.deliverable, context=parsed.context, account_browser=parsed.account_browser,
             materials=parsed.materials, resources=parsed.resources,
         )
+        return task_summary(result, detail=True)
     if name != "task":
         raise ValueError(f"unknown task tool {name!r}")
     parsed = TaskArguments.model_validate(args)
-    return await perform_task_action(service, scene, parsed)
+    result = await perform_task_action(service, scene, parsed)
+    if parsed.action == "list":
+        return {"items": [task_summary(item, detail=False) for item in result["items"]],
+                "next_offset": result["next_offset"]}
+    if parsed.action in {"status", "continue", "cancel"}:
+        return task_summary(result, detail=True)
+    if parsed.action == 'outputs':
+        return {**result, 'registered_files': [delivery_summary(file) for file in result['registered_files']]}
+    return result
+
+
+def delivery_summary(file: dict) -> dict:
+    """Keep actual file identity and receipt state; raw upload frames stay in events."""
+    result = {key: file[key] for key in ('id', 'name', 'size', 'status', 'exists')}
+    if file['note'] is not None:
+        result['note'] = file['note']
+    upload = file['upload']
+    result['upload'] = None if upload is None else {
+        key: upload[key] for key in ('status', 'platform_file_id', 'error', 'created', 'ended')}
+    return result
+
+
+def task_summary(item: dict, *, detail: bool) -> dict:
+    """Model task view, without the panel's duplicated input and runtime settings."""
+    value = {key: item[key] for key in ("id", "requester", "goal", "status")}
+    for key in ("question", "summary", "error"):
+        if item[key] is not None:
+            value[key] = item[key]
+    if detail:
+        value.update({key: item[key] for key in (
+            "deliverable", "workspace_discard_requested", "account_browser", "browser_active")})
+        value['files'] = [delivery_summary(file) for file in item['files']]
+    return value
 
 
 async def perform_task_action(service: WorkTasks, scene: str, parsed: TaskArguments) -> dict:

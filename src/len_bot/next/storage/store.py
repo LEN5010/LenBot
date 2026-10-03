@@ -6,7 +6,8 @@ import json
 import math
 import sqlite3
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from itertools import islice
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -742,14 +743,28 @@ class Store:
 
     def recent_context_messages(self, scene: str, limit: int = 20) -> list[ChatMessage]:
         """Only inbound messages already batched for the mind, plus saved outbound."""
+        return list(reversed(list(islice(self.iter_recent_context(scene), limit))))
+
+    def iter_recent_context(self, scene: str, *, sender: str | None = None) -> Iterator[ChatMessage]:
+        """Newest consumed/outbound first, for token-bounded readers without a row cap."""
         rows = self.db.execute(
             "SELECT body FROM messages WHERE scene=? AND (raw IS NULL "
             "OR (json_extract(body,'$.is_self')=1 AND json_extract(body,'$.send_status')='sent') OR seq<="
             "COALESCE((SELECT last_message_seq FROM mind_sessions WHERE scene=?),0)) "
-            "ORDER BY seq DESC LIMIT ?",
-            (scene, scene, limit),
-        ).fetchall()
-        return [decode_message(row[0]) for row in reversed(rows)]
+            + ("AND json_extract(body,'$.sender.uid')=? " if sender is not None else "")
+            + "ORDER BY seq DESC",
+            (scene, scene) if sender is None else (scene, scene, sender),
+        )
+        for row in rows:
+            yield decode_message(row[0])
+
+    def ordered_messages(self, scene: str, ids: Sequence[str]) -> list[ChatMessage]:
+        """Keep original reception order, including equal or out-of-order platform clocks."""
+        rows = self.db.execute(
+            "SELECT body FROM messages WHERE scene=? AND json_extract(body,'$.id') IN "
+            "(SELECT value FROM json_each(?)) ORDER BY seq", (scene, encode(list(ids))),
+        )
+        return [decode_message(row[0]) for row in rows]
 
     def attention_sample(self, scene: str, limit: int = 20, *,
                          exclude_uids: Sequence[str] = ()) -> list[tuple[ChatMessage, float]]:
@@ -1132,6 +1147,16 @@ class Store:
             (scene,),
         ).fetchone()
         return None if row is None else json.loads(row[0])
+
+    def last_mind_usage(self, scene: str) -> tuple[dict, dict | None] | None:
+        """Reuse the last completed request; a failed latest call isn't a usage anchor."""
+        row = self.db.execute(
+            "SELECT request,usage,error,ended FROM model_calls WHERE scene=? AND role='mind' "
+            "AND plugin IS NULL ORDER BY id DESC LIMIT 1", (scene,),
+        ).fetchone()
+        if row is None or row['ended'] is None or row['error'] is not None:
+            return None
+        return json.loads(row['request']), None if row['usage'] is None else json.loads(row['usage'])
 
     def finish_pending_tools(self, scene: str, reason: str) -> None:
         # The only persisted pending work is the provider's native call/result group.

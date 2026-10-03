@@ -19,7 +19,7 @@ class Compaction(BaseModel):
     model_config = STRICT
 
     trigger_ratio: float = Field(default=0.6, gt=0, lt=1, allow_inf_nan=False)
-    keep_recent_entries: int = Field(default=30, ge=1)
+    keep_recent_tokens: int = Field(default=20000, gt=0, strict=True)
     max_output_tokens: int = Field(default=1024, gt=0)
 
 
@@ -248,6 +248,7 @@ class SceneSettings(ScenePersona):
     behavior_addendum: str | None = None
     persona: Path
     voice_mode: Literal["voice", "direct"] = "voice"
+    voice_context_tokens: int = Field(default=6000, gt=0, strict=True)
     attention: Attention = Field(default_factory=Attention)
     schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
     tasks: TaskSettings = Field(default_factory=TaskSettings)

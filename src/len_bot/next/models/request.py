@@ -5,8 +5,8 @@ from contextlib import nullcontext
 from typing import Literal, Protocol
 
 from ..config import SharedConfig
-from ..chat.recap import CompactionPlan, ContextBudgetError, estimate_request, estimate_text_request
-from .client import ChatModel, ModelProtocolError, ModelReply
+from ..chat.recap import CompactionPlan, ContextBudgetError, estimate_text_request
+from .client import ChatModel, ModelProtocolError, ModelReply, parse_token_usage
 from .slots import ModelSlots
 from .pricing import estimate_cost
 from ..storage.store import Store
@@ -22,6 +22,32 @@ class ChatRequest(Protocol):
                  expression_ids: list[int] | None = None) -> Awaitable[ModelReply]: ...
 
 
+def request_estimate(config: SharedConfig, store: Store, model: ChatModel, *, scene: str, role: str,
+                     messages: list[dict], tools: list[dict], output_tokens: int) -> tuple[int, str]:
+    """Actual prior input plus changed-material estimates, never cached-token discounts."""
+    estimated = estimate_text_request(messages, tools, output_tokens)
+    images = any(isinstance(message.get('content'), list) and any(
+        block['type'] == 'image_url' for block in message['content']) for message in messages)
+    if images:
+        return estimated, 'text_estimate_images_unknown'
+    previous = store.last_mind_usage(scene) if role == 'mind' else None
+    if previous is not None:
+        request, usage = previous
+        tokens = parse_token_usage(usage)
+        prefix = request['messages'][:-1]
+        same_binding = (request['provider'] == config.models.roles.mind.provider
+                        and request['settings'] == model.settings.model_dump(exclude={'api_key'}))
+        previous_images = any(isinstance(message.get('content'), list) and any(
+            block['type'] == 'image_url' for block in message['content']) for message in request['messages'])
+        if (tokens is not None and tokens.prompt_tokens is not None and same_binding
+                and not previous_images and request['tools'] == tools
+                and messages[:len(prefix)] == prefix):
+            old_estimate = estimate_text_request(request['messages'], tools, 0)
+            estimated = max(0, tokens.prompt_tokens + estimated - output_tokens - old_estimate) + output_tokens
+            return estimated, 'usage_assisted'
+    return estimated, 'utf8_bytes_estimate'
+
+
 async def request_model(config: SharedConfig, store: Store, model: ChatModel,
                         messages: list[dict], tools: list[dict], *, scene: str, role: str,
                         turn_id: str | None = None, plugin: str | None = None,
@@ -33,8 +59,8 @@ async def request_model(config: SharedConfig, store: Store, model: ChatModel,
                         notify: Callable[[], None] | None = None) -> ModelReply:
     binding = getattr(config.models.roles, "mind" if role == "recap" else role)
     tokens = binding.max_output_tokens if output_tokens is None else output_tokens
-    estimate = estimate_text_request if role == "vision" else estimate_request
-    estimated = estimate(messages, tools, tokens)
+    estimated, method = request_estimate(config, store, model, scene=scene, role=role,
+                                         messages=messages, tools=tools, output_tokens=tokens)
     if estimated > binding.context_window_tokens:
         scope = "文本部分" if role == "vision" else "请求"
         raise ContextBudgetError(
@@ -43,6 +69,7 @@ async def request_model(config: SharedConfig, store: Store, model: ChatModel,
     price = config.models.prices.get(binding.provider, {}).get(binding.model)
     async with (slots.slot(direct=direct, scene=scene) if slots is not None else nullcontext()):
         request = {"settings": settings, "messages": messages, "tools": tools, "provider": binding.provider,
+                   "estimate_method": method,
                    **({"expression_ids": expression_ids} if expression_ids is not None else {}),
                    "price": None if price is None else price.model_dump(mode="json"),
                    **({"estimated_text_tokens": estimated, "estimated_total_tokens": None} if role == "vision"

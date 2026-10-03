@@ -14,6 +14,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from .session import Chat
+from .recap import estimate_content, estimate_request
 from .scene_control import SceneControlArguments, TemporaryQuiet, require_control
 from ..models.limits import LimitReached
 from ..configuration.chat import Attention
@@ -359,7 +360,8 @@ class SceneRunner:
                 await asyncio.wait_for(self.changed.wait(), timeout=delay)
             except TimeoutError:
                 pass  # Recheck the wait deadline and any quiet interval that just ended.
-        return f"等待结束：实际等待 {time.monotonic() - started:.3f} 秒；{reason}。"
+        observed = datetime.fromtimestamp(self.now(), ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
+        return f"等待结束 {observed}：实际等待 {time.monotonic() - started:.3f} 秒；{reason}。"
 
     def ambient_interval(self) -> float:
         base, maximum = self.settings.ambient_min_interval_seconds, self.settings.ambient_max_interval_seconds
@@ -509,13 +511,25 @@ class SceneRunner:
                 pass  # The known burst/cooldown deadline has arrived.
 
     def batch(self, pending: list[tuple[int, ChatMessage, float]], reason: str) -> tuple[int, list[str]]:
-        contents = []
+        binding = self.config.models.roles.mind
+        available = (int(binding.context_window_tokens * self.config.compaction.trigger_ratio)
+                     - estimate_request([{"role": "system", "content": self.chat.context.system}],
+                                        self.chat.toolset.tools, binding.max_output_tokens)
+                     - self.config.compaction.max_output_tokens)
+        target = max(1, min(self.config.compaction.keep_recent_tokens, available))
+        contents, selected = [], []
+        text = ""
         for _, message, _ in pending:
-            content = self.chat.context.render(message) + f"（平台消息 ID：{message.platform_message_id}）"
-            if message.reply_to is not None:
-                content += f"（回复平台消息 ID：{message.reply_to}）"
-            contents.append(content)
-        contents[0] = reason + "\n" + contents[0]
+            candidate = self.chat.context.batch([*selected, message], reason=reason if not contents else None)
+            if selected and estimate_content(candidate) > target:
+                contents.append(text)
+                selected = [message]
+                text = self.chat.context.batch(selected)
+            else:
+                selected.append(message)
+                text = candidate
+        if selected:
+            contents.append(text)
         return pending[-1][0], contents
 
     def consumed_state(self) -> AttentionState:

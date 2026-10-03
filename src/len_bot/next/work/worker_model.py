@@ -197,11 +197,16 @@ class WorkerModelProxy:
             store = False
         else:
             store = None
+        output_tokens = inbound.get("max_completion_tokens", self.settings.max_output_tokens)
+        if type(output_tokens) is not int or not 0 < output_tokens <= self.settings.max_output_tokens:
+            raise WorkerModelError(
+                f"worker max_completion_tokens must be a positive integer <= "
+                f"{self.settings.max_output_tokens}; actual={output_tokens!r}")
         outgoing: dict[str, Any] = {
             "model": self.settings.model,
             "messages": messages,
             "temperature": self.settings.temperature,
-            "max_completion_tokens": self.settings.max_output_tokens,
+            "max_completion_tokens": output_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
@@ -222,7 +227,7 @@ class WorkerModelProxy:
         try:
             text_estimate = estimate_text_request(
                 [{"content": None, **message} for message in messages],
-                tools, self.settings.max_output_tokens,
+                tools, output_tokens,
             )
         except (KeyError, TypeError, ValueError) as error:
             raise WorkerModelError(f"invalid worker message content: {error}; "
