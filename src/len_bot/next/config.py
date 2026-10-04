@@ -104,7 +104,7 @@ class SharedConfig(BaseModel):
         asr = self.models.roles.asr
         if asr is not None and (asr.price is None or asr.price.currency != self.limits.currency):
             raise ValueError("日金额预算要求 ASR 显式配置同币种 price")
-        bindings = [getattr(self.models.roles, role) for role in ("mind","voice","vision","memory","worker","learner")]
+        bindings = [getattr(self.models.roles, role) for role in ("mind","vision","memory","worker","learner")]
         if isinstance(self.memory, LocalMemoryConfig) and self.memory.local.embedding is not None:
             bindings.append(self.memory.local.embedding)
         for binding in bindings:
@@ -183,15 +183,15 @@ class SharedConfig(BaseModel):
         return _valid_timezone(value)
 
     @model_validator(mode="after")
-    def mind_output_fits_compaction_trigger(self) -> SharedConfig:
+    def input_and_output_fit_window(self) -> SharedConfig:
         mind = self.models.roles.mind
         if self.compaction.max_output_tokens >= mind.context_window_tokens:
             raise ValueError("compaction.max_output_tokens must be less than mind.context_window_tokens")
-        trigger_tokens = mind.context_window_tokens * self.compaction.trigger_ratio
-        if mind.max_output_tokens >= trigger_tokens:
+        trigger_tokens = self.compaction.input_tokens
+        if trigger_tokens + mind.max_output_tokens > mind.context_window_tokens:
             raise ValueError(
-                "models.roles.mind.max_output_tokens must be less than "
-                "models.roles.mind.context_window_tokens * compaction.trigger_ratio"
+                "compaction.input_tokens + models.roles.mind.max_output_tokens must fit "
+                "models.roles.mind.context_window_tokens"
             )
         return self
 
@@ -229,7 +229,7 @@ class SharedConfig(BaseModel):
                 raise ValueError("history_import.source, history_import.backup and database must differ")
         return self
 
-    def model_settings(self, role: Literal["mind", "voice", "vision", "memory", "worker", "learner"]) -> ModelSettings:
+    def model_settings(self, role: Literal["mind", "vision", "memory", "worker", "learner"]) -> ModelSettings:
         binding = getattr(self.models.roles, role)
         if binding is None:
             raise ValueError(f"models.roles.{role} is not configured")

@@ -12,12 +12,12 @@ from len_bot.next.work.tools import execute_tasks
 
 
 def test_account_task_requires_root_owner_and_new_workspace(tmp_path: Path):
-    source = {
+    source = {"compaction": {"input_tokens": 2000},
         'mode':'isolated-multi','bot_qq':'90001','owner_qq':'70001','timezone':'UTC',
         'permissions':{'admins':['70003'],'blacklist':['70004']},
         'database':str(tmp_path/'state.db'),'onebot':{'mode':'forward_ws','ws_url':'ws://127.0.0.1:9'},
         'models':{'providers':{'fixture':{'api':'openai-chat','base_url':'http://127.0.0.1:9/v1','api_key':'fixture'}},
-                  'roles':{role:{'provider':'fixture','model':'fixture','context_window_tokens':65536} for role in ['mind','voice','worker']}},
+                  'roles':{role:{'provider':'fixture','model':'fixture','context_window_tokens':65536} for role in ['mind', 'worker']}},
         'scenes':{'group:80001':{'persona':str(tmp_path/'persona'),'permissions':{'whitelist':['70005']},'tasks':{'enabled':True,'owner':'70002'}}},
         'worker':{'docker_binary':'/usr/bin/false','docker_host':'unix:///private/tmp/unused.sock','image':'fixture',
                   'workspace_root':str(tmp_path/'work'),'runtime_root':str(tmp_path/'run'),'delivery_root':str(tmp_path/'out'),

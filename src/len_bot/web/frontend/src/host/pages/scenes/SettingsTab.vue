@@ -37,7 +37,7 @@ const timing = [
 
 function sceneBody(value, rows) {
   return {
-    timezone: value.timezone || null, voice_mode: value.voice_mode, voice_context_tokens: value.voice_context_tokens,
+    timezone: value.timezone || null, voice_mode: value.voice_mode,
     attention: value.attention,
     schedules: { enabled: value.schedules.enabled, max_pending: value.schedules.max_pending, autonomous: value.schedules.autonomous },
     proactive: value.proactive, transcribe_audio: value.transcribe_audio,
@@ -113,12 +113,7 @@ async function removeScene() {
         <section class="surface">
           <h2>回复方式</h2>
           <div class="form-grid">
-            <v-select v-model="draft.voice_mode" label="怎么组织回复" :items="[
-              { title: '先想再说（表达器润色）', value: 'voice' }, { title: '直接说', value: 'direct' }]"
-              hint="先想再说会多调用一次模型，口吻更稳定" persistent-hint />
-            <v-text-field :model-value="draft.voice_context_tokens" type="number" label="表达器近期原话预算（token）"
-              hint="完整保留引用及必要原话，再按预算补充近期记录" persistent-hint
-              @update:model-value="value => draft.voice_context_tokens = numberOrBlank(value)" />
+            <p>聊天模型根据完整上下文直接组织回复。</p>
             <v-text-field :model-value="draft.timezone ?? ''" label="本群时区" placeholder="和全局一致"
               hint="留空使用全局时区，例如 Asia/Shanghai" persistent-hint @update:model-value="value => draft.timezone = value || null" />
           </div>

@@ -12,11 +12,11 @@ from len_bot.next.storage.store import Store
 
 def config(root: Path):
     model={'provider':'fixture','model':'synthetic','context_window_tokens':4096}
-    source={'mode':'isolated-multi','bot_qq':'90001','owner_qq':'70001','timezone':'UTC','database':'state.db',
+    source={"compaction": {"input_tokens": 2000}, 'mode':'isolated-multi','bot_qq':'90001','owner_qq':'70001','timezone':'UTC','database':'state.db',
         'permissions':{'admins':['70002'],'whitelist':['70004'],'blacklist':['70005']},
         'onebot':{'mode':'forward_ws','ws_url':'ws://127.0.0.1:9'},
         'models':{'providers':{'fixture':{'api':'openai-chat','base_url':'http://127.0.0.1:9/v1','api_key':'unused'}},
-                  'roles':{'mind':model,'voice':model}},
+                  'roles':{'mind':model}},
         'scenes':{'group:80001':{'persona':'role','schedules':{'owner':'70006'}},
                   'private:70003':{'persona':'role'}}}
     (root/'lenbot.config.json').write_text(json.dumps(source))

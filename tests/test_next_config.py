@@ -30,7 +30,7 @@ from len_bot.web.auth import hash_password
 
 
 def _config(persona: str) -> dict:
-    return {
+    return {"compaction": {"input_tokens": 6000},
         "mode": "isolated",
         "scene": "group:80001",
         "bot_qq": "90001",
@@ -48,7 +48,7 @@ def _config(persona: str) -> dict:
             "roles": {
                 "mind": {"provider": "sample", "model": "sample-mind", "reasoning_effort": "high",
                          "context_window_tokens": 8192},
-                "voice": {"provider": "sample", "model": "sample-voice", "context_window_tokens": 4096},
+
             },
         },
     }
@@ -269,10 +269,10 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
 
     assert config.database == root / "data/isolated-chat.db"
     assert config.persona == external_persona
-    assert config.voice_mode == "voice" and config.max_steps == 8
+    assert config.voice_mode == "direct" and config.max_steps == 8
     assert config.onebot is None and config.delivery == "simulated"
     assert config.panel is None
-    assert config.compaction.trigger_ratio == 0.6
+    assert config.compaction.input_tokens == 6000
     assert config.compaction.keep_recent_tokens == 20000
     assert config.compaction.max_output_tokens == 1024
     assert config.text_delivery.max_chars == 300
@@ -311,12 +311,10 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.schedules.manage == ["owner", "admin", "group_manager"]
     assert config.schedules.autonomous is True
     assert config.models.roles.mind.context_window_tokens == 8192
-    assert config.models.roles.voice.context_window_tokens == 4096
     assert config.models.roles.vision is None
     assert config.models.prices == {}
     assert config.model_settings("mind").model == "sample-mind"
     assert config.model_settings("mind").reasoning_effort == "high"
-    assert config.model_settings("voice").model == "sample-voice"
     with pytest.raises(ValueError, match="models.roles.vision is not configured"):
         config.model_settings("vision")
     assert "context_window_tokens" not in config.model_settings("mind").model_dump()
@@ -417,7 +415,6 @@ def test_explicit_multiscene_host_roundtrips_and_derives_existing_scene_contract
     assert private.voice_mode == "direct" and private.schedules.owner == "80002"
     assert group.model_settings("mind").model == private.model_settings("mind").model == "sample-mind"
     assert group.model_settings("mind").reasoning_effort == "high"
-    assert group.model_settings("voice").model == private.model_settings("voice").model == "sample-voice"
     assert LabConfig.model_validate_json(group.model_dump_json()) == group
     assert LabConfig.model_validate_json(private.model_dump_json()) == private
     with pytest.raises(ValueError, match="group:99999.*not configured"):
@@ -464,7 +461,6 @@ def test_host_learning_binding_and_group_settings_roundtrip_without_changing_oth
     assert host.models.roles.learner.model == "sample-learner"
     assert host.model_settings("learner").model == "sample-learner"
     assert host.model_settings("mind").model == "sample-mind"
-    assert host.model_settings("voice").model == "sample-voice"
     assert host.scenes["group:80001"].learning == LearningSettings(
         min_messages=8, batch_size=24, idle_seconds=20.5,
         max_age_seconds=120.0, auto_adopt=False,
@@ -833,7 +829,7 @@ def test_evaluation_profiles_and_sets_resolve_once_from_single_lab_root(tmp_path
     source = _config("personas/example")
     source["evaluation"] = {
         "profiles": {
-            "same-model_voice": {"voice_mode": "voice"},
+            "same-model_voice": {"voice_mode": 'direct'},
             "same-model-direct": {"voice_mode": "direct"},
         },
         "sets": {
@@ -847,7 +843,7 @@ def test_evaluation_profiles_and_sets_resolve_once_from_single_lab_root(tmp_path
 
     assert config.evaluation is not None
     assert list(config.evaluation.profiles) == ["same-model_voice", "same-model-direct"]
-    assert config.evaluation.profiles["same-model_voice"].voice_mode == "voice"
+    assert config.evaluation.profiles["same-model_voice"].voice_mode == "direct"
     assert config.evaluation.profiles["same-model-direct"].voice_mode == "direct"
     assert config.evaluation.sets == {
         "coherence": root / "cases/coherence.json", "external-set": external,
@@ -856,7 +852,6 @@ def test_evaluation_profiles_and_sets_resolve_once_from_single_lab_root(tmp_path
     assert config.evaluation.repetitions == 3
     assert config.evaluation.case_timeout_seconds == 300.0
     assert config.models.roles.mind.model == "sample-mind"
-    assert config.models.roles.voice.model == "sample-voice"
     assert LabConfig.model_validate_json(config.model_dump_json()) == config
 
 
@@ -902,7 +897,7 @@ def test_evaluation_configuration_rejects_invalid_values(tmp_path, change, field
     root = tmp_path / "isolated"
     source = _config("personas/example")
     source["evaluation"] = {
-        "profiles": {"valid": {"voice_mode": "voice"}},
+        "profiles": {"valid": {"voice_mode": 'direct'}},
         "sets": {"coherence": "cases/coherence.json"},
     }
     change(source["evaluation"])
@@ -921,7 +916,7 @@ def test_evaluation_selection_names_are_single_ascii_path_segments(tmp_path, fie
     root = tmp_path / "isolated"
     source = _config("personas/example")
     source["evaluation"] = {
-        "profiles": {"valid": {"voice_mode": "voice"}},
+        "profiles": {"valid": {"voice_mode": 'direct'}},
         "sets": {"coherence": "cases/coherence.json"},
     }
     source["evaluation"][field][name] = (
@@ -938,7 +933,7 @@ def test_evaluation_output_must_resolve_inside_instance_root(tmp_path, runs):
     root = tmp_path / "isolated"
     source = _config("personas/example")
     source["evaluation"] = {
-        "profiles": {"valid": {"voice_mode": "voice"}},
+        "profiles": {"valid": {"voice_mode": 'direct'}},
         "sets": {"coherence": "cases/coherence.json"},
         "runs_directory": runs,
     }
@@ -951,7 +946,7 @@ def test_host_does_not_accept_evaluation_configuration(tmp_path):
     root = tmp_path / "host"
     source = _host_config()
     source["evaluation"] = {
-        "profiles": {"voice": {"voice_mode": "voice"}},
+        "profiles": {"voice": {"voice_mode": 'direct'}},
         "sets": {"coherence": "cases/coherence.json"},
     }
     _write_config(root, source)
@@ -1488,7 +1483,6 @@ def test_web_read_configuration_is_optional_and_roundtrips(tmp_path, value):
         assert config.web_read.timeout_seconds == value.get("timeout_seconds", 20)
     assert config.model_settings("mind").model == "sample-mind"
     assert config.model_settings("mind").reasoning_effort == "high"
-    assert config.model_settings("voice").model == "sample-voice"
     assert LabConfig.model_validate_json(config.model_dump_json()) == config
 
 
@@ -1545,7 +1539,6 @@ def test_explicit_vision_binding_and_image_limits_roundtrip_without_changing_oth
     assert vision.timeout_seconds == 15.0 and vision.reasoning_effort == "low"
     assert config.model_settings("mind").model == "sample-mind"
     assert config.model_settings("mind").reasoning_effort == "high"
-    assert config.model_settings("voice").model == "sample-voice"
     assert LabConfig.model_validate_json(config.model_dump_json()) == config
     assert "synthetic-image-secret" not in repr(config)
 
@@ -1758,21 +1751,15 @@ def test_quiet_hours_reject_invalid_configuration(tmp_path, quiet, field):
         (lambda source: source.update(database="../legacy.db"), "database"),
         (lambda source: source.update(max_steps=0), "max_steps"),
         (lambda source: source.update(extra_runtime_flag=True), "extra_runtime_flag"),
-        (lambda source: source["models"]["roles"]["voice"].update(provider="missing"), "voice.provider"),
         (lambda source: source["models"]["roles"]["mind"].update(reasoning_effort=" "), "reasoning_effort"),
         (lambda source: source["models"]["roles"]["mind"].pop("context_window_tokens"), "context_window_tokens"),
-        (lambda source: source["models"]["roles"]["voice"].update(context_window_tokens=0), "context_window_tokens"),
-        (lambda source: source["models"]["roles"]["voice"].update(context_window_tokens=True), "context_window_tokens"),
-        (lambda source: source["models"]["roles"]["voice"].update(max_output_tokens=4096), "max_output_tokens"),
-        (lambda source: source["models"]["roles"]["mind"].update(max_output_tokens=5000), "compaction.trigger_ratio"),
-        (lambda source: source.update(compaction={"trigger_ratio": 0.1}), "compaction.trigger_ratio"),
-        (lambda source: source.update(compaction={"trigger_ratio": 1}), "trigger_ratio"),
-        (lambda source: source.update(compaction={"trigger_ratio": "0.6"}), "trigger_ratio"),
+        (lambda source: source["models"]["roles"]["mind"].update(max_output_tokens=5000), "compaction.input_tokens"),
+        (lambda source: source.update(compaction={"input_tokens": 0.1}), "compaction.input_tokens"),
+        (lambda source: source.update(compaction={"input_tokens": 8192}), "input_tokens"),
+        (lambda source: source.update(compaction={"input_tokens": "0.6"}), "input_tokens"),
         (lambda source: source.update(compaction={"keep_recent_tokens": 0}), "keep_recent_tokens"),
         (lambda source: source.update(compaction={"keep_recent_tokens": 30.0}), "keep_recent_tokens"),
         (lambda source: source.update(compaction={"keep_recent_entries": 30}), "keep_recent_entries"),
-        (lambda source: source.update(voice_context_tokens=0), "voice_context_tokens"),
-        (lambda source: source.update(voice_context_tokens=True), "voice_context_tokens"),
         (lambda source: source.update(compaction={"max_output_tokens": 0}), "max_output_tokens"),
         (lambda source: source.update(compaction={"max_output_tokens": 100000}), "compaction.max_output_tokens"),
         (lambda source: source.update(compaction={"unknown": True}), "unknown"),
@@ -2179,3 +2166,31 @@ def test_proactive_requires_actual_reply_judgments(tmp_path):
     _write_config(tmp_path / "host", source)
     with pytest.raises(ValueError, match='requires learning.reply_effects'):
         load_host_config(tmp_path / "host")
+
+
+def test_large_output_keeps_a_separate_soft_input_budget(tmp_path):
+    source = _config('personas/example')
+    source['models']['roles']['mind'].update(context_window_tokens=1048576, max_output_tokens=32768,
+                                           history_policy='antigravity-chat')
+    source['compaction'] = {'input_tokens': 180000, 'keep_recent_tokens': 100000, 'max_output_tokens': 8192}
+    root = tmp_path / 'large'
+    _write_config(root, source)
+    config = load_config(root)
+    assert config.compaction.input_tokens == 180000
+    source['models']['roles']['mind']['max_output_tokens'] = 65536
+    (root / 'lenbot.config.json').write_text(json.dumps(source))
+    assert load_config(root).compaction.input_tokens == 180000
+    source['models']['roles']['mind']['context_window_tokens'] = 200000
+    (root / 'lenbot.config.json').write_text(json.dumps(source))
+    with pytest.raises(ValueError, match='input_tokens.*max_output_tokens must fit'):
+        load_config(root)
+
+
+@pytest.mark.parametrize('policy', ['unknown', True])
+def test_history_projection_policy_is_explicit_not_provider_inference(tmp_path, policy):
+    source = _config('personas/example')
+    source['models']['roles']['mind']['history_policy'] = policy
+    root = tmp_path / 'policy'
+    _write_config(root, source)
+    with pytest.raises(ValueError, match='history_policy'):
+        load_config(root)

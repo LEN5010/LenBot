@@ -173,8 +173,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
             "persona": {"id": chat.persona.id, "name": chat.persona.name},
             "delivery": config.delivery,
             "voice_mode": config.scenes[scene].voice_mode,
-            "models": {"mind": config.models.roles.mind.model,
-                       "voice": config.models.roles.voice.model},
+            "models": {"mind": config.models.roles.mind.model},
             "messages": [
                 {"seq": seq, "rendered": chat.context.render(message), "text": chat.context.render_text(message), **asdict(message),
                  "images": runtime.store.message_media(scene, seq)}

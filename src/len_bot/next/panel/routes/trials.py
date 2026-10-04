@@ -70,7 +70,7 @@ class Trial:
                 'persona': self.session.chat.persona.name,
                 'persona_source': self.persona_source,
                 'draft_path': str(self.root / 'persona-draft') if self.persona_source == 'draft' else None,
-                'models': {'mind': self.config.models.roles.mind.model, 'voice': self.config.models.roles.voice.model}}
+                'models': {'mind': self.config.models.roles.mind.model}}
 
     def snapshot(self) -> dict:
         return self.session.snapshot() if self.final_state is None else self.final_state
@@ -210,12 +210,11 @@ class HostTrials:
                     intro = (Path(__file__).resolve().parents[3] / 'prompts' / 'next_trial_context.md').read_text()
                     store.append(scene, {'role': 'user', 'content': intro + '\n\n' + '\n'.join(context)})
                 mind = await stack.enter_async_context(ChatModel(config.model_settings('mind')))
-                voice = await stack.enter_async_context(ChatModel(config.model_settings('voice')))
                 vision = (None if config.models.roles.vision is None else
                           await stack.enter_async_context(ChatModel(config.model_settings('vision'))))
                 local_memory = await stack.enter_async_context(open_memory(config, store,
                     active_personas={scene: persona.id}, slots=self.runtime.chats[scene].slots))
-                session = PanelSession(config, store, mind, voice, vision=vision, memory=local_memory,
+                session = PanelSession(config, store, mind, vision=vision, memory=local_memory,
                                        persona=persona, slots=self.runtime.chats[scene].slots)
                 trial = Trial(root.name, scene, root, time.time(), config, session, stack, excluded, context,
                               persona_source='running' if persona_draft is None else 'draft')

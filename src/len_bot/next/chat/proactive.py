@@ -139,11 +139,13 @@ class ProactiveStore:
         return pending
 
     def next_at(self, scene: str, settings: Proactive, timezone: str, quiet: QuietHours | None,
-                now: float, exclude_uids: tuple[str, ...]) -> tuple[float | None, str]:
+                now: float, exclude_uids: tuple[str, ...], observed_since: float | None = None) -> tuple[float | None, str]:
         """Return the earliest allowed wake time at or after ``now`` and why it is that time."""
         idle_since = self.last_activity(scene, exclude_uids)
         if idle_since is None:
             return None, "本群还没有可计算安静时长的消息"
+        if observed_since is not None:
+            idle_since = max(idle_since, observed_since)
         at, reason = max(now, idle_since + settings.idle_seconds), "安静时长达到设定值"
         pause = self.pause(scene)
         if pause is not None and pause["until"] > at:

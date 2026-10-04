@@ -67,6 +67,10 @@ def parse_notice(raw: dict) -> Notice | None:
         datetime.fromtimestamp(moment, timezone.utc)
     except (ValueError, OverflowError, OSError) as error:
         raise ValueError(f"OneBot notice invalid time: {error}; raw={repr(raw)[:300]}") from error
+    if kind == "group_ban":
+        duration = raw.get("duration")
+        if (sub_type not in {"ban", "lift_ban"} or type(duration) is not int or duration < 0):
+            raise ValueError(f"OneBot group_ban invalid sub_type/duration: {repr(raw)[:300]}")
     if kind in {"group_recall", "friend_recall"}:
         _id(raw.get("message_id"), "message_id")
     ids = {}

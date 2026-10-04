@@ -178,7 +178,7 @@ class MemoryTransferSettings(BaseModel):
 class EvaluationProfile(BaseModel):
     model_config = STRICT
 
-    voice_mode: Literal["voice", "direct"]
+    voice_mode: Literal["direct"]
 
 
 class EvaluationSettings(BaseModel):

@@ -31,12 +31,12 @@ def _root(root):
     for name, content in [('voice.md', '简短'), ('boundaries.md', '正常'), ('examples.yaml', '[]')]:
         (role / name).write_text(content)
     source = dict(
-        mode='isolated-multi', bot_qq='70001', timezone='Asia/Shanghai', database='state.db',
+        compaction={"input_tokens": 2000}, mode='isolated-multi', bot_qq='70001', timezone='Asia/Shanghai', database='state.db',
         delivery='simulated', onebot={'mode': 'forward_ws', 'ws_url': 'ws://127.0.0.1:9/unused'},
         models={'providers': {'offline': {'api': 'openai-chat', 'base_url': 'http://127.0.0.1:9/v1',
                                           'api_key': 'unused-placeholder'}},
                 'roles': {name: {'provider': 'offline', 'model': name, 'context_window_tokens': 16384}
-                          for name in ['mind', 'voice']}},
+                          for name in ['mind']}},
         memory={'backend': 'local', 'local': {'directory': 'memory'}},
         retention={'message_days': {SCENE: 1}}, scenes={SCENE: {'persona': 'role'}})
     (root / 'lenbot.config.json').write_text(json.dumps(source))
@@ -79,10 +79,9 @@ def test_transfer_preserves_exclusions_after_retention(tmp_path, initialize_curs
                                     store=store, active_personas={SCENE: 'fixture'})
             await service.write(SCENE, 'events/meeting.md', '读书会旧记录', '确认内容')
             await service.delete(SCENE, 'events/meeting.md', '明确遗忘', forget=True, exclude_records=[1])
-            async with ChatModel(config.model_settings('mind')) as mind, \
-                    ChatModel(config.model_settings('voice')) as voice:
+            async with ChatModel(config.model_settings('mind')) as mind:
                 runtime = NetworkRuntime(config, [(config.scene_config(SCENE), load_persona(tmp_path / 'role'))],
-                                         store, mind, voice, memory=service)
+                                         store, mind, memory=service)
                 store.new_context(SCENE)
                 assert runtime.retention.batch()['messages'] == 1
             assert store.read_message(SCENE, 1) is None

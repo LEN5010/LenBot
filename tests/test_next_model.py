@@ -186,10 +186,12 @@ def test_model_settings_reject_invalid_config_at_named_field(field, value):
 
 
 @pytest.mark.asyncio
-async def test_loopback_replay_sends_native_tool_continuation_without_retry():
+@pytest.mark.parametrize("policy", ["native", "antigravity-chat"])
+async def test_loopback_replay_sends_native_tool_continuation_without_retry(tmp_path, policy):
     recorded = recorded_response()
     recorded_text = recorded_text_response()
     requests = []
+    recorded["choices"][0]["message"]["provider_continuation"] = {"signature": "synthetic-opaque"}
 
     async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         headers = await reader.readuntil(b"\r\n\r\n")
@@ -224,15 +226,33 @@ async def test_loopback_replay_sends_native_tool_continuation_without_retry():
         assert settings.timeout_seconds == 60
         tools = [{"type": "function", "function": {"name": "read_validation_document", "parameters": {"type": "object"}}}]
         messages = [{"role": "user", "content": "Read the document"}]
+        from len_bot.next.config import LabConfig
+        from len_bot.next.storage.store import Store
+        from len_bot.next.models.request import request_model
+        config = LabConfig.model_validate_json(json.dumps({
+            "mode": "isolated", "scene": "group:80001", "bot_qq": "90001", "timezone": "UTC",
+            "database": str(tmp_path / "chat.sqlite3"), "persona": str(tmp_path / "persona"),
+            "models": {"providers": {"fixture": {"api": settings.api, "base_url": settings.base_url,
+                                               "api_key": settings.api_key}},
+                       "roles": {"mind": {"provider": "fixture", "model": settings.model,
+                           "context_window_tokens": 200000, "history_policy": policy,
+                           "reasoning_effort": "high"}}},
+        }))
         async with ChatModel(settings) as model:
-            first = await model.complete(messages, tools)
-            continuation = messages + [first.message, {
-                "role": "tool", "tool_call_id": first.tool_calls[0].id, "content": "document excerpt",
-            }]
-            second = await model.complete(continuation, tools, max_output_tokens=512)
-            await model.complete(continuation + [second.message, {
-                "role": "user", "content": "continue",
-            }], tools)
+            with Store(config.database) as store:
+                turn = store.start_turn(config.scene)
+                first = await request_model(config, store, model, messages, tools,
+                                            scene=config.scene, role="mind", turn_id=turn)
+                continuation = messages + [first.message, {
+                    "role": "tool", "tool_call_id": first.tool_calls[0].id, "content": "document excerpt",
+                }]
+                second = await request_model(config, store, model, continuation, tools,
+                    scene=config.scene, role="mind", turn_id=turn, output_tokens=512)
+                await request_model(config, store, model, continuation + [second.message, {
+                    "role": "user", "content": "continue",
+                }], tools, scene=config.scene, role="mind", turn_id=turn)
+                raw = json.loads(store.db.execute("SELECT response FROM model_calls ORDER BY id LIMIT 1").fetchone()[0])
+                assert raw["raw"] == recorded
         assert settings.max_output_tokens == 1024
 
     assert len(requests) == 3
@@ -247,11 +267,23 @@ async def test_loopback_replay_sends_native_tool_continuation_without_retry():
     assert requests[2][2]["max_completion_tokens"] == 1024
     assert first_payload["reasoning_effort"] == "high"
     assert first_payload["tools"] == tools
-    assert requests[1][2]["messages"][1] == recorded["choices"][0]["message"]
+    native = recorded["choices"][0]["message"]
+    assert requests[1][2]["messages"][1] == {key: value for key, value in native.items()
+        if policy == "native" or key != "reasoning_content"}
+    assert requests[1][2]["messages"][1]["provider_continuation"] == {"signature": "synthetic-opaque"}
+    if policy == "antigravity-chat":
+        assert all(headers["session-id"] == requests[0][1]["session-id"] for _, headers, _ in requests)
+    else:
+        assert all("session-id" not in headers for _, headers, _ in requests)
     assert requests[1][2]["messages"][2]["tool_call_id"] == first.tool_calls[0].id
-    assert requests[2][2]["messages"][-2] == recorded_text["choices"][0]["message"]
+    native = recorded_text["choices"][0]["message"]
+    assert requests[2][2]["messages"][-2] == {key: value for key, value in native.items()
+        if policy == "native" or key != "reasoning_content"}
     assert requests[2][2]["messages"][-2]["tool_calls"] is None
-    assert requests[2][2]["messages"][-2]["reasoning_content"] == "[redacted]"
+    if policy == "native":
+        assert requests[2][2]["messages"][-2]["reasoning_content"] == "[redacted]"
+    else:
+        assert "reasoning_content" not in requests[2][2]["messages"][-2]
 
 
 @pytest.mark.asyncio

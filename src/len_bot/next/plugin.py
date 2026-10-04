@@ -101,7 +101,7 @@ class Mention:
 
 
 Content = Text | Image | Mention
-GenerationRole = Literal["mind", "voice", "learner"]
+GenerationRole = Literal["mind", "learner"]
 
 
 

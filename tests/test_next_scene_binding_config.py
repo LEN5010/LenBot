@@ -20,7 +20,7 @@ def test_scene_bindings_validate_before_save_and_keep_running_snapshot(tmp_path)
         'bot_qq': '90001', 'owner_qq': '70001', 'timezone': 'UTC', 'delivery': 'simulated',
         'onebot': {'mode': 'forward_ws', 'ws_url': 'ws://127.0.0.1:9'},
         'provider': {'api': 'openai-chat', 'base_url': 'http://127.0.0.1:9/v1', 'api_key': 'synthetic-unused'},
-        'mind': binding, 'voice': binding, 'scene': 'group:80001', 'persona_id': 'fixture',
+        'compaction': {'input_tokens': 6000}, 'mind': binding,  'scene': 'group:80001', 'persona_id': 'fixture',
         'persona_name': '合成角色', 'brief': '合成资料', 'voice_text': '简短', 'boundaries': '',
         'panel_port': 8088, 'username': 'fixture', 'password': 'synthetic-password',
     })))
@@ -28,8 +28,8 @@ def test_scene_bindings_validate_before_save_and_keep_running_snapshot(tmp_path)
     config = load_host_config(tmp_path)
     async def run():
         with Store(config.database) as store:
-            async with ChatModel(config.model_settings('mind')) as mind, ChatModel(config.model_settings('voice')) as voice:
-                runtime = NetworkRuntime(config, [(config.scene_config('group:80001'), load_persona(config.scenes['group:80001'].persona))], store, mind, voice)
+            async with ChatModel(config.model_settings('mind')) as mind:
+                runtime = NetworkRuntime(config, [(config.scene_config('group:80001'), load_persona(config.scenes['group:80001'].persona))], store, mind)
                 app = create_app(config, runtime, root=tmp_path)
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as client:
                     endpoint = '/api/host/settings/scenes'
@@ -43,7 +43,7 @@ def test_scene_bindings_validate_before_save_and_keep_running_snapshot(tmp_path)
                     assert (await client.post('/api/auth/login', json={'username': 'fixture', 'password': 'synthetic-password'})).status_code == 200
                     processing = (await client.get('/api/host/settings')).json()['saved']['processing']
                     before_processing = (tmp_path/'lenbot.config.json').read_bytes()
-                    invalid = json.loads(json.dumps(processing)); invalid['compaction']['trigger_ratio'] = 1
+                    invalid = json.loads(json.dumps(processing)); invalid['compaction']['input_tokens'] = 100000000
                     assert (await client.put('/api/host/settings/processing', json=invalid)).status_code == 422
                     invalid = json.loads(json.dumps(processing)); invalid['logging'] = {'directory': '../outside', 'retention_days': 14, 'level': 'INFO'}
                     assert (await client.put('/api/host/settings/processing', json=invalid)).status_code == 422

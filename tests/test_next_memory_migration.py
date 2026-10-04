@@ -135,13 +135,13 @@ def _root(tmp_path: Path) -> Path:
     for name, content in (("voice.md", "简短"), ("boundaries.md", "合成"), ("examples.yaml", "[]")):
         (role / name).write_text(content)
     _legacy_source(root / "legacy.sqlite3")
-    source = dict(mode="isolated-multi", bot_qq="90001", timezone="Asia/Shanghai", database="state.db",
+    source = dict(compaction={"input_tokens": 2000}, mode="isolated-multi", bot_qq="90001", timezone="Asia/Shanghai", database="state.db",
                   delivery="simulated",
                   onebot={"mode": "forward_ws", "ws_url": "ws://127.0.0.1:9/unused", "access_token": "synthetic"},
                   models={"providers": {"local": {"api": "openai-chat", "base_url": "http://127.0.0.1:9/v1",
                                                   "api_key": "synthetic"}},
                           "roles": {name: {"provider": "local", "model": name, "context_window_tokens": 16384}
-                                    for name in ("mind", "voice")}},
+                                    for name in ("mind",)}},
                   memory={"backend": "local", "local": {"directory": "memory"}},
                   history_import={"source": "legacy.sqlite3", "backup": "backup.sqlite3", "scenes": ["group:80001"]},
                   scenes={"group:80001": {"persona": "role"}})

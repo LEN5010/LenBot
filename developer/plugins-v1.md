@@ -109,7 +109,7 @@ await ctx.reply(text)
 task = await ctx.delegate("整理刚才的活动", "CSV 文件", context="实际活动记录")
 ```
 
-`generate` 的 role 只能是现有 `mind`、`voice`、`learner` 用途绑定；未配置的用途直接报错，不换模型。`PluginContext.generate` 需先传 scene。调用复用 ModelSlots、原有预算及用量记录，插件来源写进 `model_calls.plugin`，没有虚假的聊天 turn。完整系统提示与输入由插件提供，宿主不自动注入角色或历史。
+`generate` 的 role 只能是现有 `mind`、`learner` 用途绑定；未配置的用途直接报错，不换模型。`PluginContext.generate` 需先传 scene。调用复用 ModelSlots、原有预算及用量记录，插件来源写进 `model_calls.plugin`，没有虚假的聊天 turn。完整系统提示与输入由插件提供，宿主不自动注入角色或历史。
 
 `Invocation.delegate` 参数为 goal、deliverable，以及可选 context、materials（本场景共享资料文件名列表）。通知、cron 和没有触发消息的工具上下文不能委派；不传伪造的 requester。任务沿既有场景、发送者权限及角色技能许可执行。返回只表示已接单，结果事件由宿主回到群会话；不要用 `wait` 轮询占住聊天。
 

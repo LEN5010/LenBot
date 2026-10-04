@@ -14,8 +14,7 @@ import DevOnly from '../../components/DevOnly.vue'
 import LimitsSection from './LimitsSection.vue'
 
 const roles = [
-  ['mind', '大脑', '决定说不说、说什么、用哪些工具。运行中不能更换，需要先停止 LenBot', true],
-  ['voice', '表达器', '把大脑的意思写成角色口吻的台词', true],
+  ['mind', '大脑', '决定说不说、说什么、用哪些工具。结合完整上下文决定回应、台词和工具；更换绑定前需停机', true],
   ['vision', '看图', '看懂群里发的图片', false],
   ['memory', '本地记忆整理', '供本地记忆后端整理与摘要；OpenViking 使用服务自身配置的模型，不使用此绑定', false],
   ['learner', '学习', '学习群里的说话方式、黑话和表情', false],
@@ -66,7 +65,7 @@ function addProvider() {
 }
 function toggleRole(name, value) {
   draft.value.roles[name] = value ? { provider: providerNames.value[0] || '', model: '', context_window_tokens: 128000,
-    temperature: 0.6, max_output_tokens: 1024, timeout_seconds: 60, reasoning_effort: null } : null
+    temperature: 0.6, max_output_tokens: 1024, timeout_seconds: 60, reasoning_effort: null, history_policy: 'native' } : null
 }
 function toggleAsr(value) {
   draft.value.roles.asr = value ? { api: 'openai-audio', provider: providerNames.value[0] || '', model: '', timeout_seconds: 60, language: null, price: null } : null
@@ -122,6 +121,9 @@ const amounts = value => Object.entries(value || {}).map(([currency, amount]) =>
                 @update:model-value="value => draft.roles[name].context_window_tokens = numberOrBlank(value)" />
             </div>
             <AdvancedFields>
+              <v-select v-model="draft.roles[name].history_policy" label="历史续接协议"
+                :items="[{ title: '原生保留', value: 'native' }, { title: '已核对的 Antigravity 聊天路由', value: 'antigravity-chat' }]"
+                hint="仅在确认路由自行保持签名续接时选择后者；该模式省去可读 reasoning_content" persistent-hint />
               <v-text-field :model-value="draft.roles[name].max_output_tokens" type="number" label="最长输出（token）"
                 @update:model-value="value => draft.roles[name].max_output_tokens = numberOrBlank(value)" />
               <v-text-field :model-value="draft.roles[name].temperature" type="number" step="0.1" label="温度" hint="越高越随机" persistent-hint

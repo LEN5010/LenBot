@@ -34,7 +34,7 @@ def panel_config(panel_root):
     (persona / "voice.md").write_text("简短。", encoding="utf-8")
     (persona / "boundaries.md").write_text("仅限测试。", encoding="utf-8")
     (persona / "examples.yaml").write_text("[]\n", encoding="utf-8")
-    config = {
+    config = {"compaction": {"input_tokens": 2000},
         "mode": "isolated",
         "scene": "group:80001",
         "bot_qq": "90001",
@@ -54,8 +54,7 @@ def panel_config(panel_root):
             "roles": {
                 "mind": {"provider": "local", "model": "synthetic-mind",
                          "context_window_tokens": 8192},
-                "voice": {"provider": "local", "model": "synthetic-voice",
-                          "context_window_tokens": 4096},
+
             },
         },
     }

@@ -117,6 +117,7 @@ class SceneRunner:
         self.execution = asyncio.Lock()
         self.chat = chat
         self.connected_since = connected_since
+        self.started_at = chat.now()
         self.now = chat.now
         self.store, self.config = chat.store, chat.config
         self.settings = self.config.attention
@@ -512,9 +513,9 @@ class SceneRunner:
 
     def batch(self, pending: list[tuple[int, ChatMessage, float]], reason: str) -> tuple[int, list[str]]:
         binding = self.config.models.roles.mind
-        available = (int(binding.context_window_tokens * self.config.compaction.trigger_ratio)
+        available = (self.config.compaction.input_tokens
                      - estimate_request([{"role": "system", "content": self.chat.context.system}],
-                                        self.chat.toolset.tools, binding.max_output_tokens)
+                                        self.chat.toolset.tools, 0)
                      - self.config.compaction.max_output_tokens)
         target = max(1, min(self.config.compaction.keep_recent_tokens, available))
         contents, selected = [], []
@@ -687,13 +688,19 @@ class SceneRunner:
         if result["status"] == "limited" and channel == "direct":
             await self.limit_notice(LimitReached(result["error"], result["limit_until"]))
 
+    def observed_since(self) -> float | None:
+        return self.started_at if self.config.delivery == "simulated" else self.connected_since()
+
     def proactive_times(self) -> tuple[float | None, float | None]:
         """Close finished observations; return the next allowed wake and the next observation end."""
         now = self.now()
         exclude = tuple(self.settings.other_bot_qqs)
+        if self.observed_since() is None:
+            return None, None
         observe_until = self.proactive.settle(self.config.scene, now)
         wake_at, _ = self.proactive.next_at(self.config.scene, self.config.proactive, self.config.timezone,
-                                            self.settings.quiet_hours, now, exclude)
+                                            self.settings.quiet_hours, now, exclude,
+                                            observed_since=self.observed_since())
         temporary = self.state.temporary_quiet
         if wake_at is not None and temporary is not None and now < temporary.until:
             wake_at = max(wake_at, temporary.until)
@@ -709,7 +716,8 @@ class SceneRunner:
             now = self.now()
             if wake_at is None or wake_at > now:
                 return
-            idle_since = self.proactive.last_activity(self.config.scene, tuple(self.settings.other_bot_qqs))
+            idle_since = max(self.observed_since(),
+                             self.proactive.last_activity(self.config.scene, tuple(self.settings.other_bot_qqs)))
             zone = ZoneInfo(self.config.timezone)
             local = datetime.fromtimestamp(now, zone)
             text = Template(PROACTIVE_PROMPT.read_text(encoding="utf-8")).substitute(

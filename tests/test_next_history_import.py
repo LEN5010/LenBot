@@ -43,7 +43,7 @@ def _source(path: Path, events: list[dict]) -> None:
 
 def _instance(root: Path, source: Path, scenes: list[str], *, backup: str = "pre-import.sqlite3") -> Path:
     (root / "persona").mkdir(exist_ok=True)
-    config = {
+    config = {"compaction": {"input_tokens": 2000},
         "mode": "isolated-multi", "bot_qq": "900001", "timezone": "UTC",
         "database": "next.sqlite3", "delivery": "simulated",
         "onebot": {"mode": "forward_ws", "ws_url": "ws://127.0.0.1:9"},
@@ -54,8 +54,7 @@ def _instance(root: Path, source: Path, scenes: list[str], *, backup: str = "pre
             "roles": {
                 "mind": {"provider": "synthetic", "model": "synthetic-mind",
                          "context_window_tokens": 30000, "max_output_tokens": 200},
-                "voice": {"provider": "synthetic", "model": "synthetic-voice",
-                          "context_window_tokens": 30000, "max_output_tokens": 200},
+
             },
         },
         "history_import": {"source": str(source), "backup": backup, "scenes": scenes,

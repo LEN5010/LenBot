@@ -71,13 +71,12 @@ def test_plugin_owner_permission_uses_root_identity_and_enabled_scene(tmp_path):
 def _root(tmp_path: Path, plugins: dict | None, scene_plugins: list[str] | None = None) -> Path:
     root = tmp_path / "host"
     root.mkdir()
-    source = {
+    source = {"compaction": {"input_tokens": 2000},
         "mode": "isolated-multi", "bot_qq": "90001", "timezone": "Asia/Shanghai", "database": "state.db",
         "onebot": {"mode": "reverse_ws", "listen_host": "127.0.0.1", "listen_port": 0},
         "models": {"providers": {"sample": {"api": "openai-chat", "base_url": "http://127.0.0.1:9/v1",
                                             "api_key": "synthetic"}},
-                   "roles": {"mind": {"provider": "sample", "model": "mind", "context_window_tokens": 8192},
-                             "voice": {"provider": "sample", "model": "voice", "context_window_tokens": 4096}}},
+                   "roles": {"mind": {"provider": "sample", "model": "mind", "context_window_tokens": 8192}}},
         "scenes": {"group:80001": {"persona": "role", **({} if scene_plugins is None else {"plugins": scene_plugins})},
                    "private:80002": {"persona": "role"}},
     }

@@ -397,6 +397,18 @@ class Store:
                 self.db.execute("UPDATE messages SET body=json_set(body,'$.recalled',json('true')) "
                                 "WHERE scene=? AND platform_id=?", (notice.scene, platform_id))
 
+    def bot_muted_until(self, scene: str, bot_qq: str) -> float | None:
+        row = self.db.execute(
+            "SELECT time,raw FROM notices WHERE scene=? AND kind='group_ban' "
+            "AND CAST(json_extract(raw,'$.user_id') AS TEXT)=? ORDER BY time DESC,id DESC LIMIT 1",
+            (scene, bot_qq),
+        ).fetchone()
+        if row is None:
+            return None
+        notice = json.loads(row["raw"])
+        until = row["time"] + notice["duration"]
+        return until if notice["sub_type"] == "ban" and until > self.now() else None
+
     def notice_page(self, scene: str, *, before: int | None = None, limit: int = 50) -> dict:
         rows = self.db.execute(
             "SELECT * FROM notices WHERE scene=? AND (? IS NULL OR id<?) ORDER BY id DESC LIMIT ?",

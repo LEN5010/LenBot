@@ -106,13 +106,12 @@ class ExpressionService:
                 self.on_update()
             return batch
 
-    async def select(self, scene: str, query: str, *, turn_id: str, direct: bool) -> list[dict]:
-        """Return up to five ranked candidate facts; the voice model decides use."""
+    async def select(self, scene: str, query: str, *, turn_id: str, direct: bool, exclude_uids: tuple[str, ...] = ()) -> list[dict]:
+        """Return up to five ranked candidate facts; the chat model decides relevance and use."""
         async with self._lock(scene):
-            adopted = self.records.adopted(scene)
+            adopted = self.records.adopted(scene, exclude_uids=exclude_uids)
             dimensions = self._validate_rows(scene, adopted)
-            excluded = self.records.recent_expression_ids(scene, limit=3)
-            eligible = [item for item in adopted if item["id"] not in excluded]
+            eligible = adopted
             if not eligible:
                 return []
             if not query.strip():

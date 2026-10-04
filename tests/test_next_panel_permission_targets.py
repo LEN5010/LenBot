@@ -28,7 +28,7 @@ def test_permission_write_uses_selected_persona(tmp_path: Path, field: str) -> N
         (role / 'boundaries.md').write_text('隔离测试。', encoding='utf-8')
         (role / 'examples.yaml').write_text('[]\n', encoding='utf-8')
     binding = {'provider': 'fixture', 'model': 'unused', 'context_window_tokens': 8192}
-    source = {
+    source = {"compaction": {"input_tokens": 2000},
         'mode': 'isolated-multi', 'bot_qq': '90001', 'timezone': 'UTC',
         'database': 'state.sqlite3', 'delivery': 'simulated',
         'onebot': {'mode': 'forward_ws', 'ws_url': 'ws://127.0.0.1:9'},
@@ -36,7 +36,7 @@ def test_permission_write_uses_selected_persona(tmp_path: Path, field: str) -> N
                   'password_hash': hash_password('synthetic-password')},
         'models': {'providers': {'fixture': {'api': 'openai-chat', 'base_url': 'http://127.0.0.1:9/v1',
                                              'api_key': 'synthetic-unused'}},
-                   'roles': {'mind': binding, 'voice': binding}},
+                   'roles': {'mind': binding}},
         'scenes': {'group:80001': {'persona': 'first'}, 'group:80002': {'persona': 'second'}},
     }
     (tmp_path / 'lenbot.config.json').write_text(json.dumps(source), encoding='utf-8')
@@ -44,11 +44,11 @@ def test_permission_write_uses_selected_persona(tmp_path: Path, field: str) -> N
 
     async def exercise() -> None:
         with Store(config.database) as store:
-            async with ChatModel(config.model_settings('mind')) as mind, ChatModel(config.model_settings('voice')) as voice:
+            async with ChatModel(config.model_settings('mind')) as mind:
                 runtime = NetworkRuntime(config, [
                     (config.scene_config(scene), load_persona(settings.persona))
                     for scene, settings in config.scenes.items()
-                ], store, mind, voice)
+                ], store, mind)
                 app = create_app(config, runtime, root=tmp_path)
                 try:
                     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://testserver') as client:

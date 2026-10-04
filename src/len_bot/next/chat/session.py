@@ -6,6 +6,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from dataclasses import dataclass
 from string import Template
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -16,7 +17,7 @@ from .context import ChatContext, PROMPTS, turn_state
 from .expression import ChatExpression, MessageSender
 from .tools import SceneTools
 from ..config import LabConfig
-from .recap import CompactionPlan, ContextBudgetError, estimate_content, plan_compaction
+from .recap import CompactionPlan, ContextBudgetError, estimate_content, estimate_text_request, plan_compaction
 from ..learning.expression_selection import ExpressionService
 from ..tools.external_tools import ExternalTool
 from ..models.limits import LimitReached, check_speech
@@ -31,9 +32,16 @@ from ..storage.store import Store, encode
 from ..work.service import WorkTasks
 
 
+@dataclass(frozen=True)
+class PreparedContext:
+    messages: list[dict]
+    input_tokens: int
+    estimate_method: str
+
+
 class Chat:
     def __init__(self, config: LabConfig, persona: Persona, store: Store,
-                 mind: ChatModel, voice: ChatModel, *,
+                 mind: ChatModel, *,
                  vision: ChatModel | None = None,
                  memory: MemoryService | None = None,
                  tasks: WorkTasks | None = None,
@@ -50,8 +58,10 @@ class Chat:
                  now: Callable[[], float] = time.time):
         self.config, self.persona, self.store = config, persona, store
         self.now = now
-        self.mind, self.voice, self.vision = mind, voice, vision
+        self.mind, self.vision = mind, vision
         self.audio = audio_service
+        self.expression_service = expression_service
+        self.expression_ids: list[int] | None = None
         if (config.memory is None) != (memory is None):
             raise ValueError("memory 服务必须与根配置的记忆后端一起提供")
         self.memory = memory
@@ -77,8 +87,8 @@ class Chat:
         self.skills = () if tasks is None else tasks.skills[config.scene]
         self.context = ChatContext(config, persona, store, platform=send_message is not None, memory=memory)
         self.expression = ChatExpression(
-            config, persona, store, context=self.context, request=self.request,
-            send_message=send_message, expression_service=expression_service,
+            config, persona, store, context=self.context,
+            send_message=send_message,
             notify=self.notify, on_reply_sample=on_reply_sample, now=now)
         self.toolset = SceneTools(
             config, persona, store, expression=self.expression, request=self.request, vision=vision,
@@ -103,23 +113,24 @@ class Chat:
             self.store.save_discovered_tools(self.config.scene, sorted(self.toolset.discovered_tools))
         if previous is not None and previous["messages"][0]["content"] != self.context.system:
             self.store.append(self.config.scene, {"role": "user", "content":
-                "本次启动已更新角色、表达模式或工具能力；当前系统设定生效，已有聊天原文保留。"})
+                "宿主启动状态：本次启动已更新角色、表达模式或工具能力；当前系统设定生效，已有聊天原文保留。"})
         history = self.store.recent(self.config.scene, 1)
         if history:
             last = datetime.fromtimestamp(history[-1].time, ZoneInfo(self.config.timezone)).isoformat()
             self.store.append(self.config.scene, {"role": "user", "content":
-                f"隔离会话已恢复。上次保存聊天时间：{last}。离线期间的消息尚未取得。"})
+                f"宿主启动状态：群会话已恢复，上次保存聊天时间：{last}。离线期间的消息尚未取得。"})
         return resume
 
-    async def request(self, turn_id: str, role: Literal["mind", "voice", "recap", "vision"],
+    async def request(self, turn_id: str, role: Literal["mind", "recap", "vision"],
                       messages: list[dict], tools: list[dict], *,
                       recap_target: CompactionPlan | None = None,
-                      expression_ids: list[int] | None = None) -> ModelReply:
+                      expression_ids: list[int] | None = None,
+                      input_estimate: tuple[int, str] | None = None) -> ModelReply:
         model_role = "mind" if role == "recap" else role
         model = getattr(self, model_role)
         def validate(reply: ModelReply) -> None:
-            if role in {"voice", "vision"} and (reply.tool_calls or not reply.text.strip()):
-                label = "表达器未返回完整台词" if role == "voice" else "视觉模型未返回完整描述"
+            if role == "vision" and (reply.tool_calls or not reply.text.strip()):
+                label = "视觉模型未返回完整描述"
                 raise ValueError(f"{label}：{encode(reply.message)}")
             if recap_target is not None:
                 if reply.tool_calls or not reply.text.strip():
@@ -136,7 +147,8 @@ class Chat:
             output_tokens=self.config.compaction.max_output_tokens if role == "recap" else None,
             validate=validate, append_to_scene=role == "mind",
             recap_for=None if recap_target is None else (self.config.scene, recap_target.through),
-            expression_ids=expression_ids, notify=self.notify)
+            expression_ids=self.expression_ids if role == "mind" else expression_ids,
+            input_estimate=input_estimate, notify=self.notify)
 
     async def compact_now(self) -> dict:
         """One explicit operator-requested compaction; caller owns the scene lock."""
@@ -144,13 +156,18 @@ class Chat:
         binding = self.config.models.roles.mind
         state = turn_state(self.config, self.store, now=self.now())
         projection = await self.context.project(recap, entries, state)
+        estimated, method = request_estimate(
+            self.config, self.store, self.mind, scene=self.config.scene, role="mind",
+            messages=projection, tools=self.toolset.tools, output_tokens=0)
+        scale = (estimated / estimate_text_request(projection, self.toolset.tools, 0)
+                 if method == "usage_assisted" else 1.0)
         plan = plan_compaction(
-            entries, system=projection[0], state=projection[-1],
+            self.context.project_entries(entries), system=projection[0], state=projection[-1],
             tools=self.toolset.core_tools, output_tokens=binding.max_output_tokens,
-            trigger_tokens=int(binding.context_window_tokens * self.config.compaction.trigger_ratio),
+            trigger_tokens=self.config.compaction.input_tokens,
             keep_recent_tokens=self.config.compaction.keep_recent_tokens,
             summary_output_tokens=self.config.compaction.max_output_tokens, recap=recap,
-            summary_template=(PROMPTS / "next_recap.md").read_text(), window_tokens=binding.context_window_tokens,
+            summary_template=(PROMPTS / "next_recap.md").read_text(), window_tokens=binding.context_window_tokens, source_entries=entries, token_scale=scale,
         )
         turn_id = self.store.start_turn(self.config.scene)
         try:
@@ -166,9 +183,11 @@ class Chat:
         return {"turn_id": turn_id, "compact_through": plan.through, "recap": reply.text}
 
     async def prepare_context(self, turn_id: str, *, observed_at: float, expression_style: str | None = None,
-                              recalled: str | None = None) -> list[dict]:
+                              recalled: str | None = None) -> PreparedContext:
         binding = self.config.models.roles.mind
-        trigger = int(binding.context_window_tokens * self.config.compaction.trigger_ratio)
+        trigger = self.config.compaction.input_tokens
+        token_scale = 1.0
+        compacted = False
         while True:
             AudioStore(self.store).append_late(self.config.scene)
             recap, entries = self.store.active_history(self.config.scene)
@@ -177,20 +196,27 @@ class Chat:
             state = turn_state(self.config, self.store, now=observed_at,
                                expression_style=expression_style, recalled=recalled)
             messages = await self.context.project(recap, entries, state)
-            estimated, _ = request_estimate(self.config, self.store, self.mind, scene=self.config.scene,
+            estimated, method = request_estimate(self.config, self.store, self.mind, scene=self.config.scene,
                                             role='mind', messages=messages, tools=self.toolset.tools,
-                                            output_tokens=binding.max_output_tokens)
+                                            output_tokens=0)
+            if method == "usage_assisted":
+                token_scale = estimated / estimate_text_request(messages, self.toolset.tools, 0)
+            elif compacted:
+                estimated = round(estimated * token_scale)
+                method = "usage_scaled_after_recap" if token_scale != 1.0 else method
             if estimated <= trigger:
-                return messages
+                return PreparedContext(messages, estimated, method)
+            scale = token_scale
             plan = plan_compaction(
-                entries, system=messages[0], state=messages[-1], tools=self.toolset.core_tools,
+                self.context.project_entries(entries), system=messages[0], state=messages[-1], tools=self.toolset.core_tools,
                 output_tokens=binding.max_output_tokens, trigger_tokens=trigger,
                 keep_recent_tokens=self.config.compaction.keep_recent_tokens,
                 summary_output_tokens=self.config.compaction.max_output_tokens,
                 recap=recap, summary_template=(PROMPTS / "next_recap.md").read_text(),
-                window_tokens=binding.context_window_tokens,
+                window_tokens=binding.context_window_tokens, source_entries=entries, token_scale=scale,
             )
             await self.request(turn_id, "recap", plan.request_messages, [], recap_target=plan)
+            compacted = True
             if self.on_compaction is not None:
                 self.on_compaction()
 
@@ -227,18 +253,36 @@ class Chat:
                 recalled = None
                 if self.memory is not None and self.memory.settings.auto_recall:
                     recall = await self.memory.recall(scene, self.store.recent_context_messages(scene, limit=8))
-                    recalled = encode({"backend": recall["backend"], "items": recall["items"]})
+                    if recall["items"]:
+                        recalled = encode({"backend": recall["backend"], "items": recall["items"]})
+                self.expression_ids = None
+                learned = None
+                if self.expression_service is not None and scene in self.expression_service.scenes:
+                    recent = self.store.recent_context_messages(scene, limit=8)
+                    query = "\n".join(self.context.render(message) for message in recent
+                                      if not message.is_self and message.sender.uid not in self.config.attention.other_bot_qqs)
+                    if query:
+                        selected = await self.expression_service.select(
+                            scene, query, turn_id=turn_id, direct=direct,
+                            exclude_uids=(self.config.bot_qq, *self.config.attention.other_bot_qqs))
+                        if selected:
+                            self.expression_ids = [item["id"] for item in selected]
+                            learned = Template((PROMPTS / "next_learned_expressions.md").read_text()).substitute(
+                                expressions=encode([{ "情境": item["situation"], "说法": item["style"] } for item in selected]))
                 style = select_style(self.persona)
                 expression_style = None
                 if style is not None:
                     expression_style = Template((PROMPTS / "next_style.md").read_text()).substitute(
                         name=style.name, note="" if style.note is None else style.note,
                     )
+                if learned is not None:
+                    expression_style = learned if expression_style is None else expression_style + "\n" + learned
                 for step in range(self.config.max_steps):
                     self.check_limits()
-                    messages = await self.prepare_context(turn_id, observed_at=observed_at,
+                    prepared = await self.prepare_context(turn_id, observed_at=observed_at,
                                                           expression_style=expression_style, recalled=recalled)
-                    reply = await self.request(turn_id, "mind", messages, self.toolset.tools)
+                    reply = await self.request(turn_id, "mind", prepared.messages, self.toolset.tools,
+                                               input_estimate=(prepared.input_tokens, prepared.estimate_method))
                     end_turn, group_failed = False, False
                     for call in reply.tool_calls:
                         if call.name == "memory":
@@ -269,13 +313,13 @@ class Chat:
                                     group_failed = True
                                     failed_tools += 1
                         self.notify()
+                    if not reply.tool_calls or (end_turn and not group_failed):
+                        status = "settled"
+                        break
                     if step + 1 < self.config.max_steps and extensions < self.config.attention.max_extensions:
                         if await append_new(bool(reply.tool_calls), turn_id):
                             extensions += 1
                             continue
-                    if not reply.tool_calls or (end_turn and not group_failed):
-                        status = "settled"
-                        break
         except asyncio.CancelledError:
             self.store.finish_pending_tools(scene, "当前轮被取消")
             self.store.end_turn(turn_id, "cancelled", "CancelledError")

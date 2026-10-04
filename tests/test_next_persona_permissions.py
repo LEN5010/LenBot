@@ -35,7 +35,7 @@ def _package(root: Path, name: str, *, tools: str | list[str], documents: dict[s
 
 def _config(root: Path, package: Path):
     root.mkdir(parents=True, exist_ok=True)
-    (root / "lenbot.config.json").write_text(json.dumps({
+    (root / "lenbot.config.json").write_text(json.dumps({"compaction": {"input_tokens": 2000},
         "mode": "isolated", "scene": "group:80001", "bot_qq": "90001", "timezone": "UTC",
         "database": "persona.sqlite3", "persona": str(package), "voice_mode": "direct",
         "models": {
@@ -45,8 +45,7 @@ def _config(root: Path, package: Path):
             "roles": {
                 "mind": {"provider": "synthetic", "model": "synthetic-mind",
                          "context_window_tokens": 8192},
-                "voice": {"provider": "synthetic", "model": "synthetic-voice",
-                          "context_window_tokens": 4096},
+
             },
         },
     }, ensure_ascii=False), encoding="utf-8")
@@ -117,17 +116,15 @@ async def test_chat_only_exposes_current_role_documents_after_allowed_discovery(
     config = _config(tmp_path / "instance", allowed)
 
     with Store(config.database) as store:
-        async with ChatModel(config.model_settings("mind")) as mind, ChatModel(
-            config.model_settings("voice")
-        ) as voice:
-            chat = Chat(config, load_persona(no_docs), store, mind, voice)
+        async with ChatModel(config.model_settings("mind")) as mind:
+            chat = Chat(config, load_persona(no_docs), store, mind)
             assert "persona_knowledge" not in chat.toolset.tool_names
             with pytest.raises(ValueError, match="persona_knowledge|knowledge"):
-                Chat(config, load_persona(explicit_missing), store, mind, voice)
+                Chat(config, load_persona(explicit_missing), store, mind)
             with pytest.raises(ValueError, match="tool_search"):
-                Chat(config, load_persona(no_search), store, mind, voice)
+                Chat(config, load_persona(no_search), store, mind)
 
-            chat = Chat(config, load_persona(allowed), store, mind, voice)
+            chat = Chat(config, load_persona(allowed), store, mind)
             assert "tool_search" in chat.toolset.tool_names and "persona_knowledge" not in chat.toolset.tool_names
             read = ToolCall(id="synthetic-read", name="persona_knowledge",
                             arguments={"action": "read", "filename": "one.md"})
@@ -142,7 +139,7 @@ async def test_chat_only_exposes_current_role_documents_after_allowed_discovery(
             assert expression is None and "persona_knowledge" in discovered
             assert "persona_knowledge" not in chat.toolset.tool_names  # same request still cannot use it
             store.complete_tool(config.scene, search.id, result, discovered_tools=discovered)
-            chat = Chat(config, load_persona(allowed), store, mind, voice)
+            chat = Chat(config, load_persona(allowed), store, mind)
             assert "persona_knowledge" in chat.toolset.tool_names
             content, expression, discovered = await chat.toolset.execute(
                 "unused-turn", read, wait_for_messages,
@@ -152,7 +149,7 @@ async def test_chat_only_exposes_current_role_documents_after_allowed_discovery(
             assert expression is None and discovered is None
 
             # Persisted discovery is not permission: a different loaded role loses access.
-            chat = Chat(config, load_persona(forbidden), store, mind, voice)
+            chat = Chat(config, load_persona(forbidden), store, mind)
             assert "persona_knowledge" not in chat.toolset.tool_names
             with pytest.raises(ValueError, match="persona_knowledge"):
                 await chat.toolset.execute("unused-turn", read, wait_for_messages)

@@ -75,7 +75,7 @@ def test_asr_configuration_is_explicit_and_does_not_need_chat_parameters():
             ASRBinding.model_validate({**selected.model_dump(), **item})
     model = {"provider": "fixture", "model": "synthetic", "context_window_tokens": 4096}
     source = {"providers": {"fixture": {"api": "openai-chat", "base_url": "http://127.0.0.1:9/v1", "api_key": "synthetic"}},
-              "roles": {"mind": model, "voice": model, "asr": selected.model_dump()}}
+              "roles": {"mind": model,  "asr": selected.model_dump()}}
     assert Models.model_validate(source).roles.asr == selected
     source["roles"]["asr"]["provider"] = "missing"
     with pytest.raises(ValidationError, match="models.roles.asr.provider"):
@@ -88,10 +88,10 @@ def test_automatic_transcription_requires_explicit_runtime_binding(tmp_path):
     import json
     from len_bot.next.config import load_host_config
     model = {'provider':'fixture','model':'synthetic','context_window_tokens':4096}
-    source = {'mode':'isolated-multi','bot_qq':'90001','timezone':'UTC','database':'state.db',
+    source = {"compaction": {"input_tokens": 2000}, 'mode':'isolated-multi','bot_qq':'90001','timezone':'UTC','database':'state.db',
         'onebot':{'mode':'reverse_ws','listen_host':'127.0.0.1','listen_port':0},
         'models':{'providers':{'fixture':{'api':'openai-chat','base_url':'http://127.0.0.1:9/v1','api_key':'synthetic'}},
-                  'roles':{'mind':model,'voice':model}},
+                  'roles':{'mind':model}},
         'scenes':{'group:80001':{'persona':'role','transcribe_audio':True}}}
     def load():
         (tmp_path/'lenbot.config.json').write_text(json.dumps(source))
@@ -173,11 +173,11 @@ def test_daily_budget_accepts_asr_only_with_explicit_same_currency_price(tmp_pat
     import json
     from len_bot.next.config import load_host_config
     binding={'provider':'fixture','model':'synthetic','context_window_tokens':4096}
-    source={'mode':'isolated-multi','bot_qq':'90001','timezone':'UTC','database':'state.db',
+    source={"compaction": {"input_tokens": 2000}, 'mode':'isolated-multi','bot_qq':'90001','timezone':'UTC','database':'state.db',
         'onebot':{'mode':'reverse_ws','listen_host':'127.0.0.1','listen_port':0},
         'limits':{'currency':'USD','daily_model_cost':'1'},
         'models':{'providers':{'fixture':{'api':'openai-chat','base_url':'http://127.0.0.1:9/v1','api_key':'synthetic'}},
-                  'roles':{'mind':binding,'voice':binding,'asr':{'provider':'fixture','model':'synthetic-audio'}},
+                  'roles':{'mind':binding,'asr':{'provider':'fixture','model':'synthetic-audio'}},
                   'prices':{'fixture':{'synthetic':{'currency':'USD','input':'1','output':'1','cache_read':'1'}}}},
         'scenes':{'group:80001':{'persona':'role'}}}
     def load():

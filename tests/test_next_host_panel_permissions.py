@@ -29,7 +29,7 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
     (role / "voice.md").write_text("简短。", encoding="utf-8")
     (role / "boundaries.md").write_text("仅限隔离测试。", encoding="utf-8")
     (role / "examples.yaml").write_text("[]\n", encoding="utf-8")
-    source = {
+    source = {"compaction": {"input_tokens": 2000},
         "mode": "isolated-multi", "bot_qq": "90001", "timezone": "UTC",
         "database": "host.sqlite3", "delivery": "simulated",
         "onebot": {"mode": "forward_ws", "ws_url": "ws://127.0.0.1:9"},
@@ -40,7 +40,7 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                                     "api_key": "synthetic-unused"}},
             "roles": {
                 "mind": {"provider": "local", "model": "synthetic-mind", "context_window_tokens": 8192},
-                "voice": {"provider": "local", "model": "synthetic-voice", "context_window_tokens": 8192},
+
             },
         },
         "scenes": {
@@ -54,11 +54,10 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
 
     async def exercise() -> None:
         with Store(config.database) as store:
-            async with ChatModel(config.model_settings("mind")) as mind, \
-                       ChatModel(config.model_settings("voice")) as voice:
+            async with ChatModel(config.model_settings("mind")) as mind:
                 runtime = NetworkRuntime(
                     config, [(config.scene_config(scene), persona) for scene in config.scenes],
-                    store, mind, voice,
+                    store, mind,
                 )
                 configured_turn = store.start_turn("group:80001")
                 store.end_turn(configured_turn, "settled")
@@ -153,7 +152,7 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                     assert {'permissions', 'account_browser'} <= set(pending['sections'])
                     assert pending['scenes'] == ['group:80001'] and pending['personas'] == []
                     scene_saved = (await client.get('/api/host/settings')).json()['saved']['scenes']['group:80001']
-                    scene_body = {'timezone': None, 'voice_mode': 'direct', 'voice_context_tokens': scene_saved['voice_context_tokens'], 'attention': scene_saved['attention'],
+                    scene_body = {'timezone': None, 'voice_mode': 'direct',  'attention': scene_saved['attention'],
                                   'schedules': {'enabled': True, 'max_pending': 9, 'autonomous': False},
                                   'proactive': None, 'transcribe_audio': False, 'persona_aliases': [],
                                   'relationships': {}, 'behavior_addendum': None}

@@ -16,13 +16,13 @@ from len_bot.next.platform.onebot import OneBot
 
 def host_source(onebot):
     binding = {'provider': 'fixture', 'model': 'synthetic', 'context_window_tokens': 4096}
-    return {
+    return {"compaction": {"input_tokens": 2000},
         'mode': 'isolated-multi', 'bot_qq': '90001', 'timezone': 'UTC', 'database': 'unused.db',
         'delivery': 'onebot', 'onebot': onebot,
         'models': {
             'providers': {'fixture': {'api': 'openai-chat', 'base_url': 'http://127.0.0.1:9/v1',
                                       'api_key': 'synthetic-unused'}},
-            'roles': {'mind': binding, 'voice': binding,
+            'roles': {'mind': binding,
                       'asr': {'provider': 'fixture', 'model': 'synthetic-audio'}},
         },
         'scenes': {'group:80001': {'persona': 'unused-role'}},

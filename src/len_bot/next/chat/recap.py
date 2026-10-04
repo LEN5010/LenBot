@@ -71,7 +71,9 @@ class CompactionPlan:
 def plan_compaction(entries: list[Entry], *, system: dict, state: dict,
                     tools: list[dict], output_tokens: int, trigger_tokens: int,
                     keep_recent_tokens: int, summary_output_tokens: int,
-                    recap: str | None, summary_template: str, window_tokens: int) -> CompactionPlan:
+                    recap: str | None, summary_template: str, window_tokens: int,
+                    source_entries: list[Entry] | None = None,
+                    token_scale: float = 1.0) -> CompactionPlan:
     boundaries = [cut for cut in complete_boundaries(entries) if cut < len(entries)]
     if not boundaries:
         required = estimate_request([system] + project_history(recap, entries) + [state], tools, output_tokens)
@@ -79,7 +81,7 @@ def plan_compaction(entries: list[Entry], *, system: dict, state: dict,
             f"没有可压缩的旧完整对话段；含 system、tools、参考与输出 {output_tokens} 的请求估算 "
             f"{required} token，压缩阈值 {trigger_tokens}、窗口 {window_tokens}；原文与工具组未拆分")
     # Start from the newest complete units, not an arbitrary message count.
-    sizes = [ceil(len(encode(message).encode('utf-8')) / 3) for _, message in entries]
+    sizes = [ceil(token_scale * len(encode(message).encode('utf-8')) / 3) for _, message in entries]
     recent = 0
     preferred = len(entries)
     for index in range(len(entries) - 1, -1, -1):
@@ -93,7 +95,8 @@ def plan_compaction(entries: list[Entry], *, system: dict, state: dict,
             continue
         kept = entries[cut:]
         without_recap = [system] + project_history("", kept) + [state]
-        available = trigger_tokens - estimate_request(without_recap, tools, output_tokens)
+        available = min(trigger_tokens, window_tokens - output_tokens) - ceil(
+            token_scale * estimate_request(without_recap, tools, 0))
         if available >= summary_output_tokens:
             break
     else:
@@ -104,8 +107,10 @@ def plan_compaction(entries: list[Entry], *, system: dict, state: dict,
 
     prompt = Template(summary_template).substitute(summary_budget_tokens=available)
 
+    source = entries[:cut] if source_entries is None else [
+        entry for entry in source_entries if entry[0] <= entries[cut - 1][0]]
     request = [{"role": "system", "content": prompt},
-               {"role": "user", "content": recap_source(recap, entries[:cut])}]
+               {"role": "user", "content": recap_source(recap, source)}]
     required = estimate_request(request, [], summary_output_tokens)
     if required > window_tokens:
         raise ContextBudgetError(

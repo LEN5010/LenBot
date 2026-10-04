@@ -30,7 +30,7 @@ docker compose -f host.compose.yaml run --rm --no-deps -T \
 
 此命令只解析初始化资料并生成卷内的 `lenbot.config.json` 和新角色，不监听端口、不调用模型、不连接 QQ。根配置或同名角色目录已存在时直接报错，不覆盖旧实例。输入 JSON 是首次配置资料，不是运行参数；后续启动不再读取它，填过的文件含明文凭据，按本机凭据文件管理。
 
-Docker 示例使用 `panel_host: "0.0.0.0"` 和 `panel_port: 11307`，这两个值写入唯一根配置；Compose 只发布到主机回环。默认 direct 模式下填写同一 mind／voice 绑定，启用 voice 模式时分别填写。模型、OneBot、记忆等地址按容器网络填写，容器内 `127.0.0.1` 不是 Docker 主机。
+Docker 示例使用 `panel_host: "0.0.0.0"` 和 `panel_port: 11307`，这两个值写入唯一根配置；Compose 只发布到主机回环。普通聊天填写一个 mind 绑定，直接组织回复。模型、OneBot、记忆等地址按容器网络填写，容器内 `127.0.0.1` 不是 Docker 主机。
 
 示例反向 OneBot 监听 8080；基础配方没有替你公开该端口。让 OneBot 加入同一容器网络并连接 `ws://lenbot:8080`，或按实际桥接环境添加端口映射。示例监听与模拟发送配置不会替你登录 QQ，也不自动获得真实群连接。
 

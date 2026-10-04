@@ -60,13 +60,13 @@ def _chat_inputs(tmp_path, *, tools: str | list[str], vision: bool):
     (persona / "examples.yaml").write_text("[]\n", encoding="utf-8")
     roles = {
         "mind": {"provider": "local", "model": "synthetic-mind", "context_window_tokens": 8192},
-        "voice": {"provider": "local", "model": "synthetic-voice", "context_window_tokens": 4096},
+
     }
     if vision:
         roles["vision"] = {
             "provider": "local", "model": "synthetic-vision", "context_window_tokens": 4096,
         }
-    (root / "lenbot.config.json").write_text(json.dumps({
+    (root / "lenbot.config.json").write_text(json.dumps({"compaction": {"input_tokens": 2000},
         "mode": "isolated", "scene": "group:80001", "bot_qq": "90001",
         "timezone": "UTC", "database": "data/image-permissions.sqlite3",
         "persona": "persona", "models": {
@@ -140,34 +140,26 @@ async def test_look_registration_requires_role_configuration_and_vision_client(t
 
     config, persona = _chat_inputs(tmp_path / "explicit", tools=["look"], vision=False)
     with Store(config.database) as store:
-        async with ChatModel(config.model_settings("mind")) as mind, ChatModel(
-            config.model_settings("voice")
-        ) as voice:
+        async with ChatModel(config.model_settings("mind")) as mind:
             with pytest.raises(ValueError, match="look|vision"):
-                Chat(config, persona, store, mind, voice)
+                Chat(config, persona, store, mind)
 
     config, persona = _chat_inputs(tmp_path / "all", tools="all", vision=False)
     with Store(config.database) as store:
-        async with ChatModel(config.model_settings("mind")) as mind, ChatModel(
-            config.model_settings("voice")
-        ) as voice:
-            chat = Chat(config, persona, store, mind, voice)
+        async with ChatModel(config.model_settings("mind")) as mind:
+            chat = Chat(config, persona, store, mind)
             assert "look" not in chat.toolset.tool_names
 
     config, persona = _chat_inputs(tmp_path / "missing-client", tools=["look"], vision=True)
     with Store(config.database) as store:
-        async with ChatModel(config.model_settings("mind")) as mind, ChatModel(
-            config.model_settings("voice")
-        ) as voice:
+        async with ChatModel(config.model_settings("mind")) as mind:
             with pytest.raises(ValueError, match="look|vision"):
-                Chat(config, persona, store, mind, voice)
+                Chat(config, persona, store, mind)
 
     config, persona = _chat_inputs(tmp_path / "allowed", tools=["look"], vision=True)
     with Store(config.database) as store:
-        async with ChatModel(config.model_settings("mind")) as mind, ChatModel(
-            config.model_settings("voice")
-        ) as voice, ChatModel(config.model_settings("vision")) as vision:
-            chat = Chat(config, persona, store, mind, voice, vision=vision)
+        async with ChatModel(config.model_settings("mind")) as mind, ChatModel(config.model_settings("vision")) as vision:
+            chat = Chat(config, persona, store, mind, vision=vision)
             assert "look" in chat.toolset.tool_names
             _receive_image(store, config.scene, "500")
             store.save_image(config.scene, "500", 1, _asset("purple", "获准场景的已缓存描述"))
@@ -181,10 +173,8 @@ async def test_look_registration_requires_role_configuration_and_vision_client(t
 
     config, persona = _chat_inputs(tmp_path / "forbidden", tools=[], vision=True)
     with Store(config.database) as store:
-        async with ChatModel(config.model_settings("mind")) as mind, ChatModel(
-            config.model_settings("voice")
-        ) as voice, ChatModel(config.model_settings("vision")) as vision:
-            chat = Chat(config, persona, store, mind, voice, vision=vision)
+        async with ChatModel(config.model_settings("mind")) as mind, ChatModel(config.model_settings("vision")) as vision:
+            chat = Chat(config, persona, store, mind, vision=vision)
             assert "look" not in chat.toolset.tool_names
             with pytest.raises(ValueError, match="look"):
                 await chat.toolset.execute("unused-turn", ToolCall(
