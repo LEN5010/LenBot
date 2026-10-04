@@ -212,6 +212,8 @@ class NetworkRuntime:
         if self.tasks is not None:
             self.tasks.stop()
         self.stopped.set()
+        for runner in self.runners.values():
+            runner.close_input()
         if self.status != "stopped":
             self._status("stopping")
 
@@ -278,13 +280,15 @@ class NetworkRuntime:
         self._emit({"type": "receipt", **receipt, "scene": message.scene})
 
     async def _ready(self, wait: bool) -> bool:
+        if self.stopped.is_set():
+            return False
         if self.platform is None:
-            return not self.stopped.is_set()
+            return True
         if self.platform.connected:
             return True
         if not wait:
             return False
-        if self.stopped.is_set() or isinstance(self.config.onebot, OneBotForward):
+        if isinstance(self.config.onebot, OneBotForward):
             return False
         async with asyncio.TaskGroup() as waiting:
             connected = waiting.create_task(self.platform.wait_connected(None))

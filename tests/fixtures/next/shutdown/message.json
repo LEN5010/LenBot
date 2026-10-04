@@ -1,0 +1,31 @@
+{
+  "time": 1791136805,
+  "self_id": 90001,
+  "post_type": "message",
+  "message_type": "group",
+  "sub_type": "normal",
+  "message_id": -10001,
+  "message_seq": 1,
+  "group_id": 80001,
+  "group_name": "脱敏群",
+  "user_id": 70001,
+  "message": [
+    {
+      "type": "text",
+      "data": {
+        "text": "脱敏原话"
+      }
+    }
+  ],
+  "raw_message": "脱敏原话",
+  "font": 0,
+  "sender": {
+    "user_id": 70001,
+    "nickname": "脱敏群友",
+    "card": "",
+    "role": "member",
+    "sex": "unknown",
+    "age": 0
+  },
+  "anonymous": null
+}
