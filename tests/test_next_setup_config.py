@@ -12,15 +12,15 @@ from len_bot.next.panel.setup import create_setup_app
 from len_bot.web.auth import verify_password
 
 
-@pytest.mark.parametrize('voice_mode', ['direct', 'voice'])
+@pytest.mark.parametrize('voice_mode', ['direct'])
 def test_first_setup_validates_and_never_overwrites(tmp_path: Path, voice_mode: str):
     body = {
         'bot_qq':'90001','owner_qq':'70001','timezone':'Asia/Shanghai','delivery':'simulated',
         'onebot':{'mode':'forward_ws','ws_url':'ws://127.0.0.1:9','access_token':'synthetic-token'},
         'provider':{'api':'openai-chat','base_url':'http://127.0.0.1:9/v1','api_key':'synthetic-secret'},
         'mind':{'provider':'primary','model':'fixture','context_window_tokens':8192},
-        'voice':{'provider':'primary','model':'fixture','context_window_tokens':8192},
-        'voice_mode': voice_mode,
+
+        'voice_mode': voice_mode, 'compaction': {'input_tokens': 6000},
         'scene':'group:80001','persona_id':'fixture','persona_name':'合成角色','brief':'测试设定',
         'voice_text':'简短','boundaries':'合成场景','panel_port':8088,'username':'fixture',
         'password':'synthetic-password',

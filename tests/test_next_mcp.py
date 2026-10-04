@@ -12,10 +12,10 @@ from len_bot.next.tools.mcp_host import MCPToolError, text_result
 
 
 def config(tmp_path, services):
-    value = {'mode':'isolated-multi','bot_qq':'90001','timezone':'UTC','database':'state.db',
+    value = {"compaction": {"input_tokens": 2000}, 'mode':'isolated-multi','bot_qq':'90001','timezone':'UTC','database':'state.db',
         'onebot':{'mode':'reverse_ws','listen_host':'127.0.0.1','listen_port':0},
         'models':{'providers':{'local':{'api':'openai-chat','base_url':'http://127.0.0.1:9/v1','api_key':'synthetic'}},
-            'roles':{role:{'provider':'local','model':'fixture','context_window_tokens':8192} for role in ['mind','voice']}},
+            'roles':{role:{'provider':'local','model':'fixture','context_window_tokens':8192} for role in ['mind']}},
         'scenes':{'group:80001':{'persona':'role'}},'mcp':services}
     (tmp_path/'lenbot.config.json').write_text(json.dumps(value))
     return load_host_config(tmp_path)

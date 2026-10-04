@@ -8,6 +8,8 @@ from ..config import SharedConfig
 from ..chat.recap import CompactionPlan, ContextBudgetError, estimate_text_request
 from .client import ChatModel, ModelProtocolError, ModelReply, parse_token_usage
 from .slots import ModelSlots
+from .projection import project_messages
+from urllib.parse import quote
 from .pricing import estimate_cost
 from ..storage.store import Store
 from ..plugins.store import PluginStore
@@ -16,15 +18,18 @@ from ..plugins.store import PluginStore
 class ChatRequest(Protocol):
     """The scene request callback used by expression and image tools."""
 
-    def __call__(self, turn_id: str, role: Literal["mind", "voice", "recap", "vision"],
+    def __call__(self, turn_id: str, role: Literal["mind", "recap", "vision"],
                  messages: list[dict], tools: list[dict], *,
                  recap_target: CompactionPlan | None = None,
-                 expression_ids: list[int] | None = None) -> Awaitable[ModelReply]: ...
+                 expression_ids: list[int] | None = None,
+                 input_estimate: tuple[int, str] | None = None) -> Awaitable[ModelReply]: ...
 
 
 def request_estimate(config: SharedConfig, store: Store, model: ChatModel, *, scene: str, role: str,
                      messages: list[dict], tools: list[dict], output_tokens: int) -> tuple[int, str]:
     """Actual prior input plus changed-material estimates, never cached-token discounts."""
+    binding = getattr(config.models.roles, "mind" if role == "recap" else role)
+    messages = project_messages(messages, binding.history_policy)
     estimated = estimate_text_request(messages, tools, output_tokens)
     images = any(isinstance(message.get('content'), list) and any(
         block['type'] == 'image_url' for block in message['content']) for message in messages)
@@ -34,15 +39,17 @@ def request_estimate(config: SharedConfig, store: Store, model: ChatModel, *, sc
     if previous is not None:
         request, usage = previous
         tokens = parse_token_usage(usage)
-        prefix = request['messages'][:-1]
+        prior = project_messages(request['messages'], binding.history_policy)
+        prefix = prior[:-1]
         same_binding = (request['provider'] == config.models.roles.mind.provider
-                        and request['settings'] == model.settings.model_dump(exclude={'api_key'}))
+                        and request['settings'] == model.settings.model_dump(exclude={'api_key'})
+                        and request.get('history_policy') == binding.history_policy)
         previous_images = any(isinstance(message.get('content'), list) and any(
             block['type'] == 'image_url' for block in message['content']) for message in request['messages'])
         if (tokens is not None and tokens.prompt_tokens is not None and same_binding
                 and not previous_images and request['tools'] == tools
                 and messages[:len(prefix)] == prefix):
-            old_estimate = estimate_text_request(request['messages'], tools, 0)
+            old_estimate = estimate_text_request(prior, tools, 0)
             estimated = max(0, tokens.prompt_tokens + estimated - output_tokens - old_estimate) + output_tokens
             return estimated, 'usage_assisted'
     return estimated, 'utf8_bytes_estimate'
@@ -56,11 +63,20 @@ async def request_model(config: SharedConfig, store: Store, model: ChatModel,
                         validate: Callable[[ModelReply], None] | None = None,
                         append_to_scene: bool = False, recap_for: tuple[str, int] | None = None,
                         expression_ids: list[int] | None = None,
+                        input_estimate: tuple[int, str] | None = None,
                         notify: Callable[[], None] | None = None) -> ModelReply:
     binding = getattr(config.models.roles, "mind" if role == "recap" else role)
+    messages = project_messages(messages, binding.history_policy)
     tokens = binding.max_output_tokens if output_tokens is None else output_tokens
-    estimated, method = request_estimate(config, store, model, scene=scene, role=role,
-                                         messages=messages, tools=tools, output_tokens=tokens)
+    session_id = None
+    if binding.history_policy == "antigravity-chat":
+        session_id = quote(f"{config.database.resolve()}:{scene}:{role}", safe="")
+    if input_estimate is None:
+        estimated, method = request_estimate(config, store, model, scene=scene, role=role,
+                                             messages=messages, tools=tools, output_tokens=tokens)
+    else:
+        input_tokens, method = input_estimate
+        estimated = input_tokens + tokens
     if estimated > binding.context_window_tokens:
         scope = "文本部分" if role == "vision" else "请求"
         raise ContextBudgetError(
@@ -74,18 +90,19 @@ async def request_model(config: SharedConfig, store: Store, model: ChatModel,
                    "price": None if price is None else price.model_dump(mode="json"),
                    **({"estimated_text_tokens": estimated, "estimated_total_tokens": None} if role == "vision"
                       else {"estimated_total_tokens": estimated}),
-                   "context_window_tokens": binding.context_window_tokens}
+                   "context_window_tokens": binding.context_window_tokens,
+                   "history_policy": binding.history_policy, "session_id": session_id}
         call_id = (store.start_call(turn_id, role, request) if plugin is None
                    else PluginStore(store).start_plugin_call(scene, plugin, role, request))
         if notify is not None:
             notify()
         reply = None
         try:
-            reply = await model.complete(messages, tools, max_output_tokens=tokens)
+            reply = await model.complete(messages, tools, max_output_tokens=tokens, session_id=session_id)
             if validate is not None:
                 validate(reply)
         except BaseException as error:
-            response = None if reply is None else {"message": reply.message, "finish_reason": reply.finish_reason}
+            response = None if reply is None else {"message": reply.message, "finish_reason": reply.finish_reason, "raw": reply.response}
             usage = None if reply is None else reply.usage
             token_usage = None if reply is None else reply.token_usage
             if isinstance(error, ModelProtocolError):
@@ -95,7 +112,7 @@ async def request_model(config: SharedConfig, store: Store, model: ChatModel,
             if notify is not None:
                 notify()
             raise
-        store.end_call(call_id, {"message": reply.message, "finish_reason": reply.finish_reason}, reply.usage,
+        store.end_call(call_id, {"message": reply.message, "finish_reason": reply.finish_reason, "raw": reply.response}, reply.usage,
                        cost=estimate_cost(price, reply.token_usage),
                        append_to_scene=scene if append_to_scene else None, recap_for=recap_for)
         if notify is not None:

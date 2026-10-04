@@ -35,9 +35,7 @@ class FirstSetup(BaseModel):
     onebot: OneBotSettings
     provider: Provider
     mind: Binding
-    voice: Binding
-    voice_mode: Literal['voice', 'direct'] = 'voice'
-    voice_context_tokens: int = Field(default=6000, gt=0, strict=True)
+    voice_mode: Literal['direct'] = 'direct'
     compaction: Compaction = Field(default_factory=Compaction)
     scene: str
     persona_id: str = Field(pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$', max_length=64)
@@ -68,11 +66,10 @@ def initialize(root: Path, item: FirstSetup) -> dict:
         'onebot': item.onebot.model_dump(mode='json'),
         'compaction': item.compaction.model_dump(mode='json'),
         'models': {'providers': {'primary': item.provider.model_dump(mode='json')},
-                   'roles': {'mind': item.mind.model_dump(mode='json'), 'voice': item.voice.model_dump(mode='json')}},
+                   'roles': {'mind': item.mind.model_dump(mode='json')}},
         'panel': {'host': item.panel_host, 'port': item.panel_port, 'username': item.username,
                   'password_hash': hash_password(item.password)},
         'scenes': {item.scene: {'persona': f'personas/{item.persona_id}', 'voice_mode': item.voice_mode,
-                                'voice_context_tokens': item.voice_context_tokens,
                                 'attention': {'only_direct': True}}},
     }
     # Validate all cross-field requirements before creating any role/config files.

@@ -20,7 +20,7 @@ def test_profile_form_rewrites_role_files_and_rejects_invalid_values(tmp_path):
         'bot_qq': '90001', 'owner_qq': '70001', 'timezone': 'UTC', 'delivery': 'simulated',
         'onebot': {'mode': 'forward_ws', 'ws_url': 'ws://127.0.0.1:9'},
         'provider': {'api': 'openai-chat', 'base_url': 'http://127.0.0.1:9/v1', 'api_key': 'synthetic-unused'},
-        'mind': binding, 'voice': binding, 'scene': 'group:80001', 'persona_id': 'fixture',
+        'compaction': {'input_tokens': 2000}, 'mind': binding,  'scene': 'group:80001', 'persona_id': 'fixture',
         'persona_name': '合成角色', 'brief': '合成资料', 'voice_text': '简短', 'boundaries': '',
         'panel_port': 8088, 'username': 'fixture', 'password': 'synthetic-password',
     })))
@@ -29,8 +29,8 @@ def test_profile_form_rewrites_role_files_and_rejects_invalid_values(tmp_path):
 
     async def run():
         with Store(config.database) as store:
-            async with ChatModel(config.model_settings('mind')) as mind, ChatModel(config.model_settings('voice')) as voice:
-                runtime = NetworkRuntime(config, [(config.scene_config('group:80001'), load_persona(config.scenes['group:80001'].persona))], store, mind, voice)
+            async with ChatModel(config.model_settings('mind')) as mind:
+                runtime = NetworkRuntime(config, [(config.scene_config('group:80001'), load_persona(config.scenes['group:80001'].persona))], store, mind)
                 app = create_app(config, runtime, root=tmp_path)
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as client:
                     endpoint = '/api/host/scenes/group:80001/persona-profile'

@@ -154,13 +154,13 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
         "images": config.images.model_dump(mode='json'),
         "jargon_references_enabled": config.learning is not None,
         "models": {role: config.model_settings(role).model_dump(exclude={"api_key"})
-                   for role in ("mind", "voice", *(("vision",) if config.models.roles.vision is not None else ()))},
+                   for role in ("mind", *(("vision",) if config.models.roles.vision is not None else ()))},
         "expression_embedding": None if embedding is None else {
             "provider": embedding.provider,
             "base_url": config.models.providers[embedding.provider].base_url,
             "model": embedding.model,
             "dimensions": embedding.dimensions,
-            "voice_selection_only": True,
+            "query_source": "recent_scene_dialogue",
         },
         "case_ids": [case.id for case in cases.cases],
         "case_initial_databases": {

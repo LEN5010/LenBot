@@ -19,18 +19,11 @@
     "context_window_tokens": 65536,
     "max_output_tokens": 4096
   },
-  "voice": {
-    "provider": "primary",
-    "model": "填入与 mind 相同的实际模型名",
-    "context_window_tokens": 65536,
-    "max_output_tokens": 4096
-  },
   "voice_mode": "direct",
-  "voice_context_tokens": 6000,
   "compaction": {
-    "trigger_ratio": 0.6,
     "keep_recent_tokens": 20000,
-    "max_output_tokens": 1024
+    "max_output_tokens": 1024,
+    "input_tokens": 60000
   },
   "scene": "group:80001",
   "persona_id": "companion",

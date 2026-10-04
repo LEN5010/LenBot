@@ -66,6 +66,7 @@ class ModelReply:
     finish_reason: str
     usage: dict[str, Any] | None
     token_usage: TokenUsage | None
+    response: dict | None = None
 
 
 class ModelProtocolError(RuntimeError):
@@ -185,6 +186,7 @@ def parse_chat_completion(body: object) -> ModelReply:
         finish_reason=finish_reason,
         usage=copy.deepcopy(usage),
         token_usage=token_usage,
+        response=copy.deepcopy(body),
     )
 
 
@@ -206,7 +208,7 @@ class ChatModel:
         await self._client.aclose()
 
     async def complete(self, messages: list[dict], tools: list[dict], *,
-                       max_output_tokens: int | None = None) -> ModelReply:
+                       max_output_tokens: int | None = None, session_id: str | None = None) -> ModelReply:
         payload: dict[str, Any] = {
             "model": self.settings.model,
             "messages": messages,
@@ -220,7 +222,8 @@ class ChatModel:
             payload["tools"] = tools
         if self.settings.reasoning_effort is not None:
             payload["reasoning_effort"] = self.settings.reasoning_effort
-        response = await self._client.post("chat/completions", json=payload)
+        response = await self._client.post("chat/completions", json=payload,
+                                           headers={} if session_id is None else {"Session-Id": session_id})
         if not response.is_success:
             raise ModelHTTPError(f"Model HTTP {response.status_code}: {response.text}")
         try:

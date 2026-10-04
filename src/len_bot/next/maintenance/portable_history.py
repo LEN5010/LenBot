@@ -45,14 +45,13 @@ def _status(store: Store, scene: str) -> None:
 def _state(store: Store, config: HostConfig, scene: str, persona: Persona) -> dict:
     local = config.scene_config(scene)
     expression = None
-    if local.voice_mode == "direct":
-        variants = [style for style in persona.styles if style.weight > 0]
-        if variants:
-            template = Template((PROMPTS / "next_style.md").read_text())
-            expression = max(
-                (template.substitute(name=style.name, note="" if style.note is None else style.note)
-                 for style in variants), key=lambda text: len(text.encode("utf-8")),
-            )
+    variants = [style for style in persona.styles if style.weight > 0]
+    if variants:
+        template = Template((PROMPTS / "next_style.md").read_text())
+        expression = max(
+            (template.substitute(name=style.name, note="" if style.note is None else style.note)
+             for style in variants), key=lambda text: len(text.encode("utf-8")),
+        )
     return turn_state(local, store, now=datetime.now(UTC).timestamp(), expression_style=expression)
 
 
@@ -63,19 +62,20 @@ def _check_budget(store: Store, config: HostConfig, scene: str, persona: Persona
     profile = (scene_overview(config.memory.local.directory, scene)
                if isinstance(config.memory, LocalMemoryConfig) and config.memory.summaries else None)
     system = build_system(local, persona, allowed, platform=config.delivery == "onebot")
-    tools = [tool for tool in allowed if tool["function"]["name"] not in DEFERRED_NAMES]
+    deferred = DEFERRED_NAMES if any(tool["function"]["name"] == "tool_search" for tool in allowed) else frozenset()
+    tools = [tool for tool in allowed if tool["function"]["name"] not in deferred]
     binding = config.models.roles.mind
-    trigger = int(binding.context_window_tokens * config.compaction.trigger_ratio)
+    trigger = config.compaction.input_tokens
     state = _state(store, config, scene, persona)
     if profile is not None:
         state["content"] += "\n" + Template((PROMPTS / "next_group_profile.md").read_text()).substitute(profile=profile)
     messages = ([{"role": "system", "content": system}]
                 + project_history(recap, entries) + [state])
-    estimated = estimate_request(messages, tools, binding.max_output_tokens)
+    estimated = estimate_request(messages, tools, 0)
     if estimated > trigger:
         raise ValueError(
-            f"Scene {scene} portable first mind request estimates {estimated} tokens including output "
-            f"reserve, above configured trigger {trigger}; source history unchanged"
+            f"Scene {scene} portable first mind input estimates {estimated} tokens, "
+            f"above configured input trigger {trigger}; source history unchanged"
         )
     return estimated
 

@@ -47,6 +47,7 @@ class Binding(BaseModel):
     max_output_tokens: int = Field(default=1024, gt=0)
     timeout_seconds: float = Field(default=60.0, gt=0, allow_inf_nan=False)
     reasoning_effort: str | None = None
+    history_policy: Literal["native", "antigravity-chat"] = "native"
 
     @field_validator("provider", "model")
     @classmethod
@@ -73,7 +74,6 @@ class Roles(BaseModel):
     model_config = STRICT
 
     mind: Binding
-    voice: Binding
     vision: Binding | None = None
     memory: Binding | None = None
     worker: Binding | None = None
@@ -90,7 +90,7 @@ class Models(BaseModel):
 
     @model_validator(mode="after")
     def known_providers(self) -> Models:
-        for role in ("mind", "voice", "vision", "memory", "worker", "learner", "asr"):
+        for role in ("mind", "vision", "memory", "worker", "learner", "asr"):
             binding = getattr(self.roles, role)
             if binding is None:
                 continue

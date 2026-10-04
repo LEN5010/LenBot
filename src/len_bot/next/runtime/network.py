@@ -39,7 +39,7 @@ from ..work.service import WorkTasks
 
 class NetworkRuntime:
     def __init__(self, config: SharedConfig, scene_configs: list[tuple[LabConfig, Persona]],
-                 store: Store, mind: ChatModel, voice: ChatModel, *,
+                 store: Store, mind: ChatModel, *,
                  vision: ChatModel | None = None, slots: ModelSlots | None = None,
                  memory: MemoryService | None = None,
                  budget: ModelBudget | None = None,
@@ -110,7 +110,7 @@ class NetworkRuntime:
             if scene in self.chats:
                 raise ValueError(f"Duplicate network scene {scene}")
             self.chats[scene] = Chat(
-                scene_config, persona, store, mind, voice, vision=vision, slots=slots, memory=memory,
+                scene_config, persona, store, mind, vision=vision, slots=slots, memory=memory,
                 tasks=tasks, expression_service=expression_service,
                 on_compaction=lambda scene=scene: self.compacted(scene),
                 on_reply_sample=(None if reply_effects is None else
@@ -473,10 +473,10 @@ class NetworkRuntime:
 
 
 async def run_network(config: SharedConfig, scene_configs: list[tuple[LabConfig, Persona]],
-                      store: Store, mind: ChatModel, voice: ChatModel, *,
+                      store: Store, mind: ChatModel, *,
                       vision: ChatModel | None = None, slots: ModelSlots | None = None,
                       memory: MemoryService | None = None, ingestor: MemoryIngestor | None = None,
                       expression_service: ExpressionService | None = None, budget: ModelBudget | None = None) -> None:
-    runtime = NetworkRuntime(config, scene_configs, store, mind, voice, vision=vision, slots=slots,
+    runtime = NetworkRuntime(config, scene_configs, store, mind, vision=vision, slots=slots,
                              memory=memory, ingestor=ingestor, expression_service=expression_service, budget=budget)
     await runtime.run()

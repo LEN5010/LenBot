@@ -193,23 +193,18 @@ class MemoryService:
             prompt_root = Path(__file__).resolve().parents[2] / "prompts"
             section = Template((prompt_root / "next_native_memory_section.md").read_text())
             included: list[str] = []
-            omitted: list[str] = []
             for current in overviews:
                 freshness = current.freshness
-                if (freshness is None or freshness.pending_child_changes or freshness.unsampled_entries
+                if (not current.content or freshness is None or freshness.pending_child_changes or freshness.unsampled_entries
                         or freshness.missing_summary_entries):
-                    omitted.append(encode({"path": current.path, "overview_available": current.content is not None,
-                                          "freshness":
-                                          None if freshness is None else freshness.model_dump()}))
                     continue
                 included.append(section.substitute(path=current.path, overview=current.content,
                     missing="未报告" if freshness.missing_summary_entries is None
                     else freshness.missing_summary_entries))
-            if not included and not omitted:
+            if not included:
                 return None
             return Template((prompt_root / "next_native_memory_overview.md").read_text()).substitute(
-                included="\n\n".join(included) if included else "本轮没有纳入概览正文。",
-                omitted="\n".join(omitted) if omitted else "无")
+                included="\n\n".join(included))
         if self.summarizer is None:
             return None
         summary = await self.backend.summary(scene)
@@ -352,7 +347,7 @@ class MemoryService:
         def append(scope: str, path: str, content: str, limit: int, *,
                    kind: str = "file", source_chars: int | None = None) -> None:
             nonlocal budget
-            if (scope, path) in seen or budget <= 0:
+            if not content.strip() or limit == 0 or (scope, path) in seen or budget <= 0:
                 return
             shown = content[:min(budget, limit)]
             items.append({"scope": scope, "path": path, "content": shown, "kind": kind,

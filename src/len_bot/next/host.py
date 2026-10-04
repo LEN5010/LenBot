@@ -132,7 +132,6 @@ async def run(lifecycle: HostLifecycle) -> None:
             raise ValueError("仍有未清理的任务容器；保留原 worker 配置完成清理后再停用任务执行器")
         async with (
             ChatModel(config.model_settings("mind")) as mind,
-            ChatModel(config.model_settings("voice")) as voice,
             (ChatModel(config.model_settings("vision")) if config.models.roles.vision is not None
              else nullcontext(None)) as vision,
             (ChatModel(config.model_settings("learner"))
@@ -196,7 +195,7 @@ async def run(lifecycle: HostLifecycle) -> None:
                 await mcp.start()
                 if tasks is not None:
                     tasks.mcp = mcp
-                runtime = NetworkRuntime(config, scenes, store, mind, voice, vision=vision, slots=slots,
+                runtime = NetworkRuntime(config, scenes, store, mind, vision=vision, slots=slots,
                                          memory=memory, ingestor=ingestor, tasks=tasks, budget=budget, learning=learning, jargon=jargon,
                                          expression_service=expression_service, sticker_collection=sticker_collection,
                                          reply_effects=reply_effects, plugins=plugins, mcp=mcp)

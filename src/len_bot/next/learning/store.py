@@ -248,10 +248,13 @@ class LearningStore:
             (scene, situation, style),
         ).fetchone())
 
-    def adopted(self, scene: str) -> list[dict]:
+    def adopted(self, scene: str, *, exclude_uids: Sequence[str] = ()) -> list[dict]:
         return [dict(row) for row in self.db.execute(
             "SELECT id,situation,style,vector,vector_binding,vector_dimensions FROM expressions "
-            "WHERE scene=? AND status='adopted' ORDER BY id", (scene,),
+            "WHERE scene=? AND status='adopted' AND NOT EXISTS ("
+            "SELECT 1 FROM json_each(expressions.sources) source JOIN messages m ON m.seq=source.value "
+            "WHERE json_extract(m.body,'$.sender.uid') IN (SELECT value FROM json_each(?))) ORDER BY id",
+            (scene, encode(exclude_uids)),
         )]
 
     def vector(self, scene: str, id: int) -> StoredVector | None:
@@ -271,10 +274,11 @@ class LearningStore:
                                 [(*vectors[id], scene, id) for id, _ in snapshot])
 
     def recent_expression_ids(self, scene: str, limit: int = 3) -> set[int]:
+        """IDs provided as reference; this does not record use or drive selection."""
         rows = self.db.execute(
             "SELECT json_extract(model_calls.request,'$.expression_ids') FROM model_calls "
             "JOIN turns ON turns.id=model_calls.turn_id "
-            "WHERE turns.scene=? AND model_calls.role='voice' AND model_calls.ended IS NOT NULL "
+            "WHERE turns.scene=? AND model_calls.role IN ('mind','voice') AND model_calls.ended IS NOT NULL "
             "AND model_calls.error IS NULL ORDER BY model_calls.id DESC LIMIT ?", (scene, limit),
         )
         return {id for row in rows if row[0] is not None for id in json.loads(row[0])}

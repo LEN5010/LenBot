@@ -13,7 +13,7 @@ from len_bot.media.images import image_block
 from ..media.audio import TRANSCRIBE_TOOL, AudioService, TranscribeArguments
 from .context import PROMPTS
 from ..config import LabConfig
-from ..tools.discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, model_schema, search_tools
+from ..tools.discovery import DISCOVERY_REQUIRED_NAMES, DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, model_schema, search_tools
 from ..platform.delivery import Expression
 from ..tools.external_tools import ExternalTool
 from ..platform.file_delivery import SEND_FILE_TOOL, SendFileArguments, execute_send_file
@@ -49,7 +49,6 @@ class SayArguments(BaseModel):
     reply_to: str | None = Field(default=None, description="需要引用时填本场景已有平台消息 ID；直接接话可省略。")
     mention: str | None = Field(default=None, pattern=r"^[0-9]+$",
         description="需要提醒特定对象时填实际 QQ；连续对话中对象清楚时可省略。")
-    length: Literal["短", "正常", "长"] = Field(default="正常", description="本次表达的详略倾向；范围由实际请求决定，不代表固定字数。")
 
 
 class ReactArguments(BaseModel):
@@ -170,19 +169,18 @@ def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[
         raise ValueError("角色开放 schedule 时必须同时开放 schedule_list 和 schedule_cancel")
     if "delegate" in names and "task" not in names:
         raise ValueError("角色开放 delegate 时必须同时开放 task 管理工具")
-    if names & DEFERRED_NAMES and "tool_search" not in names:
+    if names & DISCOVERY_REQUIRED_NAMES and "tool_search" not in names:
         raise ValueError("角色开放低频工具时必须同时开放 tool_search")
-    emotions = sorted({value for sticker in persona.stickers.values() for value in sticker.emotions})
     for index, tool in enumerate(allowed):
         function = tool["function"]
         if function["name"] == "say":
             parameters = SayArguments.model_json_schema()
-            mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
+            mode = "next_direct.md"
             parameters["properties"]["content"]["description"] = (PROMPTS / mode).read_text().strip()
             allowed[index] = {**tool, "function": {**function, "parameters": parameters}}
         elif function["name"] == "react":
             allowed[index] = {**tool, "function": {**function, "description": function["description"]
-                              + " 当前角色情绪标签：" + encode(emotions)}}
+                              + " 按图像描述用 query 搜索；emotion 只填写已知的实际标签。素材标签不是文字口吻或关系判断菜单。"}}
     return allowed
 
 
@@ -226,9 +224,9 @@ class SceneTools:
             raise ValueError("平台查询工具已启用但未接入实际 OneBot 调用")
         if "transcribe" in self.allowed_tool_names and self.audio is None:
             raise ValueError("语音工具已启用但未接入实际语音处理服务")
-        self.deferred_names = DEFERRED_NAMES | set(self.external)
-        self.core_tools = [tool for tool in allowed if tool["function"]["name"] not in DEFERRED_NAMES]
-        self.deferred_tools = ([tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
+        self.deferred_names = (DEFERRED_NAMES if "tool_search" in self.allowed_tool_names else frozenset()) | set(self.external)
+        self.core_tools = [tool for tool in allowed if tool["function"]["name"] not in self.deferred_names]
+        self.deferred_tools = ([tool for tool in allowed if tool["function"]["name"] in self.deferred_names]
                                + [tool.definition for tool in self.external.values()])
         saved = self.store.load_discovered_tools(config.scene)
         self.discovered_tools = set(saved) & self.allowed_tool_names & self.deferred_names

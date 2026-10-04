@@ -52,7 +52,7 @@ class TestMessage(BaseModel):
 
 
 class PanelSession:
-    def __init__(self, config: LabConfig, store: Store, mind: ChatModel, voice: ChatModel,
+    def __init__(self, config: LabConfig, store: Store, mind: ChatModel,
                  *, vision: ChatModel | None = None, memory: MemoryService | None = None,
                  ingestor: MemoryIngestor | None = None, persona: Persona | None = None,
                  slots: ModelSlots | None = None):
@@ -62,7 +62,7 @@ class PanelSession:
             slots.admit = ModelBudget(config, store, memory, root=config._instance_root).check
         self.listeners: set[asyncio.Event] = set()
         self.closing = False
-        self.chat = Chat(config, load_persona(config.persona) if persona is None else persona, store, mind, voice, vision=vision,
+        self.chat = Chat(config, load_persona(config.persona) if persona is None else persona, store, mind, vision=vision,
                          memory=memory, slots=slots, on_update=self.notify,
                          on_compaction=None if ingestor is None else lambda: ingestor.request(config.scene))
         self.runner = SceneRunner(self.chat, lambda _: self.notify())
@@ -85,7 +85,7 @@ class PanelSession:
             "scene": self.config.scene, "timezone": self.config.timezone, "bot_qq": self.config.bot_qq,
             "persona": {"id": self.chat.persona.id, "name": self.chat.persona.name},
             "voice_mode": self.config.voice_mode,
-            "models": {"mind": self.config.models.roles.mind.model, "voice": self.config.models.roles.voice.model},
+            "models": {"mind": self.config.models.roles.mind.model},
             "delivery": "simulated", "running": not self.closing and not self.task.done(), "error": self.error(),
             "messages": [{"seq": seq, "rendered": self.chat.context.render(message), "text": self.chat.context.render_text(message),
                           **asdict(message)}
@@ -139,14 +139,13 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
             slots.admit = budget.check
             async with (
                 ChatModel(config.model_settings("mind")) as mind,
-                ChatModel(config.model_settings("voice")) as voice,
                 (ChatModel(config.model_settings("vision")) if config.models.roles.vision is not None
                  else nullcontext(None)) as vision,
                 open_memory(config, store, active_personas={config.scene: persona.id}, slots=slots) as memory,
                 open_memory_ingestor(config, store, memory, [config.scene], slots=slots) as ingestor,
             ):
                 budget.memory = memory
-                session = PanelSession(config, store, mind, voice, vision=vision, memory=memory, ingestor=ingestor, slots=slots,
+                session = PanelSession(config, store, mind, vision=vision, memory=memory, ingestor=ingestor, slots=slots,
                                        persona=persona)
                 app.state.session = session
                 try:

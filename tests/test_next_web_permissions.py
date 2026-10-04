@@ -33,7 +33,7 @@ def _chat_inputs(tmp_path, *, tools: str | list[str], web_read: dict | None):
     (persona / "voice.md").write_text("简短。", encoding="utf-8")
     (persona / "boundaries.md").write_text("仅限测试。", encoding="utf-8")
     (persona / "examples.yaml").write_text("[]\n", encoding="utf-8")
-    (root / "lenbot.config.json").write_text(json.dumps({
+    (root / "lenbot.config.json").write_text(json.dumps({"compaction": {"input_tokens": 2000},
         "mode": "isolated", "scene": "group:80001", "bot_qq": "90001",
         "timezone": "UTC", "database": "data/web-permissions.sqlite3",
         "persona": "persona", "web_read": web_read,
@@ -45,8 +45,7 @@ def _chat_inputs(tmp_path, *, tools: str | list[str], web_read: dict | None):
             "roles": {
                 "mind": {"provider": "local", "model": "synthetic-mind",
                          "context_window_tokens": 8192},
-                "voice": {"provider": "local", "model": "synthetic-voice",
-                          "context_window_tokens": 4096},
+
             },
         },
     }), encoding="utf-8")
@@ -89,34 +88,26 @@ async def test_saved_web_document_is_readable_only_in_its_scene(tmp_path):
 async def test_web_read_registration_requires_configuration_and_role(tmp_path):
     config, persona = _chat_inputs(tmp_path / "explicit", tools=["web_read"], web_read=None)
     with Store(config.database) as store:
-        async with ChatModel(config.model_settings("mind")) as mind, ChatModel(
-            config.model_settings("voice")
-        ) as voice:
+        async with ChatModel(config.model_settings("mind")) as mind:
             with pytest.raises(ValueError, match="web_read"):
-                Chat(config, persona, store, mind, voice)
+                Chat(config, persona, store, mind)
 
     config, persona = _chat_inputs(tmp_path / "all", tools="all", web_read=None)
     with Store(config.database) as store:
-        async with ChatModel(config.model_settings("mind")) as mind, ChatModel(
-            config.model_settings("voice")
-        ) as voice:
-            chat = Chat(config, persona, store, mind, voice)
+        async with ChatModel(config.model_settings("mind")) as mind:
+            chat = Chat(config, persona, store, mind)
             assert "web_read" not in {tool["function"]["name"] for tool in chat.toolset.tools}
 
     config, persona = _chat_inputs(tmp_path / "allowed", tools=["web_read"], web_read={})
     with Store(config.database) as store:
-        async with ChatModel(config.model_settings("mind")) as mind, ChatModel(
-            config.model_settings("voice")
-        ) as voice:
-            chat = Chat(config, persona, store, mind, voice)
+        async with ChatModel(config.model_settings("mind")) as mind:
+            chat = Chat(config, persona, store, mind)
             assert "web_read" in {tool["function"]["name"] for tool in chat.toolset.tools}
 
     config, persona = _chat_inputs(tmp_path / "forbidden", tools=[], web_read={})
     with Store(config.database) as store:
-        async with ChatModel(config.model_settings("mind")) as mind, ChatModel(
-            config.model_settings("voice")
-        ) as voice:
-            chat = Chat(config, persona, store, mind, voice)
+        async with ChatModel(config.model_settings("mind")) as mind:
+            chat = Chat(config, persona, store, mind)
             assert "web_read" not in {tool["function"]["name"] for tool in chat.toolset.tools}
 
             async def wait_for_messages(seconds: float) -> str:

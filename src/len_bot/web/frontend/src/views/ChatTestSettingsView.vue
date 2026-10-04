@@ -62,7 +62,7 @@ onMounted(refresh)
           <div><dt>场景</dt><dd>{{ snapshot.scene }}</dd></div>
           <div><dt>Bot QQ</dt><dd>{{ snapshot.bot_qq }}</dd></div>
           <div><dt>时区</dt><dd>{{ snapshot.timezone }}</dd></div>
-          <div><dt>表达方式</dt><dd>{{ snapshot.voice_mode === 'direct' ? '大脑直接表达' : '表达器组织台词' }}</dd></div>
+          <div><dt>表达方式</dt><dd>{{ '聊天模型直接表达' }}</dd></div>
           <div><dt>消息出口</dt><dd>{{ snapshot.delivery === 'simulated' ? '模拟发送 · 未发送到 QQ' : snapshot.delivery }}</dd></div>
         </dl>
       </section>

@@ -18,7 +18,7 @@ from .tasks import TaskSettings
 class Compaction(BaseModel):
     model_config = STRICT
 
-    trigger_ratio: float = Field(default=0.6, gt=0, lt=1, allow_inf_nan=False)
+    input_tokens: int = Field(default=60000, gt=0, strict=True)
     keep_recent_tokens: int = Field(default=20000, gt=0, strict=True)
     max_output_tokens: int = Field(default=1024, gt=0)
 
@@ -247,8 +247,7 @@ class SceneSettings(ScenePersona):
     relationships: dict[str, str] = Field(default_factory=dict)
     behavior_addendum: str | None = None
     persona: Path
-    voice_mode: Literal["voice", "direct"] = "voice"
-    voice_context_tokens: int = Field(default=6000, gt=0, strict=True)
+    voice_mode: Literal["direct"] = "direct"
     attention: Attention = Field(default_factory=Attention)
     schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
     tasks: TaskSettings = Field(default_factory=TaskSettings)

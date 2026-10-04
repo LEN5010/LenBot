@@ -39,7 +39,7 @@ const tools = {
   memory: '记忆', delegate: '委托任务', task: '任务', send_file: '发送文件', react: '表情回应',
   persona_knowledge: '查角色资料', scene_control: '让 Bot 暂时安静', open_forward: '看合并转发', member_info: '查群成员', transcribe: '转写语音',
 }
-const callRoles = { mind: '大脑', voice: '表达器', recap: '整理回想', vision: '看图' }
+const callRoles = { mind: '大脑', voice: '历史表达器', recap: '整理回想', vision: '看图' }
 const notices = {
   group_recall: '撤回了一条消息', friend_recall: '撤回了一条消息', group_increase: '加入了群聊', group_decrease: '离开了群聊',
   group_ban: '禁言状态变化', group_card: '修改了群名片', notify: '平台通知', group_upload: '上传了群文件',

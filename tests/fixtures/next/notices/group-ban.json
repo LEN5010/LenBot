@@ -1,0 +1,24 @@
+[
+  {
+    "time": 1791116541,
+    "self_id": 90002,
+    "post_type": "notice",
+    "notice_type": "group_ban",
+    "sub_type": "ban",
+    "group_id": 80001,
+    "operator_id": 70002,
+    "user_id": 90002,
+    "duration": 3600
+  },
+  {
+    "time": 1791116589,
+    "self_id": 90002,
+    "post_type": "notice",
+    "notice_type": "group_ban",
+    "sub_type": "lift_ban",
+    "group_id": 80001,
+    "operator_id": 70002,
+    "user_id": 90002,
+    "duration": 0
+  }
+]

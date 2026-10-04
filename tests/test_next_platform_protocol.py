@@ -63,3 +63,29 @@ def test_member_fields_are_parsed_once_and_identity_must_match():
     with pytest.raises(ValueError, match="retcode=200"):
         parse_member({"status": "failed", "retcode": 200, "wording": "群成员不存在", "data": None},
                      group_id="80001", qq="70001")
+
+
+def test_recorded_bot_ban_and_lift_define_actual_send_availability(tmp_path):
+    from pathlib import Path
+    import json
+    from len_bot.next.platform.messages import parse_notice
+    from len_bot.next.storage.store import Store
+
+    rows = json.loads((Path(__file__).parent / 'fixtures/next/notices/group-ban.json').read_text())
+    moment = rows[0]['time'] + 1
+    with Store(tmp_path / 'notices.sqlite3', now=lambda: moment) as store:
+        store.save_notice(parse_notice(rows[0]))
+        assert store.bot_muted_until('group:80001', '90002') == rows[0]['time'] + rows[0]['duration']
+        assert store.bot_muted_until('group:80001', '90003') is None
+        store.save_notice(parse_notice(rows[1]))
+        assert store.bot_muted_until('group:80001', '90002') is None
+
+
+@pytest.mark.parametrize('duration', [-1, 0.5, True, None])
+def test_group_ban_rejects_invalid_duration_at_protocol_entry(duration):
+    from len_bot.next.platform.messages import parse_notice
+    raw = {'post_type': 'notice', 'notice_type': 'group_ban', 'sub_type': 'ban', 'time': 1790000000,
+           'group_id': 80001, 'user_id': 90002, 'operator_id': 70002, 'duration': duration}
+    with pytest.raises(ValueError, match='invalid sub_type/duration') as failure:
+        parse_notice(raw)
+    assert 'group_ban' in str(failure.value)

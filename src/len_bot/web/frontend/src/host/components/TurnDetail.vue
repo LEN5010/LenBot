@@ -1,6 +1,6 @@
 <script setup>
 // What happened in one reply: what the mind thought, which tools it used and
-// what came back, and what the voice wrote. Raw exchanges stay in developer mode.
+// what came back, and what was actually expressed. Raw exchanges stay in developer mode.
 import { computed } from 'vue'
 import { callRoleLabel, toolLabel, turnLabel } from '../labels.js'
 import { formatTime } from '../time.js'

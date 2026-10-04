@@ -10,7 +10,7 @@ const emit = defineEmits(['saved', 'dirty'])
 const saved = computed(() => props.snapshot.saved.processing)
 const groups = [
   ['compaction', '上下文压缩', [
-    ['trigger_ratio', '压缩时机（0–1）', '对话占到模型上下文的这个比例时，把较早的内容压缩成回想'],
+    ['input_tokens', '输入压缩阈值（token）', '输入含角色、工具和参考；输出额度另外预留'],
     ['keep_recent_tokens', '近期原文目标（token）', '按完整消息／工具组保留；实际范围还受模型窗口和回想占用限制'],
     ['max_output_tokens', '回想最大长度（token）', '']]],
   ['images', '图片', [

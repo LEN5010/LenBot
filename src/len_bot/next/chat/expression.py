@@ -15,10 +15,8 @@ from .context import ChatContext, PROMPTS
 from .tools import ReactArguments, SayArguments
 from ..config import LabConfig
 from ..platform.delivery import Expression, part_length, report_parts, split_expression
-from ..learning.expression_selection import ExpressionService
 from ..models.limits import LimitReached, check_speech
 from ..platform.messages import ChatMessage, Segment, Sender, SendResult
-from ..models.request import ChatRequest
 from ..persona.profile import Persona
 from ..persona.stickers import PersonaSticker
 from ..plugin import Content, Sent
@@ -38,37 +36,30 @@ class ChatExpression:
     """Build and deliver speech without owning the scene's model loop."""
 
     def __init__(self, config: LabConfig, persona: Persona, store: Store, *, context: ChatContext,
-                 request: ChatRequest, send_message: MessageSender | None,
-                 expression_service: ExpressionService | None, notify: Callable[[], None],
+                 send_message: MessageSender | None, notify: Callable[[], None],
                  on_reply_sample: Callable[[], None] | None, now: Callable[[], float]):
         self.config, self.persona, self.store = config, persona, store
-        self.context, self.request = context, request
-        self.send_message, self.expression_service = send_message, expression_service
+        self.context = context
+        self.send_message = send_message
         self.notify, self.on_reply_sample, self.now = notify, on_reply_sample, now
         # Plugin sends never interleave with a multi-part expression.
         self.outlet = asyncio.Lock()
 
+    def check_send_available(self) -> None:
+        until = self.store.bot_muted_until(self.config.scene, self.config.bot_qq)
+        if until is not None:
+            raise ValueError(f"平台 group_ban 通知：当前 Bot 禁言至 {until}，未发送")
+
     async def express(self, turn_id: str, arguments: SayArguments, *,
                       expression_style: str | None = None, direct: bool = False) -> ChatMessage:
+        self.check_send_available()
         check_speech(self.store, self.config)
         quote = None
         if arguments.reply_to is not None:
             quote = self.store.find_message(self.config.scene, arguments.reply_to)
             if quote is None:
                 raise ValueError(f"当前场景没有平台消息 {arguments.reply_to}")
-        if self.config.voice_mode == "direct":
-            text = arguments.content
-        else:
-            selected = []
-            if self.expression_service is not None and self.config.scene in self.expression_service.scenes:
-                selected = await self.expression_service.select(
-                    self.config.scene, arguments.content, turn_id=turn_id, direct=direct,
-                )
-            messages = self.context.voice_messages(arguments, quote=quote,
-                                                   expression_style=expression_style, selected=selected)
-            reply = await self.request(turn_id, "voice", messages, [],
-                                       expression_ids=[item["id"] for item in selected])
-            text = reply.text
+        text = arguments.content
         segments = []
         platform_reply = (arguments.reply_to if quote is not None and (
             self.now() - quote.time > 120 or self.store.messages_after(self.config.scene, arguments.reply_to) > 3
@@ -81,6 +72,7 @@ class ChatExpression:
         return self.simulated_message(segments, reply_to=platform_reply)
 
     def react(self, arguments: ReactArguments) -> Expression:
+        self.check_send_available()
         if arguments.reply_to is not None and self.store.find_message(self.config.scene, arguments.reply_to) is None:
             raise ValueError(f"当前场景没有平台消息 {arguments.reply_to}")
         if arguments.emotion is not None:
@@ -131,6 +123,7 @@ class ChatExpression:
                                        sticker: PersonaSticker | CollectedSticker | None = None,
                                        channels: set[str], quota_notice: bool = False) -> tuple[str, str]:
         async with self.outlet:
+            self.check_send_available()
             return await self._send_prepared(entry_seq, parts, prefix=prefix, turn_id=turn_id,
                                              sticker=sticker, channels=channels, quota_notice=quota_notice)
 
@@ -150,6 +143,7 @@ class ChatExpression:
                     await asyncio.sleep(delay)
                 if not quota_notice:
                     try:
+                        self.check_send_available()
                         check_speech(self.store, self.config)
                     except LimitReached as error:
                         content = prefix + report_parts(parts, errors, self.context.render) + "\n" + str(error)
@@ -193,6 +187,7 @@ class ChatExpression:
         """Send ordered plugin content through one scene outlet and retain actual results."""
         if reply_to is not None and self.store.find_message(self.config.scene, reply_to) is None:
             raise ValueError(f"当前场景没有平台消息 {reply_to}")
+        self.check_send_available()
         check_speech(self.store, self.config)
         prepared = await prepare_parts(plugin, content, self.config.text_delivery.max_chars, reply_to)
         parts = [self.simulated_message(part.segments, reply_to=reply_to if index == 0 else None)
@@ -206,6 +201,7 @@ class ChatExpression:
                     if index:
                         await asyncio.sleep(min(settings.max_interval_seconds, max(
                             settings.min_interval_seconds, part_length(part) / settings.chars_per_second)))
+                    self.check_send_available()
                     check_speech(self.store, self.config)
                     part.time = self.now()
                     part.send_status = "simulated" if self.send_message is None else "unconfirmed"
