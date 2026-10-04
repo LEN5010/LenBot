@@ -504,6 +504,10 @@ class SceneRunner:
                         return None
                     continue
                 return self.store.pending_messages(self.config.scene), notice_until, []
+            if self.closing:
+                # EOF drains accepted input without waiting for another arrival;
+                # a stopped network host rejects new turns at admission.
+                return self.store.pending_messages(self.config.scene), notice_until, []
             if not wait:
                 return None
             try:
