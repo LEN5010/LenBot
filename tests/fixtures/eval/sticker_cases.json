@@ -1,0 +1,184 @@
+{
+  "format": "structured-development",
+  "source": "前一轮真实索图后query=哼失败、emotion=小小得意成功的观察脱敏；其余为同职责迁移设计例，非真实发言。",
+  "cases": [
+    {
+      "id": "sticker-request-after-no-match",
+      "set": "expression",
+      "expect": [
+        "实际索图时选择真实可用素材；不只承诺会发却没有图片。",
+        "不匹配原错保持，不能把猜测标签写成成功发送。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 90001,
+            "group_id": 80001,
+            "user_id": 70001,
+            "message_id": "sticker-1",
+            "time": 1791138801,
+            "sender": {
+              "nickname": "群友甲",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "你的表情呢"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        }
+      ],
+      "image_materials": "sticker-images.json"
+    },
+    {
+      "id": "sticker-celebration-without-request",
+      "set": "expression",
+      "expect": [
+        "对好消息自然回应，倾向选择合适庆祝图；不以真人先索图为条件。",
+        "文字和图像若一起使用应在最后一次表达收轮。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 90001,
+            "group_id": 80001,
+            "user_id": 70001,
+            "message_id": "sticker-2",
+            "time": 1791138802,
+            "sender": {
+              "nickname": "群友甲",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "然然！我刚刚过了科目二，终于！！！"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        }
+      ],
+      "image_materials": "sticker-images.json"
+    },
+    {
+      "id": "sticker-greeting-without-request",
+      "set": "expression",
+      "expect": [
+        "对轻松探头选择真实表情，图像可以独立回应；不机械附上文字。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 90001,
+            "group_id": 80001,
+            "user_id": 70001,
+            "message_id": "sticker-3",
+            "time": 1791138803,
+            "sender": {
+              "nickname": "群友甲",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "然然探头"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        }
+      ],
+      "image_materials": "sticker-images.json"
+    },
+    {
+      "id": "sticker-factual-question",
+      "set": "expression",
+      "expect": [
+        "认真问日期用文字回答具体日期，表情不能代替信息。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 90001,
+            "group_id": 80001,
+            "user_id": 70001,
+            "message_id": "sticker-4",
+            "time": 1791138804,
+            "sender": {
+              "nickname": "群友甲",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "告诉我你的生日具体哪一天"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        }
+      ],
+      "image_materials": "sticker-images.json"
+    }
+  ]
+}

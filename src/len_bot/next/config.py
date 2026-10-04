@@ -122,6 +122,10 @@ class SharedConfig(BaseModel):
             raise ValueError('memory_transfer requires an explicit target memory with a different backend')
         if self.memory_transfer is not None:
             source = self.memory_transfer.source
+            if self.memory_transfer.resume_failed and (
+                    not isinstance(self.memory, LocalMemoryConfig) or self.memory.ingest is None
+                    or not isinstance(source, OpenVikingMemoryConfig)):
+                raise ValueError('memory_transfer.resume_failed requires native source and local target with ingest enabled')
             if isinstance(source, LocalMemoryConfig) and source.local.embedding is not None:
                 if source.local.embedding.provider not in self.models.providers:
                     raise ValueError('memory_transfer.source.local.embedding.provider references an unknown provider')

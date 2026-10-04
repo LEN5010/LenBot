@@ -344,7 +344,7 @@ async def import_archive(config: HostConfig | LabConfig) -> dict:
     elif any(item.scope == 'public' for item, _ in contents) and config.memory.openviking.public_root is None:
         raise ValueError('Public archive content requires an explicit target public_root; it is not scene memory')
     report = {'operation': 'import', 'started': time.time(), 'finished': None,
-              'writes': [], 'error': None, 'not_transferred':
+              'writes': [], 'resumed_jobs': [], 'error': None, 'not_transferred':
               ['Source revision history stays in its archive/service', 'Derived summaries and vectors are not copied',
                'Original chat and processing database remain in place; no backend configuration is rewritten']}
     with report_path.open('x', encoding='utf-8') as stream:
@@ -374,6 +374,19 @@ async def import_archive(config: HostConfig | LabConfig) -> dict:
                     else:
                         result = asdict(await service.backend.write(item.scene, item.target_path, content, scope=item.scope))
                     write.update(finished=time.time(), result=result)
+                    _atomic_replace(report_path, encode(report))
+                if settings.resume_failed:
+                    for scene in archive.scenes:
+                        previous = service.jobs.latest(scene)
+                        if previous is None or previous['status'] not in {'failed', 'interrupted'}:
+                            continue
+                        resumed = service.jobs.create(scene, 'local', previous['first_seq'], previous['through_seq'])
+                        resumed['details'].update(retry_of=previous['id'], transfer_archive=str(settings.archive))
+                        service.jobs.details(resumed)
+                        report['resumed_jobs'].append({'scene': scene, 'job': resumed['id'],
+                                                       'source_job': previous['id'],
+                                                       'first_seq': resumed['first_seq'],
+                                                       'through_seq': resumed['through_seq']})
                     _atomic_replace(report_path, encode(report))
         report['finished'] = time.time()
     except BaseException as error:

@@ -75,7 +75,12 @@ class ChatExpression:
         self.check_send_available()
         if arguments.reply_to is not None and self.store.find_message(self.config.scene, arguments.reply_to) is None:
             raise ValueError(f"当前场景没有平台消息 {arguments.reply_to}")
-        if arguments.emotion is not None:
+        if arguments.file is not None:
+            sticker = self.persona.stickers.get(arguments.file)
+            if sticker is None:
+                raise ValueError(f"当前角色没有表情文件：{arguments.file}")
+            matches = [sticker]
+        elif arguments.emotion is not None:
             matches = [sticker for sticker in self.persona.stickers.values()
                        if arguments.emotion.casefold() in {value.casefold() for value in sticker.emotions}]
         else:
