@@ -2,13 +2,15 @@
 
 import asyncio
 import json
+import shutil
 import sqlite3
 import time
 
 import pytest
 
 from len_bot.next.config import load_host_config
-from len_bot.next.maintenance.transfer_memory import export_archive, check_processing_archive
+from len_bot.next.maintenance.transfer_memory import (Archive, Document, backend_description,
+                                                     export_archive, check_processing_archive, import_archive)
 from len_bot.next.memory.jobs import MemoryJobs
 from len_bot.next.memory.local import LocalMemory
 from len_bot.next.memory.service import MemoryService
@@ -110,3 +112,64 @@ def test_transfer_rejects_exclusion_for_existing_other_scene_message(tmp_path):
     with pytest.raises(ValueError, match='source belongs to another scene'):
         asyncio.run(export_archive(_export_config(tmp_path, source)))
     assert not (tmp_path / 'transfer').exists()
+
+
+@pytest.mark.parametrize('resume_failed', [False, True])
+def test_native_to_local_import_preserves_failed_sources_and_optionally_resumes(tmp_path, resume_failed):
+    source = _root(tmp_path)
+    source['models']['roles']['memory'] = dict(source['models']['roles']['mind'])
+    source['memory'] = {'backend': 'local', 'local': {'directory': 'local-after'}, 'ingest': {}}
+    native = {'backend': 'openviking', 'openviking': {
+        'base_url': 'http://127.0.0.1:9', 'account_id': 'offline',
+        'scenes': {SCENE: {'user_id': 'offline-group', 'api_key': 'unused-placeholder'}}}}
+    source['memory_transfer'] = {'operation': 'import', 'source': native, 'archive': 'transfer',
+                                 'scenes': [SCENE], 'public_scene': SCENE, 'resume_failed': resume_failed}
+    (tmp_path / 'lenbot.config.json').write_text(json.dumps(source))
+    config = load_host_config(tmp_path)
+    jobs_path = config.database.with_name('state.db.memory.sqlite3')
+    with Store(config.database) as store, MemoryJobs(jobs_path) as jobs:
+        _enqueue(store, 1)
+        _enqueue(store, 2)
+        jobs.initialize(SCENE, 0)
+        jobs.remember_personas(SCENE, {'fixture'})
+        jobs.exclude_records(SCENE, [2])
+        failed = jobs.create(SCENE, 'openviking', 1, 1)
+        failed['details'].update(native_phase='failed', task_id='actual-failed-task',
+                                 receipt={'archive_uri': 'viking://user/offline-group/sessions/source/history/archive_001'})
+        jobs.status(failed, 'failed', 'Request timed out.')
+    archive_root = tmp_path / 'transfer'
+    archive_root.mkdir()
+    shutil.copy2(config.database, archive_root / 'chat.sqlite3')
+    shutil.copy2(jobs_path, archive_root / 'memory-jobs.sqlite3')
+    document = Document(scope='scene', scene=SCENE, source_path='memories/lenbot/events.md',
+                        target_path='lenbot/events.md')
+    payload = document.payload(archive_root)
+    payload.parent.mkdir(parents=True)
+    content = '群友(QQ 90001)说读书会在周五；原消息1，日期保留。'
+    payload.write_text(content)
+    manifest = Archive(format=1, exported_at=time.time(),
+                       source=backend_description(config.memory_transfer.source),
+                       target=backend_description(config.memory), database=str(config.database),
+                       scenes=[SCENE], public_scene=SCENE, documents=[document])
+    (archive_root / 'manifest.json').write_text(manifest.model_dump_json())
+
+    result = asyncio.run(import_archive(config))
+    assert result['result']['finished'] is not None and result['result']['error'] is None
+    with MemoryJobs(jobs_path) as jobs, Store(config.database) as store:
+        assert jobs.after(SCENE) == 0
+        assert jobs.excluded_records(SCENE) == [2]
+        assert jobs.persona_ids(SCENE) == {'fixture'}
+        old = dict(jobs.db.execute('SELECT * FROM memory_jobs WHERE id=?', (failed['id'],)).fetchone())
+        assert old['status'] == 'failed' and old['error'] == 'Request timed out.'
+        assert old['details'] == json.dumps(failed['details'], ensure_ascii=False)
+        assert store.read_message(SCENE, 1) is not None
+        latest = jobs.latest(SCENE)
+        if resume_failed:
+            assert latest['backend'] == 'local' and latest['status'] == 'queued'
+            assert (latest['first_seq'], latest['through_seq']) == (1, 1)
+            assert latest['details']['retry_of'] == failed['id']
+            assert result['result']['resumed_jobs'][0]['source_job'] == failed['id']
+        else:
+            assert latest['id'] == failed['id'] and result['result']['resumed_jobs'] == []
+    backend = LocalMemory(config.memory.local)
+    assert asyncio.run(backend.read(SCENE, 'lenbot/events.md')).content == content

@@ -69,6 +69,8 @@ uv run --no-sync python -m len_bot.next.maintenance.migrate_memory_jobs
 
 历史格式只由 `import_history`、`import_reminders`、`import_media`、`import_legacy_memory` 等显式离线命令读取；当前后端移交用 `transfer_memory`，角色记忆模板见[专门说明](memory-templates.md)。仅在实际需要移交时按模块入口与根配置准备参数，不恢复旧运行时或反写旧库。
 
+OpenViking移交到local时，根配置的`memory_transfer.resume_failed: true`可在全部正文导入后，为最新失败／中断的原消息范围建立本地queued批次。原失败记录、服务任务与归档引用保持，游标仍在上次成功位置；待本地抽取实际完成才推进。该选项要求启用local ingest和明确memory模型；未确认的原生提交必须先处理，不能靠移交跳过。导入回执的`resumed_jobs`列实际新批次，创建待处理批次不代表抽取已完成。
+
 本地记忆正文在停机后手工修改时，从实例根执行 `uv run --no-sync python -m len_bot.next.maintenance.memory_reindex`。重建保留正文和历史，清除所有派生目录摘要（`.abstract.md`／`.overview.md`），避免旧概览继续作为当前资料；启用摘要整理后会按新正文重新生成。
 
 ## 记忆删除的范围

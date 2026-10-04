@@ -160,6 +160,7 @@ class MemoryTransferSettings(BaseModel):
     archive: Path
     scenes: list[str] = Field(min_length=1)
     public_scene: str
+    resume_failed: bool = False
 
     @field_validator('scenes')
     @classmethod

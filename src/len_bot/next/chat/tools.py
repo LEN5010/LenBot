@@ -56,13 +56,15 @@ class ReactArguments(BaseModel):
     end_turn: bool = Field(default=False, description="这次表情完成本轮回应，成功后即可结束；还要继续处理时保持 false。")
     emotion: str | None = Field(default=None, min_length=1)
     query: str | None = Field(default=None, min_length=1)
+    file: str | None = Field(default=None, min_length=1, description="从当前角色素材目录选择真实文件名，直接发送这一张。")
     reply_to: str | None = None
 
     @model_validator(mode="after")
     def one_selector(self) -> ReactArguments:
-        if (self.emotion is None) == (self.query is None):
-            raise ValueError("emotion 与 query 必须二选一")
-        if not (self.emotion if self.emotion is not None else self.query).strip():
+        selectors = [value for value in (self.file, self.emotion, self.query) if value is not None]
+        if len(selectors) != 1:
+            raise ValueError("file、emotion 与 query 必须三选一")
+        if not selectors[0].strip():
             raise ValueError("表情检索内容不能为空白")
         return self
 
@@ -88,7 +90,8 @@ SAY_TOOL = {"type": "function", "function": {
 
 REACT_TOOL = {"type": "function", "function": {
     "name": "react", "description": "在当前场景发送一张表情，角色匹配优先，其次是启用的本群已采用表情；"
-        "emotion 精确匹配情绪标签，或 query 按描述、标签字面检索，二选一；结果返回实际来源与发送状态。",
+        "file 直接选择目录中的角色素材，emotion 精确匹配情绪标签，query 按描述、标签字面检索，三选一；"
+        "结果返回实际来源与发送状态。",
     "parameters": ReactArguments.model_json_schema(),
 }}
 
@@ -179,8 +182,14 @@ def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[
             parameters["properties"]["content"]["description"] = (PROMPTS / mode).read_text().strip()
             allowed[index] = {**tool, "function": {**function, "parameters": parameters}}
         elif function["name"] == "react":
+            parameters = ReactArguments.model_json_schema()
+            catalog = "\n".join(f"{sticker.file}：{sticker.description}"
+                                for sticker in sorted(persona.stickers.values(), key=lambda sticker: sticker.file))
             allowed[index] = {**tool, "function": {**function, "description": function["description"]
-                              + " 按图像描述用 query 搜索；emotion 只填写已知的实际标签。素材标签不是文字口吻或关系判断菜单。"}}
+                              + " 先按眼前情境选择图像，使用 file 可以直接发送目录里这一张。"
+                              + " query 是字面检索，不理解近义词；emotion 只填写已知的实际标签。"
+                              + " 素材描述说明图片内容，不预设文字态度。\n当前角色真实素材：\n" + catalog,
+                              "parameters": model_schema(parameters)}}
     return allowed
 
 
