@@ -1,6 +1,6 @@
 # 表达回放用例
 
-一组通用的群聊情境，用来对照修改提示词或角色包前后的回复。人物、账号和对话都是虚构的，角色使用[示例角色小满](../personas/companion/)。
+一组通用的群聊情境，用来对照修改提示词或角色包前后的回复。人物、账号和对话都是虚构的，角色使用[示例角色小然](../personas/companion/)。
 
 每个用例只有被 @ 的消息会让 Bot 开口，前面没 @ 的消息作为上下文；`expect` 写的是期待的回应方式，由人对照判断，不自动打分。
 
@@ -29,6 +29,7 @@ uv run --no-sync lenbot-eval report <run 目录名>
 | teasing | 被调侃偷吃宵夜 | 斗嘴有分寸 |
 | good-news-sticker | 收到 offer | 表情承担情绪，文字不重复强调 |
 | follow-the-topic | 聊完海报再问 Bot 今天干嘛 | 和前面的话题接得上 |
+| spicy-hotpot | 被叫去吃重庆火锅 | 结合不吃辣自然回应 |
 | are-you-a-bot | 群里聊谁是机器人 | 回答自然，不生硬声明 |
 
 新增用例时沿用 `cases.json` 的格式：`message` 步骤放原始 OneBot 事件，`await_turn` 等待第几轮结束，`observe` 再观察几秒。

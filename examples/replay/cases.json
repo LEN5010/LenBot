@@ -36,7 +36,7 @@
               {
                 "type": "text",
                 "data": {
-                  "text": "小满在吗"
+                  "text": "小然在吗"
                 }
               }
             ]
@@ -67,7 +67,7 @@
               {
                 "type": "text",
                 "data": {
-                  "text": "满满出来玩"
+                  "text": "小然出来玩"
                 }
               }
             ]
@@ -98,7 +98,7 @@
               {
                 "type": "text",
                 "data": {
-                  "text": "小满救命 好无聊"
+                  "text": "小然救命 好无聊"
                 }
               }
             ]
@@ -319,7 +319,7 @@
       "set": "expression",
       "start_time": 1791194400.0,
       "expect": [
-        "直接回答 6 月 21 日；需要时可以先查角色资料。",
+        "直接回答 3 月 7 日；需要时可以先查角色资料。",
         "不附加反问或叮嘱。"
       ],
       "steps": [
@@ -348,7 +348,7 @@
               {
                 "type": "text",
                 "data": {
-                  "text": "小满你生日几号来着，直接告诉我日期就行"
+                  "text": "小然你生日几号来着，直接告诉我日期就行"
                 }
               }
             ]
@@ -398,7 +398,7 @@
               {
                 "type": "text",
                 "data": {
-                  "text": "小满你是不是又偷偷吃宵夜了（）"
+                  "text": "小然你是不是又偷偷吃宵夜了（）"
                 }
               }
             ]
@@ -573,7 +573,81 @@
               {
                 "type": "text",
                 "data": {
-                  "text": "小满你呢 今天忙啥了"
+                  "text": "小然你呢 今天忙啥了"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        },
+        {
+          "type": "observe",
+          "seconds": 20
+        }
+      ]
+    },
+    {
+      "id": "spicy-hotpot",
+      "set": "expression",
+      "start_time": 1791198000.0,
+      "expect": [
+        "结合自己不吃辣自然回应，比如问有没有鸳鸯锅，不长篇解释口味。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70003",
+            "message_id": "spicy-hotpot-0",
+            "time": 1791198002.0,
+            "sender": {
+              "nickname": "老周",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "text",
+                "data": {
+                  "text": "今晚去吃重庆火锅"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70003",
+            "message_id": "spicy-hotpot-1",
+            "time": 1791198006.0,
+            "sender": {
+              "nickname": "老周",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90002"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "小然来不来"
                 }
               }
             ]
@@ -647,7 +721,7 @@
               {
                 "type": "text",
                 "data": {
-                  "text": "小满你是AI吗"
+                  "text": "小然你是AI吗"
                 }
               }
             ]

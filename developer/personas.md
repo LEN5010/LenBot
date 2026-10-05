@@ -1,13 +1,13 @@
 # 角色包
 
-角色包决定 Bot 是谁、怎么说话。一个角色包就是一个目录，可以在面板的角色页编辑，也可以直接写文件。完整例子见[示例角色小满](../examples/personas/companion/)。
+角色包决定 Bot 是谁、怎么说话。一个角色包就是一个目录，可以在面板的角色页编辑，也可以直接写文件。完整例子见[示例角色小然](../examples/personas/companion/)。
 
 ```text
 companion/
   persona.yaml       名字、身份、性格、许可
   voice.md           说话方式
   boundaries.md      底线
-  examples.yaml      情境和台词样例
+  examples.yaml      情境和台词样例（没有样例时写 []）
   knowledge/         可检索的资料（可选）
   stickers/          表情图片和 index.yaml（可选）
   avatar.png         头像（可选）
@@ -41,6 +41,14 @@ companion/
 **表情承担情绪。** 有表情包时，在 `voice.md` 里说明：话照常说，情绪交给表情，文字里不再重复强调。
 
 **样例写情境和一句台词。** `context` 写当时的情境，`line` 写它会怎么回。样例只是示范语气，内容不要和真实群聊经历混在一起。准备多套样例时用 `tags` 区分，再用 `example_tags` 选。
+
+```yaml
+- context: 群友：刚下班，今天被甲方改了八版
+  line: 八版，甲方是来许愿的吧
+  tags: [daily]
+```
+
+样例不是必需的。示例角色小然就没有写样例，只靠设定、说话方式和表情；样例写得太像某个人，模型容易照抄。
 
 **事实放进资料。** 生日、经历、作品这类需要说准的内容写进 `knowledge/` 下的 Markdown，模型需要时会检索；资料里没有的，它应该说不知道。
 
