@@ -31,10 +31,12 @@ defineEmits(['click'])
 .object-row{display:flex;align-items:center;gap:var(--sp-2);min-width:0;border-radius:var(--radius);position:relative}
 .row-main{flex:1;min-width:0;display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) var(--sp-3);border:0;background:none;font:inherit;color:inherit;text-align:left;border-radius:var(--radius)}
 .interactive .row-main{cursor:pointer}
+.object-row{transition:background-color var(--dur-1)}
 .interactive:hover{background:var(--hover)}
 .row-main:hover{text-decoration:none}
 .active,.active:hover{background:var(--selected)}
-.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:2px;border-radius:2px;background:var(--primary)}
+.active::before{content:'';position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:3px;background:var(--brand);animation:rise var(--dur-2) var(--ease-out)}
+.active .row-title{color:var(--primary)}
 .row-prepend{flex:none;display:inline-flex}
 .row-text{flex:1;min-width:0;display:grid;gap:2px}
 .row-title{font-weight:600;overflow-wrap:anywhere}

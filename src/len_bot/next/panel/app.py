@@ -39,6 +39,7 @@ from .routes.jargon import register_host_jargon
 from .routes.stickers import register_host_stickers
 from .routes.reply_effects import register_host_reply_effects
 from ..runtime.network import NetworkRuntime
+from ..platform.platform_tools import scene_title
 from .auth import changes_socket, install_panel_auth
 
 
@@ -141,6 +142,27 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
                  "latest_error": item["errors"][0] if item["errors"] else None} for item in runtime.mcp.state()
             ],
         }
+
+    # Group names and private nicknames come from OneBot once per process; they
+    # only label scenes in the panel and are not stored.
+    titles: dict[str, str] = {}
+
+    @app.get("/api/host/scene-titles")
+    async def scene_titles(_: str = Depends(user)):
+        missing = [scene for scene in config.scenes if scene not in titles]
+        if runtime.platform is None or not runtime.platform.connected:
+            missing = []
+        results = await asyncio.gather(*(scene_title(scene, runtime.platform.call) for scene in missing),
+                                       return_exceptions=True)
+        errors = {}
+        for scene, result in zip(missing, results):
+            if isinstance(result, Exception):
+                errors[scene] = f"{type(result).__name__}: {result}"
+            elif isinstance(result, BaseException):
+                raise result
+            else:
+                titles[scene] = result
+        return {"titles": {scene: titles[scene] for scene in config.scenes if scene in titles}, "errors": errors}
 
     @app.post("/api/host/connection/connect", status_code=202)
     async def connect(_: str = Depends(user)):

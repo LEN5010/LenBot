@@ -18,10 +18,10 @@ defineEmits(['back'])
 </template>
 <style scoped>
 .master-detail{display:grid;grid-template-columns:minmax(220px,var(--list-width)) minmax(0,1fr);gap:var(--sp-4);align-items:start;min-width:0}
-.md-list{position:sticky;top:72px;max-height:calc(100vh - 88px);overflow:auto;min-width:0}
+.md-list{position:sticky;top:84px;max-height:calc(100vh - 108px);overflow:auto;min-width:0;border-radius:var(--radius-lg)}
 .md-detail{display:grid;gap:var(--sp-4);min-width:0}
 .md-back{display:none;justify-self:start}
-.md-placeholder{border:1px dashed var(--line);border-radius:var(--radius-lg);padding:var(--sp-6) var(--sp-4);text-align:center;color:var(--muted)}
+.md-placeholder{border:1.5px dashed var(--line-strong);border-radius:var(--radius-lg);padding:var(--sp-6) var(--sp-4);text-align:center;color:var(--muted);background:var(--surface)}
 .md-placeholder:empty{display:none}
 @media(max-width:900px){
   .master-detail{grid-template-columns:minmax(0,1fr)}

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, sceneName } from '../../../api.js'
+import { api, sceneName, sceneNumber } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'
 import { useCurrentScene } from '../../../composables/useCurrentScene.js'
 import { useUnsavedChanges } from '../../../composables/useUnsavedChanges.js'
@@ -39,7 +39,7 @@ async function addScene() {
 </script>
 
 <template>
-  <HostPage :title="scene ? sceneName(scene) : '群聊'" :description="current ? `角色：${current.persona.name}` : ''">
+  <HostPage :title="scene ? sceneName(scene) : '群聊'" :description="current ? `${sceneNumber(scene)} · 角色：${current.persona.name}` : ''">
     <template #actions><v-btn variant="tonal" color="primary" @click="adding = true">添加群聊</v-btn></template>
     <EmptyState v-if="host.state && !scene" text="还没有群聊"><v-btn color="primary" @click="adding = true">添加群聊</v-btn></EmptyState>
     <template v-else-if="scene">

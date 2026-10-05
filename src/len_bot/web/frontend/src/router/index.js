@@ -43,7 +43,13 @@ const router = createRouter({
       path:'/host/capabilities',
       name:'host-capabilities',
       component:()=>import('../host/pages/capabilities/CapabilitiesPage.vue'),
-      meta:{title:'能力',scene:route=>['tools','plugins',undefined].includes(route.query.tab)}
+      meta:{title:'能力',scene:route=>['tools',undefined].includes(route.query.tab)}
+    },
+    {
+      path:'/host/plugins',
+      name:'host-plugins',
+      component:()=>import('../host/pages/capabilities/PluginsPage.vue'),
+      meta:{title:'插件',scene:true}
     },
     {
       path:'/host/models',

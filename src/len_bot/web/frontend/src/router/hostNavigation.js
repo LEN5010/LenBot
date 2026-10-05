@@ -13,8 +13,11 @@ export const hostGroups = [
     { id: 'tasks', title: '任务', name: 'host-tasks', pages: ['host-tasks'] },
     { id: 'resources', title: '资源', name: 'host-resources', pages: ['host-resources'] },
   ] },
-  { title: '配置', areas: [
+  { title: '扩展', areas: [
+    { id: 'plugins', title: '插件', name: 'host-plugins', pages: ['host-plugins'] },
     { id: 'capabilities', title: '能力', name: 'host-capabilities', pages: ['host-capabilities'] },
+  ] },
+  { title: '配置', areas: [
     { id: 'models', title: '模型', name: 'host-models', pages: ['host-models'] },
     { id: 'settings', title: '设置', name: 'host-system', pages: ['host-system'] },
   ] },
@@ -22,7 +25,7 @@ export const hostGroups = [
 export const hostAreas = hostGroups.flatMap(group => group.areas)
 export const hostPageNames = hostAreas.flatMap(area => area.pages)
 export const hostPaths = ['/host/overview', '/host/chat-test', '/host/scenes', '/host/logs',
-  '/host/capabilities', '/host/models', '/host/persona', '/host/system', '/host/memory',
+  '/host/capabilities', '/host/plugins', '/host/models', '/host/persona', '/host/system', '/host/memory',
   '/host/tasks', '/host/resources']
 export function hostTarget(name, scene) {
   return { name, query: scene ? { scene } : {} }

@@ -1,6 +1,8 @@
 <script setup>
 import { computed } from 'vue'
-import { api, sceneName } from '../../../api.js'
+import { mdiMessageTextOutline, mdiSendOutline, mdiChatProcessingOutline, mdiAlarm, mdiCurrencyCny, mdiRefresh, mdiLanConnect,
+  mdiCheckCircleOutline, mdiArrowRight, mdiAlertCircleOutline, mdiAccountGroupOutline } from '@mdi/js'
+import { api, sceneName, sceneNumber } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { useHostEvents } from '../../events.js'
 import { host, readHostState } from '../../store.js'
@@ -11,6 +13,8 @@ import Panel from '../../ui/Panel.vue'
 import ErrorNote from '../../ui/ErrorNote.vue'
 import LiveStatus from '../../ui/LiveStatus.vue'
 import StatGrid from '../../ui/StatGrid.vue'
+import SceneAvatar from '../../ui/SceneAvatar.vue'
+import markUrl from '../../../assets/lenbot-mark.svg'
 import ObjectList from '../../ui/ObjectList.vue'
 import ObjectRow from '../../ui/ObjectRow.vue'
 import EmptyState from '../../ui/EmptyState.vue'
@@ -43,12 +47,14 @@ const todo = computed(() => {
     items.push({ key: 'connection', text: runtimeLabel(state.value.connection.status),
       to: { name: 'host-system', query: { tab: 'connection' } }, action: '连接设置' })
   }
-  for (const [kind, tab, list] of [['插件', 'plugins', state.value?.plugins || []], ['MCP 服务', 'mcp', state.value?.mcp || []]]) {
+  const places = { 插件: name => ({ name: 'host-plugins', query: { item: name } }),
+    'MCP 服务': name => ({ name: 'host-capabilities', query: { tab: 'mcp', item: name } }) }
+  for (const [kind, list] of [['插件', state.value?.plugins || []], ['MCP 服务', state.value?.mcp || []]]) {
     for (const item of list) {
       if (item.status === 'failed') items.push({ key: `${kind}:${item.name}`, text: `${kind} ${item.name} 没有启动成功`,
-        error: item.error, to: { name: 'host-capabilities', query: { tab } }, action: '查看' })
+        error: item.error, to: places[kind](item.name), action: '查看' })
       else if (item.latest_error) items.push({ key: `${kind}:${item.name}`, text: `${kind} ${item.name} ${formatAgo(item.latest_error.at)}报错`,
-        error: item.latest_error.error, to: { name: 'host-capabilities', query: { tab } }, action: '查看' })
+        error: item.latest_error.error, to: places[kind](item.name), action: '查看' })
     }
   }
   if (!day.value) return items
@@ -78,10 +84,12 @@ function refresh() {
   today.reload()
 }
 const stats = computed(() => [
-  { label: '收到消息', value: day.value.messages.received || 0 },
-  { label: 'Bot 发言', value: spoke.value },
-  { label: '回复轮次', value: count(day.value.turns) },
-  { label: '待执行提醒', value: day.value.pending_schedules },
+  { label: '收到消息', value: day.value.messages.received || 0, icon: mdiMessageTextOutline },
+  { label: 'Bot 发言', value: spoke.value, icon: mdiSendOutline },
+  { label: '回复轮次', value: count(day.value.turns), icon: mdiChatProcessingOutline, to: { name: 'host-logs' } },
+  { label: '待执行提醒', value: day.value.pending_schedules, icon: mdiAlarm, to: { name: 'host-tasks', query: { tab: 'schedules' } } },
+  { label: '今日花费', value: costs.value.length ? costs.value.join(' · ') : '暂无', icon: mdiCurrencyCny,
+    hint: day.value.unknown_cost_calls ? `另有 ${day.value.unknown_cost_calls} 次调用费用未知` : '', to: { name: 'host-models', query: { tab: 'usage' } } },
 ])
 const connectionNotes = {
   connection_failed: 'QQ 连接失败。确认 OneBot 已经启动、地址和令牌正确，然后手动连接。',
@@ -93,72 +101,92 @@ const connectionNotes = {
 
 <template>
   <HostPage title="首页">
-    <template #actions><v-btn variant="tonal" :loading="today.loading.value" @click="refresh">刷新</v-btn></template>
+    <template #actions><v-btn variant="tonal" color="primary" :prepend-icon="mdiRefresh" :loading="today.loading.value" @click="refresh">刷新</v-btn></template>
     <ErrorNote v-if="host.stateError" title="读取运行状态失败" :error="host.stateError" @retry="readHostState" />
     <ErrorNote v-if="today.error.value" title="读取今日统计失败" :error="today.error.value" @retry="today.reload()" />
 
-    <Panel v-if="state">
-      <template #title>
-        <div class="status-main" :class="{ ok: online }">
-          <span class="dot" />
-          <div><h2>{{ online ? 'Bot 在线' : runtimeLabel(state.connection.status) }}</h2>
-            <span class="muted small">QQ {{ state.bot_qq }} · {{ state.delivery === 'onebot' ? '真实发送到 QQ' : '模拟发送，不会发到 QQ' }}</span></div>
+    <section v-if="state" class="hero rise" :class="{ ok: online }">
+      <div class="hero-main">
+        <span class="hero-mark"><img :src="markUrl" alt="" /><span class="hero-dot" /></span>
+        <div class="hero-text">
+          <h2>{{ online ? 'Bot 在线' : runtimeLabel(state.connection.status) }}</h2>
+          <p>QQ {{ state.bot_qq }} · {{ state.delivery === 'onebot' ? '真实发送到 QQ' : '模拟发送，不会发到 QQ' }} · {{ state.scenes.length }} 个群聊</p>
+          <LiveStatus :status="events.status.value" @reconnect="events.reconnect" />
         </div>
-      </template>
-      <template #actions>
-        <LiveStatus :status="events.status.value" @reconnect="events.reconnect" />
-        <v-btn v-if="state.connection.can_connect || connect.busy.value" color="primary" :loading="connect.busy.value" @click="connectQQ">手动连接 QQ</v-btn>
+      </div>
+      <div class="hero-actions">
+        <v-btn v-if="state.connection.can_connect || connect.busy.value" color="primary" :prepend-icon="mdiLanConnect" :loading="connect.busy.value" @click="connectQQ">手动连接 QQ</v-btn>
         <v-btn :to="{ name: 'host-system', query: { tab: 'connection' } }" variant="text">连接设置</v-btn>
-      </template>
-      <p v-if="connectionNotes[state.connection.status]" class="note">{{ connectionNotes[state.connection.status] }}</p>
-      <ErrorNote v-if="connect.error.value" title="手动连接没有成功" :error="connect.error.value" />
-      <ErrorNote v-if="state.connection.last_error" title="最近一次连接或运行失败" :error="state.connection.last_error" />
-      <DevOnly label="连接详情" :json="state.connection" />
-    </Panel>
-
-    <Panel title="需要处理的事" flush>
-      <div class="todo">
-        <p v-if="!state || !day" class="muted">读取中…</p>
-        <p v-else-if="!todo.length" class="all-good">暂无待处理项</p>
-        <ObjectList v-else divided>
-          <ObjectRow v-for="item in todo" :key="item.key" :title="item.text">
-            <Fold v-if="item.error" label="错误原文" code>{{ item.error }}</Fold>
-            <template #actions><v-btn :to="item.to" size="small" variant="tonal" color="primary">{{ item.action }}</v-btn></template>
-          </ObjectRow>
-        </ObjectList>
       </div>
-    </Panel>
+      <p v-if="connectionNotes[state.connection.status]" class="hero-note">{{ connectionNotes[state.connection.status] }}</p>
+    </section>
+    <ErrorNote v-if="connect.error.value" title="手动连接没有成功" :error="connect.error.value" />
+    <ErrorNote v-if="state?.connection.last_error" title="最近一次连接或运行失败" :error="state.connection.last_error" />
 
-    <Panel v-if="day" title="今天">
-      <StatGrid :items="stats" />
-      <p class="note">花费：{{ costs.length ? costs.join(' · ') : '暂无' }}<template v-if="day.unknown_cost_calls">，另有 {{ day.unknown_cost_calls }} 次调用费用未知</template>
-        <RouterLink :to="{ name: 'host-models', query: { tab: 'usage' } }" class="ml-2">模型与价格</RouterLink></p>
-      <p v-if="effects.length" class="note">群友对 Bot 发言的反应：{{ effects.join(' · ') }}</p>
-      <DevOnly label="今日统计原始数据" :json="day" />
-    </Panel>
+    <StatGrid v-if="day" :items="stats" />
 
-    <Panel v-if="state" title="群聊">
-      <EmptyState v-if="!state.scenes.length" text="还没有群聊"><v-btn color="primary" :to="{ name: 'host-scenes' }">添加群聊</v-btn></EmptyState>
-      <div class="scene-grid">
-        <RouterLink v-for="item in state.scenes" :key="item.scene" :to="{ name: 'host-scenes', query: { scene: item.scene } }" class="scene-card">
-          <strong>{{ sceneName(item.scene) }}</strong><span>{{ item.persona.name }}</span>
-        </RouterLink>
-      </div>
-    </Panel>
+    <div class="columns">
+      <Panel title="需要处理的事" :icon="todo.length ? mdiAlertCircleOutline : mdiCheckCircleOutline" flush class="rise" style="--i: 2">
+        <template #actions><v-chip v-if="todo.length" color="primary">{{ todo.length }}</v-chip></template>
+        <div class="todo">
+          <p v-if="!state || !day" class="muted">读取中…</p>
+          <div v-else-if="!todo.length" class="all-good"><v-icon :icon="mdiCheckCircleOutline" size="20" />一切正常，暂无待处理项</div>
+          <ObjectList v-else divided>
+            <ObjectRow v-for="item in todo" :key="item.key" :title="item.text">
+              <Fold v-if="item.error" label="错误原文" code>{{ item.error }}</Fold>
+              <template #actions><v-btn :to="item.to" size="small" variant="tonal" color="primary">{{ item.action }}</v-btn></template>
+            </ObjectRow>
+          </ObjectList>
+        </div>
+        <p v-if="effects.length" class="effects muted small">群友对 Bot 发言的反应：{{ effects.join(' · ') }}</p>
+      </Panel>
+
+      <Panel v-if="state" title="群聊" :icon="mdiAccountGroupOutline" class="rise" style="--i: 3">
+        <template #actions><v-btn variant="text" size="small" :append-icon="mdiArrowRight" :to="{ name: 'host-scenes' }">管理</v-btn></template>
+        <EmptyState v-if="!state.scenes.length" text="还没有群聊"><v-btn color="primary" :to="{ name: 'host-scenes' }">添加群聊</v-btn></EmptyState>
+        <div class="scene-list">
+          <RouterLink v-for="item in state.scenes" :key="item.scene" :to="{ name: 'host-scenes', query: { scene: item.scene } }" class="scene-card">
+            <SceneAvatar :scene="item.scene" :size="40" />
+            <span class="scene-text"><strong>{{ sceneName(item.scene) }}</strong><span>{{ sceneNumber(item.scene) }} · {{ item.persona.name }}</span></span>
+            <v-icon :icon="mdiArrowRight" size="18" class="scene-go" />
+          </RouterLink>
+        </div>
+      </Panel>
+    </div>
+    <DevOnly label="连接详情" :json="state?.connection" />
+    <DevOnly v-if="Object.keys(host.titleErrors).length" label="群名读取失败" :json="host.titleErrors" />
+    <DevOnly label="今日统计原始数据" :json="day" />
   </HostPage>
 </template>
 
 <style scoped>
-.status-main{display:flex;align-items:center;gap:var(--sp-3)}
-.status-main h2{font-size:var(--fs-xl)}
-.status-main .dot{width:12px;height:12px;border-radius:50%;background:var(--warning);flex:none}
-.status-main.ok .dot{background:var(--success)}
-.note{margin:0;overflow-wrap:anywhere}
-.todo{padding:0 var(--sp-4) var(--sp-3)}
-.todo p{margin:0}
-.all-good{color:var(--success);font-weight:600}
-.scene-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,200px),1fr));gap:var(--sp-3)}
-.scene-card{border:1px solid var(--line);border-radius:var(--radius);padding:var(--sp-3);color:inherit;display:grid;gap:2px}
-.scene-card:hover{border-color:var(--primary);background:var(--hover);text-decoration:none}
-.scene-card span{color:var(--muted);font-size:var(--fs-sm)}
+.hero{position:relative;overflow:hidden;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--sp-4);align-items:center;padding:var(--sp-5) var(--sp-6);
+  border-radius:var(--radius-xl);border:1px solid var(--line);background:linear-gradient(120deg,var(--brand-soft),var(--surface) 70%);box-shadow:var(--shadow-card)}
+.hero::after{content:'';position:absolute;right:-60px;top:-80px;width:260px;height:260px;border-radius:50%;background:radial-gradient(circle,var(--selected),transparent 70%);animation:float 12s ease-in-out infinite;pointer-events:none}
+.hero-main{display:flex;align-items:center;gap:var(--sp-4);min-width:0;position:relative;z-index:1}
+.hero-mark{position:relative;flex:none}
+.hero-mark img{width:64px;height:64px;border-radius:30%;box-shadow:var(--shadow-brand);display:block}
+.hero-dot{position:absolute;right:-3px;bottom:-3px;width:18px;height:18px;border-radius:50%;border:3px solid var(--surface);background:var(--warning)}
+.hero.ok .hero-dot{background:var(--success);color:var(--success);animation:pulse 2s var(--ease-out) infinite}
+.hero-text{display:grid;gap:2px;min-width:0;justify-items:start}
+.hero-text h2{font-size:var(--fs-xl);font-weight:700}
+.hero-text p{margin:0;color:var(--muted);overflow-wrap:anywhere}
+.hero-actions{display:flex;gap:var(--sp-2);flex-wrap:wrap;position:relative;z-index:1}
+.hero-note{grid-column:1/-1;margin:0;position:relative;z-index:1}
+.columns{display:grid;grid-template-columns:minmax(0,3fr) minmax(300px,2fr);gap:var(--sp-4);align-items:start}
+.todo{padding:0 var(--sp-3) var(--sp-3)}
+.todo p{margin:0;padding:0 var(--sp-2)}
+.all-good{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-3) var(--sp-2);color:var(--success);font-weight:600}
+.effects{margin:0;padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line)}
+.scene-list{display:grid;gap:var(--sp-2)}
+.scene-card{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) var(--sp-3);border:1px solid var(--line);border-radius:var(--radius);color:inherit;background:var(--surface);
+  transition:transform var(--dur-2) var(--ease-out),box-shadow var(--dur-2) var(--ease-out),border-color var(--dur-1)}
+.scene-card:hover{text-decoration:none;transform:translateY(-2px);box-shadow:var(--shadow-hover);border-color:var(--line-strong)}
+.scene-text{display:grid;min-width:0;flex:1}
+.scene-text strong,.scene-text span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scene-text span{font-size:var(--fs-sm);color:var(--muted)}
+.scene-go{color:var(--muted);transition:transform var(--dur-2) var(--ease-spring),color var(--dur-1)}
+.scene-card:hover .scene-go{transform:translateX(3px);color:var(--primary)}
+@media(max-width:1100px){.columns{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:700px){.hero{grid-template-columns:minmax(0,1fr);padding:var(--sp-4)}.hero-mark img{width:52px;height:52px}}
 </style>

@@ -2,7 +2,9 @@
 
 import pytest
 
-from len_bot.next.platform.platform_tools import parse_forward, parse_member
+import asyncio
+
+from len_bot.next.platform.platform_tools import parse_forward, parse_member, scene_title
 
 
 def _forward_response():
@@ -63,6 +65,28 @@ def test_member_fields_are_parsed_once_and_identity_must_match():
     with pytest.raises(ValueError, match="retcode=200"):
         parse_member({"status": "failed", "retcode": 200, "wording": "群成员不存在", "data": None},
                      group_id="80001", qq="70001")
+
+
+def test_scene_title_reads_group_name_and_private_nickname():
+    calls = []
+
+    async def call(action, params):
+        calls.append((action, params))
+        data = {"group_id": 80001, "group_name": "测试群", "member_count": 12, "max_member_count": 500} \
+            if action == "get_group_info" else {"user_id": 70001, "nickname": "群友甲", "sex": "unknown", "age": 0}
+        return {"status": "ok", "retcode": 0, "data": data, "echo": "1"}
+
+    assert asyncio.run(scene_title("group:80001", call)) == "测试群"
+    assert asyncio.run(scene_title("private:70001", call)) == "群友甲"
+    assert calls == [("get_group_info", {"group_id": 80001}), ("get_stranger_info", {"user_id": 70001})]
+
+
+def test_scene_title_failure_keeps_raw_fragment():
+    async def call(action, params):
+        return {"status": "failed", "retcode": 1200, "wording": "不是群成员", "data": None}
+
+    with pytest.raises(ValueError, match="不是群成员"):
+        asyncio.run(scene_title("group:80001", call))
 
 
 def test_recorded_bot_ban_and_lift_define_actual_send_availability(tmp_path):

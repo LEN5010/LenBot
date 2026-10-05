@@ -17,9 +17,15 @@ defineProps({
     <EmptyState v-if="empty" :text="emptyText" :compact="compact"><slot name="empty" /></EmptyState>
     <slot v-else :data="resource.data.value" />
   </template>
-  <div v-else-if="resource.loading.value" class="loading" role="status">
-    <v-progress-circular indeterminate size="18" width="2" color="primary" />读取中…</div>
+  <div v-else-if="resource.loading.value" class="loading" :class="{ compact }" role="status" aria-label="读取中">
+    <span v-for="index in (compact ? 2 : 3)" :key="index" class="bar" :style="{ '--i': index }" /></div>
 </template>
 <style scoped>
-.loading{display:flex;align-items:center;justify-content:center;gap:var(--sp-2);padding:var(--sp-5);color:var(--muted);font-size:var(--fs-sm)}
+.loading{display:grid;gap:var(--sp-3);padding:var(--sp-5);border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--surface)}
+.loading.compact{padding:var(--sp-2) 0;border:0;background:none}
+.bar{height:14px;border-radius:7px;background:linear-gradient(90deg,var(--hover) 25%,var(--selected) 50%,var(--hover) 75%);background-size:300% 100%;animation:shimmer 1.4s ease-in-out infinite;animation-delay:calc(var(--i) * 120ms)}
+.bar:nth-child(1){width:42%}
+.bar:nth-child(2){width:88%}
+.bar:nth-child(3){width:64%}
+@keyframes shimmer{from{background-position:100% 0}to{background-position:0 0}}
 </style>

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { mdiCheck, mdiDotsVertical, mdiPlus } from '@mdi/js'
+import { mdiCheck, mdiDotsVertical, mdiPlus, mdiPuzzleOutline } from '@mdi/js'
 import { api, sceneName } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { confirm } from '../../../composables/useConfirm.js'
@@ -192,11 +192,12 @@ const facts = name => {
     <MasterDetail v-else :selected="selected !== null" @back="back">
       <template #list>
         <div class="stack">
-          <Panel title="已安装" flush>
+          <Panel :title="`${names.length} 个插件`" flush>
             <template #actions><v-btn size="small" variant="tonal" color="primary" :prepend-icon="mdiPlus" @click="installing = true">从 Git 安装</v-btn></template>
             <ObjectList class="list">
               <ObjectRow v-for="name in names" :key="name" :title="name" clickable :active="selected === name" @click="open(name)"
                 :subtitle="manifest(name)?.description || ''">
+                <template #prepend><span class="plugin-icon" :class="status(name).tone || status(name).value"><v-icon :icon="mdiPuzzleOutline" size="18" /></span></template>
                 <template #meta>
                   <v-icon v-if="sceneSaved.includes(name)" :icon="mdiCheck" size="16" color="primary" :aria-label="`在 ${sceneName(scene)} 使用`" />
                   <StatusBadge dot v-bind="status(name)" />
@@ -226,10 +227,10 @@ const facts = name => {
       <template #placeholder>从左边选一个插件查看和配置。</template>
 
       <template v-if="selected && names.includes(selected)">
-        <Panel :title="selected" :description="manifest(selected)?.description || ''">
+        <Panel :title="selected" :description="manifest(selected)?.description || ''" :icon="mdiPuzzleOutline">
           <template #actions>
             <StatusBadge v-bind="status(selected)" />
-            <v-chip v-if="recommended.includes(selected)" variant="outlined">内置推荐</v-chip>
+            <v-chip v-if="recommended.includes(selected)" color="primary">内置推荐</v-chip>
             <v-menu>
               <template #activator="{ props: menu }"><v-btn v-bind="menu" :icon="mdiDotsVertical" variant="text" size="small" aria-label="更多操作" /></template>
               <v-list density="compact">
@@ -320,6 +321,9 @@ const facts = name => {
 </template>
 
 <style scoped>
+.plugin-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:var(--radius-sm);background:var(--brand-soft);color:var(--primary)}
+.plugin-icon.failed{background:var(--error-bg);color:var(--error)}
+.plugin-icon.unloaded,.plugin-icon.neutral{background:var(--hover);color:var(--muted)}
 .list{padding:0 var(--sp-2) var(--sp-2)}
 .empty{padding:var(--sp-3)}
 .justify-self-start{justify-self:start}

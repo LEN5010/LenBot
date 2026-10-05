@@ -36,31 +36,33 @@ async function exit() {
 </script>
 
 <template>
-  <v-navigation-drawer v-model="drawer" :permanent="!mobile" :temporary="mobile" :width="216" aria-label="主导航" class="shell-nav">
+  <v-navigation-drawer v-model="drawer" :permanent="!mobile" :temporary="mobile" :width="236" floating aria-label="主导航" class="shell-nav">
     <div class="shell-brand"><img :src="markUrl" alt="" /><div><strong>LenBot</strong><span>隔离对话测试</span></div></div>
     <nav class="shell-nav-groups">
       <div class="shell-nav-group">
         <RouterLink v-for="item in sections" :key="item.id" :to="{ name: item.id }" class="shell-nav-item"
           :class="{ active: route.name === item.id }" :aria-current="route.name === item.id ? 'page' : undefined">
-          <v-icon :icon="item.icon" size="18" />{{ item.label }}</RouterLink>
+          <v-icon :icon="item.icon" size="20" />{{ item.label }}</RouterLink>
       </div>
     </nav>
     <template #append>
       <div class="shell-nav-footer"><v-btn :prepend-icon="mdiLogout" block variant="text" :loading="leaving" @click="exit">退出登录</v-btn></div>
     </template>
   </v-navigation-drawer>
-  <v-app-bar flat :height="56" class="shell-bar">
-    <v-btn v-if="mobile" :icon="mdiMenu" variant="text" aria-label="打开导航" @click="drawer = true" />
-    <span class="shell-bar-title">{{ route.meta.title }}</span>
-    <v-spacer />
-    <v-chip class="mr-2">隔离 · 模拟发送</v-chip>
-  </v-app-bar>
-  <v-main tag="div">
-    <main class="shell-main" id="main-content">
-      <ErrorNote v-if="logoutError" title="退出登录失败" :error="logoutError" />
-      <slot />
-    </main>
+  <v-main class="shell-wrap">
+    <div class="shell-canvas">
+      <header class="shell-top">
+        <v-btn v-if="mobile" :icon="mdiMenu" variant="text" aria-label="打开导航" @click="drawer = true" />
+        <span class="shell-top-title">{{ route.meta.title }}</span>
+        <v-spacer />
+        <span class="shell-pill muted">隔离 · 模拟发送</span>
+      </header>
+      <main class="shell-main" id="main-content">
+        <ErrorNote v-if="logoutError" title="退出登录失败" :error="logoutError" />
+        <slot />
+      </main>
+    </div>
   </v-main>
   <ConfirmHost />
-  <v-snackbar v-model="toast" :timeout="3000" location="bottom">{{ host.toast }}</v-snackbar>
+  <v-snackbar v-model="toast" :timeout="3000" location="bottom" color="primary" rounded="pill">{{ host.toast }}</v-snackbar>
 </template>

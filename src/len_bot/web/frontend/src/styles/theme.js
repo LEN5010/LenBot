@@ -1,28 +1,40 @@
 // The one color table. It becomes both the Vuetify theme and the CSS
 // variables (`--ink`, `--error-bg`, …) that scoped styles use.
+// `brand` is the LenBot pink; `primary` is a deeper shade of the same pink so
+// that white button text and pink links stay readable.
 export const palette = {
-  ink: '#172b46',
-  muted: '#63748b',
-  line: '#e2e8f0',
-  surface: '#ffffff',
-  page: '#f4f6f9',
-  primary: '#2563eb',
-  'primary-bg': '#eef3ff',
+  brand: '#e799b0',
+  'brand-soft': '#fcebf1',
+  primary: '#c25579',
+  'primary-bg': '#fcebf1',
   'on-primary': '#ffffff',
-  success: '#16845c',
-  'success-bg': '#e7f5ef',
-  warning: '#a35a12',
-  'warning-bg': '#fbeede',
-  error: '#b3261e',
-  'error-bg': '#fde8e7',
-  info: '#326fa8',
-  'info-bg': '#e8f0f9',
-  idle: '#adb8c7',
-  // Neutral states for "where am I": hover and the selected list row or tab.
-  hover: '#f5f7fa',
-  selected: '#eaeef4',
-  'code-bg': '#f6f8fb',
+  ink: '#2d2430',
+  muted: '#7d6f7a',
+  line: '#f0e2e8',
+  'line-strong': '#e4ceda',
+  // Shell background, the content canvas inside it, and cards on the canvas.
+  page: '#f8eef3',
+  canvas: '#fdf9fb',
+  surface: '#ffffff',
+  // Neutral-pink states: hover, a segmented-control track, and the selected row or tab.
+  hover: '#fbf1f5',
+  track: '#f6e8ee',
+  selected: '#fbe3ec',
+  success: '#2f9468',
+  'success-bg': '#e5f5ec',
+  warning: '#b86e14',
+  'warning-bg': '#fcf0dd',
+  error: '#cc3d4d',
+  'error-bg': '#fde8ea',
+  info: '#3f7fc0',
+  'info-bg': '#e7f0fa',
+  idle: '#cdbfc7',
+  'code-bg': '#faf4f7',
 }
+
+// Background and letter colors for scene avatars, picked per scene.
+export const avatarTints = [['#fde4ec', '#c25579'], ['#f1e6fb', '#8a5cb8'], ['#ffeede', '#b9692c'],
+  ['#e3f3ee', '#2f8a68'], ['#e6effb', '#4a78b0'], ['#fff3d6', '#9a7414']]
 
 export function applyPalette(root = document.documentElement) {
   for (const [name, value] of Object.entries(palette)) root.style.setProperty(`--${name}`, value)

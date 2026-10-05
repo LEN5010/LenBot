@@ -26,7 +26,9 @@ const emit = defineEmits(['update:modelValue'])
   </v-dialog>
 </template>
 <style scoped>
-.form-dialog :deep(.v-card-title){font-size:var(--fs-lg);font-weight:650;padding:var(--sp-5) var(--sp-5) 0}
+.form-dialog{border-color:var(--line);box-shadow:var(--shadow-float)}
+.form-dialog :deep(.v-card-item){padding:var(--sp-5) var(--sp-5) 0}
+.form-dialog :deep(.v-card-title){font-size:var(--fs-xl);font-weight:700;padding:0}
 .form-dialog-body{display:grid;gap:var(--sp-4);padding:var(--sp-4) var(--sp-5);align-content:start}
 .form-dialog-body :deep(p){margin:0}
 .form-dialog-actions{padding:var(--sp-3) var(--sp-4) var(--sp-4);gap:var(--sp-2);flex-wrap:wrap}

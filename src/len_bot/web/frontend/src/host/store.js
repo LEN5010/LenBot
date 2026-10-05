@@ -3,10 +3,10 @@
 // `operator` is the QQ of the person using the panel, which task and reminder
 // permissions are checked against; it is kept while moving between pages.
 import { reactive } from 'vue'
-import { api } from '../api.js'
+import { api, sceneTitles } from '../api.js'
 
-export const host = reactive({ state: null, stateError: null, restart: null, toast: '', operator: '' })
-let stateRead = 0, restartRead = 0
+export const host = reactive({ state: null, stateError: null, restart: null, toast: '', operator: '', titleErrors: {} })
+let stateRead = 0, restartRead = 0, titlesRead = 0
 
 export async function readHostState() {
   const own = ++stateRead
@@ -17,6 +17,20 @@ export async function readHostState() {
     host.stateError = null
   } catch (error) {
     if (own === stateRead) host.stateError = error
+  }
+}
+
+// Group names come from QQ once the connection is up; failures stay visible
+// in developer mode and the scene keeps showing its number.
+export async function readSceneTitles() {
+  const own = ++titlesRead
+  try {
+    const value = await api('/api/host/scene-titles')
+    if (own !== titlesRead) return
+    Object.assign(sceneTitles, value.titles)
+    host.titleErrors = value.errors
+  } catch (error) {
+    if (own === titlesRead) host.titleErrors = { '': error.message }
   }
 }
 
@@ -37,5 +51,7 @@ export function notify(text) {
 export function clearHost() {
   ++stateRead
   ++restartRead
-  Object.assign(host, { state: null, stateError: null, restart: null, toast: '', operator: '' })
+  ++titlesRead
+  Object.assign(host, { state: null, stateError: null, restart: null, toast: '', operator: '', titleErrors: {} })
+  for (const key of Object.keys(sceneTitles)) delete sceneTitles[key]
 }

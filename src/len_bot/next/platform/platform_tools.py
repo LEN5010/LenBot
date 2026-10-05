@@ -1,4 +1,4 @@
-"""Low-frequency tools that query the live OneBot platform: merged forwards and group members."""
+"""Low-frequency queries to the live OneBot platform: merged forwards, group members and scene names."""
 
 from __future__ import annotations
 
@@ -170,6 +170,20 @@ async def open_forward(store: Store, scene: str, timezone: str, args: OpenForwar
               "next_offset": None if end == len(text) else end, "text": text[args.offset:end]}
     return Template((PROMPTS / "next_forward.md").read_text(encoding="utf-8")).substitute(
         scene=scene, result=encode(result)).strip()
+
+
+async def scene_title(scene: str, call: PlatformCall) -> str:
+    """The group name or the private contact's nickname, for the panel."""
+    kind, number = scene.split(":", 1)
+    action, field = ("get_group_info", "group_name") if kind == "group" else ("get_stranger_info", "nickname")
+    raw = await call(action, {"group_id" if kind == "group" else "user_id": int(number)})
+    try:
+        title = _succeeded(raw, action)[field]
+        if not isinstance(title, str):
+            raise ValueError(f"{field} must be text")
+        return title
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"{action} 返回无法解析：{error}; raw={repr(raw)[:500]}") from error
 
 
 def parse_member(raw: object, *, group_id: str, qq: str) -> dict:
