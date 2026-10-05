@@ -70,12 +70,11 @@ uv run --no-sync python -m len_bot.next.maintenance.migrate_memory_jobs
 1. 停止实例，按运行手册备份程序、配置、角色与数据。
 2. 删除 `models.roles.voice` 和场景的 `voice_context_tokens`，各场景 `voice_mode` 选 `direct`；评测 profile 同步选 direct。
 3. 用 `compaction.input_tokens` 替换 `trigger_ratio`。输入包含角色、工具、原话和参考；输出另以模型 `max_output_tokens` 预留，二者之和须能放入 `context_window_tokens`。`keep_recent_tokens` 是完整近期单位的保留目标，`compaction.max_output_tokens` 是回想输出上限。不要按旧条数或比例自动换算。
-4. 按实际服务核对续接协议。`history_policy` 缺省 native 保留；只有已核对由中转保持签名续接的 Antigravity 聊天路由才选 `antigravity-chat`，省去可读思考。其他字段仍原样续接，原始响应完整存档。
+4. 按实际服务核对续接协议。`history_policy` 缺省 native 保留；只有已核对由中转保持签名续接的 省去可读思考的路由才选 `omit-reasoning`，省去可读思考。其他字段仍原样续接，原始响应完整存档。
 5. 从实例根执行 `uv run --no-sync python -c 'from pathlib import Path; from len_bot.next.config import load_instance_config; load_instance_config(Path.cwd()); print("配置有效")'`。这只是配置校验，之后按当前授权显式启动。
 
 选择参数应依服务能力，较大输出额度是容量上限，不要求写满。一次性 system 与协议投影变化可能影响缓存。回退需停机恢复对应程序与配置；不要用旧数据库覆盖升级后的新聊天，也不自动回退。
 
-历史格式只由 `import_history`、`import_reminders`、`import_media`、`import_legacy_memory` 等显式离线命令读取；不恢复旧运行时或反写旧库。
 
 升级到仅支持本地记忆的版本时，停机备份后显式删除废弃的 `memory_transfer`、`persona_memory_export`、`replay_memory` 字段（包括值为 null 的字段）。仍使用远端记忆的实例应先用原版本完成正文移交，再安装新版本；新版本不自动转换配置或数据。旧服务目录、移交归档和回执备份保留。
 

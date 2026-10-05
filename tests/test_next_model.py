@@ -186,7 +186,7 @@ def test_model_settings_reject_invalid_config_at_named_field(field, value):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("policy", ["native", "antigravity-chat"])
+@pytest.mark.parametrize("policy", ["native", "omit-reasoning"])
 async def test_loopback_replay_sends_native_tool_continuation_without_retry(tmp_path, policy):
     recorded = recorded_response()
     recorded_text = recorded_text_response()
@@ -271,7 +271,7 @@ async def test_loopback_replay_sends_native_tool_continuation_without_retry(tmp_
     assert requests[1][2]["messages"][1] == {key: value for key, value in native.items()
         if policy == "native" or key != "reasoning_content"}
     assert requests[1][2]["messages"][1]["provider_continuation"] == {"signature": "synthetic-opaque"}
-    if policy == "antigravity-chat":
+    if policy == "omit-reasoning":
         assert all(headers["session-id"] == requests[0][1]["session-id"] for _, headers, _ in requests)
     else:
         assert all("session-id" not in headers for _, headers, _ in requests)

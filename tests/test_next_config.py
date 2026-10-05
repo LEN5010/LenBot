@@ -2171,7 +2171,7 @@ def test_proactive_requires_actual_reply_judgments(tmp_path):
 def test_large_output_keeps_a_separate_soft_input_budget(tmp_path):
     source = _config('personas/example')
     source['models']['roles']['mind'].update(context_window_tokens=1048576, max_output_tokens=32768,
-                                           history_policy='antigravity-chat')
+                                           history_policy='omit-reasoning')
     source['compaction'] = {'input_tokens': 180000, 'keep_recent_tokens': 100000, 'max_output_tokens': 8192}
     root = tmp_path / 'large'
     _write_config(root, source)

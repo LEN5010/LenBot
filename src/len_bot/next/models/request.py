@@ -69,7 +69,7 @@ async def request_model(config: SharedConfig, store: Store, model: ChatModel,
     messages = project_messages(messages, binding.history_policy)
     tokens = binding.max_output_tokens if output_tokens is None else output_tokens
     session_id = None
-    if binding.history_policy == "antigravity-chat":
+    if binding.history_policy == "omit-reasoning":
         session_id = quote(f"{config.database.resolve()}:{scene}:{role}", safe="")
     if input_estimate is None:
         estimated, method = request_estimate(config, store, model, scene=scene, role=role,

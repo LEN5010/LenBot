@@ -161,7 +161,7 @@ const amounts = value => Object.entries(value || {}).map(([currency, amount]) =>
               </div>
               <AdvancedFields>
                 <v-select v-model="draft.roles[name].history_policy" label="历史续接方式"
-                  :items="[{ title: '原生保留', value: 'native' }, { title: 'Antigravity 聊天路由', value: 'antigravity-chat' }]"
+                  :items="[{ title: '原生保留', value: 'native' }, { title: '省去可读思考', value: 'omit-reasoning' }]"
                   hint="只有确认路由自己保持签名续接时才选后者" persistent-hint />
                 <v-text-field :model-value="draft.roles[name].max_output_tokens" type="number" label="最长输出（token）"
                   @update:model-value="value => draft.roles[name].max_output_tokens = numberOrBlank(value)" />

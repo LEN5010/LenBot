@@ -12,12 +12,23 @@ import time
 import traceback
 
 from ..config import HostConfig, LabConfig, load_instance_config
-from .import_media import stopped
-from .import_history import _reject_constant
 from ..instance_lock import instance_lock
 from ..storage.store import FORMAT_VERSION, encode
 from ..work.materials import open_regular, require_directory
 from ..work.store import TERMINAL, TaskFile, _task
+
+
+def _reject_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
+def stopped(path: Path) -> None:
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f'Media transfer requires an existing regular stopped SQLite file: {path}')
+    for suffix in ('-wal', '-journal'):
+        sidecar = Path(str(path) + suffix)
+        if sidecar.exists() and sidecar.stat().st_size:
+            raise ValueError(f'Media transfer requires a complete checkpointed snapshot; nonempty {sidecar}')
 
 
 def write_json(path: Path, value: object) -> None:
