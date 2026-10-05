@@ -7,6 +7,7 @@ import ErrorNote from '../ui/ErrorNote.vue'
 import FormDialog from '../ui/FormDialog.vue'
 const pending = computed(() => flow.preview ? [...new Set([
   ...flow.preview.pending.sections.map(sectionLabel), ...flow.preview.pending.scenes.map(sceneName),
+  ...flow.preview.pending.plugins.map(item => `插件 ${item.name} v${item.candidate.version}`),
   ...flow.preview.pending.personas.map(item => `角色 ${item.name}`),
 ])] : [])
 const link = computed(() => flow.preview ? newPanelUrl() : null)
@@ -17,6 +18,7 @@ const link = computed(() => flow.preview ? newPanelUrl() : null)
     <ErrorNote v-if="flow.error" title="重启没有完成" :error="flow.error" />
     <template v-if="flow.preview && flow.phase === 'preview'">
       <p>{{ pending.length ? `将应用这些已保存的修改：${pending.join('、')}。` : '没有待应用的修改，按当前配置重新启动。' }}</p>
+<ErrorNote v-for="item in flow.preview.pending.plugins.filter(item => item.error)" :key="item.name" :title="`${item.name} 上次应用失败`" :error="item.error" />
       <p>重启后需要重新登录，页面上还没保存的修改会丢失。</p>
       <p v-if="flow.preview.chats.length">正在进行的聊天会先说完：{{ flow.preview.chats.map(sceneName).join('、') }}。</p>
       <div v-if="flow.preview.tasks.length">

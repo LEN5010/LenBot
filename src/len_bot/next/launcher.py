@@ -33,7 +33,16 @@ def run() -> int:
             child = None
             if stopping or code != RESTART_EXIT:
                 return code if code >= 0 else 128 - code
-            print('LenBot：旧宿主已退出，按根配置重新启动。', flush=True)
+            print('LenBot：旧宿主已退出，应用已选插件候选版本。', flush=True)
+            child = subprocess.Popen([sys.executable, '-m', 'len_bot.next.maintenance.apply_plugins'],
+                                     cwd=root, start_new_session=True)
+            if stopping:
+                child.terminate()
+            code = child.wait()
+            child = None
+            if stopping or code != 0:
+                return code if code >= 0 else 128 - code
+            print('LenBot：按根配置重新启动。', flush=True)
         return 0
     finally:
         for sig, handler in previous.items():

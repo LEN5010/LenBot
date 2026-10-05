@@ -39,7 +39,7 @@ const restartItems = computed(() => {
   const value = host.restart
   if (!value || value.error) return []
   return [...new Set([...value.sections.map(sectionLabel), ...value.scenes.map(sceneName),
-    ...value.personas.map(item => `角色 ${item.name}`)])]
+    ...value.plugins.map(item => `插件 ${item.name}`), ...value.personas.map(item => `角色 ${item.name}`)])]
 })
 const toast = computed({ get: () => Boolean(host.toast), set: value => { if (!value) host.toast = '' } })
 

@@ -13,6 +13,7 @@ from ..config import HostConfig, _load_host_source, _read_root
 from ..persona.profile import Persona, load_persona
 from ..tools.skills import select_skills
 from ..plugins.manifest import scene_skill_catalog
+from ..plugins.install import PluginInstaller
 
 
 def restart_summary(root: Path, running: HostConfig, personas: dict[str, Persona]) -> dict:
@@ -28,6 +29,7 @@ def restart_summary(root: Path, running: HostConfig, personas: dict[str, Persona
         if loaded[settings.persona] != personas[scene]:
             changed_personas[str(settings.persona)] = loaded[settings.persona].name
     return {
+        "plugins": [item.model_dump() for item in PluginInstaller(root).pending() if item.requested],
         "sections": [name for name in HostConfig.model_fields
                      if name != "scenes" and getattr(running, name) != getattr(saved, name)],
         "scenes": sorted(scene for scene in running.scenes.keys() | saved.scenes.keys()

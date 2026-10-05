@@ -6,7 +6,13 @@ import { api } from '../../api.js'
  */
 export const pluginsApi = {
   read: () => api('/api/host/plugins'),
-  install: (url, ref = null) => api('/api/host/plugins/install', { method: 'POST', body: JSON.stringify({ url, ref }) }),
+  install: (url, ref = null, switch_source = false) => api('/api/host/plugins/install', { method: 'POST', body: JSON.stringify({ url, ref, switch_source }) }),
+  importZip: (file, switchSource = false) => {
+    const body = new FormData()
+    body.append('file', file)
+    body.append('switch_source', String(switchSource))
+    return api('/api/host/plugins/zip', { method: 'POST', body })
+  },
   update: (name, ref = null) => api(`/api/host/plugins/${encodeURIComponent(name)}/update`, { method: 'POST', body: JSON.stringify({ ref }) }),
   /** @returns {Promise<CatalogView>} */
   catalog: () => api('/api/host/plugin-catalog'),

@@ -34,6 +34,7 @@ const plugins = useResource(() => pluginsApi.read())
 const save = useAction()
 const active = ref('')
 const drafts = ref({}), paths = ref(null)
+const zipImport = ref(false), zipFile = ref(null), switchSource = ref(false)
 const installing = ref(false), repository = ref(''), repositoryRef = ref('')
 const catalogDirty = ref(false), updating = ref(null), updateRef = ref('')
 const recommended = ['rss_broadcast', 'group_digest']
@@ -130,9 +131,12 @@ async function operate(part, action) {
       repository.value = ''
       repositoryRef.value = ''
       installing.value = false
+      zipImport.value = false
+      zipFile.value = null
+      switchSource.value = false
       if (!keepPathsDraft) reset('paths')
       reset(result.operation.name)
-      notify(result.operation.needs_config ? '已安装，请填写参数并启用' : '已安装，可为群聊启用')
+      notify(result.operation.needs_config ? '候选已准备，请填写参数后应用' : '候选已准备，可以应用')
       open(result.operation.name)
     } else {
       if (names.value.includes(part)) reset(part)
@@ -143,7 +147,8 @@ async function operate(part, action) {
   } else await plugins.reload()
   return result
 }
-const install = () => operate('install', () => pluginsApi.install(repository.value.trim(), repositoryRef.value.trim() || null))
+const install = () => operate('install', () => pluginsApi.install(repository.value.trim(), repositoryRef.value.trim() || null, switchSource.value))
+const importZip = () => operate('install', () => pluginsApi.importZip(zipFile.value, switchSource.value))
 const manage = (name, action) => operate(name, () => api(`/api/host/plugins/${encodeURIComponent(name)}/${action}`, { method: 'POST' }))
 function installEntry(entry) {
   repository.value = entry.repository
@@ -174,10 +179,14 @@ const errorOf = part => active.value === part ? save.error.value : null
 const facts = name => {
   const source = manifest(name)?.source
   return [
-    ['源码版本', manifest(name) ? `v${manifest(name).version}` : ''],
+    ['源码版本', source?.installed ? `v${source.installed.version}` : source ? '尚未应用' : manifest(name) ? `v${manifest(name).version}` : ''],
+    ['候选版本', source?.candidate ? `v${source.candidate.version}` : ''],
+    ['生效方式', source?.candidate ? source.application === 'host' ? (source.requested ? '已选择，下次明确重启时应用' : '应用后需要重启') : '应用时重载这个插件' : ''],
     ['运行版本', running.value[name]?.version ? `v${running.value[name].version}` : '未加载'],
     ['在用的群', running.value[name]?.scenes.map(sceneName).join('、') || '没有'],
-    ['安装来源', source ? (source.ref || (source.branch ? `分支 ${source.branch}` : '固定提交')) : ''],
+    ['安装来源', source?.installed ? `${source.installed.kind} · ${source.installed.location} · ${source.installed.ref || source.installed.branch || source.installed.revision}` : ''],
+    ['候选来源', source?.candidate ? `${source.candidate.kind} · ${source.candidate.location} · ${source.candidate.revision}` : ''],
+    ['兼容范围', manifest(name) ? `宿主 ${manifest(name).requires_lenbot} · Python ${manifest(name).requires_python} · ${manifest(name).platforms.join('、')}` : ''],
     ['依赖', manifest(name)?.dependencies.join('、') || ''],
   ]
 }
@@ -193,7 +202,7 @@ const facts = name => {
       <template #list>
         <div class="stack">
           <Panel :title="`${names.length} 个插件`" flush>
-            <template #actions><v-btn size="small" variant="tonal" color="primary" :prepend-icon="mdiPlus" @click="installing = true">从 Git 安装</v-btn></template>
+            <template #actions><v-btn size="small" variant="text" :prepend-icon="mdiPlus" @click="zipImport = true">导入 ZIP</v-btn><v-btn size="small" variant="tonal" color="primary" :prepend-icon="mdiPlus" @click="installing = true">从 Git 安装</v-btn></template>
             <ObjectList class="list">
               <ObjectRow v-for="name in names" :key="name" :title="name" clickable :active="selected === name" @click="open(name)"
                 :subtitle="manifest(name)?.description || ''">
@@ -235,13 +244,18 @@ const facts = name => {
               <template #activator="{ props: menu }"><v-btn v-bind="menu" :icon="mdiDotsVertical" variant="text" size="small" aria-label="更多操作" /></template>
               <v-list density="compact">
                 <v-list-item v-if="snapshot.saved.plugins[selected]" title="重载" :disabled="save.busy.value || pluginDirty(selected)" @click="manage(selected, 'reload')" />
-                <v-list-item v-if="manifest(selected)?.managed" title="更新／选择版本" :disabled="save.busy.value || pluginDirty(selected)" @click="chooseUpdate(selected)" />
+                <v-list-item v-if="manifest(selected)?.source?.installed?.kind === 'git'" title="更新／选择版本" :disabled="save.busy.value || pluginDirty(selected)" @click="chooseUpdate(selected)" />
                 <v-list-item v-if="manifest(selected)?.managed" title="卸载（保留数据）" base-color="error" :disabled="save.busy.value" @click="remove(selected, 'source')" />
                 <v-list-item v-if="snapshot.saved.disabled.includes(selected)" title="删除插件数据" base-color="error" :disabled="save.busy.value" @click="remove(selected, 'data')" />
               </v-list>
             </v-menu>
           </template>
           <FactList :items="facts(selected)" />
+          <div v-if="manifest(selected)?.source?.candidate" class="inline">
+            <v-btn color="primary" :loading="save.busy.value" :disabled="pluginDirty(selected)" @click="manage(selected, 'apply')">{{ manifest(selected).source.application === 'host' ? '应用并等待重启' : '应用候选版本' }}</v-btn>
+            <v-btn variant="text" :disabled="save.busy.value" @click="manage(selected, 'cancel')">取消候选</v-btn>
+          </div>
+          <ErrorNote v-if="manifest(selected)?.source?.error" title="版本应用失败" :error="manifest(selected).source.error" />
           <div class="inline">
             <a v-if="manifest(selected)?.repository" :href="manifest(selected).repository" target="_blank" rel="noopener noreferrer">源码仓库</a>
             <a v-if="manifest(selected)?.homepage" :href="manifest(selected).homepage" target="_blank" rel="noopener noreferrer">使用说明</a>
@@ -253,12 +267,12 @@ const facts = name => {
             title="插件说明文件读不了" :error="entry.error" />
           <v-alert v-if="(snapshot.available[selected] || []).length > 1" type="warning">有多个目录提供了同名插件，需要删掉多余的一份才能加载。</v-alert>
           <v-switch v-if="loaded.includes(selected)" :model-value="sceneSaved.includes(selected)" :loading="save.busy.value && active === 'scene'"
-            :disabled="save.busy.value" :label="`在 ${sceneName(scene)} 使用`" hint="立即生效，只重载这个插件" persistent-hint
+            :disabled="save.busy.value" :label="`在 ${sceneName(scene)} 使用`" :hint="manifest(selected)?.source?.candidate ? '候选应用时生效' : '立即生效，只重载这个插件'" persistent-hint
             @update:model-value="value => toggleScene(selected, value)" />
         </Panel>
 
         <SettingSection v-if="manifest(selected) && drafts[selected]" title="参数" :restart="false" save-label="保存并应用"
-          description="保存后只重载这个插件，聊天不用重启。" :dirty="pluginDirty(selected)" :saving="save.busy.value && active === selected"
+          :description="manifest(selected)?.source?.candidate ? '参数保存后用于候选版本；再点击应用。' : '保存后只重载这个插件，聊天不用重启。'" :dirty="pluginDirty(selected)" :saving="save.busy.value && active === selected"
           :error="errorOf(selected)" @save="savePlugin(selected)">
           <v-switch v-model="drafts[selected].enabled" label="启用这个插件" hint="停用后保留参数和数据" persistent-hint />
           <template v-if="drafts[selected].enabled">
@@ -305,18 +319,26 @@ const facts = name => {
   </ResourceState>
 
   <FormDialog v-model="installing" title="从 Git 安装插件" :busy="save.busy.value && active === 'install'">
-    <p class="muted">安装会执行插件代码并安装它声明的依赖，和 LenBot 共用 Python 环境。</p>
+    <p class="muted">先准备源码并检查兼容范围，再配置和应用。应用后插件和 LenBot 共用 Python 环境。</p>
     <v-text-field v-model="repository" label="插件仓库 URL" placeholder="https://example.com/author/plugin.git" />
     <v-text-field v-model="repositoryRef" label="版本（可选）" hint="标签、分支或提交；留空跟随仓库默认分支" persistent-hint />
-    <ErrorNote v-if="errorOf('install')" title="插件安装没有完成" :error="errorOf('install')" />
-    <template #actions><v-btn color="primary" :loading="save.busy.value && active === 'install'" :disabled="!repository.trim()" @click="install">安装</v-btn></template>
+    <v-switch v-model="switchSource" label="替换同名插件的安装来源" />
+    <ErrorNote v-if="errorOf('install')" title="插件准备没有完成" :error="errorOf('install')" />
+    <template #actions><v-btn color="primary" :loading="save.busy.value && active === 'install'" :disabled="!repository.trim()" @click="install">准备候选</v-btn></template>
+  </FormDialog>
+  <FormDialog v-model="zipImport" title="导入插件 ZIP" :busy="save.busy.value && active === 'install'">
+    <v-file-input v-model="zipFile" accept=".zip,application/zip" label="插件 ZIP" />
+    <p class="muted">ZIP 根目录或唯一顶层目录包含 plugin.toml 和 __init__.py。先准备候选，再配置和应用。</p>
+    <v-switch v-model="switchSource" label="替换同名插件的安装来源" />
+    <ErrorNote v-if="errorOf('install')" title="ZIP 准备没有完成" :error="errorOf('install')" />
+    <template #actions><v-btn color="primary" :loading="save.busy.value" :disabled="!zipFile" @click="importZip">准备候选</v-btn></template>
   </FormDialog>
   <FormDialog :model-value="updating !== null" :title="`更新 ${updating || ''}`" :busy="save.busy.value" @update:model-value="value => { if (!value) updating = null }">
     <v-text-field v-model="updateRef" label="标签、分支或提交" hint="留空沿用安装时的版本；没选过版本时更新到当前分支最新" persistent-hint />
-    <p class="muted">更新源码和依赖，然后只重载这个插件。</p>
+    <p class="muted">先准备候选，当前版本继续运行。依赖变化或插件声明需要时，通过宿主重启应用。</p>
     <v-alert v-if="updating && pluginDirty(updating)" type="warning">这个插件的参数还没保存，请先保存或放弃修改。</v-alert>
     <ErrorNote v-if="updating && errorOf(updating)" title="更新没有完成" :error="errorOf(updating)" />
-    <template #actions><v-btn color="primary" :loading="save.busy.value" :disabled="!updating || pluginDirty(updating)" @click="update">更新并重载</v-btn></template>
+    <template #actions><v-btn color="primary" :loading="save.busy.value" :disabled="!updating || pluginDirty(updating)" @click="update">准备候选</v-btn></template>
   </FormDialog>
 </template>
 

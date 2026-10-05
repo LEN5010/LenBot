@@ -51,8 +51,8 @@ export function queryString(values) {
 export const sceneTitles = reactive({})
 
 export function sceneNumber(id) {
-  const [kind, ...parts] = id.split(':')
-  return `${kind === 'group' ? '群' : kind === 'private' ? '私聊' : kind} ${parts.join(':')}`
+  const [platform, kind, ...parts] = id.split(':')
+  return `${platform} · ${kind === 'group' ? '群' : kind === 'private' ? '私聊' : kind} ${parts.join(':')}`
 }
 
 export function sceneName(id) {

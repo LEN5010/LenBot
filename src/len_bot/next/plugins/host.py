@@ -691,7 +691,7 @@ class PluginHost:
             plugins.append({
                 "name": record.name, "status": record.status, "error": record.error,
                 "directory": None if record.directory is None else str(record.directory),
-                "version": None if record.manifest is None else record.manifest.version,
+                "version": record.manifest.version if record.status == "running" else None,
                 "description": None if record.manifest is None else record.manifest.description,
                 "scenes": list(record.scenes),
                 "commands": [{"name": name, "description": description}

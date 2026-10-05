@@ -21,6 +21,10 @@ def test_object_list_config_keeps_structured_records(tmp_path):
     (directory / "plugin.toml").write_text('''name = "roomwatch"
 version = "1.0.0"
 interface = 1
+requires_lenbot = ">=0.1,<1"
+requires_python = ">=3.13"
+platforms = ["linux", "darwin", "win32"]
+reload = "plugin"
 authors = ["LEN5010"]
 license = "AGPL-3.0-or-later"
 description = "Room subscriptions"
