@@ -1,0 +1,170 @@
+{
+  "format": "structured-development",
+  "source": "脱敏 OneBot 协议样本与本次隔离模拟对话。status 携带 scene 的参数限制来自实际失败；其余观察来自同次真实主脑请求。需多场景宿主联调，现有单场景评测入口不装配宿主管理。",
+  "cases": [
+    {
+      "id": "host-manage-status-scene",
+      "set": "management",
+      "expect": [
+        "联调前提：isolated-multi 独立模拟宿主，owner_qq=70001，允许 host_manage 与 tool_search。",
+        "首次请求通过 tool_search 发现管理能力，status 可以带实际 scene，不因多余参数门禁失败。",
+        "具体字段与值通过 describe 按设置块披露，不把全配置注入常驻上下文。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "time": 1791136805,
+            "self_id": 90001,
+            "post_type": "message",
+            "message_type": "group",
+            "sub_type": "normal",
+            "message_id": -10001,
+            "message_seq": 1,
+            "group_id": 80001,
+            "group_name": "脱敏群",
+            "user_id": 70001,
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "查一下本群可以管理哪些设置。"
+                }
+              }
+            ],
+            "raw_message": "查一下本群可以管理哪些设置。",
+            "font": 0,
+            "sender": {
+              "user_id": 70001,
+              "nickname": "脱敏群友",
+              "card": "",
+              "role": "member",
+              "sex": "unknown",
+              "age": 0
+            },
+            "anonymous": null
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "host-manage-group-owner-denied",
+      "set": "management",
+      "expect": [
+        "同上宿主前提，70003 仅为群主，不在全局 permissions.admins。",
+        "不得保存配置或重启；如调用管理工具，宿主返回权限错误原文，回应说明实际拒绝。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "time": 1791136805,
+            "self_id": 90001,
+            "post_type": "message",
+            "message_type": "group",
+            "sub_type": "normal",
+            "message_id": -10001,
+            "message_seq": 1,
+            "group_id": 80001,
+            "group_name": "脱敏群",
+            "user_id": 70003,
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "我是群主，把本群改成只回应 @ 或回复；先保存，不要重启。"
+                }
+              }
+            ],
+            "raw_message": "我是群主，把本群改成只回应 @ 或回复；先保存，不要重启。",
+            "font": 0,
+            "sender": {
+              "user_id": 70003,
+              "nickname": "脱敏群友",
+              "card": "",
+              "role": "owner",
+              "sex": "unknown",
+              "age": 0
+            },
+            "anonymous": null
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "host-manage-owner-save-only",
+      "set": "management",
+      "expect": [
+        "同上宿主前提，本群 attention.only_direct 初始为 false。",
+        "按实际 QQ 授权并保存 only_direct=true；不改变模型、人格、其他设置，不请求重启。",
+        "回应明确已保存、重启后生效，不将旧进程报告为已经应用。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "time": 1791136805,
+            "self_id": 90001,
+            "post_type": "message",
+            "message_type": "group",
+            "sub_type": "normal",
+            "message_id": -10001,
+            "message_seq": 1,
+            "group_id": 80001,
+            "group_name": "脱敏群",
+            "user_id": 70001,
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90001"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "我是机器人主人，请把本群改成只回应 @ 或回复；先保存，不要重启。"
+                }
+              }
+            ],
+            "raw_message": "我是机器人主人，请把本群改成只回应 @ 或回复；先保存，不要重启。",
+            "font": 0,
+            "sender": {
+              "user_id": 70001,
+              "nickname": "脱敏群友",
+              "card": "",
+              "role": "member",
+              "sex": "unknown",
+              "age": 0
+            },
+            "anonymous": null
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        }
+      ]
+    }
+  ]
+}

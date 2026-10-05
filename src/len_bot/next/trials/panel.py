@@ -18,6 +18,7 @@ import uvicorn
 from len_bot.web.shell import mount_panel
 from ..chat.attention import SceneRunner
 from ..chat.session import Chat
+from ..platform.messages import ChatMessage, Sender, Segment
 from ..config import LabConfig, load_config, read_scene_persona, save_scene_persona
 from ..configuration.chat import ScenePersona
 from ..configuration.types import STRICT
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 class TestMessage(BaseModel):
     model_config = STRICT
-    uid: str = Field(pattern=r"^[1-9][0-9]*$")
+    uid: str = Field(pattern=r"^[a-z][a-z0-9_-]*:[^:\s/\\]+$")
     nickname: str = Field(min_length=1)
     text: str = Field(min_length=1)
     mention_bot: bool
@@ -82,7 +83,7 @@ class PanelSession:
 
     def snapshot(self) -> dict:
         return {
-            "scene": self.config.scene, "timezone": self.config.timezone, "bot_qq": self.config.bot_qq,
+            "scene": self.config.scene, "timezone": self.config.timezone, "bot_id": self.config.bot_id,
             "persona": {"id": self.chat.persona.id, "name": self.chat.persona.name},
             "voice_mode": self.config.voice_mode,
             "models": {"mind": self.config.models.roles.mind.model},
@@ -96,25 +97,25 @@ class PanelSession:
     def receive(self, item: TestMessage) -> dict:
         if self.closing or self.task.done():
             raise HTTPException(503, self.error() or "隔离场景已停止，不接收新消息")
-        kind, target = self.config.scene.split(":")
-        if item.uid == self.config.bot_qq:
-            raise HTTPException(422, "虚拟发言者不能使用 Bot 自己的 QQ")
-        if kind == "private" and item.uid != target:
-            raise HTTPException(422, "私聊测试身份必须是当前场景的对方 QQ")
+        platform, kind, target = self.config.scene.split(":", 2)
+        if item.uid == self.config.bot_id:
+            raise HTTPException(422, "虚拟发言者不能使用 Bot 自己的账号")
+        if kind == "private" and item.uid != platform + ":" + target:
+            raise HTTPException(422, "私聊测试身份必须是当前场景的对方账号")
         if item.reply_to is not None and self.store.find_message(self.config.scene, item.reply_to) is None:
             raise HTTPException(422, "引用的消息不在当前测试场景中")
         parts = []
         if item.reply_to is not None:
-            parts.append({"type": "reply", "data": {"id": item.reply_to}})
+            parts.append(Segment("reply", {"id": item.reply_to}))
         if item.mention_bot:
-            parts.append({"type": "at", "data": {"qq": self.config.bot_qq}})
-        parts.append({"type": "text", "data": {"text": item.text}})
-        raw = {"post_type": "message", "message_type": kind, "self_id": self.config.bot_qq,
-               "user_id": item.uid, "message_id": str(uuid4()), "time": time.time(),
-               "sender": {"nickname": item.nickname, "card": "", "role": "member"}, "message": parts}
-        if kind == "group":
-            raw["group_id"] = target
-        receipt = self.runner.receive(raw)
+            parts.append(Segment("mention", {"user": self.config.bot_id}))
+        parts.append(Segment("text", {"text": item.text}))
+        message = ChatMessage(id=str(uuid4()), platform=platform, bot_id=self.config.bot_id,
+                              scene=self.config.scene, platform_message_id=str(uuid4()),
+                              sender=Sender(item.uid, item.nickname, None, "member"), time=time.time(),
+                              segments=parts, reply_to=item.reply_to, mentions_bot=item.mention_bot,
+                              is_self=False, send_status="received")
+        receipt = self.runner.receive_message(message, asdict(message))
         self.notify()
         return receipt
 
@@ -167,7 +168,7 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
         config, chat = session.config, session.chat
         persona = chat.persona
         return {
-            "scene": config.scene, "timezone": config.timezone, "bot_qq": config.bot_qq,
+            "scene": config.scene, "timezone": config.timezone, "bot_id": config.bot_id,
             "voice_mode": config.voice_mode, "delivery": "simulated",
             "scene_persona": {
                 "persona_aliases": config.persona_aliases,

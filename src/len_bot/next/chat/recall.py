@@ -18,7 +18,7 @@ class RecallArguments(BaseModel):
 
     action: Literal["search", "recent", "read", "context"] = "search"
     query: str | None = None
-    who: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
+    who: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]*:[^:\s/\\]+$")
     after: datetime | None = None
     before: datetime | None = None
     snapshot: int | None = Field(default=None, ge=0)
@@ -72,7 +72,7 @@ RECALL_TOOL = {"type": "function", "function": {
     "name": "recall_chat",
     "description": "查当前场景历史原话。search按消息时间升序，每页10条；recent按落库位置取最新10条，"
                    "页内正序，向前续页；两者续页均带原snapshot和offset。read用已有record与字符offset"
-                   "分段读全文；context查看前后各3条。who是实际QQ，时间须含时区。",
+                   "分段读全文；context查看前后各3条。who是实际账号，时间须含时区。",
     "parameters": RecallArguments.model_json_schema(),
 }}
 PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "next_recall.md"
@@ -86,7 +86,7 @@ def message_page(record: int, message: ChatMessage, timezone: str, *, offset: in
         raise ValueError(f"offset {offset} exceeds message length {len(text)}")
     end = min(offset + size, len(text))
     return {"record": record, "platform_message_id": message.platform_message_id,
-            "sender_qq": message.sender.uid, "send_status": message.send_status,
+            "sender_id": message.sender.uid, "send_status": message.send_status,
             "time": datetime.fromtimestamp(message.time, ZoneInfo(timezone)).isoformat(),
             "is_self": message.is_self, "recalled": message.recalled,
             "audio_descriptions": audio if offset == 0 else None,

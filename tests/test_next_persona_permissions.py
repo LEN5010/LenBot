@@ -36,7 +36,7 @@ def _package(root: Path, name: str, *, tools: str | list[str], documents: dict[s
 def _config(root: Path, package: Path):
     root.mkdir(parents=True, exist_ok=True)
     (root / "lenbot.config.json").write_text(json.dumps({"compaction": {"input_tokens": 2000},
-        "mode": "isolated", "scene": "group:80001", "bot_qq": "90001", "timezone": "UTC",
+        "mode": "isolated", "scene": "onebot:group:80001", "bot_id": 'onebot:90001', "timezone": "UTC",
         "database": "persona.sqlite3", "persona": str(package), "voice_mode": "direct",
         "models": {
             "providers": {"synthetic": {"api": "openai-chat",

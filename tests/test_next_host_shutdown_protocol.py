@@ -46,14 +46,14 @@ async def test_stop_releases_onebot_without_consuming_waiting_ambient_input(tmp_
         else:
             onebot.update(listen_host='127.0.0.1', listen_port=0)
         source = {
-            'mode': 'isolated-multi', 'bot_qq': '90001', 'timezone': 'UTC',
+            'mode': 'isolated-multi', 'bot_id': 'onebot:90001', 'timezone': 'UTC',
             'database': 'chat.sqlite3', 'delivery': 'simulated', 'onebot': onebot,
             'models': {'providers': {'fixture': {'api': 'openai-chat', 'base_url': 'http://127.0.0.1:9/v1',
                                                'api_key': 'synthetic-unused'}},
                        'roles': {'mind': {'provider': 'fixture', 'model': 'synthetic-unused',
                                           'context_window_tokens': 8192}}},
             'compaction': {'input_tokens': 2000},
-            'scenes': {'group:80001': {'persona': 'persona', 'attention': {
+            'scenes': {'onebot:group:80001': {'persona': 'persona', 'attention': {
                 'activity': 1, 'ambient_threshold': .1,
                 'ambient_min_interval_seconds': 60, 'ambient_max_interval_seconds': 900}}},
         }
@@ -61,10 +61,10 @@ async def test_stop_releases_onebot_without_consuming_waiting_ambient_input(tmp_
         cfg = load_host_config(tmp_path)
         with Store(cfg.database) as store:
             # The recorded failure had silence_level=4, which leaves a 900s gap.
-            store.save_attention('group:80001', asdict(AttentionState(
+            store.save_attention('onebot:group:80001', asdict(AttentionState(
                 ambient_last_at=time.time(), silence_level=4)))
             async with ChatModel(cfg.model_settings('mind')) as model:
-                runtime = NetworkRuntime(cfg, [(cfg.scene_config('group:80001'), load_persona(role))], store, model)
+                runtime = NetworkRuntime(cfg, [(cfg.scene_config('onebot:group:80001'), load_persona(role))], store, model)
                 async with asyncio.TaskGroup() as tasks:
                     running = tasks.create_task(runtime.run(manage_signals=False))
                     if mode == 'reverse_ws':
@@ -81,14 +81,14 @@ async def test_stop_releases_onebot_without_consuming_waiting_ambient_input(tmp_
                             await asyncio.sleep(.01)
                     await websocket.send(json.dumps(raw))
                     async with asyncio.timeout(3):
-                        while not store.pending_messages('group:80001'):
+                        while not store.pending_messages('onebot:group:80001'):
                             await asyncio.sleep(.01)
                     runtime.stop()
                     await asyncio.wait_for(running, 3)
                     await asyncio.wait_for(websocket.wait_closed(), 3)
                 assert runtime.status == 'stopped'
                 assert not runtime.platform.connected
-                assert [message.platform_message_id for _, message, _ in store.pending_messages('group:80001')] == ['-10001']
-                assert store.mind_history_page('group:80001', before=None, limit=1, active_only=True)['last_message_seq'] == 0
+                assert [message.platform_message_id for _, message, _ in store.pending_messages('onebot:group:80001')] == ['-10001']
+                assert store.mind_history_page('onebot:group:80001', before=None, limit=1, active_only=True)['last_message_seq'] == 0
                 assert store.db.execute('SELECT count(*) FROM turns').fetchone()[0] == 0
                 assert store.db.execute('SELECT count(*) FROM model_calls').fetchone()[0] == 0

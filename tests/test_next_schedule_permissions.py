@@ -6,13 +6,13 @@ from len_bot.next.configuration.chat import ScheduleSettings
 from len_bot.next.chat.schedule import check_cancellation, check_creation, identity_roles
 
 
-BOT = "90001"
-OWNER = "80001"
-ADMIN = "80002"
-WHITELISTED = "80003"
-GROUP_MANAGER = "80004"
-MEMBER = "80005"
-OTHER = "80006"
+BOT = 'onebot:90001'
+OWNER = 'onebot:80001'
+ADMIN = 'onebot:80002'
+WHITELISTED = 'onebot:80003'
+GROUP_MANAGER = 'onebot:80004'
+MEMBER = 'onebot:80005'
+OTHER = 'onebot:80006'
 
 
 def _settings(**changes) -> ScheduleSettings:
@@ -53,7 +53,7 @@ def test_identity_roles_combine_configured_and_platform_roles(requester, group_r
     ],
 )
 def test_default_schedule_creation_matrix(requester, group_role, target, allowed):
-    kwargs = dict(requester=requester, target=target, bot_qq=BOT, group_role=group_role)
+    kwargs = dict(requester=requester, target=target, bot_id=BOT, group_role=group_role)
     if allowed:
         assert check_creation(_settings(), **kwargs) is None
     else:
@@ -65,11 +65,11 @@ def test_creation_uses_configured_lists_without_privileged_bypass():
     settings = _settings(own=[], others=["whitelist"], manage=[])
 
     with pytest.raises(PermissionError, match="本人安排"):
-        check_creation(settings, requester=OWNER, target="self", bot_qq=BOT, group_role=None)
+        check_creation(settings, requester=OWNER, target="self", bot_id=BOT, group_role=None)
     with pytest.raises(PermissionError, match="他人提醒"):
-        check_creation(settings, requester=OWNER, target=OTHER, bot_qq=BOT, group_role=None)
+        check_creation(settings, requester=OWNER, target=OTHER, bot_id=BOT, group_role=None)
     assert check_creation(settings, requester=WHITELISTED, target=OTHER,
-                          bot_qq=BOT, group_role=None) is None
+                          bot_id=BOT, group_role=None) is None
 
 
 @pytest.mark.parametrize(
@@ -87,7 +87,7 @@ def test_creation_uses_configured_lists_without_privileged_bypass():
 def test_creation_separates_autonomous_bot_from_human_permission(
     settings, requester, target, allowed, error
 ):
-    kwargs = dict(requester=requester, target=target, bot_qq=BOT, group_role=None)
+    kwargs = dict(requester=requester, target=target, bot_id=BOT, group_role=None)
     if allowed:
         assert check_creation(settings, **kwargs) is None
     else:
@@ -115,7 +115,7 @@ def test_creation_separates_autonomous_bot_from_human_permission(
     ],
 )
 def test_schedule_cancellation_matrix(requester, creator, group_role, allowed):
-    kwargs = dict(requester=requester, creator=creator, bot_qq=BOT, group_role=group_role)
+    kwargs = dict(requester=requester, creator=creator, bot_id=BOT, group_role=group_role)
     if allowed:
         assert check_cancellation(_settings(), **kwargs) is None
     else:
@@ -127,17 +127,17 @@ def test_creator_can_cancel_after_creation_is_disabled_but_others_still_need_man
     settings = _settings(enabled=False, own=[], others=[], manage=[])
 
     assert check_cancellation(settings, requester=MEMBER, creator=MEMBER,
-                              bot_qq=BOT, group_role=None) is None
+                              bot_id=BOT, group_role=None) is None
     assert check_cancellation(settings, requester=None, creator=None,
-                              bot_qq=BOT, group_role=None) is None
+                              bot_id=BOT, group_role=None) is None
     with pytest.raises(PermissionError, match="管理能力"):
         check_cancellation(settings, requester=OWNER, creator=MEMBER,
-                           bot_qq=BOT, group_role=None)
+                           bot_id=BOT, group_role=None)
 
 
-def test_root_owner_is_shared_with_schedule_capabilities():
+def test_root_owners_is_shared_with_schedule_capabilities():
     settings = ScheduleSettings(owner=None, own=['owner'], others=['owner'], manage=['owner'])
-    check_creation(settings, requester=OWNER, target=OTHER, bot_qq=BOT, group_role=None, root_owner=OWNER)
-    check_cancellation(settings, requester=OWNER, creator=OTHER, bot_qq=BOT, group_role=None, root_owner=OWNER)
+    check_creation(settings, requester=OWNER, target=OTHER, bot_id=BOT, group_role=None, root_owners=[OWNER])
+    check_cancellation(settings, requester=OWNER, creator=OTHER, bot_id=BOT, group_role=None, root_owners=[OWNER])
     with pytest.raises(PermissionError):
-        check_creation(settings, requester=MEMBER, target=OTHER, bot_qq=BOT, group_role=None, root_owner=OWNER)
+        check_creation(settings, requester=MEMBER, target=OTHER, bot_id=BOT, group_role=None, root_owners=[OWNER])

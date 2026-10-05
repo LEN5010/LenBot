@@ -4,22 +4,39 @@
 
 一个目录包含 `plugin.toml`、`__init__.py`，并恰好定义一个 `Plugin` 子类。可直接复制 [counter](examples/counter/)，只使用 `len_bot.next.plugin`，不需要引用 Chat、Store 或 NetworkRuntime。
 
-清单必填 `name`（等于目录名）、`version`、`interface = 1`、`authors`、`license`、`description`。可选 `repository`（源码仓库 HTTP(S) URL）、`homepage`（使用说明 HTTP(S) URL）。它们显示在插件详情。
+清单必填以下字段。`name` 等于安装目录名；仓库根或 ZIP 根不要求预先使用该目录名。公共接口代次为 **1**，同代接口兼容增加，破坏签名或语义时升代。宿主只加载当前代次，不猜旧包字段。
 
-`dependencies = ["包名>=版本"]` 声明 Python 依赖，支持 uv 的 requirement 写法。宿主只在用户主动安装或更新时安装依赖，不在捕获 ImportError 后自行安装重试。当前环境已有版本作为约束，冲突原样报出，不自动替换其他插件或宿主正在使用的包。
+```toml
+name = "counter"
+version = "1.0.0"
+interface = 1
+requires_lenbot = ">=0.1,<1"
+requires_python = ">=3.13"
+platforms = ["linux", "darwin", "win32"]
+reload = "plugin"
+authors = ["插件维护者"]
+license = "GPL-3.0-only"
+description = "每群独立计数"
+```
+
+`version` 按 Python packaging 版本规范解析和规范化，推荐 X.Y.Z；两个 requires 字段是显式版本范围，与实际宿主和解释器比较。`platforms` 使用 Python 系统名称；列出 win32 不表示宿主已有 Windows 原生发行包。`reload` 为 `plugin`（允许单插件换版）或 `host`（需要宿主重启）。可选 `repository`、`homepage` 是 HTTP(S) 地址。
+
+`dependencies = ["包名>=版本"]` 声明 Python 依赖，由 uv 解析。当前环境已有版本作为约束，冲突原样报出，不自动换服务或改版本重试。系统软件、外部服务及凭据要求写在插件 README。公开作者入口是 `len_bot.next.plugin`、它返回的 `len_bot.next.platform.messages` 类型，以及下文的 `len_bot.next.plugin_testing`；其他内部模块不承诺兼容。
 
 ## 安装与维护
 
-- 在面板「发现」选择目录条目，或手填完整 HTTP(S) 或 `ssh://` Git 仓库 URL。可选 ref 为标签、分支或提交，留空使用仓库默认分支。仓库根就是插件目录内容，第一版不支持 ZIP、本地路径或多插件仓库子目录；私有仓库使用本机 Git 凭据配置，URL 不放密码。
-- 安装器把源码放在实例 `plugins/<name>` 并登记搜索路径。没有必填参数的插件直接加载；需要参数时先以停用状态保留，填写后启用。单群使用还需在群的插件列表中打开。
-- 保存插件配置或群启用会直接应用目标插件。根 `plugins.disabled` 仅记录停用的已配置插件名，停用保留参数、群选择和数据。
-- 「重载」先撤下该插件的命令／工具，取消它的处理与后台任务，执行 stop，再重新导入并执行 start，刷新工具和只读技能。其他插件与聊天不重启；处理中调用会中断，使用插件文件的在途工作不承诺无损。
-- 「更新」只管理安装器目录下的独立 Git 仓库，未选择 ref 时执行当前分支快进更新；已选择 ref 时重新获取并定位该 ref，也可明确改选。随后安装依赖并重载。更新框留空保持原安装方式，不会取消已有定位。有跟踪文件的本地修改就报错；未跟踪文件不主动删除，Git 发现覆盖冲突也会报错。没有回退版本或失败后自动重启旧代码。
-- 「卸载」停止插件，删除其源码与启用配置，默认保留 `plugins.data_directory/<name>`。删除 KV／素材是单独操作，要求插件已停止，不删除聊天历史。
-- 重建宿主 Python 环境后，在停止的实例根执行 `python -m len_bot.next.maintenance.plugin_dependencies`，集中安装全部已配置插件的声明依赖，不更新 Git 或执行插件；使用目标环境的解释器。Linux 服务与 Docker 的可写环境见[部署说明](../deploy/current/README.md)。
-- 内置插件跟随主程序更新；手动配置的外部源码目录支持重载，但安装器不会替用户改动那个仓库。
+- 在面板手填完整 HTTP(S) 或 `ssh://` Git URL，可选标签、分支或提交；仓库根包含清单和包入口。私有仓库用本机 Git 凭据，URL 不放密码。未指定 ref 时记录默认分支，更新沿用该分支；显式 ref 的更新重新获取同一 ref，不自动切最新版本。
+- ZIP 导入支持清单在根目录，或全部内容在唯一顶层目录且直接含清单。必须有 `__init__.py`；路径越界、重复文件、符号链接和超过 200 MiB 的解压内容会报错。ZIP 源码可离线准备，依赖安装可能仍需要网络。
+- 两种入口都只**准备候选**：下载、解析、检查身份与兼容，保存来源。当前运行版本继续运行，不导入候选、不修改 Python 环境。面板随后填写候选配置并保存，点击应用；新插件初始停用，应用成功后可启用并选群。
+- 实例 `plugins/<name>` 保存已安装源码，`.plugin-candidates/<name>` 保存候选，`plugin-installations/<name>.json` 保存 Git commit／ZIP SHA-256、已安装和候选版本、生效方式、是否已选择重启应用及最近错误。参数和群选择只在根 `lenbot.config.json`，业务数据只在 `plugins.data_directory/<name>`。手工目录不被安装器接管，内置同名包不能覆盖。
+- Git 受管源码有本地修改（包括未跟踪文件，宿主生成的 `__pycache__` 除外）就停止应用。ZIP 换版重新导入；同名包更换 Git 仓库或 Git／ZIP 来源需选“替换安装来源”，沿用原插件数据身份。
+- 无依赖变化且 `reload=plugin`：停止目标插件，切换源码，实际重新导入／start。保存普通参数或选群也只重载目标插件。重载会中断它的在途处理，其他插件和聊天继续运行。
+- 依赖声明变化或 `reload=host`：应用动作选定候选，面板列为待重启。明确重启时，启动器等待旧宿主退出，再由 `maintenance.apply_plugins` 持实例锁，核对候选配置、一次安装合并依赖、切源码，最后启动新宿主。普通启动不消费候选。失败结束本次启动器，候选和原错保留；修正后显式再操作，不自动回滚环境。
+- 直接运行 host 的实例停机后，在实例根执行 `python -m len_bot.next.maintenance.apply_plugins`，再明确启动。它只处理面板已经选择应用的候选。重建环境后用 `python -m len_bot.next.maintenance.plugin_dependencies` 恢复已安装插件声明依赖。使用目标环境的解释器及 uv；服务和容器说明见[部署](../deploy/current/README.md)。
+- “取消候选”保留已安装源码；首次安装尚未应用时取消会移除其配置入口。停用保留参数、群选择和数据；卸载删除源码、候选和启用配置，保留插件业务数据和共享依赖包。删除数据仍是插件停止后的单独动作。
+- 插件自有文件／KV 格式由作者维护。增加必填配置或删除字段须在应用前明确填写；数据转换用作者提供的停机命令。选择旧源码不代表数据能回退，宿主不自动删除未知配置或回滚 KV。
 
-[四个内置插件](builtin-plugins.md)分别展示命令接管、无模型订阅、生成与委派、外部服务；counter 保持最短模板。目录使用[静态 JSON](plugin-catalog.md)，安装和运行仍复用这里的接口。
+[四个内置插件](builtin-plugins.md)覆盖命令接管、无模型订阅、生成与委派、外部服务。发现页仍使用[静态目录](plugin-catalog.md)，首版没有市场后端。
 
 ## 入口
 
@@ -77,12 +94,12 @@ default = "live"
 
 ## 调用上下文
 
-命令和全文／正则的 `Invocation.message` 是真实触发消息；工具调用可能没有 message，不据此编造请求人。`ctx.scene` 是当前启用场景。
+命令和全文／正则的 `Invocation.message` 是真实触发消息；工具调用可能没有 message，不据此编造请求人。`ctx.scene` 是当前启用场景，例如 `onebot:group:80001`；`ctx.message.sender.uid` 和 `self.ctx.bot_id` 是带平台的账号，例如 `onebot:70001`。提及使用 `Mention("onebot:70001")`。
 
 | 能力 | 使用方式 |
 |---|---|
 | 回复 | `await ctx.reply(text)`，图片 `reply_image(data, description)`，组合 `reply_parts(parts)` |
-| 组合消息 | `Text(text)`、`Image(bytes, description)`、`Mention(qq)` 从公共入口导入 |
+| 组合消息 | `Text(text)`、`Image(bytes, description)`、`Mention(user)` 从公共入口导入 |
 | KV | `get_kv(key, default=None)`、`set_kv(key, JSON值)`、`delete_kv(key)`；均 await |
 | 原消息 | `ctx.recent_messages(limit=20)`，只读当前场景，最多 100 条 |
 | 记忆 | `await ctx.memory(arguments)`，当前场景记忆服务，不直连后端数据库 |
@@ -138,3 +155,27 @@ async def publish(self, ctx):
 一次处理器报错结束该次调用，原错由宿主记录，不自动重试、换服务或停用整个插件。需要特权的具体入口可用 `ctx.plugin.require_owner(ctx.scene, ctx.message.sender.uid)`；不必给普通查询加主人门槛。
 
 插件是同进程代码，共享宿主依赖环境，不能宣称沙箱隔离。不使用 `ctx.plugin.host` 穿透到内部运行时。接口扩展随版本发布；当前安装与生效方式见 [示例说明](examples/counter/README.md)。
+
+## 本地测试与发布
+
+宿主提供无需启动 OneBot、面板或 worker 的公共测试入口，使用实际生命周期、配置、入口匹配、工具校验和磁盘 KV，发送仅捕获为 simulated：
+
+```python
+from pathlib import Path
+from len_bot.next.plugin_testing import PluginTest
+
+async def check():
+    async with PluginTest(Path("counter"), config={"step": 2}) as bot:
+        assert await bot.message("计数加一")
+        assert bot.deliveries[-1].text == "本群计数：2"
+        result = await bot.tool("counter_read", {})
+        assert '2' in result
+```
+
+`scenes` 和 `owners` 可在构造器指定；`message(text, scene=..., sender=...)` 模拟实际身份，返回是否被接管。`deliveries` 包含插件、场景、组合内容、reply_to 和 simulated 状态；`events()` 查看实际记录的插件事件。处理器或启动失败会使本次测试报错，退出上下文会停止插件并删除临时实例。它不提供模型、记忆或工作服务，这些调用明确报错；插件自行调用外部网络仍会执行，同进程测试不是沙箱。
+
+在 GitHub 上打开[插件模板仓库](https://github.com/lendevs/lenbot-plugin-template)，点 Use this template 生成自己的仓库。模板 CI 安装指定版本的宿主再跑插件测试；打 `v*` 标签时，发布工作流把清单、入口、README 和 LICENSE 打成可导入的 ZIP 挂到 Release。发布前填写自己的 name／authors，更新版本及兼容范围。
+
+**许可证**：LenBot 宿主采用 AGPL-3.0-only，插件模板和计数示例采用 GPL-3.0-only。插件和宿主运行在同一个进程里，推荐插件也使用 GPL-3.0；GPLv3 第 13 条允许 GPLv3 作品与 AGPLv3 作品组合使用。选择其他许可证前，请自行确认它与 GPLv3／AGPLv3 兼容。
+
+[English](plugins-v1.en.md)

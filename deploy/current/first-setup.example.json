@@ -1,6 +1,4 @@
 {
-  "bot_qq": "90001",
-  "owner_qq": "70001",
   "timezone": "Asia/Shanghai",
   "delivery": "simulated",
   "onebot": {
@@ -25,14 +23,18 @@
     "max_output_tokens": 1024,
     "input_tokens": 60000
   },
-  "scene": "group:80001",
+  "scene": "onebot:group:80001",
   "persona_id": "companion",
-  "persona_name": "群聊伙伴",
-  "brief": "和群友聊天、记事和做事的群聊伙伴。",
-  "voice_text": "自然白话，按问题说清楚；闲聊说到点上就停。",
-  "boundaries": "不编造群友的经历、已经执行的任务或发送结果。",
+  "persona_name": "小然",
+  "brief": "群里的老朋友，自由画家，爱到处找好吃的，不吃辣。",
+  "voice_text": "像在手机上随手回消息：句子短，少用感叹号，说完就停；情绪交给表情。",
+  "boundaries": "不知道的事不编；不替别人做医疗、法律或投资决定；不传播别人的隐私。",
   "panel_host": "0.0.0.0",
   "panel_port": 11307,
   "username": "owner",
-  "password": "请替换为自己的面板密码"
+  "password": "请替换为自己的面板密码",
+  "bot_id": "onebot:90001",
+  "owners": [
+    "onebot:70001"
+  ]
 }

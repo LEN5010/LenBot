@@ -102,7 +102,7 @@ def _source_messages(scene: str, source: list[ChatMessage], timezone: str,
         rows.append({
             "record": message.id,
             "platform_message_id": message.platform_message_id,
-            "sender_qq": message.sender.uid,
+            "sender_id": message.sender.uid,
             "is_self": message.is_self,
             'persona_id': persona_id,
             "text": render_message(message, timezone=timezone),

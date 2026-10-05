@@ -50,9 +50,9 @@ async def prepare_parts(plugin: str, content: Sequence[Content], max_chars: int,
                 if length == max_chars:
                     flush()
         elif isinstance(item, Mention):
-            if item.qq != "all" and re.fullmatch(r"[1-9][0-9]*", item.qq) is None:
-                raise ValueError(f"插件Mention须为实际QQ或all：{item.qq!r}")
-            segments.append(Segment("at", {"qq": item.qq}))
+            if item.user != "all" and re.fullmatch(r"[a-z][a-z0-9_-]*:[^:\s/\\]+", item.user) is None:
+                raise ValueError(f"插件Mention须为实际账号或all：{item.user!r}")
+            segments.append(Segment("mention", {"user": item.user}))
         elif isinstance(item, Image):
             if not item.description.strip():
                 raise ValueError("插件图片须提供非空内容说明")

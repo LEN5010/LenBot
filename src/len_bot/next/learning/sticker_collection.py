@@ -205,7 +205,7 @@ class StickerCollector:
             timezone = ZoneInfo(self.config.scene_timezone(scene))
             source = {"scene": scene, "source_message_seq": candidate["source_message_seq"],
                       'pixels_source': pixels_source, 'recorded_fetched_at': recorded_fetched_at,
-                      "image_index": image_index, "qq": message.sender.uid,
+                      "image_index": image_index, "sender_id": message.sender.uid,
                       "display_name": message.sender.card or message.sender.nickname,
                       "platform_message_id": message.platform_message_id,
                       "platform_time": datetime.fromtimestamp(message.time, timezone).isoformat(),

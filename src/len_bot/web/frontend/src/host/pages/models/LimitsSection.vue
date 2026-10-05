@@ -5,10 +5,10 @@ import { useAction, useResource } from '../../../composables/useResource.js'
 import { host } from '../../store.js'
 import { formatTime } from '../../time.js'
 import { clone, numberOrNull, same } from '../../forms.js'
-import SettingSection from '../../components/SettingSection.vue'
-import AdvancedFields from '../../components/AdvancedFields.vue'
+import SettingSection from '../../ui/SettingSection.vue'
+import AdvancedFields from '../../ui/AdvancedFields.vue'
 import SceneRows from '../../components/SceneRows.vue'
-import ErrorNote from '../../components/ErrorNote.vue'
+import ErrorNote from '../../ui/ErrorNote.vue'
 
 const props = defineProps({ snapshot: { type: Object, required: true } })
 const emit = defineEmits(['saved', 'dirty'])
@@ -29,9 +29,8 @@ async function submit() {
 </script>
 
 <template>
-  <div class="page-stack">
-    <ErrorNote v-if="status.error.value" title="读取当前额度状态失败" :error="status.error.value" />
-    <v-alert v-for="item in blocked" :key="item.scene" type="warning" variant="tonal">
+    <ErrorNote v-if="status.error.value" title="读取当前额度状态失败" :error="status.error.value" @retry="status.reload()" />
+    <v-alert v-for="item in blocked" :key="item.scene" type="warning">
       {{ sceneName(item.scene) }} 已到上限，{{ item.until ? `${formatTime(item.until, host.state?.timezone)} 恢复` : '暂停中' }}：{{ item.reason }}
     </v-alert>
     <SettingSection v-if="draft" title="花费与发言上限" description="到上限后 Bot 暂停调用模型或暂停发言，到时间自动恢复。"
@@ -55,9 +54,8 @@ async function submit() {
         <v-text-field v-model="draft.currency" label="计价币种" hint="三位大写代码，例如 USD、CNY；需要和模型价格的币种一致" persistent-hint />
       </AdvancedFields>
     </SettingSection>
-  </div>
 </template>
 
 <style scoped>
-h3{font-size:14px;margin:0 0 8px}
+h3{margin-bottom:var(--sp-2)}
 </style>

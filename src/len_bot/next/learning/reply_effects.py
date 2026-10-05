@@ -148,7 +148,7 @@ class ReplyEffectTracker:
                 "worker_error": None if error is None else _error_text(error)}
 
     def _exclude_uids(self, scene: str) -> tuple[str, ...]:
-        return (self.config.bot_qq, *self.config.scenes[scene].attention.other_bot_qqs)
+        return (self.config.bot_id, *self.config.scenes[scene].attention.other_bot_ids)
 
     async def _worker(self, scene: str) -> None:
         try:
@@ -242,7 +242,7 @@ class ReplyEffectTracker:
         price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
         effects = self.records.effects(scene, ids)
         messages = [{"role": "system", "content": self._prompt},
-                    {"role": "user", "content": encode({"scene": scene, "bot_qq": self.config.bot_qq,
+                    {"role": "user", "content": encode({"scene": scene, "bot_id": self.config.bot_id,
                                                         "samples": [self._sample(scene, item) for item in effects]})}]
         estimate = estimate_request(messages, [], binding.max_output_tokens)
         request = {"provider": binding.provider,

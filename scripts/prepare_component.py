@@ -24,7 +24,7 @@ def prepare(name: str, destination: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('component', choices=('openviking', 'browserskill'))
+    parser.add_argument('component', choices=('browserskill',))
     parser.add_argument('destination', type=Path)
     parser.add_argument('--source-archive', type=Path)
     args = parser.parse_args()

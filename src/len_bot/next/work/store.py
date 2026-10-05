@@ -59,7 +59,7 @@ CREATE INDEX task_model_usage ON task_events(scene,created) WHERE kind='model_ca
 class TaskInput(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
     mode: Literal['continue', 'steer']
-    requester: str = Field(pattern=r'^[1-9][0-9]*$')
+    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
     text: str = Field(min_length=1)
 
 

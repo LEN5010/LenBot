@@ -1,0 +1,69 @@
+# Deployment
+
+[中文](README.md)
+
+LenBot runs in three ways. All of them run the same program against the same kind of instance directory:
+
+| Option | Good for | Needs | Guide |
+|---|---|---|---|
+| Release package | Day-to-day use on Linux or macOS | uv | [Package (zh)](package/README.md) |
+| Docker | Servers, NAS, Windows via WSL2 | Docker | [Docker (zh)](current/docker.md) |
+| Source | Development, tracking the main branch | uv, Node.js 22 | below |
+
+Whichever you choose, the first start of `len-bot` opens a local web wizard:
+
+1. Connect OneBot and read the bot's own account from the platform.
+2. Enter the owner's QQ number.
+3. Enter a model provider and test one call.
+4. Create a persona and the first group, and set the panel login.
+
+After saving you land in the panel. Start with simulated delivery, try a few messages in the panel's trial chat, then switch to real delivery.
+
+## The instance directory
+
+The instance directory holds everything for one bot:
+
+| What | Where |
+|---|---|
+| Runtime configuration (with secrets) | `lenbot.config.json` |
+| Chat database and memory job database | `database` from the configuration, plus the matching `.memory.sqlite3` |
+| Persona packages | `personas/<persona id>/` |
+| Memory, logs, plugin data, task directories | under `state/` and wherever the configuration points |
+
+`lenbot.config.json` is the only runtime configuration; there are no environment variables or command-line overrides. Change settings in the panel while running; it tells you when a restart is needed. Stop the bot before editing the file by hand. To back up, stop the bot and copy the whole instance directory, plus any task directories the configuration points to outside it.
+
+## Running from source
+
+```sh
+git clone https://github.com/lendevs/LenBot.git
+cd LenBot
+./scripts/install.sh
+uv run --no-sync len-bot
+```
+
+The checkout is the instance directory. To update:
+
+```sh
+# stop the bot first (Ctrl-C)
+git pull
+./scripts/install.sh
+uv run --no-sync python -m len_bot.next.maintenance.migrate
+uv run --no-sync python -m len_bot.next.maintenance.migrate_memory_jobs
+uv run --no-sync python -m len_bot.next.maintenance.plugin_dependencies
+uv run --no-sync len-bot
+```
+
+The three maintenance commands upgrade the business database, upgrade the memory job database and restore dependencies of installed plugins. They do nothing when everything is current. Back up the instance before upgrading.
+
+On macOS you can double-click [`current/start.command`](current/start.command). To run as a system service, see [optional services (zh)](current/README.md#作为系统服务运行).
+
+## Optional capabilities
+
+For chatting you only need OneBot and one chat model. Add these as needed, see [optional services (zh)](current/README.md):
+
+- vector memory search (an embeddings service such as Ollama);
+- voice transcription (local [ASR](current/asr.md));
+- background tasks (Docker and the task image, optionally a [storage pool](current/task-storage.md));
+- account browsing ([browser components](browser/README.md)).
+
+Daily operation, personas, plugins and task maintenance are covered in [operations (zh)](current/operations.md). Releasing a new version is described in the [release guide (zh)](releasing.md).

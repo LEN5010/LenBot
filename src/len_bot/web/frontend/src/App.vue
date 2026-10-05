@@ -21,11 +21,14 @@ async function retry() {
     </div>
     <router-view v-else-if="route.name==='login'" />
     <template v-else-if="auth.status==='authenticated'">
-      <HostShell v-if="auth.panelContext.mode==='isolated-multi'"><router-view /></HostShell>
-      <TrialShell v-else-if="auth.panelContext.mode==='isolated'"><router-view /></TrialShell>
+      <component :is="auth.panelContext.mode==='isolated-multi' ? HostShell : TrialShell" v-if="['isolated-multi','isolated'].includes(auth.panelContext.mode)">
+        <router-view v-slot="{ Component, route: page }">
+          <transition name="page" mode="out-in"><component :is="Component" :key="page.name" /></transition>
+        </router-view>
+      </component>
     </template>
   </v-app>
 </template>
 <style scoped>
-.initial-state{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;padding:24px;color:var(--muted)}
+.initial-state{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--sp-4);padding:var(--sp-5);color:var(--muted)}
 </style>

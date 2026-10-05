@@ -1,7 +1,8 @@
 <script setup>
 // Add a sticker, or edit what the Bot knows about one. `entry` is null when adding a new picture.
 import { computed, ref, watch } from 'vue'
-import ErrorNote from '../../components/ErrorNote.vue'
+import ErrorNote from '../../ui/ErrorNote.vue'
+import FormDialog from '../../ui/FormDialog.vue'
 
 const props = defineProps({ entry: { type: Object, default: null }, image: { type: String, default: null },
   emotions: { type: Array, default: () => [] }, tags: { type: Array, default: () => [] },
@@ -23,27 +24,20 @@ const ready = computed(() => draft.value?.description.trim() && (!adding.value |
 </script>
 
 <template>
-  <v-dialog v-model="open" max-width="520">
-    <v-card v-if="draft" :title="adding ? '添加表情' : '编辑表情'">
-      <v-card-text class="fields">
-        <img v-if="preview || image" :src="preview || image" alt="表情图片" class="picture" />
-        <v-file-input v-if="adding" v-model="file" label="图片" accept="image/png,image/jpeg,image/gif,image/webp"
-          prepend-icon="" hint="PNG、JPG、GIF 或 WebP，最大 10 MB" persistent-hint />
-        <v-textarea v-model="draft.description" label="描述" rows="2" auto-grow hint="图上是什么、适合什么时候发。Bot 靠这句话挑表情" persistent-hint />
-        <v-combobox v-model="draft.emotions" :items="emotions" label="情绪（可不填）" multiple chips closable-chips hint="比如 开心、无语" persistent-hint />
-        <v-combobox v-model="draft.tags" :items="tags" label="标签（可不填）" multiple chips closable-chips />
-        <ErrorNote v-if="error" title="没有保存成功" :error="error" />
-      </v-card-text>
-      <v-card-actions>
-        <v-spacer />
-        <v-btn variant="text" :disabled="busy" @click="open = false">取消</v-btn>
-        <v-btn color="primary" :loading="busy" :disabled="!ready" @click="emit('save', { file, ...draft })">保存</v-btn>
-      </v-card-actions>
-    </v-card>
-  </v-dialog>
+  <FormDialog v-model="open" :title="adding ? '添加表情' : '编辑表情'" :busy="busy">
+    <template v-if="draft">
+      <img v-if="preview || image" :src="preview || image" alt="表情图片" class="picture" />
+      <v-file-input v-if="adding" v-model="file" label="图片" accept="image/png,image/jpeg,image/gif,image/webp"
+        prepend-icon="" hint="PNG、JPG、GIF 或 WebP，最大 10 MB" persistent-hint />
+      <v-textarea v-model="draft.description" label="描述" rows="2" auto-grow hint="图上是什么、适合什么时候发。Bot 靠这句话挑表情" persistent-hint />
+      <v-combobox v-model="draft.emotions" :items="emotions" label="情绪（可不填）" multiple chips closable-chips hint="比如 开心、无语" persistent-hint />
+      <v-combobox v-model="draft.tags" :items="tags" label="标签（可不填）" multiple chips closable-chips />
+      <ErrorNote v-if="error" title="没有保存成功" :error="error" />
+    </template>
+    <template #actions><v-btn color="primary" :loading="busy" :disabled="!ready" @click="emit('save', { file, ...draft })">保存</v-btn></template>
+  </FormDialog>
 </template>
 
 <style scoped>
-.fields{display:grid;gap:16px}
-.picture{max-width:160px;max-height:160px;object-fit:contain;justify-self:center;border-radius:8px}
+.picture{max-width:160px;max-height:160px;object-fit:contain;justify-self:center;border-radius:var(--radius)}
 </style>

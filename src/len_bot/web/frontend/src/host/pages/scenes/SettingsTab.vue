@@ -1,21 +1,25 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '../../../api.js'
+import { api, sceneName } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify, readHostState, readPendingRestart } from '../../store.js'
 import { clone, numberOrBlank, numberOrNull, same } from '../../forms.js'
-import ErrorNote from '../../components/ErrorNote.vue'
-import AdvancedFields from '../../components/AdvancedFields.vue'
+import { confirm } from '../../../composables/useConfirm.js'
+import Panel from '../../ui/Panel.vue'
+import ResourceState from '../../ui/ResourceState.vue'
+import ErrorNote from '../../ui/ErrorNote.vue'
+import AdvancedFields from '../../ui/AdvancedFields.vue'
+import RowEditor from '../../ui/RowEditor.vue'
+import SaveBar from '../../ui/SaveBar.vue'
 import QuietControl from './QuietControl.vue'
-import SaveBar from '../../components/SaveBar.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
 const router = useRouter()
 const settings = useResource(() => api('/api/host/settings'))
 const saved = computed(() => settings.data.value?.saved.scenes[props.scene] || null)
-const group = computed(() => props.scene.startsWith('group:'))
+const group = computed(() => props.scene.split(':', 3)[1] === 'group')
 const draft = ref(null), relationships = ref([])
 const save = useAction(), binding = useAction()
 const persona = ref('')
@@ -64,7 +68,7 @@ const dirty = computed(() => sceneDirty.value || tasksDirty.value)
 watch(() => dirty.value || Boolean(saved.value && persona.value !== saved.value.persona),
   value => emit('dirty', value), { immediate: true })
 const personaOptions = computed(() => [...new Set(Object.values(settings.data.value?.saved.scenes || {}).map(item => item.persona))])
-const duplicateQQ = computed(() => new Set(relationships.value.map(row => row.qq)).size !== relationships.value.length)
+const duplicateAccount = computed(() => new Set(relationships.value.map(row => row.qq)).size !== relationships.value.length)
 
 function toggleQuiet(value) {
   draft.value.attention.quiet_hours = value ? { start: '23:00', end: '07:00', direct: 'defer', notice_text: null } : null
@@ -89,49 +93,43 @@ async function submit() {
   }
 }
 async function rebind() {
-  if (!window.confirm('换成这个角色？重启后生效。')) return
+  if (!await confirm({ title: `把 ${sceneName(props.scene)} 换成角色 ${persona.value}？`, text: '重启后生效。', confirmLabel: '换角色' })) return
   const result = await binding.run(() => api(`/api/host/settings/scenes/${encodeURIComponent(props.scene)}/persona`, {
     method: 'PUT', body: JSON.stringify({ persona: persona.value }),
   }))
   if (result) { settings.data.value = result; readPendingRestart(); notify('已保存') }
 }
 async function removeScene() {
-  if (!window.confirm('从配置里移除这个群？重启后 Bot 不再处理这个群。聊天记录、记忆和提醒都会保留。')) return
+  if (!await confirm({ title: `移除 ${sceneName(props.scene)}？`, text: '重启后 Bot 不再处理这个群。聊天记录、记忆和提醒都会保留。', confirmLabel: '移除', danger: true })) return
   const result = await binding.run(() => api(`/api/host/settings/scenes/${encodeURIComponent(props.scene)}`, { method: 'DELETE' }))
-  if (result) { readPendingRestart(); readHostState(); notify('已移除，重启后生效'); router.push({ name: 'host-scenes' }) }
+  if (result) { readPendingRestart(); readHostState(); notify('已移除，重启后生效'); router.push({ name: 'host-overview' }) }
 }
 </script>
 
 <template>
-  <div class="page-stack">
-    <ErrorNote v-if="settings.error.value" title="读取群设置失败" :error="settings.error.value" />
-    <p v-if="settings.data.value && !saved" class="surface">这个群已经从配置里移除，重启后不再显示。</p>
-    <template v-if="draft">
+  <ResourceState :resource="settings" error-title="读取群设置失败">
+    <p v-if="!saved" class="muted">这个群已经从配置里移除，重启后不再显示。</p>
+    <template v-else-if="draft">
       <QuietControl :scene="scene" />
 
-      <form class="page-stack" @submit.prevent="submit">
-        <section class="surface">
-          <h2>回复方式</h2>
+      <form class="stack" @submit.prevent="submit">
+        <Panel title="回复方式" description="聊天模型根据完整上下文直接组织回复。">
           <div class="form-grid">
-            <p>聊天模型根据完整上下文直接组织回复。</p>
             <v-text-field :model-value="draft.timezone ?? ''" label="本群时区" placeholder="和全局一致"
               hint="留空使用全局时区，例如 Asia/Shanghai" persistent-hint @update:model-value="value => draft.timezone = value || null" />
           </div>
           <v-switch v-model="draft.transcribe_audio" label="自动转写语音消息" hint="需要先在模型页配置语音识别" persistent-hint />
-        </section>
+        </Panel>
 
-        <section class="surface">
-          <h2>什么时候说话</h2>
+        <Panel title="什么时候说话">
           <v-switch v-model="draft.attention.only_direct" label="只在被 @、被回复或私聊时说话" />
           <template v-if="!draft.attention.only_direct">
-            <div>
-              <v-slider v-model="draft.attention.activity" :min="0" :max="1" :step="0.05" label="活跃度" thumb-label hide-details color="primary" />
-              <p class="muted field-hint">活跃度越高，Bot 越常在没被叫到时插话</p>
-            </div>
+            <v-slider v-model="draft.attention.activity" :min="0" :max="1" :step="0.05" label="活跃度" thumb-label color="primary"
+              hint="活跃度越高，Bot 越常在没被叫到时插话" persistent-hint />
             <v-combobox v-model="draft.attention.keywords" label="关键词" multiple chips closable-chips
               hint="群里出现这些词时，Bot 会留意要不要接话" persistent-hint />
           </template>
-          <v-combobox v-model="draft.attention.other_bot_qqs" label="群里其他 Bot 的 QQ" multiple chips closable-chips
+          <v-combobox v-model="draft.attention.other_bot_ids" label="群里其他 Bot 的账号" placeholder="onebot:QQ号" multiple chips closable-chips
             hint="这些账号的普通消息不会叫醒 Bot，避免两个 Bot 互相聊个没完" persistent-hint />
           <v-switch :model-value="draft.attention.quiet_hours !== null" label="每天的安静时段" @update:model-value="toggleQuiet" />
           <div v-if="draft.attention.quiet_hours" class="form-grid">
@@ -146,10 +144,9 @@ async function removeScene() {
             <v-text-field v-for="[key, label, hint] in timing" :key="key" :model-value="draft.attention[key]" type="number" :label="label"
               :hint="hint" :persistent-hint="Boolean(hint)" @update:model-value="value => draft.attention[key] = numberOrBlank(value)" />
           </AdvancedFields>
-        </section>
+        </Panel>
 
-        <section v-if="group" class="surface">
-          <h2>主动开话题</h2>
+        <Panel v-if="group" title="主动开话题">
           <v-switch :model-value="draft.proactive !== null" label="群里安静太久时主动开个话题"
             hint="每天最多一次，安静时段内不会；需要先在学习标签打开回复效果" persistent-hint @update:model-value="toggleProactive" />
           <div v-if="draft.proactive" class="form-grid">
@@ -158,31 +155,25 @@ async function removeScene() {
             <v-text-field v-model="draft.proactive.start" label="每天从几点开始" type="time" />
             <v-text-field v-model="draft.proactive.end" label="到几点结束" type="time" />
           </div>
-        </section>
+        </Panel>
 
-        <section class="surface">
-          <h2>在本群的称呼与关系</h2>
-          <p class="muted">只对这个群生效，角色本身的设定在角色页修改。</p>
+        <Panel title="在本群的称呼与关系" description="只对这个群生效，角色本身的设定在角色页修改。">
           <v-combobox v-model="draft.scene_persona.persona_aliases" label="群友对 Bot 的其他称呼" multiple chips closable-chips
             hint="群里这样叫 Bot 时，Bot 知道是在叫自己" persistent-hint />
-          <div class="relations">
-            <h3>和群友的关系</h3>
-            <div v-for="(row, index) in relationships" :key="index" class="relation-row">
-              <v-text-field v-model="row.qq" label="QQ" inputmode="numeric" />
-              <v-textarea v-model="row.text" label="关系说明" rows="1" auto-grow placeholder="例如：群主，和 Bot 是老朋友" />
-              <v-btn variant="text" @click="relationships.splice(index, 1)">删除</v-btn>
-            </div>
-            <p v-if="duplicateQQ" class="error-line">有重复的 QQ，请合并成一条</p>
-            <v-btn variant="outlined" size="small" @click="relationships.push({ qq: '', text: '' })">添加关系</v-btn>
-          </div>
+          <h3>和群友的关系</h3>
+          <RowEditor :items="relationships" :make="() => ({ qq: '', text: '' })" add-label="添加关系" columns="160px minmax(0,1fr)">
+            <template #default="{ item }">
+              <v-text-field v-model="item.qq" label="账号" placeholder="onebot:QQ号" />
+              <v-textarea v-model="item.text" label="关系说明" rows="1" auto-grow placeholder="例如：群主，和 Bot 是老朋友" />
+            </template>
+          </RowEditor>
+          <p v-if="duplicateAccount" class="problem">有重复的账号，请合并成一条</p>
           <v-textarea :model-value="draft.scene_persona.behavior_addendum ?? ''" label="本群的额外要求" rows="2" auto-grow
             hint="例如：这个群聊技术话题，回复可以长一点" persistent-hint
             @update:model-value="value => draft.scene_persona.behavior_addendum = value || null" />
-        </section>
+        </Panel>
 
-        <section class="surface">
-          <h2>提醒与任务</h2>
-          <p class="muted">谁可以用这些功能在设置页的权限里修改。</p>
+        <Panel title="提醒与任务" description="谁可以用这些功能在设置页的权限里修改。">
           <div class="form-grid">
             <v-switch v-model="draft.schedules.enabled" label="允许定提醒" />
             <v-switch v-model="draft.schedules.autonomous" label="允许 Bot 自己定提醒" :disabled="!draft.schedules.enabled" />
@@ -201,35 +192,29 @@ async function removeScene() {
               :key="key" :model-value="draft.tasks[key] ?? ''" type="number" :label="label" hint="留空使用全局设置" persistent-hint
               @update:model-value="value => draft.tasks[key] = numberOrNull(value)" />
           </AdvancedFields>
-        </section>
+        </Panel>
 
         <SaveBar :on-save="submit" :dirty="dirty" :saving="save.busy.value" :error="save.error.value" label="保存本群设置"
-          :problem="duplicateQQ ? '和群友的关系里有重复的 QQ' : ''" @discard="adopt" />
+          :problem="duplicateAccount ? '和群友的关系里有重复的账号' : ''" @discard="adopt" />
       </form>
 
-      <section class="surface">
-        <h2>角色</h2>
+      <Panel title="角色与移除">
         <ErrorNote v-if="binding.error.value" title="没有保存成功" :error="binding.error.value" />
         <div class="bind-row">
           <v-combobox v-model="persona" :items="personaOptions" label="角色包目录" hint="选择已有角色包，或填写新的角色包目录" persistent-hint />
           <v-btn color="primary" variant="tonal" :loading="binding.busy.value" :disabled="!persona || persona === saved.persona" @click="rebind">换角色</v-btn>
         </div>
-        <v-btn class="mt-6" color="error" variant="text" :loading="binding.busy.value" @click="removeScene">从配置移除这个群</v-btn>
-      </section>
+        <template #footer>
+          <span class="muted small grow">移除后聊天记录、记忆和提醒都保留。</span>
+          <v-btn color="error" variant="text" :loading="binding.busy.value" @click="removeScene">从配置移除这个群</v-btn>
+        </template>
+      </Panel>
     </template>
-  </div>
+  </ResourceState>
 </template>
 
 <style scoped>
-section.surface{display:grid;gap:16px;align-content:start}
-section.surface > h2{margin:0 !important}
-section.surface > .muted{margin:-8px 0 0 !important}
-h3{font-size:14px;margin:0}
-.field-hint{font-size:12px;margin:0 16px}
-.relations{display:grid;gap:8px;justify-items:start}
-.relation-row{display:grid;grid-template-columns:160px minmax(0,1fr) auto;gap:12px;align-items:start;width:100%}
-.error-line{color:var(--error-text);margin:0}
-.bind-row{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
+.bind-row{display:flex;gap:var(--sp-3);align-items:flex-start;flex-wrap:wrap}
 .bind-row .v-input{flex:1 1 320px}
-@media(max-width:600px){.relation-row{grid-template-columns:1fr auto}.relation-row .v-textarea{grid-column:1/-1;grid-row:2}}
+.grow{flex:1}
 </style>

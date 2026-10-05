@@ -23,7 +23,7 @@ from ...work.tools import DelegateArguments, TaskArguments, perform_task_action
 
 class WorkspaceDiscard(BaseModel):
     model_config = STRICT
-    requester: str = Field(pattern=r'^[1-9][0-9]*$')
+    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
     workspace: str = Field(min_length=1)
     runtime: str = Field(min_length=1)
     confirmed: bool

@@ -3,10 +3,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from importlib.metadata import version
+import sys
 import re
 import tomllib
 from typing import Annotated, Literal
 from urllib.parse import quote, quote_plus
+
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
 
 from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, JsonValue,
                       TypeAdapter, ValidationError, create_model, field_validator, model_validator)
@@ -96,6 +101,10 @@ class Manifest(BaseModel):
     name: str
     version: str = Field(min_length=1)
     interface: int
+    requires_lenbot: str
+    requires_python: str
+    platforms: list[Literal['linux', 'darwin', 'win32']] = Field(min_length=1)
+    reload: Literal['plugin', 'host']
     authors: list[str] = Field(min_length=1)
     license: str = Field(min_length=1)
     description: str = Field(min_length=1)
@@ -103,6 +112,27 @@ class Manifest(BaseModel):
     homepage: HttpUrl | None = None
     dependencies: list[str] = Field(default_factory=list)
     config: dict[str, ConfigField] = Field(default_factory=dict)
+
+    @field_validator('version')
+    @classmethod
+    def comparable_version(cls, value: str) -> str:
+        return str(Version(value))
+
+    @field_validator('requires_lenbot', 'requires_python')
+    @classmethod
+    def version_range(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError('Version range must be explicit')
+        return str(SpecifierSet(value))
+
+    def require_compatible(self) -> None:
+        host, python = version('len-bot'), '.'.join(map(str, sys.version_info[:3]))
+        if Version(host) not in SpecifierSet(self.requires_lenbot):
+            raise ValueError(f'{self.name} requires host {self.requires_lenbot}; actual={host}')
+        if Version(python) not in SpecifierSet(self.requires_python):
+            raise ValueError(f'{self.name} requires Python {self.requires_python}; actual={python}')
+        if sys.platform not in self.platforms:
+            raise ValueError(f'{self.name} requires platforms {self.platforms!r}; actual={sys.platform}')
 
     @field_validator("name")
     @classmethod
@@ -148,12 +178,13 @@ def parse_manifest(path: Path) -> Manifest:
     try:
         manifest = Manifest.model_validate(raw)
     except ValidationError as error:
-        raise ValueError(f"{path}: {error}") from error
+        raise ValueError(f"{path}: {error}; 原文开头：{text[:300]!r}") from error
     return manifest
 
 
 def read_manifest(directory: Path) -> Manifest:
     manifest = parse_manifest(directory / "plugin.toml")
+    manifest.require_compatible()
     if manifest.name != directory.name:
         raise ValueError(f"{directory}/plugin.toml: name {manifest.name!r} 必须等于目录名 {directory.name!r}")
     return manifest

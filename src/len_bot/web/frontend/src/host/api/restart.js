@@ -4,7 +4,7 @@ import { api } from '../../api.js'
  * @typedef {{pid:number, started_at:number}} HostProcess
  * @typedef {{host:string, port:number}} PanelAddress
  * @typedef {{process:HostProcess, restartable:boolean, intent:string,
- * pending:{sections:string[],scenes:string[],personas:{name:string,path:string}[]},
+ * pending:{sections:string[],scenes:string[],personas:{name:string,path:string}[],plugins:{name:string,candidate:{version:string},error:string|null}[]},
  * panel:{running:PanelAddress,saved:PanelAddress|null}, chats:string[],
  * tasks:{id:number,scene:string,goal:string,status:string,account_browser:boolean}[],
  * queued_tasks:number, browsers:{id:number,scene:string,session:string|null}[],

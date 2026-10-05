@@ -1,23 +1,31 @@
+/* Scales. Colors come from styles/theme.js. Scoped styles use only these. */
 :root {
-  --ink:#172b46;
-  --muted:#63748b;
-  --line:#e2e8f0;
-  --surface:#fff;
-  --page:#f4f6f9;
-  --primary:#2563eb;
-  /* Colors pages used to write out in their own styles; values unchanged. */
-  --on-primary:#fff;
-  --success:#16845c;
-  --warning-text:#9a5514;
-  --warning-bg:#fbeade;
-  --error-text:#b3261e;
-  --error-bg:#fde8e7;
-  --status-warning:#bd8340;
-  --status-idle:#adb8c7;
-  --chip-bg:#f2f5fa;
-  --message-avatar-bg:#edf1f6;
-  --bot-avatar-bg:#eaf1ff;
-  --selected-bg:#f2f6ff;
-  --code-bg:#f6f8fb;
-  --list-heading-bg:#f8fafc;
+  --fs-xs:12px;
+  --fs-sm:13px;
+  --fs-md:14px;
+  --fs-lg:16px;
+  --fs-xl:20px;
+  --fs-2xl:26px;
+  --sp-1:4px;
+  --sp-2:8px;
+  --sp-3:12px;
+  --sp-4:16px;
+  --sp-5:24px;
+  --sp-6:32px;
+  --radius-sm:8px;
+  --radius:12px;
+  --radius-lg:16px;
+  --radius-xl:24px;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --shadow-card:0 1px 2px rgb(150 70 100 / 4%),0 8px 24px -12px rgb(150 70 100 / 12%);
+  --shadow-hover:0 2px 6px rgb(150 70 100 / 6%),0 16px 36px -14px rgb(150 70 100 / 26%);
+  --shadow-float:0 18px 48px -16px rgb(150 70 100 / 32%);
+  --shadow-brand:0 8px 20px -8px rgb(214 110 145 / 70%);
+  --glass:rgb(255 255 255 / 72%);
+  --glass-blur:saturate(160%) blur(18px);
+  --ease-out:cubic-bezier(.22,1,.36,1);
+  --ease-spring:cubic-bezier(.34,1.56,.64,1);
+  --dur-1:150ms;
+  --dur-2:240ms;
+  --dur-3:460ms;
 }

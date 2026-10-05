@@ -1,4 +1,4 @@
-"""Actual extraction ranges, resumable service receipts and model exchanges.
+"""Actual extraction ranges, processing results and model exchanges.
 
 This database belongs to memory processing, not the chat history or a backend's
 rebuildable index. Enabling memory for the first time starts with new messages.

@@ -11,6 +11,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "pydantic>=2.13.5",
+    "packaging>=24",
     "websockets>=17.1",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
@@ -40,8 +41,9 @@ build-backend = "uv_build"
 # The source distribution includes panel sources and deployment recipes;
 # the wheel contains runtime code and the built panel, not its build tools.
 [tool.uv.build-backend]
-source-include = [".github/**", "uv.lock", ".dockerignore", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "scripts/**", "docker/**", "deploy/**", "developer/**"]
-source-exclude = ["src/len_bot/web/frontend/node_modules", "**/__pycache__", "**/*.pyc", "**/.lenbot-instance.lock"]
+source-include = [".github/**", "uv.lock", ".dockerignore", "AGENTS.md", "CONTRIBUTING.md", "CONTRIBUTING.en.md", "README.en.md", "SECURITY.md", "scripts/**", "docker/**", "deploy/**", "developer/**", "examples/**"]
+source-exclude = ["src/len_bot/web/frontend/node_modules", "**/__pycache__", "**/*.pyc", "**/.lenbot-instance.lock",
+                  "examples/replay/lenbot.config.json", "examples/replay/chat.sqlite3*", "examples/replay/runs"]
 wheel-exclude = [
     "**/.lenbot-instance.lock",
     "/src/len_bot/web/frontend/**",
@@ -52,3 +54,6 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

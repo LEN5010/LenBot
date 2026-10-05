@@ -4,8 +4,9 @@ import { api, sceneName } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { clone, same } from '../../forms.js'
 import { notify, readPendingRestart } from '../../store.js'
-import ErrorNote from '../../components/ErrorNote.vue'
-import SaveBar from '../../components/SaveBar.vue'
+import Panel from '../../ui/Panel.vue'
+import ResourceState from '../../ui/ResourceState.vue'
+import SaveBar from '../../ui/SaveBar.vue'
 import AvatarCard from './AvatarCard.vue'
 import StylesEditor from './StylesEditor.vue'
 import ExamplesEditor from './ExamplesEditor.vue'
@@ -54,16 +55,15 @@ async function draftFiles() {
 </script>
 
 <template>
-  <ErrorNote v-if="saved.error.value" title="读取角色失败" :error="saved.error.value" />
+  <ResourceState :resource="saved" error-title="读取角色失败">
   <template v-if="draft">
-    <p v-if="shared.length" class="muted">这个角色也用在 {{ shared.map(sceneName).join('、') }}，改动会一起生效。</p>
+    <v-alert v-if="shared.length" type="info">这个角色也用在 {{ shared.map(sceneName).join('、') }}，改动会一起生效。</v-alert>
     <ProfileDraftFile :profile="draft" :preview="previewProfile" :disabled="save.busy.value" @imported="value => draft = value" />
-    <form class="profile" @submit.prevent="submit">
-      <section class="surface">
-        <h2>它是谁</h2>
+    <form class="stack" @submit.prevent="submit">
+      <Panel title="它是谁">
         <div class="who">
           <AvatarCard :scene="scene" :directory="saved.data.value.directory" :name="draft.name" />
-          <div class="fields">
+          <div class="stack">
             <v-text-field v-model="draft.name" label="名字" />
             <div class="form-grid">
               <v-combobox v-model="draft.aliases" label="别名" multiple chips closable-chips
@@ -76,23 +76,20 @@ async function draftFiles() {
         <v-textarea v-model="draft.brief" label="简介" rows="3" auto-grow hint="身份、背景和性格" persistent-hint />
         <v-textarea v-model="draft.behavior" label="做事方式" rows="3" auto-grow hint="它在群里什么时候开口、怎么回应别人" persistent-hint />
         <v-textarea v-model="draft.boundaries" label="底线" rows="3" auto-grow hint="它不会做、不会说的事" persistent-hint />
-      </section>
-      <section class="surface">
-        <h2>怎么说话</h2>
+      </Panel>
+      <Panel title="怎么说话">
         <v-textarea v-model="draft.voice" label="说话方式" rows="4" auto-grow hint="语气、句子长短、口头禅、用不用表情符号" persistent-hint />
         <StylesEditor v-model="draft.styles" />
-      </section>
+      </Panel>
       <ExamplesEditor v-model:examples="draft.examples" v-model:tags="draft.example_tags" />
       <SaveBar :on-save="submit" :dirty="dirty" :saving="save.busy.value" :error="save.error.value" :problem="problem" @discard="discard" />
     </form>
     <DraftTrial :scene="scene" :disabled="Boolean(problem)" :draft="draftFiles" />
   </template>
+  </ResourceState>
 </template>
 
 <style scoped>
-.profile{display:grid;gap:20px}
-.profile .surface{display:grid;gap:16px}
-.who{display:grid;grid-template-columns:auto minmax(0,1fr);gap:20px;align-items:start}
-.fields{display:grid;gap:16px}
+.who{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--sp-5);align-items:start}
 @media(max-width:600px){.who{grid-template-columns:1fr}}
 </style>

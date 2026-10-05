@@ -1,4 +1,4 @@
-任务来自 ${scene}，请求人 QQ ${requester}。
+任务来自 ${scene}，请求人账号 ${requester}。
 任务建立于 ${created_at}，场景时区为 ${timezone}。
 
 目标：${goal}

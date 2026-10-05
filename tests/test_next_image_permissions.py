@@ -10,7 +10,7 @@ from len_bot.next.chat.session import Chat
 from len_bot.next.configuration.chat import ImageSettings
 from len_bot.next.config import load_config
 from len_bot.next.media.images import LookArguments, execute_look
-from len_bot.next.platform.messages import parse_message
+from len_bot.next.platform.onebot_messages import parse_message
 from len_bot.next.models.client import ChatModel, ToolCall
 from len_bot.next.persona.profile import load_persona
 from len_bot.next.storage.store import ImageAsset, Store
@@ -23,7 +23,7 @@ def _jpeg(color: str) -> bytes:
 
 
 def _receive_image(store: Store, scene: str, message_id: str) -> None:
-    kind, number = scene.split(":", 1)
+    platform, kind, number = scene.split(":", 2)
     raw = {
         "post_type": "message", "message_type": kind,
         "self_id": 90001, "user_id": int(number), "message_id": message_id,
@@ -67,7 +67,7 @@ def _chat_inputs(tmp_path, *, tools: str | list[str], vision: bool):
             "provider": "local", "model": "synthetic-vision", "context_window_tokens": 4096,
         }
     (root / "lenbot.config.json").write_text(json.dumps({"compaction": {"input_tokens": 2000},
-        "mode": "isolated", "scene": "group:80001", "bot_qq": "90001",
+        "mode": "isolated", "scene": "onebot:group:80001", "bot_id": 'onebot:90001',
         "timezone": "UTC", "database": "data/image-permissions.sqlite3",
         "persona": "persona", "models": {
             "providers": {"local": {
@@ -88,18 +88,18 @@ async def test_cached_images_with_same_platform_id_do_not_cross_scenes(tmp_path)
     )
     with Store(tmp_path / "images.sqlite3") as store:
         for scene, message_id, color, caption in (
-            ("group:80001", "400", "red", first),
-            ("group:80002", "400", "blue", second),
-            ("group:80002", "401", "yellow", group_only),
-            ("private:80003", "402", "green", private),
+            ("onebot:group:80001", "400", "red", first),
+            ("onebot:group:80002", "400", "blue", second),
+            ("onebot:group:80002", "401", "yellow", group_only),
+            ("onebot:private:80003", "402", "green", private),
         ):
             _receive_image(store, scene, message_id)
             store.save_image(scene, message_id, 1, _asset(color, caption))
 
-        assert store.image("group:80001", "400", 1).description == first
-        assert store.image("group:80002", "400", 1).description == second
-        assert store.image("group:80001", "401", 1) is None
-        assert store.image("group:80001", "402", 1) is None
+        assert store.image("onebot:group:80001", "400", 1).description == first
+        assert store.image("onebot:group:80002", "400", 1).description == second
+        assert store.image("onebot:group:80001", "401", 1) is None
+        assert store.image("onebot:group:80001", "402", 1) is None
 
         async def cached_description(asset: ImageAsset) -> str:
             return asset.description or ""
@@ -110,9 +110,9 @@ async def test_cached_images_with_same_platform_id_do_not_cross_scenes(tmp_path)
                 model_name="synthetic-vision", describe=cached_description,
             )
 
-        local_result = await look("group:80001", "400")
-        other_result = await look("group:80002", "400")
-        private_result = await look("private:80003", "402")
+        local_result = await look("onebot:group:80001", "400")
+        other_result = await look("onebot:group:80002", "400")
+        private_result = await look("onebot:private:80003", "402")
         for result in (local_result, other_result, private_result):
             observed = json.loads(result.split("\n", 1)[0])
             assert observed["pixels_reused"] is True
@@ -124,13 +124,13 @@ async def test_cached_images_with_same_platform_id_do_not_cross_scenes(tmp_path)
 
         for foreign_id in ("401", "402", "999"):
             with pytest.raises(ValueError) as failure:
-                await look("group:80001", foreign_id)
+                await look("onebot:group:80001", foreign_id)
             assert second not in str(failure.value)
             assert private not in str(failure.value)
             assert group_only not in str(failure.value)
         with pytest.raises(ValueError):
-            store.save_image_description("group:80001", "401", 1, "越权改写", "synthetic-vision", 0.0)
-        assert store.image("group:80002", "401", 1).description == group_only
+            store.save_image_description("onebot:group:80001", "401", 1, "越权改写", "synthetic-vision", 0.0)
+        assert store.image("onebot:group:80002", "401", 1).description == group_only
 
 
 @pytest.mark.asyncio

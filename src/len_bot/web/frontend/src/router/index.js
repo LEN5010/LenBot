@@ -18,20 +18,20 @@ const router = createRouter({
   routes:[
     {path:'/',redirect:{name:'host-overview'}},
     { path:'/host/chat-test', name:'host-trials', component:()=>import('../host/pages/trial/TrialPage.vue'), meta:{title:'对话测试'} },
-    { path:'/host/logs', name:'host-logs', component:()=>import('../host/pages/logs/LogsPage.vue'), meta:{title:'日志'} },
-    { path:'/host/scenes', name:'host-scenes', component:()=>import('../host/pages/scenes/ScenesPage.vue'), meta:{title:'群聊'} },
+    { path:'/host/logs', name:'host-logs', component:()=>import('../host/pages/logs/LogsPage.vue'), meta:{title:'日志',scene:route=>route.query.tab!=='system'} },
+    { path:'/host/scenes', name:'host-scenes', component:()=>import('../host/pages/scenes/ScenesPage.vue'), meta:{title:'群聊',scene:true} },
     {
       path:'/host/tasks',
       name:'host-tasks',
       component:()=>import('../host/pages/tasks/TasksPage.vue'),
-      meta:{title:'任务'}
+      meta:{title:'任务',scene:true}
     },
-    { path:'/host/resources', name:'host-resources', component:()=>import('../host/pages/resources/ResourcesPage.vue'), meta:{title:'资源'} },
+    { path:'/host/resources', name:'host-resources', component:()=>import('../host/pages/resources/ResourcesPage.vue'), meta:{title:'资源',scene:true} },
     {
       path:'/host/memory',
       name:'host-memory',
       component:()=>import('../host/pages/memory/MemoryPage.vue'),
-      meta:{title:'记忆'}
+      meta:{title:'记忆',scene:route=>route.query.tab!=='settings'}
     },
     {
       path:'/host/overview',
@@ -43,7 +43,13 @@ const router = createRouter({
       path:'/host/capabilities',
       name:'host-capabilities',
       component:()=>import('../host/pages/capabilities/CapabilitiesPage.vue'),
-      meta:{title:'能力'}
+      meta:{title:'能力',scene:route=>['tools',undefined].includes(route.query.tab)}
+    },
+    {
+      path:'/host/plugins',
+      name:'host-plugins',
+      component:()=>import('../host/pages/capabilities/PluginsPage.vue'),
+      meta:{title:'插件',scene:true}
     },
     {
       path:'/host/models',
@@ -55,13 +61,13 @@ const router = createRouter({
       path:'/host/system',
       name:'host-system',
       component:()=>import('../host/pages/settings/SettingsPage.vue'),
-      meta:{title:'设置'}
+      meta:{title:'设置',scene:route=>route.query.tab==='permissions'}
     },
     {
       path:'/host/persona',
       name:'host-persona',
       component:()=>import('../host/pages/persona/PersonaPage.vue'),
-      meta:{title:'角色'}
+      meta:{title:'角色',scene:true}
     },
     {
       path:'/login',

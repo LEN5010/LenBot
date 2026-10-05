@@ -11,7 +11,6 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 
 from ...configuration.types import STRICT
-from ...memory.local import LocalMemory
 from ...runtime.network import NetworkRuntime
 from ...chat.recall import RecallArguments, message_page
 from ...runtime.operations import credentials, redact, redact_record
@@ -53,12 +52,6 @@ class SummaryRequest(BaseModel):
     scene: str
     path: str
     scope: Literal["scene", "public"]
-
-
-class NativeOverviewRequest(BaseModel):
-    model_config = STRICT
-    scene: str
-    path: str = "memories"
 
 
 class DeleteRequest(BaseModel):
@@ -118,9 +111,8 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
             "enabled": memory is not None,
             "backend": None if memory is None else memory.settings.backend,
             "actions": [] if memory is None else memory.actions,
-            "public_writable": memory is not None and isinstance(memory.backend, LocalMemory),
-            "public_readable": memory is not None and (isinstance(memory.backend, LocalMemory)
-                                or memory.settings.openviking.public_root is not None),
+            "public_writable": memory is not None,
+            "public_readable": memory is not None,
             "auto_recall": memory is not None and memory.settings.auto_recall,
             "recall_budget_chars": None if memory is None else memory.settings.recall_budget_chars,
             "summaries": memory is not None and memory.settings.summaries,
@@ -162,13 +154,6 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
         async with operation(scene) as memory:
             return {"changes": await memory.history(scene, path)}
 
-    @app.get("/api/host/memory/history-diff")
-    async def history_diff(scene: str, path: str, target: str, previous: str | None = None,
-                           _: str = Depends(user)):
-        async with operation(scene) as memory:
-            if isinstance(memory.backend, LocalMemory):
-                raise ValueError("本地历史直接提供修改前后正文，不使用远端快照引用")
-            return await memory.backend.history_diff(scene, path, target, previous)
 
     @app.post("/api/host/memory/search")
     async def search(body: SearchRequest, _: str = Depends(user)):
@@ -192,33 +177,11 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
             return await memory.delete(body.scene, body.path, body.reason, forget=body.forget,
                                        exclude_records=body.exclude_records)
 
-    @app.get("/api/host/memory/native-overview")
-    async def native_overview(scene: str, path: str = "memories", _: str = Depends(user)):
-        async with operation(scene) as memory:
-            if isinstance(memory.backend, LocalMemory):
-                raise ValueError("原生概览仅适用于 OpenViking 后端")
-            async with memory.write_lock(scene):
-                return (await memory.backend.overview(scene, path)).as_dict()
-
-    @app.post("/api/host/memory/native-overview")
-    async def refresh_native_overview(body: NativeOverviewRequest, _: str = Depends(user)):
-        async with operation(body.scene) as memory:
-            if isinstance(memory.backend, LocalMemory):
-                raise ValueError("原生概览仅适用于 OpenViking 后端")
-            async with memory.write_lock(body.scene):
-                if body.scene in memory.pending_native_tasks:
-                    raise ValueError(f"OpenViking 抽取仍在处理：{memory.pending_native_tasks[body.scene]}")
-                result = await memory.backend.refresh_overview(body.scene, body.path)
-                return {"result": result.model_dump(),
-                        "complete": result.failed_records == 0 and result.unsupported_records == 0,
-                        "scope": "原生目录及其子目录，不包含同级 peers，也不刷新上级目录"}
 
     @app.get("/api/host/memory/summary")
     async def summary(scene: str, path: str = "", scope: Literal["scene", "public"] = "scene",
                       _: str = Depends(user)):
         async with operation(scene) as memory:
-            if not isinstance(memory.backend, LocalMemory):
-                raise ValueError("目录摘要只在本地后端实现")
             current = await memory.backend.summary(scene, path, scope=scope)
             return {"enabled": memory.summarizer is not None, "summary": asdict(current),
                     "runs": memory.jobs.summary_runs("public" if scope == "public" else scene, path)}
@@ -268,15 +231,12 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
         ]}
 
     @app.post("/api/host/memory/ingest/{scene}/{action}")
-    async def ingest(scene: str, action: Literal["run", "retry", "refresh"], _: str = Depends(user)):
+    async def ingest(scene: str, action: Literal["run", "retry"], _: str = Depends(user)):
         async with operation(scene):
             ingestor = runtime.ingestor
             if ingestor is None:
                 raise ValueError("当前运行配置未开启记忆自动抽取")
             if action == "retry":
                 return {"requested": "retry", "job": ingestor.retry(scene)}
-            if action == "refresh":
-                ingestor.refresh(scene)
-            else:
-                ingestor.request(scene)
+            ingestor.request(scene)
             return {"requested": action, "state": ingestor.jobs.view(scene)}

@@ -3,7 +3,8 @@
 import { computed, ref, watch } from 'vue'
 import { api, queryString } from '../../../api.js'
 import { useResource } from '../../../composables/useResource.js'
-import ErrorNote from '../../components/ErrorNote.vue'
+import ErrorNote from '../../ui/ErrorNote.vue'
+import LoadMore from '../../ui/LoadMore.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['selection'])
@@ -36,32 +37,32 @@ function toggle(item, on) {
 
 <template>
   <div class="sources">
-    <strong>要跳过的聊天消息（可选）</strong>
+    <h3>要跳过的聊天消息（可选）</h3>
     <form class="search" @submit.prevent="search">
-      <v-text-field v-model="text" label="消息里的文字" density="compact" hide-details />
-      <v-text-field v-model="who" label="发言人 QQ" inputmode="numeric" density="compact" hide-details />
-      <v-btn type="submit" variant="outlined" :loading="page.loading.value">查找</v-btn>
+      <v-text-field v-model="text" label="消息里的文字" />
+      <v-text-field v-model="who" label="发言人账号" placeholder="onebot:QQ号" />
+      <v-btn type="submit" variant="tonal" :loading="page.loading.value">查找</v-btn>
     </form>
     <ErrorNote v-if="page.error.value" title="查找消息失败" :error="page.error.value" />
     <p v-if="page.data.value && !rows.length" class="muted">没有找到消息</p>
-    <ul class="rows">
+    <ul class="plain-list rows">
       <li v-for="item in rows" :key="item.record">
         <v-checkbox :model-value="item.excluded || chosen.has(item.record)" :disabled="item.excluded || (!chosen.has(item.record) && chosen.size >= limit)"
-          density="compact" hide-details @update:model-value="value => toggle(item, value)">
-          <template #label><span class="row-text"><span v-if="item.excluded" class="muted">已经跳过</span>{{ item.text }}</span></template>
+          @update:model-value="value => toggle(item, value)">
+          <template #label><span class="row-text"><span v-if="item.excluded" class="muted small">已经跳过</span>{{ item.text }}</span></template>
         </v-checkbox>
       </li>
     </ul>
-    <v-btn v-if="page.data.value?.next_offset != null" size="small" variant="text" :loading="page.loading.value" @click="page.reload(true)">显示更多</v-btn>
-    <p v-if="list.length" class="muted">已选 {{ list.length }} 条{{ list.length >= limit ? '，一次最多 500 条' : '' }}</p>
+    <LoadMore v-if="page.data.value?.next_offset != null" :loading="page.loading.value" @more="page.reload(true)" />
+    <p v-if="list.length" class="muted small">已选 {{ list.length }} 条{{ list.length >= limit ? '，一次最多 500 条' : '' }}</p>
   </div>
 </template>
 
 <style scoped>
-.sources{display:grid;gap:8px;border-top:1px solid var(--line);padding-top:12px}
-.search{display:grid;grid-template-columns:1fr 160px auto;gap:8px;align-items:center}
-.rows{list-style:none;margin:0;padding:0;max-height:320px;overflow:auto}
-.row-text{display:grid;gap:2px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px}
-.row-text .muted{font-size:12px}
+.sources{display:grid;gap:var(--sp-2);border-top:1px solid var(--line);padding-top:var(--sp-3)}
+.sources p{margin:0}
+.search{display:grid;grid-template-columns:1fr 160px auto;gap:var(--sp-2);align-items:center}
+.rows{max-height:320px;overflow:auto}
+.row-text{display:grid;gap:2px;white-space:pre-wrap;overflow-wrap:anywhere}
 @media(max-width:600px){.search{grid-template-columns:1fr}}
 </style>

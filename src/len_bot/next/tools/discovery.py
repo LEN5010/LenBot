@@ -3,10 +3,10 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-DISCOVERY_REQUIRED_NAMES = frozenset({"scene_control", "schedule_list", "schedule_cancel", "persona_knowledge", "open_forward", "member_info", "transcribe"})
+DISCOVERY_REQUIRED_NAMES = frozenset({"scene_control", "host_manage", "schedule_list", "schedule_cancel", "persona_knowledge", "open_forward", "member_info", "transcribe"})
 
 
-DEFERRED_NAMES = frozenset({"schedule", "memory", "delegate", "task", "send_file", "web_search", "web_read", "scene_control", "schedule_list", "schedule_cancel", "persona_knowledge", "open_forward", "member_info", "transcribe"})
+DEFERRED_NAMES = frozenset({"schedule", "memory", "delegate", "task", "send_file", "web_search", "web_read", "scene_control", "host_manage", "schedule_list", "schedule_cancel", "persona_knowledge", "open_forward", "member_info", "transcribe"})
 
 
 def model_schema(schema: dict | bool) -> dict | bool:

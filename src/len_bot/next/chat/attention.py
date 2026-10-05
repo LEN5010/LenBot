@@ -19,7 +19,8 @@ from .scene_control import SceneControlArguments, TemporaryQuiet, require_contro
 from ..models.limits import LimitReached
 from ..configuration.chat import Attention
 from ..platform.delivery import report_parts, split_expression
-from ..platform.messages import ChatMessage, Segment, parse_message, plain_text
+from ..platform.messages import ChatMessage, Segment, plain_text
+from ..platform.onebot_messages import parse_message
 from .proactive import PROMPT as PROACTIVE_PROMPT, ProactiveStore, idle_text
 from .quiet import next_quiet_start, quiet_period
 from .schedule import effective_settings, check_creation, platform_role, wake_text
@@ -73,13 +74,13 @@ class AttentionState:
 
 
 def is_direct(message: ChatMessage) -> bool:
-    return not message.is_self and (message.scene.startswith("private:") or message.mentions_bot)
+    return not message.is_self and (message.scene.split(":", 2)[1] == "private" or message.mentions_bot)
 
 
 def participation_score(pending: list[tuple[ChatMessage, float]],
                         recent: list[tuple[ChatMessage, float]], config: Attention) -> float:
     humans = [(message, at) for message, at in pending
-              if not message.is_self and message.sender.uid not in config.other_bot_qqs]
+              if not message.is_self and message.sender.uid not in config.other_bot_ids]
     if not humans:
         return 0.0
     texts = [plain_text(message).strip() for message, _ in humans]
@@ -94,11 +95,11 @@ def participation_score(pending: list[tuple[ChatMessage, float]],
         score -= 0.8
     if not any(texts):
         score -= 0.7
-    other_targets = sum(any(segment.type == "at" and str(segment.data["qq"]) in config.other_bot_qqs
+    other_targets = sum(any(segment.type == "mention" and str(segment.data["user"]) in config.other_bot_ids
                             for segment in message.segments) for message, _ in humans)
     score -= other_targets / len(humans)
     sample = [(message, at) for message, at in recent
-              if message.is_self or message.sender.uid not in config.other_bot_qqs]
+              if message.is_self or message.sender.uid not in config.other_bot_ids]
     if sample:
         score -= 1.5 * sum(message.is_self and message.send_status != "failed"
                            for message, _ in sample) / len(sample)
@@ -144,17 +145,17 @@ class SceneRunner:
             disabled = (self.settings.only_direct and channel != "direct"
                         or channel == "ambient" and self.settings.activity == 0
                         or channel == "focus" and self.settings.focus_seconds == 0)
-            eligible = self.store.last_pending_arrival(self.config.scene, self.settings.other_bot_qqs) is not None
+            eligible = self.store.last_pending_arrival(self.config.scene, self.settings.other_bot_ids) is not None
             if disabled or not eligible:
                 restored.pending = None
         own_at = self.store.last_self_time(self.config.scene)
         if own_at is not None:
             restored.contact(own_at, self.settings.focus_seconds)
         if saved is None:
-            recent = self.store.attention_sample(self.config.scene, exclude_uids=self.settings.other_bot_qqs)
+            recent = self.store.attention_sample(self.config.scene, exclude_uids=self.settings.other_bot_ids)
             seen = []
             for _, message, at in self.store.pending_messages(self.config.scene):
-                if not message.is_self and message.sender.uid not in self.settings.other_bot_qqs:
+                if not message.is_self and message.sender.uid not in self.settings.other_bot_ids:
                     seen = (seen + [(message, at)])[-20:]
                 self.offer_message(restored, message, at, seen, recent)
             # An empty state also records that older input was already considered.
@@ -235,7 +236,7 @@ class SceneRunner:
             if message.send_status in {"sent", "received", "simulated"}:
                 state.contact(at, self.settings.focus_seconds)
             return
-        if self.settings.only_direct or message.sender.uid in self.settings.other_bot_qqs:
+        if self.settings.only_direct or message.sender.uid in self.settings.other_bot_ids:
             return
         if self.quiet_period(at) is not None:
             return
@@ -263,13 +264,13 @@ class SceneRunner:
         ``wake=False`` stores a plugin command without offering a wake; it still
         reaches the mind with the next batch.
         """
-        if str(raw["self_id"]) != self.config.bot_qq:
-            raise ValueError("输入场景或 Bot QQ 与隔离实例配置不同")
+        if message.bot_id != self.config.bot_id:
+            raise ValueError("输入场景或 Bot 账号与隔离实例配置不同")
         if message.scene != self.config.scene:
             if ignore_other_scenes:
                 return {"status": "ignored", "scene": message.scene,
                         "platform_message_id": message.platform_message_id}
-            raise ValueError("输入场景或 Bot QQ 与隔离实例配置不同")
+            raise ValueError("输入场景或 Bot 账号与隔离实例配置不同")
         if message.reply_to is not None:
             if message.reply_to in self.own_ids:
                 message.mentions_bot = True
@@ -293,12 +294,12 @@ class SceneRunner:
         # Batch statistics are only needed for a new, non-direct ambient opportunity.
         pending, recent = [], []
         if (wake and not is_direct(message) and not message.is_self and not self.settings.only_direct
-                and message.sender.uid not in self.settings.other_bot_qqs and state.pending is None
+                and message.sender.uid not in self.settings.other_bot_ids and state.pending is None
                 and self.settings.activity > 0 and period is None):
-            pending = self.store.pending_attention_sample(self.config.scene, self.settings.other_bot_qqs, limit=19)
+            pending = self.store.pending_attention_sample(self.config.scene, self.settings.other_bot_ids, limit=19)
             pending.append((message, now))
             recent = self.store.attention_sample(self.config.scene, limit=19,
-                                               exclude_uids=self.settings.other_bot_qqs) + [(message, now)]
+                                               exclude_uids=self.settings.other_bot_ids) + [(message, now)]
         if wake:
             self.offer_message(state, message, now, pending, recent)
         snapshot = asdict(state) if state != self.state else None
@@ -306,10 +307,10 @@ class SceneRunner:
             message, raw, now, attention_state=snapshot,
             plugin_claim=plugin_claim,
             collect_stickers=(not blocked and self.config.learning is not None and self.config.learning.collect_stickers
-                              and not message.is_self and message.sender.uid != self.config.bot_qq
-                              and message.sender.uid not in self.settings.other_bot_qqs),
+                              and not message.is_self and message.sender.uid != self.config.bot_id
+                              and message.sender.uid not in self.settings.other_bot_ids),
             transcribe_audio=(not blocked and self.config.transcribe_audio and not message.is_self
-                              and message.sender.uid not in self.settings.other_bot_qqs),
+                              and message.sender.uid not in self.settings.other_bot_ids),
         )
         self.state = state
         if message.is_self:
@@ -336,7 +337,7 @@ class SceneRunner:
             now = self.now()
             period = self.quiet_period(now)
             if period is None:
-                available = self.store.last_pending_arrival(self.config.scene, self.settings.other_bot_qqs) is not None
+                available = self.store.last_pending_arrival(self.config.scene, self.settings.other_bot_ids) is not None
             else:
                 available = (self.quiet_direct(now) == "allow" and self.state.pending is not None
                              and self.state.pending.channel == "direct")
@@ -376,7 +377,7 @@ class SceneRunner:
         if wake.channel == "ambient":
             return max(wake.first_at, wake.first_at if self.state.ambient_last_at is None else
                        self.state.ambient_last_at + self.ambient_interval())
-        latest = self.store.last_pending_arrival(self.config.scene, self.settings.other_bot_qqs)
+        latest = self.store.last_pending_arrival(self.config.scene, self.settings.other_bot_ids)
         idle = getattr(self.settings, wake.channel + "_idle_seconds")
         maximum = getattr(self.settings, wake.channel + "_max_seconds")
         return min((wake.first_at if latest is None else latest) + idle, wake.first_at + maximum)
@@ -390,7 +391,7 @@ class SceneRunner:
                 if item.requester in self.config.permissions.blacklist:
                     raise PermissionError('安排请求人已在黑名单中')
                 check_creation(effective_settings(self.config), requester=item.requester, target=item.target,
-                               bot_qq=self.config.bot_qq, root_owner=self.config.owner_qq,
+                               bot_id=self.config.bot_id, root_owners=self.config.owners,
                                group_role=platform_role(self.store, self.config, item.requester))
             except PermissionError as error:
                 reason = f"{type(error).__name__}: {error}"
@@ -625,7 +626,7 @@ class SceneRunner:
         state = self.consumed_state()
         parts, note = None, None
         expressions = []
-        prefix = ("[宿主安静时段固定表达；模拟，未发送到 QQ]\n" if self.chat.expression.send_message is None
+        prefix = ("[宿主安静时段固定表达；模拟，未发送到平台]\n" if self.chat.expression.send_message is None
                   else "[宿主安静时段固定表达]\n")
         if state.quiet_notice_until != until:
             expression = self.chat.expression.simulated_message([
@@ -691,6 +692,9 @@ class SceneRunner:
         self.emit(result)
         if result["status"] == "limited" and channel == "direct":
             await self.limit_notice(LimitReached(result["error"], result["limit_until"]))
+        if self.chat.toolset.restart_after_turn:
+            self.chat.toolset.restart_after_turn = False
+            await self.chat.toolset.host_management.finish_turn()
 
     def observed_since(self) -> float | None:
         return self.started_at if self.config.delivery == "simulated" else self.connected_since()
@@ -698,7 +702,7 @@ class SceneRunner:
     def proactive_times(self) -> tuple[float | None, float | None]:
         """Close finished observations; return the next allowed wake and the next observation end."""
         now = self.now()
-        exclude = tuple(self.settings.other_bot_qqs)
+        exclude = tuple(self.settings.other_bot_ids)
         if self.observed_since() is None:
             return None, None
         observe_until = self.proactive.settle(self.config.scene, now)
@@ -721,7 +725,7 @@ class SceneRunner:
             if wake_at is None or wake_at > now:
                 return
             idle_since = max(self.observed_since(),
-                             self.proactive.last_activity(self.config.scene, tuple(self.settings.other_bot_qqs)))
+                             self.proactive.last_activity(self.config.scene, tuple(self.settings.other_bot_ids)))
             zone = ZoneInfo(self.config.timezone)
             local = datetime.fromtimestamp(now, zone)
             text = Template(PROACTIVE_PROMPT.read_text(encoding="utf-8")).substitute(

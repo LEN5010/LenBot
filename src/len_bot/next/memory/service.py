@@ -1,12 +1,10 @@
-"""Selected memory backend, scene-bound tools and transient per-turn recall."""
+"""Local memory, scene-bound tools and transient per-turn recall."""
 
 from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import asdict
-from pathlib import Path
-from string import Template
 from typing import Annotated, Literal, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
@@ -14,7 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 from .embeddings import EmbeddingClient, EmbeddingSettings
 from .local import LocalMemory, LocalMemorySettings
 from .jobs import MemoryJobs
-from .openviking import OpenVikingMemory, OpenVikingSettings
 from .summary import MemorySummarizer
 from .role_paths import require_bot_path
 from ..platform.messages import ChatMessage, plain_text, render_message
@@ -58,14 +55,7 @@ class LocalMemoryConfig(RecallSettings):
     summaries: bool = False
 
 
-class OpenVikingMemoryConfig(RecallSettings):
-    backend: Literal["openviking"]
-    openviking: OpenVikingSettings
-    summaries: bool = False
-
-
-MemorySettings = Annotated[LocalMemoryConfig | OpenVikingMemoryConfig, Field(discriminator="backend")]
-
+MemorySettings = LocalMemoryConfig
 
 class BrowseMemory(BaseModel):
     model_config = STRICT
@@ -132,7 +122,7 @@ MEMORY_ARGUMENTS = TypeAdapter(Annotated[
 ])
 MEMORY_TOOL = {"type": "function", "function": {
     "name": "memory", "description": "浏览、检索、读写当前场景长期记忆；公共分区只读。"
-    "普通删除与 forget 的范围由当前后端说明，不能据此宣称聊天和备份已删除。",
+    "普通删除保留修改历史；forget 清除该文件及其历史，不能据此宣称聊天和备份已删除。",
     "parameters": {
         "type": "object", "additionalProperties": False, "required": ["action"],
         "properties": {
@@ -154,8 +144,8 @@ MEMORY_TOOL = {"type": "function", "function": {
 
 
 class MemoryService:
-    def __init__(self, settings: LocalMemoryConfig | OpenVikingMemoryConfig,
-                 backend: LocalMemory | OpenVikingMemory, *, jobs: MemoryJobs, store: Store,
+    def __init__(self, settings: LocalMemoryConfig,
+                 backend: LocalMemory, *, jobs: MemoryJobs, store: Store,
                  active_personas: dict[str, str]):
         self.settings, self.backend = settings, backend
         self.jobs, self.store = jobs, store
@@ -168,43 +158,9 @@ class MemoryService:
         self.summarizer: MemorySummarizer | None = None
         # A complete read/generate/write extraction shares this queue with edits.
         self.write_locks: dict[str, asyncio.Lock] = {}
-        self.pending_native_tasks: dict[str, str] = {}
-        if isinstance(settings, OpenVikingMemoryConfig):
-            for scene in settings.openviking.scenes:
-                latest = jobs.latest(scene)
-                if latest is None or latest["backend"] != "openviking":
-                    continue
-                task_id = latest["details"].get("task_id")
-                if latest["status"] == "submitted" and task_id is not None:
-                    self.pending_native_tasks[scene] = task_id
-                elif latest["details"].get("native_phase") == "submitting" and task_id is None:
-                    self.pending_native_tasks[scene] = "submission outcome unknown"
 
     async def read_group_profile(self, scene: str) -> str | None:
         """Read the current derived profile under the backend's existing write/read lock."""
-        if isinstance(self.backend, OpenVikingMemory):
-            if not self.settings.summaries:
-                return None
-            async with self.write_lock(scene):
-                if scene in self.pending_native_tasks:
-                    return None
-                overviews = [await self.backend.overview(scene, path)
-                             for path in await self.backend.memory_directories(scene)]
-            prompt_root = Path(__file__).resolve().parents[2] / "prompts"
-            section = Template((prompt_root / "next_native_memory_section.md").read_text())
-            included: list[str] = []
-            for current in overviews:
-                freshness = current.freshness
-                if (not current.content or freshness is None or freshness.pending_child_changes or freshness.unsampled_entries
-                        or freshness.missing_summary_entries):
-                    continue
-                included.append(section.substitute(path=current.path, overview=current.content,
-                    missing="未报告" if freshness.missing_summary_entries is None
-                    else freshness.missing_summary_entries))
-            if not included:
-                return None
-            return Template((prompt_root / "next_native_memory_overview.md").read_text()).substitute(
-                included="\n\n".join(included))
         if self.summarizer is None:
             return None
         summary = await self.backend.summary(scene)
@@ -221,29 +177,17 @@ class MemoryService:
         return ["browse", "read", "search", "write", "delete", "history", "forget"]
 
     async def search(self, scene: str, query: str, limit: int, *, automatic: bool = False) -> list[dict]:
-        if isinstance(self.backend, LocalMemory):
-            hits = await self.backend.search(scene, query, limit, exclude_pending=automatic, automatic=automatic)
-            return [{**asdict(hit), "score": None} for hit in hits]
-        hits = await self.backend.search(scene, query, limit)
-        return [{"scope": hit.scope, "path": hit.path, "preview": hit.abstract,
-                 "total_chars": None, "score": hit.score} for hit in hits]
+        hits = await self.backend.search(scene, query, limit, exclude_pending=automatic, automatic=automatic)
+        return [{**asdict(hit), "score": None} for hit in hits]
 
     async def write(self, scene: str, path: str, content: str, reason: str, *,
                     scope: Scope = "scene") -> dict:
         if not reason.strip():
             raise ValueError("memory write reason must not be blank")
         async with self.write_lock("public" if scope == "public" else scene):
-            if scene in self.pending_native_tasks:
-                raise ValueError(f"OpenViking 抽取仍在处理：{self.pending_native_tasks[scene]}")
-            if isinstance(self.backend, LocalMemory):
-                require_bot_path(path, self.known_persona_ids(scene))
-                result = (await self.backend.write(scene, path, content, reason) if scope == "scene"
-                          else await self.backend.owner_write_public(path, content, reason))
-            else:
-                if scope != "scene":
-                    raise ValueError("OpenViking 公共目录仅可读取")
-                require_bot_path(path, self.known_persona_ids(scene), native=True)
-                result = await self.backend.write(scene, path, content)
+            require_bot_path(path, self.known_persona_ids(scene))
+            result = (await self.backend.write(scene, path, content, reason) if scope == "scene"
+                      else await self.backend.owner_write_public(path, content, reason))
             return asdict(result)
 
     async def delete(self, scene: str, path: str, reason: str, *, forget: bool,
@@ -253,35 +197,23 @@ class MemoryService:
         if forget != (exclude_records is not None):
             raise ValueError("forget 必须显式选择 exclude_records（可为 []）；普通 delete 不接受来源排除")
         async with self.write_lock(scene):
-            if scene in self.pending_native_tasks:
-                raise ValueError(f"OpenViking 抽取仍在处理：{self.pending_native_tasks[scene]}")
             if forget:
                 selected = sorted(set(exclude_records))
                 self.store.check_message_records(scene, selected)
                 added = self.jobs.exclude_records(scene, selected)
                 try:
-                    if isinstance(self.backend, LocalMemory):
-                        result = await self.backend.forget(scene, path)
-                    else:
-                        result = await self.backend.forget(scene, path, [
-                            self.store.read_message(scene, record).id for record in selected
-                        ])
+                    result = await self.backend.forget(scene, path)
                 except Exception as error:
                     raise RuntimeError(
                         f"已保存 {len(selected)} 条原话的抽取排除；记忆遗忘未完成：{type(error).__name__}: {error}"
                     ) from error
                 return {**asdict(result), "excluded_records": selected, "new_exclusions": added}
-            if isinstance(self.backend, LocalMemory):
-                result = await self.backend.delete(scene, path, reason)
-            else:
-                result = await self.backend.delete(scene, path)
+            result = await self.backend.delete(scene, path, reason)
             return asdict(result)
 
     async def adopt_pending(self, scene: str, source: str, original: str, target: str,
                             content: str, reason: str, *, remove_source: bool) -> dict:
         """One explicit owner operation, not a model tool or a multi-file transaction."""
-        if not isinstance(self.backend, LocalMemory):
-            raise ValueError('待确认旧资料采用仅用于本地后端')
         if not source.startswith(LEGACY_IMPORT + '/'):
             raise ValueError(f'采用源必须是本场景实际待确认原件：{source!r}')
         if target == LEGACY_IMPORT or target.startswith(LEGACY_IMPORT + '/'):
@@ -305,8 +237,6 @@ class MemoryService:
                     '原聊天、抽取位置/排除与角色样例未改，无公共提升。'}
 
     async def history(self, scene: str, path: str) -> list[dict]:
-        if not isinstance(self.backend, LocalMemory):
-            return await self.backend.history(scene, path)
         return [asdict(change) for change in await self.backend.history(scene, path)]
 
     async def execute(self, scene: str, arguments: dict) -> str:
@@ -314,8 +244,6 @@ class MemoryService:
             item = MEMORY_ARGUMENTS.validate_python(arguments)
         except ValidationError as error:
             raise ValueError(f"Invalid memory arguments: {repr(arguments)[:500]}; {error}") from error
-        if item.action not in self.actions:
-            raise ValueError(f"当前 {self.settings.backend} 记忆后端不支持 {item.action}")
         if isinstance(item, BrowseMemory):
             result = asdict(await self.backend.browse(scene, item.path, scope=item.scope,
                                                      offset=item.offset, limit=item.limit))
@@ -335,8 +263,8 @@ class MemoryService:
     async def recall(self, scene: str, messages: list[ChatMessage]) -> dict:
         """Recall from actual chat only; returned text never becomes a native history entry."""
         relevant = [message for message in messages if not message.is_self]
-        # Semantic retrieval keeps speakers; literal retrieval must not match timestamps/QQs.
-        text_only = isinstance(self.backend, LocalMemory) and self.backend.embedding is None
+        # Semantic retrieval keeps speakers; literal retrieval must not match timestamps/accounts.
+        text_only = self.backend.embedding is None
         # Short replies still need the preceding topic, including our question.
         queries = [plain_text(message) if text_only else render_message(message, timezone="UTC") for message in messages
                    if plain_text(message).strip() and message.send_status in {"received", "sent", "simulated"}]
@@ -356,18 +284,17 @@ class MemoryService:
             seen.add((scope, path))
             budget -= len(shown)
 
-        if isinstance(self.backend, LocalMemory):
-            qqs = list(dict.fromkeys(message.sender.uid for message in reversed(relevant)))[:4]
-            profiles = await self.backend.profiles(scene, qqs)
-            # Keep room for the latest topic; source and dates remain in the real file text.
-            per_profile = min(900, budget // 2 // len(profiles)) if profiles else 0
-            for profile in profiles:
-                append("scene", profile.path, profile.content, per_profile)
+        users = list(dict.fromkeys(message.sender.uid for message in reversed(relevant)))[:4]
+        profiles = await self.backend.profiles(scene, users)
+        # Keep room for the latest topic; source and dates remain in the real file text.
+        per_profile = min(900, budget // 2 // len(profiles)) if profiles else 0
+        for profile in profiles:
+            append("scene", profile.path, profile.content, per_profile)
         query = "\n".join(queries)[-1200:]
         if query and budget > 0:
             for hit in await self.search(scene, query, self.settings.recall_limit, automatic=True):
                 append(hit["scope"], hit["path"], hit["preview"], budget,
-                       kind="abstract" if hit["total_chars"] is None else "excerpt",
+                       kind="excerpt",
                        source_chars=hit["total_chars"])
         return {"backend": self.settings.backend, "query": query, "items": items,
                 "content_chars": self.settings.recall_budget_chars - budget,
@@ -379,9 +306,6 @@ async def open_memory_backend(config: SharedConfig):
     settings = config.memory
     if settings is None:
         yield None
-    elif isinstance(settings, OpenVikingMemoryConfig):
-        async with OpenVikingMemory(settings.openviking, recordings=config.replay_memory) as backend:
-            yield backend
     else:
         binding = settings.local.embedding
         if binding is None:
@@ -404,10 +328,10 @@ async def open_memory(config: SharedConfig, store: Store, *, active_personas: di
             return
         with MemoryJobs(config.database.with_name(config.database.name + ".memory.sqlite3")) as jobs:
             jobs.recover_embeddings(store.now())
-            # Offline index/import/transfer owners do not have a running chat role.
+            # Offline index/import owners do not have a running chat role.
             service = MemoryService(config.memory, backend, jobs=jobs, store=store,
                                     active_personas={} if active_personas is None else active_personas)
-            if isinstance(backend, LocalMemory) and backend.embedding is not None:
+            if backend.embedding is not None:
                 binding = config.memory.local.embedding
                 price = config.models.prices.get(binding.provider, {}).get(binding.model)
                 async def embed(source, texts, purpose):
@@ -435,7 +359,7 @@ async def open_memory(config: SharedConfig, store: Store, *, active_personas: di
                         return batch
                 backend.track_embedding = embed
 
-            if not (isinstance(config.memory, LocalMemoryConfig) and config.memory.summaries):
+            if not config.memory.summaries:
                 yield service
                 return
             async with ChatModel(config.model_settings("memory")) as model:

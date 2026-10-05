@@ -4,8 +4,16 @@ import { schedulesApi } from '../../api/schedules.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify } from '../../store.js'
 import { formatTime } from '../../time.js'
-import ErrorNote from '../../components/ErrorNote.vue'
-import DevOnly from '../../components/DevOnly.vue'
+import { confirm } from '../../../composables/useConfirm.js'
+import Panel from '../../ui/Panel.vue'
+import ResourceState from '../../ui/ResourceState.vue'
+import ErrorNote from '../../ui/ErrorNote.vue'
+import ObjectList from '../../ui/ObjectList.vue'
+import ObjectRow from '../../ui/ObjectRow.vue'
+import StatusBadge from '../../ui/StatusBadge.vue'
+import FormDialog from '../../ui/FormDialog.vue'
+import LoadMore from '../../ui/LoadMore.vue'
+import DevOnly from '../../ui/DevOnly.vue'
 import SchedulePicker from '../../components/SchedulePicker.vue'
 
 const props = defineProps({ scene: { type: String, required: true }, operator: { type: String, required: true } })
@@ -21,7 +29,7 @@ watch(status, () => list.reload())
 const adding = ref(false), when = ref(''), note = ref(''), forWhom = ref('self'), other = ref('')
 watch(() => adding.value && note.value !== '', value => emit('dirty', value), { immediate: true })
 const create = useAction(), cancelling = useAction()
-const validQQ = computed(() => /^[1-9][0-9]*$/.test(props.operator))
+const validIdentity = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
 async function submit() {
   const result = await create.run(() => schedulesApi.create(props.scene, { requester: props.operator, when: when.value, note: note.value,
     for: forWhom.value === 'self' ? 'self' : other.value.trim() }))
@@ -32,14 +40,13 @@ async function submit() {
   list.reload()
 }
 async function cancel(item) {
-  if (!window.confirm(repeats(item) ? `停止这个重复提醒？\n${item.note}` : `取消这个提醒？\n${item.note}`)) return
+  if (!await confirm({ title: repeats(item) ? '停止这个重复提醒？' : '取消这个提醒？', text: item.note, confirmLabel: repeats(item) ? '停止' : '取消提醒', danger: true })) return
   const result = await cancelling.run(() => schedulesApi.cancel(props.scene, item.id, props.operator))
   if (!result) return
   notify('已取消')
   list.reload()
 }
 const repeats = item => item.interval_seconds !== null || item.cron !== null
-const statusLabel = { pending: '等待中', blocked: '卡住了', delivered: '已提醒', cancelled: '已取消' }
 function cadence(item) {
   if (item.cron !== null) {
     const [minute, hour, , , week] = item.cron.replace(/^cron:/, '').split(' ')
@@ -57,66 +64,53 @@ const statuses = [{ title: '进行中', value: 'active' }, { title: '全部', va
 </script>
 
 <template>
-  <ErrorNote v-if="state.error.value" title="读取提醒设置失败" :error="state.error.value" />
-  <section class="surface schedules">
-    <div class="head">
-      <h2>提醒</h2>
-      <v-select v-model="status" :items="statuses" density="compact" hide-details class="filter" />
+  <ErrorNote v-if="state.error.value" title="读取提醒设置失败" :error="state.error.value" @retry="state.reload()" />
+  <Panel title="提醒">
+    <template #actions>
+      <v-select v-model="status" :items="statuses" class="filter" aria-label="筛选" />
       <v-btn color="primary" variant="tonal" :disabled="!settings?.enabled || !settings?.tool_allowed" @click="adding = true">添加提醒</v-btn>
-    </div>
+    </template>
     <p v-if="settings && !settings.enabled" class="muted">本群没有开启提醒，可以在
       <RouterLink :to="{ name: 'host-scenes', query: { scene, tab: 'settings' } }">群聊设置</RouterLink> 里打开。</p>
     <p v-else-if="settings && !settings.tool_allowed" class="muted">角色没有允许提醒工具，可以在
       <RouterLink :to="{ name: 'host-capabilities', query: { scene } }">能力</RouterLink> 里打开。</p>
-    <ErrorNote v-if="list.error.value" title="读取提醒失败" :error="list.error.value" />
     <ErrorNote v-if="cancelling.error.value" title="没有取消成功" :error="cancelling.error.value" />
-    <p v-if="list.data.value && !rows.length" class="muted">没有提醒</p>
-    <ul class="items">
-      <li v-for="item in rows" :key="item.id">
-        <div class="main">
-          <p class="note">{{ item.note }}</p>
-          <span class="muted">{{ cadence(item) }} · {{ statusLabel[item.status] || item.status }} ·
-            {{ item.status === 'pending' ? '下次' : '时间' }} {{ formatTime(item.due_at, item.timezone) }} ·
-            {{ item.requester === null ? 'Bot 自己定的' : `QQ ${item.requester} 定的` }}{{ item.target !== 'self' ? `，提醒 QQ ${item.target}` : '' }}</span>
+    <ResourceState :resource="list" error-title="读取提醒失败" :empty="!rows.length" empty-text="没有提醒" compact>
+      <ObjectList divided>
+        <ObjectRow v-for="item in rows" :key="item.id" :title="item.note"
+          :subtitle="`${cadence(item)} · ${item.status === 'pending' ? '下次' : '时间'} ${formatTime(item.due_at, item.timezone)} · ${item.requester === null ? 'Bot 自己定的' : `${item.requester} 定的`}${item.target !== 'self' ? `，提醒 ${item.target}` : ''}`">
           <p v-if="item.reason" class="reason">{{ item.reason }}</p>
-          <DevOnly label="原始记录"><pre>{{ JSON.stringify(item, null, 2) }}</pre></DevOnly>
-        </div>
-        <v-btn v-if="['pending', 'blocked'].includes(item.status)" size="small" variant="text" color="error"
-          :disabled="!validQQ" :loading="cancelling.busy.value" @click="cancel(item)">取消</v-btn>
-      </li>
-    </ul>
-    <p v-if="rows.some(item => ['pending', 'blocked'].includes(item.status)) && !validQQ" class="muted">填写上方你的 QQ 后可以取消提醒。</p>
-    <v-btn v-if="list.data.value?.next_offset != null" size="small" variant="text" :loading="list.loading.value" @click="list.reload(true)">显示更多</v-btn>
-  </section>
+          <DevOnly label="原始记录" :json="item" />
+          <template #meta><StatusBadge kind="schedule" :value="item.status" /></template>
+          <template #actions>
+            <v-btn v-if="['pending', 'blocked'].includes(item.status)" size="small" variant="text" color="error"
+              :disabled="!validIdentity" :loading="cancelling.busy.value" @click="cancel(item)">取消</v-btn>
+          </template>
+        </ObjectRow>
+      </ObjectList>
+      <p v-if="rows.some(item => ['pending', 'blocked'].includes(item.status)) && !validIdentity" class="muted small">在页面上方填写你的账号后可以取消提醒。</p>
+      <LoadMore v-if="list.data.value?.next_offset != null" :loading="list.loading.value" @more="list.reload(true)" />
+    </ResourceState>
+  </Panel>
 
-  <v-dialog v-model="adding" max-width="560" scrollable>
-    <v-card v-if="settings" title="添加提醒">
-      <v-card-text class="form">
-        <v-textarea v-model="note" label="提醒什么" rows="2" auto-grow />
-        <SchedulePicker v-model="when" :timezone="settings.timezone" />
-        <v-btn-toggle v-model="forWhom" mandatory density="comfortable" color="primary">
-          <v-btn value="self">提醒我</v-btn><v-btn value="other">提醒别人</v-btn></v-btn-toggle>
-        <v-text-field v-if="forWhom === 'other'" v-model="other" label="对方 QQ" inputmode="numeric" />
-        <p v-if="!validQQ" class="problem">先在上方填写你的 QQ</p>
-        <ErrorNote v-if="create.error.value" title="没有添加成功" :error="create.error.value" />
-      </v-card-text>
-      <v-card-actions><v-spacer /><v-btn @click="adding = false">取消</v-btn>
-        <v-btn color="primary" :loading="create.busy.value" :disabled="!validQQ || !note.trim() || !when || (forWhom === 'other' && !other.trim())" @click="submit">添加</v-btn></v-card-actions>
-    </v-card>
-  </v-dialog>
+  <FormDialog v-model="adding" title="添加提醒" :busy="create.busy.value">
+    <template v-if="settings">
+      <v-textarea v-model="note" label="提醒什么" rows="2" auto-grow />
+      <SchedulePicker v-model="when" :timezone="settings.timezone" />
+      <v-btn-toggle v-model="forWhom" mandatory>
+        <v-btn value="self">提醒我</v-btn><v-btn value="other">提醒别人</v-btn></v-btn-toggle>
+      <v-text-field v-if="forWhom === 'other'" v-model="other" label="对方账号" placeholder="onebot:QQ号" />
+      <p v-if="!validIdentity" class="problem">先在页面上方填写你的账号</p>
+      <ErrorNote v-if="create.error.value" title="没有添加成功" :error="create.error.value" />
+    </template>
+    <template #actions>
+      <v-btn color="primary" :loading="create.busy.value" :disabled="!validIdentity || !note.trim() || !when || (forWhom === 'other' && !other.trim())" @click="submit">添加</v-btn>
+    </template>
+  </FormDialog>
 </template>
 
 <style scoped>
-.schedules{display:grid;gap:10px}
-.head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.head h2{margin-right:auto !important}
-.filter{max-width:160px}
-.items{list-style:none;margin:0;padding:0;display:grid}
-.items li{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
-.items li:last-child{border-bottom:0}
-.main{min-width:0;display:grid;gap:2px}
-.note{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
-.reason{margin:0;color:var(--warning-text);font-size:13px}
-.form{display:grid;gap:14px}
-.problem{color:var(--error-text);margin:0}
+.filter{width:140px;flex:none}
+.reason{margin:0;color:var(--warning);font-size:var(--fs-sm)}
+p{margin:0}
 </style>

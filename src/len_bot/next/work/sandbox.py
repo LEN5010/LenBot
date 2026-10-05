@@ -30,7 +30,7 @@ from .worker_model import WorkerModelProxy
 from .worker_transport import WorkerTransport
 
 
-_SCENE = re.compile(r"(?:group|private):[1-9][0-9]*\Z")
+_SCENE = re.compile(r"[a-z][a-z0-9_-]*:(group|private):[^:\s/\\]+\Z")
 _TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 _WRITE_PROBE = """\
 import os

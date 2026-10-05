@@ -58,7 +58,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          for component in openviking browserskill; do
+          for component in browserskill; do
             uv run --no-project --python 3.13 python scripts/prepare_component.py "$component" "$RUNNER_TEMP/$component" \
               --source-archive "$RUNNER_TEMP/release/artifacts/$component-$VERSION-source.tar.gz"
           done
@@ -76,7 +76,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [host, worker, openviking]
+        component: [host, worker]
         target:
           - {runner: ubuntu-24.04, platform: linux/amd64, arch: amd64}
           - {runner: ubuntu-24.04-arm, platform: linux/arm64, arch: arm64}
@@ -87,7 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        if: matrix.component == 'host' || matrix.component == 'openviking'
+        if: matrix.component == 'host'
         with:
           name: release-packages
           path: packages
@@ -101,9 +101,6 @@ jobs:
           case "$COMPONENT" in
             host) CONTEXT=.; FILE=deploy/current/Dockerfile; TAG="$IMAGE" ;;
             worker) CONTEXT=.; FILE=docker/next-worker/Dockerfile; TAG="$IMAGE-worker" ;;
-            openviking)
-              tar -xzf "packages/openviking-$VERSION-source.tar.gz" -C "$RUNNER_TEMP"
-              CONTEXT="$RUNNER_TEMP/openviking"; FILE=deploy/current/Dockerfile.openviking; TAG="$IMAGE-openviking" ;;
           esac
           printf 'context=%s\nfile=%s\ntag=%s\n' "$CONTEXT" "$FILE" "$TAG" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v4
@@ -227,12 +224,12 @@ jobs:
           IMAGE: ${{ needs.packages.outputs.image }}
           VERSION: ${{ needs.packages.outputs.version }}
         run: |
-          for suffix in '' '-worker' '-openviking'; do
+          for suffix in '' '-worker'; do
             docker buildx imagetools create -t "$IMAGE$suffix:$VERSION" \
               "$IMAGE$suffix:$VERSION-amd64" "$IMAGE$suffix:$VERSION-arm64"
           done
-          printf '宿主：`%s:%s`\n\n任务：`%s-worker:%s`\n\n记忆：`%s-openviking:%s`\n' \
-            "$IMAGE" "$VERSION" "$IMAGE" "$VERSION" "$IMAGE" "$VERSION" > artifacts/images.md
+          printf '宿主：`%s:%s`\n\n任务：`%s-worker:%s`\n' \
+            "$IMAGE" "$VERSION" "$IMAGE" "$VERSION" > artifacts/images.md
       - name: Publish the existing tag and its files
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

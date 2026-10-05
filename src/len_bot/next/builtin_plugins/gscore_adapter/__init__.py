@@ -97,19 +97,19 @@ class Gscore(Plugin):
         if not args.strip():
             raise ValueError('用法：/gs <Core命令>')
         message = ctx.message
-        unsupported = [part.type for part in message.segments if part.type not in {'text','at','reply'}]
+        unsupported = [part.type for part in message.segments if part.type not in {'text','mention','reply'}]
         if unsupported:
             raise ValueError(f'/gs目前只提交文字、@和引用ID；未提交的消息段：{unsupported}')
-        kind, target = ctx.scene.split(':',1)
+        platform, kind, target = ctx.scene.split(':',2)
         content = [{'type':'text','data':args}]
-        content.extend({'type':'at','data':str(part.data['qq'])} for part in message.segments if part.type=='at')
+        content.extend({'type':'at','data':'all' if part.data['user'] == 'all' else str(part.data['user']).split(':',1)[1]} for part in message.segments if part.type=='mention')
         # A real quote remains a quote ID, never an invented source message.
         if message.reply_to is not None:
             content.append({'type':'reply_id','data':message.reply_to})
-        await self.send_core({'bot_id':'onebot','bot_self_id':self.ctx.bot_qq,
+        await self.send_core({'bot_id':'onebot','bot_self_id':self.ctx.bot_id.split(':',1)[1],
             'msg_id':message.platform_message_id,'user_type':'group' if kind=='group' else 'direct',
-            'group_id':target if kind=='group' else None,'user_id':message.sender.uid,
-            'sender':{'user_id':message.sender.uid,'nickname':message.sender.nickname,
+            'group_id':target if kind=='group' else None,'user_id':message.sender.uid.split(':',1)[1],
+            'sender':{'user_id':message.sender.uid.split(':',1)[1],'nickname':message.sender.nickname,
                       'card':message.sender.card,'role':message.sender.role},'user_pm':6,'content':content})
         self.commands_submitted += 1
 
@@ -160,14 +160,14 @@ class Gscore(Plugin):
     async def deliver(self, frame: Frame):
         ids = None
         try:
-            if frame.bot_self_id != self.ctx.bot_qq:
+            if 'onebot:' + frame.bot_self_id != self.ctx.bot_id:
                 raise PermissionError(f'Core下行bot_self_id {frame.bot_self_id}不是本宿主身份')
             if frame.scene not in self.ctx.scenes:
                 raise PermissionError(f'Core目标 {frame.scene} 未启用此插件')
             parts = []
             for part in frame.content:
                 if isinstance(part,TextPart):parts.append(Text(part.data))
-                elif isinstance(part,AtPart):parts.append(Mention(part.data))
+                elif isinstance(part,AtPart):parts.append(Mention('all' if part.data == 'all' else 'onebot:' + part.data))
                 elif isinstance(part,ImagePart):parts.append(Image(await self.image_bytes(part.data),'GSUID Core返回的原图（未作视觉识别）'))
                 elif isinstance(part,ImageSize):continue  # Advisory size only; actual bytes are inspected by the host.
             result = await self.ctx.send_parts(frame.scene,parts)
@@ -179,7 +179,7 @@ class Gscore(Plugin):
         except Exception as error:
             self.last_error = self.ctx.report_error('Core下行消息',self.safe_error(error))
         if frame.echo is not None:
-            await self.send_core({'bot_id':'onebot','bot_self_id':self.ctx.bot_qq,'user_id':'',
+            await self.send_core({'bot_id':'onebot','bot_self_id':self.ctx.bot_id.split(':',1)[1],'user_id':'',
                 'content':[{'type':'recall_message_id','data':{'echo':frame.echo,'id':ids}}]})
 
     async def receive(self, socket):

@@ -36,7 +36,7 @@ function toggle(name, on) {
   </ul>
 </template>
 <style scoped>
-.allow-list{list-style:none;margin:8px 0 0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,240px),1fr));gap:4px 16px}
+.allow-list{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,240px),1fr));gap:var(--sp-1) var(--sp-4)}
 .allow-list li{min-width:0}
-.allow-list p{margin:-4px 0 6px 40px;font-size:13px}
+.allow-list p{margin:calc(-1 * var(--sp-1)) 0 var(--sp-2) 40px;font-size:var(--fs-sm)}
 </style>

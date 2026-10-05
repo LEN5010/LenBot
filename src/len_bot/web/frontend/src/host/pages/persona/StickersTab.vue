@@ -5,7 +5,10 @@ import { mdiPlus } from '@mdi/js'
 import { api } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify, readPendingRestart } from '../../store.js'
-import ErrorNote from '../../components/ErrorNote.vue'
+import { confirm } from '../../../composables/useConfirm.js'
+import Panel from '../../ui/Panel.vue'
+import ResourceState from '../../ui/ResourceState.vue'
+import ErrorNote from '../../ui/ErrorNote.vue'
 import StickerDialog from './StickerDialog.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
@@ -58,7 +61,7 @@ async function save({ file, description, emotions, tags }) {
 
 const removing = useAction()
 async function remove(file) {
-  if (!window.confirm('删除这个表情？图片也会一起删掉。')) return
+  if (!await confirm({ title: '删除这个表情？', text: '图片也会一起删掉，重启后生效。', confirmLabel: '删除', danger: true })) return
   const result = await removing.run(async () => {
     const current = listing.data.value.entries || []
     if (current.some(item => item.file === file)) await putEntries(current.filter(item => item.file !== file))
@@ -71,60 +74,52 @@ async function remove(file) {
 </script>
 
 <template>
-  <ErrorNote v-if="listing.error.value" title="读取表情失败" :error="listing.error.value" />
-  <section v-if="listing.data.value" class="surface stickers">
-    <div class="head">
-      <h2>表情</h2>
-      <v-btn :prepend-icon="mdiPlus" color="primary" variant="tonal" @click="edit(null)">添加表情</v-btn>
-    </div>
-    <p class="muted">Bot 聊天时会按描述挑合适的表情发出去。</p>
-    <ErrorNote v-if="removing.error.value" title="没有删除成功" :error="removing.error.value" />
-    <p v-if="!entries.length" class="muted">还没有表情。</p>
-    <ul class="grid">
-      <li v-for="entry in entries" :key="entry.file">
-        <div class="picture">
-          <span v-if="broken[entry.file]" class="muted">图片打不开</span>
-          <img v-else :src="image(entry.file)" :alt="entry.description" loading="lazy" @error="broken[entry.file] = true" />
-        </div>
-        <p>{{ entry.description }}</p>
-        <div v-if="entry.emotions.length || entry.tags.length" class="chips">
-          <v-chip v-for="item in entry.emotions" :key="`e${item}`" size="small" color="primary" variant="tonal">{{ item }}</v-chip>
-          <v-chip v-for="item in entry.tags" :key="`t${item}`" size="small" variant="outlined">{{ item }}</v-chip>
-        </div>
-        <div class="actions">
-          <v-btn size="small" variant="text" @click="edit(entry)">编辑</v-btn>
-          <v-btn size="small" variant="text" color="error" :disabled="removing.busy.value" @click="remove(entry.file)">删除</v-btn>
-        </div>
-      </li>
-    </ul>
-    <template v-if="loose.length">
-      <h3>还没写描述的图片</h3>
-      <p class="muted">这些图片在角色文件夹里，但 Bot 不会用，写上描述后才会。</p>
-      <ul class="grid">
+  <ResourceState :resource="listing" error-title="读取表情失败">
+    <Panel title="表情" description="Bot 聊天时会按描述挑合适的表情发出去。">
+      <template #actions><v-btn :prepend-icon="mdiPlus" color="primary" variant="tonal" @click="edit(null)">添加表情</v-btn></template>
+      <ErrorNote v-if="removing.error.value" title="没有删除成功" :error="removing.error.value" />
+      <p v-if="!entries.length" class="muted">还没有表情。</p>
+      <ul class="plain-list grid">
+        <li v-for="entry in entries" :key="entry.file">
+          <div class="picture">
+            <span v-if="broken[entry.file]" class="muted small">图片打不开</span>
+            <img v-else :src="image(entry.file)" :alt="entry.description" loading="lazy" @error="broken[entry.file] = true" />
+          </div>
+          <p>{{ entry.description }}</p>
+          <div v-if="entry.emotions.length || entry.tags.length" class="inline chips">
+            <v-chip v-for="item in entry.emotions" :key="`e${item}`" color="primary">{{ item }}</v-chip>
+            <v-chip v-for="item in entry.tags" :key="`t${item}`" variant="outlined">{{ item }}</v-chip>
+          </div>
+          <div class="actions">
+            <v-btn size="small" variant="text" @click="edit(entry)">编辑</v-btn>
+            <v-btn size="small" variant="text" color="error" :disabled="removing.busy.value" @click="remove(entry.file)">删除</v-btn>
+          </div>
+        </li>
+      </ul>
+    </Panel>
+    <Panel v-if="loose.length" title="还没写描述的图片" description="这些图片在角色文件夹里，写上描述后 Bot 才会用。">
+      <ul class="plain-list grid">
         <li v-for="item in loose" :key="item.file">
           <div class="picture"><img :src="image(item.file)" :alt="item.file" loading="lazy" /></div>
-          <p class="muted">{{ item.file }}</p>
+          <p class="muted small">{{ item.file }}</p>
           <div class="actions">
             <v-btn size="small" variant="text" @click="edit({ file: item.file, description: '', emotions: [], tags: [] })">写描述</v-btn>
             <v-btn size="small" variant="text" color="error" :disabled="removing.busy.value" @click="remove(item.file)">删除</v-btn>
           </div>
         </li>
       </ul>
-    </template>
-  </section>
+    </Panel>
+  </ResourceState>
   <StickerDialog v-model="dialog" :entry="editing" :image="editing ? image(editing.file) : null" :emotions="emotions" :tags="tags"
     :busy="write.busy.value" :error="write.error.value" @save="save" />
 </template>
 
 <style scoped>
-.stickers{display:grid;gap:12px}
-.stickers p{margin:0}
-.head{display:flex;justify-content:space-between;align-items:center;gap:8px}
-h3{font-size:15px;margin:12px 0 0}
-.grid{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
-.grid li{display:grid;gap:8px;align-content:start;border:1px solid var(--line);border-radius:10px;padding:10px;min-width:0;overflow-wrap:anywhere}
-.picture{display:grid;place-items:center;height:140px;background:var(--list-heading-bg);border-radius:8px;overflow:hidden}
+p{margin:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:var(--sp-3)}
+.grid li{display:grid;gap:var(--sp-2);align-content:start;border:1px solid var(--line);border-radius:var(--radius);padding:var(--sp-3);min-width:0;overflow-wrap:anywhere}
+.picture{display:grid;place-items:center;height:140px;background:var(--hover);border-radius:var(--radius-sm);overflow:hidden}
 .picture img{max-width:100%;max-height:100%;object-fit:contain}
-.chips{display:flex;gap:4px;flex-wrap:wrap}
+.chips{gap:var(--sp-1)}
 .actions{display:flex;justify-content:flex-end}
 </style>

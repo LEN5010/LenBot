@@ -8,16 +8,17 @@ from pathlib import Path
 
 import httpx
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, File, Form
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ...configuration.plugin import PLUGIN_NAME, PLUGIN_RESERVED, PluginCatalogSettings
 from ...plugins.catalog import CatalogView, PluginCatalog
 from ...config import HostConfig, _read_root
-from .settings import _body, _read_saved
+from .settings import _body
+from ...configuration.editing import _read_saved
 from ...runtime.network import NetworkRuntime
 from ...plugins.manifest import ConfigField, ConfigItem, Manifest, discover, read_manifest, redact_values
-from ...plugins.manager import PluginManager
+from ...plugins.manager import plugin_manifest
 from ...plugins.install import repository_url, revision_ref
 from ...plugins.store import PluginStore
 
@@ -62,6 +63,7 @@ class PluginVersion(BaseModel):
 
 class PluginInstall(PluginVersion):
     url: str
+    switch_source: bool = False
 
     @field_validator('url')
     @classmethod
@@ -87,37 +89,29 @@ def _masked(manifest: Manifest | None, values: dict) -> dict:
                   else {"value": value}) for key, value in values.items()}
 
 
+def _entry(directory: Path) -> dict:
+    try:
+        manifest = read_manifest(directory)
+        return {"directory": str(directory), "error": None, "version": manifest.version,
+                "description": manifest.description, "authors": manifest.authors,
+                "license": manifest.license, "repository": manifest.repository,
+                "homepage": manifest.homepage, "dependencies": manifest.dependencies,
+                "requires_lenbot": manifest.requires_lenbot, "requires_python": manifest.requires_python,
+                "platforms": manifest.platforms, "reload": manifest.reload,
+                "fields": _field_info(manifest)}
+    except (OSError, ValueError) as error:
+        return {"directory": str(directory), "error": f"{type(error).__name__}: {error}"}
+
+
 def _available(saved: HostConfig) -> tuple[dict[str, list[dict]], list[str]]:
     found, errors = discover([] if saved.plugins is None else saved.plugins.paths)
-    available = {}
-    for name, directories in found.items():
-        entries = []
-        for directory in directories:
-            try:
-                manifest = read_manifest(directory)
-                entries.append({"directory": str(directory), "error": None, "version": manifest.version,
-                                "description": manifest.description, "authors": manifest.authors,
-                                "license": manifest.license, "repository": manifest.repository,
-                                "homepage": manifest.homepage, "dependencies": manifest.dependencies,
-                                "fields": _field_info(manifest)})
-            except (OSError, ValueError) as error:
-                entries.append({"directory": str(directory), "error": f"{type(error).__name__}: {error}"})
-        available[name] = entries
-    return available, errors
-
-
-def _manifest(saved: HostConfig, name: str) -> Manifest:
-    found, _ = discover([] if saved.plugins is None else saved.plugins.paths)
-    directories = found.get(name, [])
-    if len(directories) != 1:
-        raise ValueError(f"插件 {name} 未找到" if not directories else
-                         f"插件 {name} 在多个目录出现：{[str(item) for item in directories]}")
-    return read_manifest(directories[0])
+    return {name: [_entry(directory) for directory in directories]
+            for name, directories in found.items()}, errors
 
 
 def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, running: HostConfig,
                           user: Callable[[Request], str], write_lock: asyncio.Lock) -> None:
-    manager = PluginManager(root, runtime, running, write_lock)
+    manager = runtime.management.plugins
     catalog = PluginCatalog()
 
     def require_name(name: str) -> None:
@@ -128,10 +122,12 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
         saved = _read_saved(root)
         _, raw = _read_root(root)
         available, errors = _available(saved)
-        for entries in available.values():
+        pending = manager.installer.pending()
+        for record in pending:
+            available[record.name] = [_entry(manager.installer.candidates / record.name)]
+        for name, entries in available.items():
             for entry in entries:
-                directory = Path(entry['directory'])
-                entry['managed'] = directory.parent == manager.installer.directory and (directory / '.git').is_dir()
+                entry['managed'] = (manager.installer.records / (name + '.json')).is_file()
         configured = {} if saved.plugins is None else saved.plugins.configured
         manifests = {}
         for name in configured:
@@ -153,7 +149,7 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
             "scenes": {scene: {"saved": saved.scenes[scene].plugins if scene in saved.scenes else None,
                                "running": settings.plugins}
                        for scene, settings in running.scenes.items()},
-            "restart_required": saved.plugins != running.plugins or any(
+            "restart_required": any(item.requested for item in pending) or saved.plugins != running.plugins or any(
                 scene not in saved.scenes or saved.scenes[scene].plugins != settings.plugins
                 for scene, settings in running.scenes.items()),
         }
@@ -223,7 +219,24 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
     @app.post('/api/host/plugins/install')
     async def install(request: Request, _: str = Depends(user)):
         change = await _body(request, PluginInstall)
-        return await operate(lambda: manager.install(change.url, ref=change.ref))
+        return await operate(lambda: manager.install(change.url, ref=change.ref, switch_source=change.switch_source))
+
+    @app.post('/api/host/plugins/zip')
+    async def import_zip(file: UploadFile = File(...), switch_source: bool = Form(False), _: str = Depends(user)):
+        if file.filename is None:
+            raise HTTPException(422, 'ZIP 文件需要文件名')
+        data = await file.read()
+        return await operate(lambda: manager.import_zip(data, file.filename, switch_source=switch_source))
+
+    @app.post('/api/host/plugins/{name}/apply')
+    async def apply_candidate(name: str, _: str = Depends(user)):
+        require_name(name)
+        return await operate(lambda: manager.apply_candidate(name))
+
+    @app.post('/api/host/plugins/{name}/cancel')
+    async def cancel(name: str, _: str = Depends(user)):
+        require_name(name)
+        return await operate(lambda: manager.cancel(name))
 
     @app.post('/api/host/plugins/{name}/reload')
     async def reload(name: str, _: str = Depends(user)):
@@ -271,7 +284,7 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
                 if name not in disabled:
                     disabled.append(name)
                 return
-            manifest = _manifest(saved, name)
+            manifest = plugin_manifest(saved, name, manager.installer)
             previous = plugins.get(name, {})
             values = {}
             for key, value in change.config.items():
@@ -301,6 +314,10 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
         def edit(source: dict, saved: HostConfig) -> None:
             if scene not in source["scenes"]:
                 raise ValueError(f"根配置已不包含场景 {scene}")
+            for name in change.plugins:
+                record_path = manager.installer.records / (name + '.json')
+                if record_path.is_file() and manager.installer.read(name).installed is None:
+                    raise ValueError(f'插件 {name} 尚未应用源码，请先完成安装')
             changed.extend(sorted(set(saved.scenes[scene].plugins) ^ set(change.plugins)))
             source["scenes"][scene]["plugins"] = change.plugins
 

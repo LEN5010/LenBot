@@ -4,7 +4,8 @@ import { computed, ref } from 'vue'
 import { api } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify, readPendingRestart } from '../../store.js'
-import ErrorNote from '../../components/ErrorNote.vue'
+import { confirm } from '../../../composables/useConfirm.js'
+import ErrorNote from '../../ui/ErrorNote.vue'
 
 const props = defineProps({ scene: { type: String, required: true }, directory: { type: String, required: true }, name: { type: String, default: '' } })
 const endpoint = computed(() => `/api/host/scenes/${encodeURIComponent(props.scene)}/persona-avatar`)
@@ -32,7 +33,7 @@ async function upload(event) {
   if (result) done(result, '头像已换好，重启后生效')
 }
 async function remove() {
-  if (!window.confirm('删掉这个头像？')) return
+  if (!await confirm({ title: '删掉这个头像？', confirmLabel: '删除', danger: true })) return
   const result = await change.run(() => api(endpoint.value, { method: 'DELETE', body: JSON.stringify({ directory: props.directory }) }))
   if (result) done(result, '头像已删除，重启后生效')
 }
@@ -54,10 +55,10 @@ async function remove() {
 </template>
 
 <style scoped>
-.avatar{display:grid;gap:8px;justify-items:center;width:160px}
+.avatar{display:grid;gap:var(--sp-2);justify-items:center;width:160px}
 img,.blank{width:112px;height:112px;border-radius:50%;object-fit:cover;border:1px solid var(--line)}
-.blank{display:grid;place-items:center;font-size:40px;background:var(--list-heading-bg);color:var(--muted)}
-.buttons{display:flex;gap:4px}
-.avatar .muted{font-size:12px;text-align:center}
+.blank{display:grid;place-items:center;font-size:var(--fs-2xl);background:var(--hover);color:var(--muted)}
+.buttons{display:flex;gap:var(--sp-1)}
+.avatar .muted{font-size:var(--fs-xs);text-align:center}
 @media(max-width:600px){.avatar{width:100%}}
 </style>

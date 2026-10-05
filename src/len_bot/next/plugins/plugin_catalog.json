@@ -21,7 +21,7 @@
         "show_seconds 控制是否显示秒。"
       ],
       "install": "builtin",
-      "repository": "https://github.com/LEN5010/LenBot.git"
+      "repository": "https://github.com/lendevs/LenBot.git"
     },
     {
       "name": "rss_broadcast",
@@ -45,7 +45,7 @@
         "首次到点发送最新条目；重启不补发离线期间的时刻。"
       ],
       "install": "builtin",
-      "repository": "https://github.com/LEN5010/LenBot.git"
+      "repository": "https://github.com/lendevs/LenBot.git"
     },
     {
       "name": "group_digest",
@@ -69,7 +69,7 @@
         "群工作需要 worker 和场景任务能力；附带技能还需角色允许。"
       ],
       "install": "builtin",
-      "repository": "https://github.com/LEN5010/LenBot.git"
+      "repository": "https://github.com/lendevs/LenBot.git"
     },
     {
       "name": "gscore_adapter",
@@ -93,7 +93,7 @@
         "gscore_status 提供实际连接状态，是否给模型使用由角色工具许可决定。"
       ],
       "install": "builtin",
-      "repository": "https://github.com/LEN5010/LenBot.git"
+      "repository": "https://github.com/lendevs/LenBot.git"
     }
   ]
 }
