@@ -138,8 +138,8 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
         return {
             "running": plugin_state,
             "available": available, "discovery_errors": errors,
-            "saved": {"paths": raw_plugins.get("paths", []),
-                      "data_directory": raw_plugins.get("data_directory", "plugin-data"),
+            "saved": {"paths": raw_plugins.get("paths", ["plugins"]),
+                      "data_directory": raw_plugins.get("data_directory", "plugins/.data"),
                       "disabled": [] if saved.plugins is None else saved.plugins.disabled,
                       "plugins": {name: _masked(manifests[name], values) for name, values in configured.items()}},
             "retained_data": ([] if saved.plugins is None or not saved.plugins.data_directory.is_dir() else

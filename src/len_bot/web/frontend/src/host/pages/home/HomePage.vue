@@ -1,9 +1,10 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, reactive } from 'vue'
 import { mdiMessageTextOutline, mdiSendOutline, mdiChatProcessingOutline, mdiAlarm, mdiCurrencyCny, mdiRefresh, mdiLanConnect,
-  mdiCheckCircleOutline, mdiArrowRight, mdiAlertCircleOutline, mdiAccountGroupOutline } from '@mdi/js'
+  mdiLanDisconnect, mdiCheckCircleOutline, mdiArrowRight, mdiAlertCircleOutline, mdiAccountGroupOutline } from '@mdi/js'
 import { api, sceneName, sceneNumber } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
+import { confirm } from '../../../composables/useConfirm.js'
 import { useHostEvents } from '../../events.js'
 import { host, readHostState } from '../../store.js'
 import { runtimeLabel, turnFailed } from '../../labels.js'
@@ -31,6 +32,28 @@ const online = computed(() => state.value?.connection.connected && state.value.c
 async function connectQQ() {
   await connect.run(() => api('/api/host/connection/connect', { method: 'POST' }))
   await readHostState()
+}
+
+const disconnect = useAction()
+async function disconnectQQ() {
+  if (!await confirm({ title: '断开 QQ 连接？', danger: true, confirmLabel: '立即断开',
+    text: 'Bot 马上停止收发消息，正在进行的回复和任务会中断。要重新连上，需要重启 LenBot。' })) return
+  await disconnect.run(() => api('/api/host/connection/disconnect', { method: 'POST' }))
+  await readHostState()
+}
+
+// One switch per group: off means messages are still saved but the Bot does not reply.
+const switching = reactive({})
+const switchError = useAction()
+async function setChat(scene, enabled) {
+  switching[scene] = true
+  try {
+    await switchError.run(() => api(`/api/host/scenes/${encodeURIComponent(scene)}/control/chat`,
+      { method: 'PUT', body: JSON.stringify({ enabled }) }))
+    await readHostState()
+  } finally {
+    switching[scene] = false
+  }
 }
 
 const effectLabels = { agree: '认同', continue: '接着聊', correct: '纠正', negative: '反感', unrelated: '没接话' }
@@ -91,10 +114,13 @@ const stats = computed(() => [
   { label: '今日花费', value: costs.value.length ? costs.value.join(' · ') : '暂无', icon: mdiCurrencyCny,
     hint: day.value.unknown_cost_calls ? `另有 ${day.value.unknown_cost_calls} 次调用费用未知` : '', to: { name: 'host-models', query: { tab: 'usage' } } },
 ])
+const connectionNote = computed(() => state.value.connection.status === 'stopped' && state.value.connection.disconnect_requested
+  ? connectionNotes.disconnected : connectionNotes[state.value.connection.status])
 const connectionNotes = {
   connection_failed: 'QQ 连接失败。确认 OneBot 已经启动、地址和令牌正确，然后手动连接。',
   failed: 'Bot 已停止工作。按下面的错误处理好原因后，重新启动 LenBot。',
   stopped: 'Bot 已停止工作。按下面的错误处理好原因后，重新启动 LenBot。',
+  disconnected: '已手动断开 QQ。要重新连上，点顶栏的重启。',
   waiting_connection: '正在等待 OneBot 连上来。',
 }
 </script>
@@ -116,11 +142,13 @@ const connectionNotes = {
       </div>
       <div class="hero-actions">
         <v-btn v-if="state.connection.can_connect || connect.busy.value" color="primary" :prepend-icon="mdiLanConnect" :loading="connect.busy.value" @click="connectQQ">手动连接 QQ</v-btn>
+        <v-btn v-if="state.connection.can_disconnect || disconnect.busy.value" variant="tonal" color="error" :prepend-icon="mdiLanDisconnect" :loading="disconnect.busy.value" @click="disconnectQQ">断开 QQ</v-btn>
         <v-btn :to="{ name: 'host-system', query: { tab: 'connection' } }" variant="text">连接设置</v-btn>
       </div>
-      <p v-if="connectionNotes[state.connection.status]" class="hero-note">{{ connectionNotes[state.connection.status] }}</p>
+      <p v-if="connectionNote" class="hero-note">{{ connectionNote }}</p>
     </section>
     <ErrorNote v-if="connect.error.value" title="手动连接没有成功" :error="connect.error.value" />
+    <ErrorNote v-if="disconnect.error.value" title="断开 QQ 没有成功" :error="disconnect.error.value" />
     <ErrorNote v-if="state?.connection.last_error" title="最近一次连接或运行失败" :error="state.connection.last_error" />
 
     <StatGrid v-if="day" :items="stats" />
@@ -144,12 +172,18 @@ const connectionNotes = {
       <Panel v-if="state" title="群聊" :icon="mdiAccountGroupOutline" class="rise" style="--i: 3">
         <template #actions><v-btn variant="text" size="small" :append-icon="mdiArrowRight" :to="{ name: 'host-scenes' }">管理</v-btn></template>
         <EmptyState v-if="!state.scenes.length" text="还没有群聊"><v-btn color="primary" :to="{ name: 'host-scenes' }">添加群聊</v-btn></EmptyState>
+        <ErrorNote v-if="switchError.error.value" title="聊天开关没有改成" :error="switchError.error.value" />
         <div class="scene-list">
-          <RouterLink v-for="item in state.scenes" :key="item.scene" :to="{ name: 'host-scenes', query: { scene: item.scene } }" class="scene-card">
-            <SceneAvatar :scene="item.scene" :size="40" />
-            <span class="scene-text"><strong>{{ sceneName(item.scene) }}</strong><span>{{ sceneNumber(item.scene) }} · {{ item.persona.name }}</span></span>
-            <v-icon :icon="mdiArrowRight" size="18" class="scene-go" />
-          </RouterLink>
+          <div v-for="item in state.scenes" :key="item.scene" class="scene-card" :class="{ off: !item.chat_enabled }">
+            <RouterLink :to="{ name: 'host-scenes', query: { scene: item.scene } }" class="scene-link">
+              <SceneAvatar :scene="item.scene" :size="40" />
+              <span class="scene-text"><strong>{{ sceneName(item.scene) }}</strong>
+                <span>{{ item.chat_enabled ? `${sceneNumber(item.scene)} · ${item.persona.name}` : '聊天已关闭，只记录消息' }}</span></span>
+            </RouterLink>
+            <v-switch :model-value="item.chat_enabled" color="primary" density="compact" hide-details inset
+              :aria-label="`${sceneName(item.scene)} 聊天`" :loading="switching[item.scene]"
+              :disabled="switching[item.scene] || !state.connection.accepting" @update:model-value="value => setChat(item.scene, value)" />
+          </div>
         </div>
       </Panel>
     </div>
@@ -179,14 +213,17 @@ const connectionNotes = {
 .all-good{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-3) var(--sp-2);color:var(--success);font-weight:600}
 .effects{margin:0;padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line)}
 .scene-list{display:grid;gap:var(--sp-2)}
-.scene-card{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) var(--sp-3);border:1px solid var(--line);border-radius:var(--radius);color:inherit;background:var(--surface);
+.scene-card{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) var(--sp-3);border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);
   transition:transform var(--dur-2) var(--ease-out),box-shadow var(--dur-2) var(--ease-out),border-color var(--dur-1)}
-.scene-card:hover{text-decoration:none;transform:translateY(-2px);box-shadow:var(--shadow-hover);border-color:var(--line-strong)}
+.scene-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-hover);border-color:var(--line-strong)}
+.scene-card.off{background:var(--page)}
+.scene-card.off .scene-text strong{color:var(--muted)}
+.scene-link{display:flex;align-items:center;gap:var(--sp-3);flex:1;min-width:0;color:inherit}
+.scene-link:hover{text-decoration:none}
+.scene-card :deep(.v-switch){flex:none}
 .scene-text{display:grid;min-width:0;flex:1}
 .scene-text strong,.scene-text span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .scene-text span{font-size:var(--fs-sm);color:var(--muted)}
-.scene-go{color:var(--muted);transition:transform var(--dur-2) var(--ease-spring),color var(--dur-1)}
-.scene-card:hover .scene-go{transform:translateX(3px);color:var(--primary)}
 @media(max-width:1100px){.columns{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:700px){.hero{grid-template-columns:minmax(0,1fr);padding:var(--sp-4)}.hero-mark img{width:52px;height:52px}}
 </style>

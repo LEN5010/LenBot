@@ -101,6 +101,7 @@ class NetworkRuntime:
         self.last_runtime_error: str | None = None
         self.stopped = asyncio.Event()
         self.connection_requested = asyncio.Event()
+        self.disconnect_requested = False
         self.retention = Retention(self)
         self.config_write_lock = asyncio.Lock()
         self.management: HostManagement | None = None
@@ -316,6 +317,18 @@ class NetworkRuntime:
     def can_connect(self) -> bool:
         return self.status == "connection_failed" and not self.stopped.is_set()
 
+    @property
+    def can_disconnect(self) -> bool:
+        return (self.platform is not None and self.status in {"waiting_connection", "running"}
+                and not self.stopped.is_set())
+
+    async def disconnect(self) -> None:
+        """Close the OneBot transport now; business stops and a restart reconnects."""
+        if not self.can_disconnect:
+            raise RuntimeError("只有等待连接或正在运行时可以断开 OneBot")
+        self.disconnect_requested = True
+        await self.platform.close()
+
     def request_connection(self) -> None:
         if not self.can_connect:
             raise RuntimeError("只有首次连接失败且业务尚未启动时可以手动连接；其他停止状态请重启宿主")
@@ -422,7 +435,9 @@ class NetworkRuntime:
                     done, _ = await asyncio.wait({*running, stopping, terminated}, return_when=asyncio.FIRST_COMPLETED)
                     self.accepting = False
                     reason = ("storage_error" if self.storage_error is not None else
-                              "signal" if stopping in done else "transport_closed" if terminated in done
+                              "signal" if stopping in done
+                              else "panel_disconnect" if terminated in done and self.disconnect_requested
+                              else "transport_closed" if terminated in done
                               else "scene_stopped")
                     self._status("stopping")
                     self._emit({"type": "runtime", "status": "stopping", "reason": reason})

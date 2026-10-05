@@ -17,6 +17,11 @@ from ...models.limits import LimitReached
 from ...memory.jobs import processing_records
 
 
+class ChatSwitch(BaseModel):
+    model_config = ConfigDict(strict=True, extra='forbid')
+    enabled: bool
+
+
 class QuietChange(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
     seconds: int = Field(ge=1, le=604800)
@@ -83,6 +88,16 @@ def register_host_operations(app, *, runtime, user):
             raise HTTPException(409, '场景正在执行或宿主正在停止，临时状态未改变')
         async with runner.execution:
             return runner.set_temporary_quiet(None, 'allow', None)
+
+    @app.put('/api/host/scenes/{scene}/control/chat')
+    async def scene_chat(scene: str, change: ChatSwitch, _: str = Depends(user)):
+        scene_exists(scene)
+        runner = runtime.runners[scene]
+        if not runtime.accepting:
+            raise HTTPException(409, '宿主没有在运行，聊天开关未改变')
+        # Waits for a running turn to finish so its saved attention state cannot overwrite the switch.
+        async with runner.execution:
+            return runner.set_paused(not change.enabled)
 
     @app.get('/api/host/scenes/{scene}/notices')
     async def notices(scene: str, before: int | None = Query(None, ge=1),

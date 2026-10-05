@@ -119,13 +119,16 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
                 "addresses": [] if runtime.platform is None else runtime.platform.addresses,
                 "last_error": runtime.last_runtime_error or runtime.last_platform_error,
                 "can_connect": runtime.can_connect,
+                "can_disconnect": runtime.can_disconnect,
+                "disconnect_requested": runtime.disconnect_requested,
                 "accepting": runtime.accepting,
             },
             "scenes": [
                 {"scene": scene, "persona": {"id": runtime.chats[scene].persona.id,
                                               "name": runtime.chats[scene].persona.name},
                  "persona_path": str(settings.persona),
-                 "voice_mode": settings.voice_mode, "timezone": config.scene_timezone(scene)}
+                 "voice_mode": settings.voice_mode, "timezone": config.scene_timezone(scene),
+                 "chat_enabled": not runtime.runners[scene].state.paused}
                 for scene, settings in config.scenes.items()
             ],
             "memory_backend": None if config.memory is None else config.memory.backend,
@@ -168,6 +171,14 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
     async def connect(_: str = Depends(user)):
         try:
             runtime.request_connection()
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from error
+        return {"status": runtime.status}
+
+    @app.post("/api/host/connection/disconnect")
+    async def disconnect(_: str = Depends(user)):
+        try:
+            await runtime.disconnect()
         except RuntimeError as error:
             raise HTTPException(409, str(error)) from error
         return {"status": runtime.status}
