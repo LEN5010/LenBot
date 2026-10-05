@@ -1659,7 +1659,7 @@ def test_isolated_attention_accepts_explicit_short_direct_timing(tmp_path):
     source = _config("personas/example")
     source["attention"] = {
         "only_direct": True,
-        "keywords": ["  然然  ", "开播"],
+        "keywords": ["  小然  ", "开播"],
         "other_bot_ids": ['onebot:90002'],
         "direct_idle_seconds": 0.02,
         "direct_max_seconds": 0.05,
@@ -1680,7 +1680,7 @@ def test_isolated_attention_accepts_explicit_short_direct_timing(tmp_path):
     attention = load_config(root).attention
     assert (attention.direct_idle_seconds, attention.direct_max_seconds, attention.max_extensions) == (0.02, 0.05, 0)
     assert attention.only_direct is True
-    assert attention.keywords == ["然然", "开播"] and attention.other_bot_ids == ['onebot:90002']
+    assert attention.keywords == ["小然", "开播"] and attention.other_bot_ids == ['onebot:90002']
     assert (attention.named_idle_seconds, attention.named_max_seconds) == (0.03, 0.06)
     assert (attention.focus_seconds, attention.focus_idle_seconds, attention.focus_max_seconds) == (0.2, 0.04, 0.08)
     assert (attention.ambient_min_interval_seconds, attention.ambient_max_interval_seconds) == (0.05, 0.1)
@@ -1777,7 +1777,7 @@ def test_quiet_hours_reject_invalid_configuration(tmp_path, quiet, field):
         (lambda source: source.update(attention={"ambient_idle_seconds": 1.0}), "ambient_idle_seconds"),
         (lambda source: source.update(attention={"only_direct": "false"}), "only_direct"),
         (lambda source: source.update(attention={"keywords": ["  "]}), "keywords"),
-        (lambda source: source.update(attention={"keywords": ["然然", " 然然 "]}), "keywords"),
+        (lambda source: source.update(attention={"keywords": ["小然", " 小然 "]}), "keywords"),
         (lambda source: source.update(attention={"keywords": [123]}), "keywords"),
         (lambda source: source.update(attention={"other_bot_ids": ["0"]}), "other_bot_ids"),
         (lambda source: source.update(attention={"other_bot_ids": ["abc"]}), "other_bot_ids"),
