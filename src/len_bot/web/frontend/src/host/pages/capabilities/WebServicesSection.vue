@@ -4,8 +4,8 @@ import { api } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify, readPendingRestart } from '../../store.js'
 import { clone, numberOrBlank, same } from '../../forms.js'
-import SettingSection from '../../components/SettingSection.vue'
-import ErrorNote from '../../components/ErrorNote.vue'
+import SettingSection from '../../ui/SettingSection.vue'
+import ResourceState from '../../ui/ResourceState.vue'
 
 const emit = defineEmits(['dirty'])
 const settings = useResource(() => api('/api/host/settings'))
@@ -26,8 +26,7 @@ async function submit(kind) {
 </script>
 
 <template>
-  <ErrorNote v-if="settings.error.value" title="读取网页服务设置失败" :error="settings.error.value" />
-  <template v-if="saved">
+  <ResourceState :resource="settings" error-title="读取网页服务设置失败">
     <SettingSection title="读网页" description="Bot 可以打开群友发的链接，读取网页正文。"
       :dirty="readDirty" :saving="saveRead.busy.value" :error="saveRead.error.value" @save="submit('web-read')">
       <v-switch :model-value="read !== null" label="允许读网页" @update:model-value="value => read = value ? { timeout_seconds: 20 } : null" />
@@ -45,5 +44,5 @@ async function submit(kind) {
           @update:model-value="value => search.timeout_seconds = numberOrBlank(value)" />
       </div>
     </SettingSection>
-  </template>
+  </ResourceState>
 </template>

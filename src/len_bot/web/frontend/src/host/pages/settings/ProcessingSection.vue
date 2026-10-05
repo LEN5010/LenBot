@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { api } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'
 import { clone, numberOrBlank, same } from '../../forms.js'
-import SettingSection from '../../components/SettingSection.vue'
+import SettingSection from '../../ui/SettingSection.vue'
 
 const props = defineProps({ snapshot: { type: Object, required: true } })
 const emit = defineEmits(['saved', 'dirty'])
@@ -37,18 +37,18 @@ async function submit() {
 
 <template>
   <SettingSection v-if="draft" title="上下文、媒体与日志" :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
-    <div v-for="[key, title, fields] in groups" :key="key">
+    <div v-for="[key, title, fields] in groups" :key="key" class="group">
       <h3>{{ title }}</h3>
       <div class="form-grid">
         <v-text-field v-for="[field, label, hint] in fields" :key="field" :model-value="draft[key][field]" type="number" :label="label"
           :hint="hint" :persistent-hint="Boolean(hint)" @update:model-value="value => draft[key][field] = numberOrBlank(value)" />
       </div>
     </div>
-    <div>
+    <div class="group">
       <h3>日志</h3>
       <v-switch :model-value="draft.logging !== null" label="把运行日志保存到文件" hint="排查问题时有用，每天一个文件" persistent-hint
         @update:model-value="toggleLogging" />
-      <div v-if="draft.logging" class="form-grid mt-4">
+      <div v-if="draft.logging" class="form-grid">
         <v-text-field v-model="draft.logging.directory" label="日志目录" hint="相对于 LenBot 实例目录" persistent-hint />
         <v-text-field :model-value="draft.logging.retention_days" type="number" label="保留天数"
           @update:model-value="value => draft.logging.retention_days = numberOrBlank(value)" />
@@ -59,5 +59,5 @@ async function submit() {
 </template>
 
 <style scoped>
-h3{font-size:14px;margin:0 0 10px}
+.group{display:grid;gap:var(--sp-3)}
 </style>

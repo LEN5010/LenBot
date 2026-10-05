@@ -1,16 +1,15 @@
 <script setup>
 import { useAuth } from '../composables/useAuth.js'
+import HostPage from '../host/ui/HostPage.vue'
+import Panel from '../host/ui/Panel.vue'
+import EmptyState from '../host/ui/EmptyState.vue'
 const auth = useAuth()
 </script>
 
 <template>
-  <div class="page-stack">
-    <h1>页面未找到</h1>
-    <v-card>
-      <v-card-text class="empty-state">
-        <p>404 · 这个地址没有对应页面。</p>
-        <v-btn color="primary" :to="auth.panelContext.home">返回首页</v-btn>
-      </v-card-text>
-    </v-card>
-  </div>
+  <HostPage title="页面未找到">
+    <Panel>
+      <EmptyState text="这个地址没有对应的页面。"><v-btn color="primary" :to="auth.panelContext.home">返回首页</v-btn></EmptyState>
+    </Panel>
+  </HostPage>
 </template>

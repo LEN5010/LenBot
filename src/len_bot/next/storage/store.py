@@ -24,7 +24,7 @@ from .schema import create_database
 from ..chat.schedule_store import ScheduleStore
 
 
-FORMAT_VERSION = 36
+FORMAT_VERSION = 1
 
 
 def turn_record(row: sqlite3.Row) -> dict:
@@ -386,26 +386,27 @@ class Store:
             self._append(scene, message)
 
     def save_notice(self, notice: Notice) -> None:
-        platform_id = (str(notice.raw["message_id"])
-                       if notice.notice_type in {"group_recall", "friend_recall"} else None)
+        platform_id = notice.platform_message_id
         with self.db:
             self.db.execute(
-                "INSERT INTO notices(scene,kind,platform_id,time,received_at,raw) VALUES (?,?,?,?,?,?)",
-                (notice.scene, notice.notice_type, platform_id, notice.time, self.now(), encode(dict(notice.raw))),
+                "INSERT INTO notices(scene,kind,platform_id,time,received_at,raw,body) VALUES (?,?,?,?,?,?,?)",
+                (notice.scene, notice.notice_type, platform_id, notice.time, self.now(), encode(dict(notice.raw)),
+                 encode({"user_id": notice.user_id, "operator_id": notice.operator_id,
+                         "duration": notice.duration, "sub_type": notice.sub_type})),
             )
             if platform_id is not None:
                 self.db.execute("UPDATE messages SET body=json_set(body,'$.recalled',json('true')) "
                                 "WHERE scene=? AND platform_id=?", (notice.scene, platform_id))
 
-    def bot_muted_until(self, scene: str, bot_qq: str) -> float | None:
+    def bot_muted_until(self, scene: str, bot_id: str) -> float | None:
         row = self.db.execute(
-            "SELECT time,raw FROM notices WHERE scene=? AND kind='group_ban' "
-            "AND CAST(json_extract(raw,'$.user_id') AS TEXT)=? ORDER BY time DESC,id DESC LIMIT 1",
-            (scene, bot_qq),
+            "SELECT time,body FROM notices WHERE scene=? AND kind='group_ban' "
+            "AND json_extract(body,'$.user_id')=? ORDER BY time DESC,id DESC LIMIT 1",
+            (scene, bot_id),
         ).fetchone()
         if row is None:
             return None
-        notice = json.loads(row["raw"])
+        notice = json.loads(row["body"])
         until = row["time"] + notice["duration"]
         return until if notice["sub_type"] == "ban" and until > self.now() else None
 
@@ -531,7 +532,7 @@ class Store:
         """Latest unbatched arrival eligible for merging into the next input."""
         excluded = tuple(exclude_uids)
         exclude_clause = (
-            " AND (json_extract(body,'$.mentions_bot')=1 OR scene LIKE 'private:%' "
+            " AND (json_extract(body,'$.mentions_bot')=1 OR scene LIKE 'onebot:private:%' "
             "OR json_extract(body,'$.sender.uid') NOT IN (" + ",".join("?" for _ in excluded) + "))"
             if excluded else ""
         )

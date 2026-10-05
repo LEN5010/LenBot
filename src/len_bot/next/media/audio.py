@@ -2,15 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import logging
 import sqlite3
 from contextlib import nullcontext
-from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING
-import wave
 from weakref import WeakValueDictionary
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -19,6 +15,7 @@ from ..models.asr import ASRProtocolError, AudioSettings, transcribe_audio, esti
 from .audio_store import AudioStore
 from ..models.slots import ModelSlots
 from ..platform.platform_tools import PlatformCall
+from ..platform.onebot_audio import fetch_record
 from ..storage.store import Store, encode
 
 if TYPE_CHECKING:
@@ -49,34 +46,6 @@ TRANSCRIBE_TOOL = {"type": "function", "function": {
 }}
 
 
-def parse_record(raw: object, settings: AudioSettings) -> tuple[bytes, float]:
-    """NapCat get_record(out_format=wav) returns converted bytes in data.base64."""
-    try:
-        if not isinstance(raw, dict) or raw.get("status") != "ok" or raw.get("retcode") != 0:
-            raise ValueError("get_record did not return status=ok, retcode=0")
-        encoded = raw["data"]["base64"]
-        if not isinstance(encoded, str) or not encoded:
-            raise ValueError("get_record data.base64 must be nonempty text")
-        if len(encoded) > 4 * ((settings.max_bytes + 2) // 3):
-            raise ValueError(f"record exceeds {settings.max_bytes} bytes")
-        wav = base64.b64decode(encoded, validate=True)
-        if len(wav) > settings.max_bytes:
-            raise ValueError(f"record exceeds {settings.max_bytes} bytes")
-        with wave.open(BytesIO(wav), "rb") as stream:
-            frames, rate = stream.getnframes(), stream.getframerate()
-            if frames <= 0 or rate <= 0:
-                raise ValueError("WAV contains no audio frames or sample rate")
-            duration = frames / rate
-            if duration > settings.max_seconds:
-                raise ValueError(f"record duration {duration:g}s exceeds {settings.max_seconds:g}s; not truncated")
-            expected = frames * stream.getnchannels() * stream.getsampwidth()
-            if expected > settings.max_bytes or len(stream.readframes(frames)) != expected:
-                raise ValueError("WAV frames are truncated or exceed configured byte limit")
-        return wav, duration
-    except (KeyError, TypeError, ValueError, binascii.Error, wave.Error, EOFError) as error:
-        # Do not echo megabytes of binary audio as a protocol error.
-        fragment = repr(raw)[:500]
-        raise ValueError(f"get_record audio parse failed: {error}; raw={fragment}") from error
 
 
 async def execute_transcribe(store: Store, config: LabConfig, arguments: TranscribeArguments, *,
@@ -86,7 +55,7 @@ async def execute_transcribe(store: Store, config: LabConfig, arguments: Transcr
     message = store.find_message(scene, arguments.message)
     if message is None:
         raise ValueError(f"当前场景没有平台消息 {arguments.message}")
-    records = [segment for segment in message.segments if segment.type == "record"]
+    records = [segment for segment in message.segments if segment.type == "audio"]
     if arguments.audio > len(records):
         raise ValueError(f"消息 {arguments.message} 只有 {len(records)} 段语音，没有第 {arguments.audio} 段")
     position = (scene, arguments.message, arguments.audio)
@@ -112,13 +81,7 @@ async def process_audio(store, config, arguments, *, turn_id, platform, slots, d
     position = (scene, arguments.message, arguments.audio)
     audio_reused = row is not None and row["wav"] is not None
     if not audio_reused:
-        source = records[arguments.audio - 1].data
-        file = source.get("file")
-        if not isinstance(file, str) or not file.strip():
-            raise ValueError(f"record段缺少实际file字段：{repr(source)[:300]}")
-        async with asyncio.timeout(config.audio.timeout_seconds):
-            raw = await platform("get_record", {"file": file, "out_format": "wav"})
-            wav, duration = parse_record(raw, config.audio)
+        wav, duration = await fetch_record(platform, records[arguments.audio - 1].data, config.audio)
         with store.db:
             store.db.execute("UPDATE audio_cache SET wav=?,duration=?,fetched_at=? "
                              "WHERE scene=? AND platform_id=? AND audio_index=?", (wav, duration, store.now(), *position))

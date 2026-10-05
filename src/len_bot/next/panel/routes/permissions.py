@@ -9,7 +9,8 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from ...runtime.identity import IdentitySettings
 from ...configuration.tasks import TaskRole
-from .settings import _body, _prepare, _read_saved
+from .settings import _body
+from ...configuration.editing import _prepare, _read_saved
 
 
 class CapabilityMatrix(BaseModel):
@@ -33,7 +34,7 @@ class CapabilityMatrix(BaseModel):
 class ScopedIdentities(BaseModel):
     """Extra owner/admin/whitelist lists that only apply to tasks or reminders.
 
-    QQ formats are checked when the candidate root config is loaded.
+    Account formats are checked when the candidate root config is loaded.
     """
     model_config = ConfigDict(strict=True, extra='forbid')
     owner: str | None
@@ -74,7 +75,7 @@ def register_host_permissions(app: FastAPI, *, root: Path, runtime, user, write_
             raise HTTPException(404, '请选当前运行与保存配置中都存在的场景')
         current, recorded = section(runtime.config, scene), section(saved, scene)
         return {'running': current, 'saved': recorded, 'restart_required': current != recorded,
-                'owner_qq': runtime.config.owner_qq,
+                'owners': runtime.config.owners,
                 'effective_identities': runtime.config.scene_config(scene).permissions.model_dump()}
 
     @app.get('/api/host/permissions')

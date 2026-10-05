@@ -1,4 +1,4 @@
-"""Low-frequency tools that query the live OneBot platform: merged forwards and group members."""
+"""Low-frequency queries to the live OneBot platform: merged forwards, group members and scene names."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .messages import Segment, render_body
+from .onebot_messages import normalized_segment
 from ..storage.store import Store, encode
 
 
@@ -41,7 +42,7 @@ class OpenForwardArguments(BaseModel):
 class MemberInfoArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    qq: str = Field(pattern=r"^[1-9][0-9]*$")
+    user: str = Field(pattern=r"^onebot:[1-9][0-9]*$")
 
 
 OPEN_FORWARD_TOOL = {"type": "function", "function": {
@@ -51,7 +52,7 @@ OPEN_FORWARD_TOOL = {"type": "function", "function": {
 }}
 MEMBER_INFO_TOOL = {"type": "function", "function": {
     "name": "member_info", "description": "查询本群一名成员的平台当前资料（昵称、群名片、身份、头衔、入群与最后发言时间）；"
-    "qq 是实际 QQ 号。",
+    "user 是实际平台账号，例如 onebot:70001。",
     "parameters": MemberInfoArguments.model_json_schema(),
 }}
 
@@ -114,8 +115,8 @@ def parse_forward(raw: object) -> list[ForwardNode]:
                     raise ValueError(f"messages[{index}].message[{position}] must have type text and data object")
                 if segment["type"] == "text" and not isinstance(segment["data"]["text"], str):
                     raise ValueError(f"messages[{index}].message[{position}].data.text must be text")
-                segments.append(Segment(segment["type"], dict(segment["data"])))
-            nodes.append(ForwardNode(_id(sender["user_id"], f"messages[{index}].sender.user_id"),
+                segments.append(normalized_segment(segment["type"], segment["data"]))
+            nodes.append(ForwardNode("onebot:" + _id(sender["user_id"], f"messages[{index}].sender.user_id"),
                                      card or nickname, float(time), segments))
         return nodes
     except (KeyError, TypeError, ValueError, OverflowError) as error:
@@ -133,7 +134,7 @@ async def _expand(call: PlatformCall, forward_id: str, timezone: str, depth: int
             break
         budget[0] -= 1
         clock = datetime.fromtimestamp(node.time, zone).isoformat(sep=" ", timespec="seconds")
-        speaker = f"{node.name}(QQ {node.uid})" if node.name else f"QQ {node.uid}"
+        speaker = f"{node.name}({node.uid})" if node.name else f"{node.uid}"
         lines.append(f"{indent}[{number}] [{clock}] {speaker}：{render_body(node.segments)}")
         for segment in (item for item in node.segments if item.type == "forward"):
             if budget[0] == 0:
@@ -172,6 +173,20 @@ async def open_forward(store: Store, scene: str, timezone: str, args: OpenForwar
         scene=scene, result=encode(result)).strip()
 
 
+async def scene_title(scene: str, call: PlatformCall) -> str:
+    """The group name or the private contact's nickname, for the panel."""
+    platform, kind, number = scene.split(":", 2)
+    action, field = ("get_group_info", "group_name") if kind == "group" else ("get_stranger_info", "nickname")
+    raw = await call(action, {"group_id" if kind == "group" else "user_id": int(number)})
+    try:
+        title = _succeeded(raw, action)[field]
+        if not isinstance(title, str):
+            raise ValueError(f"{field} must be text")
+        return title
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"{action} 返回无法解析：{error}; raw={repr(raw)[:500]}") from error
+
+
 def parse_member(raw: object, *, group_id: str, qq: str) -> dict:
     """Parse get_group_member_info once; identity fields must match the request."""
     try:
@@ -181,7 +196,7 @@ def parse_member(raw: object, *, group_id: str, qq: str) -> dict:
         role = data["role"]
         if role not in ROLES:
             raise ValueError(f"role must be one of {list(ROLES)}: {role!r}")
-        result = {"qq": qq, "nickname": data["nickname"], "card": data["card"], "role": role}
+        result = {"user": "onebot:" + qq, "nickname": data["nickname"], "card": data["card"], "role": role}
         for field in ("nickname", "card"):
             if not isinstance(result[field], str):
                 raise ValueError(f"{field} must be text")
@@ -199,11 +214,11 @@ def parse_member(raw: object, *, group_id: str, qq: str) -> dict:
 
 
 async def member_info(scene: str, timezone: str, args: MemberInfoArguments, call: PlatformCall) -> str:
-    kind, group_id = scene.split(":", 1)
+    platform, kind, group_id = scene.split(":", 2)
     if kind != "group":
         raise ValueError("member_info 只在群场景可用")
-    raw = await call("get_group_member_info", {"group_id": int(group_id), "user_id": int(args.qq), "no_cache": True})
-    member = parse_member(raw, group_id=group_id, qq=args.qq)
+    raw = await call("get_group_member_info", {"group_id": int(group_id), "user_id": int(args.user.split(":", 1)[1]), "no_cache": True})
+    member = parse_member(raw, group_id=group_id, qq=args.user.split(":", 1)[1])
     zone = ZoneInfo(timezone)
     for field in ("join_time", "last_sent_time"):
         member[field] = datetime.fromtimestamp(member[field], zone).isoformat(sep=" ", timespec="seconds")

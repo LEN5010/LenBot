@@ -1,6 +1,10 @@
 name = "rss_broadcast"
 version = "1.0.0"
 interface = 1
+requires_lenbot = ">=0.1,<1"
+requires_python = ">=3.13"
+platforms = ["linux", "darwin", "win32"]
+reload = "plugin"
 authors = ["LEN5010"]
 license = "AGPL-3.0-only"
 description = "在明确时区的 cron 时刻直接播报 RSS 2.0 订阅，不调用模型；/订阅播报 可手动查看新条目。"

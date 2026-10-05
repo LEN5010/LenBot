@@ -1,0 +1,741 @@
+{
+  "format": "structured-development",
+  "source": "维护者编写的通用群聊情境，人物、账号和对话都是虚构的。只有 @ Bot 的消息会开轮，其余消息作为前文进入上下文。",
+  "cases": [
+    {
+      "id": "several-calls-at-once",
+      "set": "expression",
+      "start_time": 1791201600.0,
+      "expect": [
+        "几个人同时叫，可以一句话一起接、挑一个接或发张表情，不给每个人各回一条结构相同的话。",
+        "对象清楚时不逐条引用原消息，也不逐个 @。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "several-calls-at-once-0",
+            "time": 1791201605.0,
+            "sender": {
+              "nickname": "阿杰",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90002"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "小然在吗"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70002",
+            "message_id": "several-calls-at-once-1",
+            "time": 1791201606.0,
+            "sender": {
+              "nickname": "小雨",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90002"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "小然出来玩"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70003",
+            "message_id": "several-calls-at-once-2",
+            "time": 1791201607.0,
+            "sender": {
+              "nickname": "老周",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90002"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "小然救命 好无聊"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        },
+        {
+          "type": "observe",
+          "seconds": 20
+        }
+      ]
+    },
+    {
+      "id": "upset-after-bad-luck",
+      "set": "expression",
+      "start_time": 1791205800.0,
+      "expect": [
+        "先站在对方那边，不拿歪卡继续逗他。",
+        "可以很短，不说教，不安排对方下一步该做什么。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "upset-after-bad-luck-0",
+            "time": 1791205802.0,
+            "sender": {
+              "nickname": "阿杰",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "text",
+                "data": {
+                  "text": "抽了一百抽"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "upset-after-bad-luck-1",
+            "time": 1791205806.0,
+            "sender": {
+              "nickname": "阿杰",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "text",
+                "data": {
+                  "text": "又歪了"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "upset-after-bad-luck-2",
+            "time": 1791205812.0,
+            "sender": {
+              "nickname": "阿杰",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90002"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "你别笑啊"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        },
+        {
+          "type": "observe",
+          "seconds": 20
+        }
+      ]
+    },
+    {
+      "id": "concrete-bad-luck",
+      "set": "expression",
+      "start_time": 1791199800.0,
+      "expect": [
+        "接住交卷时平板关机这件具体的事，不只说加油。",
+        "不在句尾追加叮嘱或反问。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70002",
+            "message_id": "concrete-bad-luck-0",
+            "time": 1791199803.0,
+            "sender": {
+              "nickname": "小雨",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "text",
+                "data": {
+                  "text": "最后一道题交卷的时候"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70002",
+            "message_id": "concrete-bad-luck-1",
+            "time": 1791199807.0,
+            "sender": {
+              "nickname": "小雨",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "text",
+                "data": {
+                  "text": "平板没电关机了"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70002",
+            "message_id": "concrete-bad-luck-2",
+            "time": 1791199812.0,
+            "sender": {
+              "nickname": "小雨",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90002"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "明天还得补考"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        },
+        {
+          "type": "observe",
+          "seconds": 20
+        }
+      ]
+    },
+    {
+      "id": "answer-a-fact",
+      "set": "expression",
+      "start_time": 1791194400.0,
+      "expect": [
+        "直接回答 3 月 7 日；需要时可以先查角色资料。",
+        "不附加反问或叮嘱。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70003",
+            "message_id": "answer-a-fact-0",
+            "time": 1791194404.0,
+            "sender": {
+              "nickname": "老周",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90002"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "小然你生日几号来着，直接告诉我日期就行"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        },
+        {
+          "type": "observe",
+          "seconds": 20
+        }
+      ]
+    },
+    {
+      "id": "teasing",
+      "set": "expression",
+      "start_time": 1791208800.0,
+      "expect": [
+        "顺着玩笑斗嘴，不迎合也不攻击对方。",
+        "不长篇解释自己的性格。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "teasing-0",
+            "time": 1791208803.0,
+            "sender": {
+              "nickname": "阿杰",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90002"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "小然你是不是又偷偷吃宵夜了（）"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        },
+        {
+          "type": "observe",
+          "seconds": 20
+        }
+      ]
+    },
+    {
+      "id": "good-news-sticker",
+      "set": "expression",
+      "start_time": 1791174600.0,
+      "expect": [
+        "替对方高兴，可以只发一张开心的表情，或者一句话加一张表情。",
+        "配了表情时，文字照常说事，不再用感叹号或语气词重复强调开心。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70002",
+            "message_id": "good-news-sticker-0",
+            "time": 1791174605.0,
+            "sender": {
+              "nickname": "小雨",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90002"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "我刚收到 offer 了！！！"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        },
+        {
+          "type": "observe",
+          "seconds": 20
+        }
+      ]
+    },
+    {
+      "id": "follow-the-topic",
+      "set": "expression",
+      "start_time": 1791187200.0,
+      "expect": [
+        "回答自己今天的事时和前面的海报、奶茶话题接得上，内容符合角色资料。",
+        "不突然换成说教或关心作息。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "follow-the-topic-0",
+            "time": 1791187202.0,
+            "sender": {
+              "nickname": "阿杰",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "text",
+                "data": {
+                  "text": "今天终于把那张海报交了"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70003",
+            "message_id": "follow-the-topic-1",
+            "time": 1791187210.0,
+            "sender": {
+              "nickname": "老周",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "text",
+                "data": {
+                  "text": "甲方满意吗"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "follow-the-topic-2",
+            "time": 1791187220.0,
+            "sender": {
+              "nickname": "阿杰",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "text",
+                "data": {
+                  "text": "满意，还请我们喝了奶茶"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "follow-the-topic-3",
+            "time": 1791187230.0,
+            "sender": {
+              "nickname": "阿杰",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90002"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "小然你呢 今天忙啥了"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        },
+        {
+          "type": "observe",
+          "seconds": 20
+        }
+      ]
+    },
+    {
+      "id": "spicy-hotpot",
+      "set": "expression",
+      "start_time": 1791198000.0,
+      "expect": [
+        "结合自己不吃辣自然回应，比如问有没有鸳鸯锅，不长篇解释口味。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70003",
+            "message_id": "spicy-hotpot-0",
+            "time": 1791198002.0,
+            "sender": {
+              "nickname": "老周",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "text",
+                "data": {
+                  "text": "今晚去吃重庆火锅"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70003",
+            "message_id": "spicy-hotpot-1",
+            "time": 1791198006.0,
+            "sender": {
+              "nickname": "老周",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90002"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "小然来不来"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        },
+        {
+          "type": "observe",
+          "seconds": 20
+        }
+      ]
+    },
+    {
+      "id": "are-you-a-bot",
+      "set": "expression",
+      "start_time": 1791212400.0,
+      "expect": [
+        "自然回答，和前面的玩笑接得上；按角色口吻回答或照实说都可以，不生硬地长篇声明。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70002",
+            "message_id": "are-you-a-bot-0",
+            "time": 1791212401.0,
+            "sender": {
+              "nickname": "小雨",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "text",
+                "data": {
+                  "text": "这群里谁是真人谁是机器人啊"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90002",
+            "group_id": "80001",
+            "user_id": "70003",
+            "message_id": "are-you-a-bot-1",
+            "time": 1791212406.0,
+            "sender": {
+              "nickname": "老周",
+              "card": "",
+              "role": "member"
+            },
+            "message": [
+              {
+                "type": "at",
+                "data": {
+                  "qq": "90002"
+                }
+              },
+              {
+                "type": "text",
+                "data": {
+                  "text": "小然你是AI吗"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "await_turn",
+          "count": 1
+        },
+        {
+          "type": "observe",
+          "seconds": 20
+        }
+      ]
+    }
+  ]
+}

@@ -43,7 +43,7 @@ def _reject_constant(value: str) -> None:
     raise ValueError(f'non-standard JSON constant {value}')
 
 
-def parse_input(line: str, bot_qq: str) -> dict:
+def parse_input(line: str, bot_id: str) -> dict:
     try:
         value = json.loads(line, parse_constant=_reject_constant)
         if not isinstance(value, dict):
@@ -52,8 +52,8 @@ def parse_input(line: str, bot_qq: str) -> dict:
         if not isinstance(post_type, str) or post_type not in {'message', 'notice', 'request', 'meta_event'}:
             raise ValueError('stdin record requires a native post_type')
         identity = value.get('self_id')
-        if type(identity) not in (int, str) or str(identity) != bot_qq:
-            raise ValueError(f'stdin self_id must match configured Bot QQ {bot_qq}')
+        if type(identity) not in (int, str) or "onebot:" + str(identity) != bot_id:
+            raise ValueError(f'stdin self_id must match configured Bot QQ {bot_id}')
         return value
     except ValueError as error:
         raise ValueError(f'Invalid stdin record: {error}; raw={line[:500]!r}') from error

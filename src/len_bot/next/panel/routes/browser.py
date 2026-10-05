@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from ...browser.client import AccountBrowser, AccountBrowserSettings
-from .settings import _prepare, _read_saved
+from ...configuration.editing import _prepare, _read_saved
 from ...browser.tasks import TaskBrowser
 from ...work.store import Task, TaskStore
 

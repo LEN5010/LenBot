@@ -4,10 +4,15 @@ import { api } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify, readPendingRestart } from '../../store.js'
 import { clone, numberOrBlank, same } from '../../forms.js'
-import ErrorNote from '../../components/ErrorNote.vue'
-import SettingSection from '../../components/SettingSection.vue'
-import AdvancedFields from '../../components/AdvancedFields.vue'
-import DevOnly from '../../components/DevOnly.vue'
+import { confirm } from '../../../composables/useConfirm.js'
+import Panel from '../../ui/Panel.vue'
+import ResourceState from '../../ui/ResourceState.vue'
+import ErrorNote from '../../ui/ErrorNote.vue'
+import SettingSection from '../../ui/SettingSection.vue'
+import AdvancedFields from '../../ui/AdvancedFields.vue'
+import FormDialog from '../../ui/FormDialog.vue'
+import StatGrid from '../../ui/StatGrid.vue'
+import DevOnly from '../../ui/DevOnly.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
@@ -63,19 +68,20 @@ for (const kind of Object.keys(kinds)) {
 }
 const editOf = (kind, item) => edits[`${kind}:${item.id}`]
 const reviewDirty = kind => (lists[kind].data.value?.items || []).some(item => !same(editOf(kind, item), fresh(kind, item)))
-function changeFilter(value) {
+const discard = title => confirm({ title, text: '没保存的修改会丢失。', confirmLabel: '放弃修改', danger: true })
+async function changeFilter(value) {
   if (value === filter.value) return
-  if (Object.keys(kinds).some(reviewDirty) && !window.confirm('放弃候选内容中没保存的修改？')) return
+  if (Object.keys(kinds).some(reviewDirty) && !await discard('放弃候选内容中没保存的修改？')) return
   filter.value = value
   Object.values(lists).forEach(list => list.reload(0, true))
 }
-function changePage(kind, offset) {
-  if (reviewDirty(kind) && !window.confirm('放弃这一页没保存的修改？')) return
+async function changePage(kind, offset) {
+  if (reviewDirty(kind) && !await discard('放弃这一页没保存的修改？')) return
   lists[kind].reload(offset, true)
 }
-function changeJargonFilter(value) {
+async function changeJargonFilter(value) {
   if (value === jargonFilter.value) return
-  if (reviewDirty('jargon') && !window.confirm('放弃黑话中没保存的修改？')) return
+  if (reviewDirty('jargon') && !await discard('放弃黑话中没保存的修改？')) return
   jargonFilter.value = value
   lists.jargon.reload(0, true)
 }
@@ -110,6 +116,7 @@ async function submitExample() {
 // Reply effects over the last 7 days.
 const effects = useResource(() => api(`${root}/reply-effects?days=7`))
 const effectLabels = [['agree', '认同'], ['continue', '接着聊'], ['correct', '纠正'], ['negative', '反感'], ['unrelated', '没接话'], ['uncertain', '看不出来']]
+const effectStats = value => effectLabels.map(([key, label]) => ({ label, value: value.distribution.states[key] }))
 
 const learner = useResource(() => api(`${root}/learning`))
 const run = useAction()
@@ -120,18 +127,17 @@ async function learnNow() {
 </script>
 
 <template>
-  <div class="page-stack">
-    <ErrorNote v-if="config.error.value" title="读取学习设置失败" :error="config.error.value" />
-    <SettingSection v-if="config.data.value" title="学习" description="黑话推断后自动使用，可随时纠正或禁用。说话方式按自动采用开关生效，收集的表情仍需人工采用。"
+  <ResourceState :resource="config" error-title="读取学习设置失败">
+    <SettingSection title="学习" description="黑话推断后自动使用，可随时纠正或禁用。说话方式按自动采用开关生效，收集的表情仍需人工采用。"
       :dirty="configDirty" :saving="saveConfig.busy.value" :error="saveConfig.error.value" @save="submitConfig">
       <v-switch :model-value="draft !== null" label="开启学习" @update:model-value="toggleLearning" />
-      <v-alert v-if="draft && noLearner" type="warning" variant="tonal">
-        还没有给学习分配模型，先到 <RouterLink :to="{ name: 'host-models' }">模型页</RouterLink> 设置，再回来保存。</v-alert>
+      <v-alert v-if="draft && noLearner" type="warning">
+        还没有给学习分配模型，先到 <RouterLink :to="{ name: 'host-models', query: { tab: 'roles' } }">模型页</RouterLink> 设置，再回来保存。</v-alert>
       <template v-if="draft">
         <div class="form-grid">
           <v-switch v-model="draft.extract" label="学说话方式" />
           <v-switch v-model="draft.jargon_extract" label="学黑话" />
-          <v-switch v-model="draft.collect_stickers" label="学习群聊表情包" hint="关闭后不再采集或使用群聊候选；角色自带表情仍可发送。保存后重启生效。" persistent-hint />
+          <v-switch v-model="draft.collect_stickers" label="学习群聊表情包" hint="关闭后不再采集或使用群聊候选，角色自带表情仍可发送" persistent-hint />
           <v-switch v-model="draft.reply_effects" label="观察群友对 Bot 发言的反应" hint="主动开话题需要打开这一项" persistent-hint />
         </div>
         <v-switch v-model="draft.auto_adopt" label="学到的说话方式不经审核直接使用" />
@@ -143,111 +149,93 @@ async function learnNow() {
         </AdvancedFields>
       </template>
     </SettingSection>
+  </ResourceState>
 
-    <section class="surface">
-      <div class="review-head">
-        <h2>学到的内容</h2>
-        <v-btn-toggle :model-value="filter" @update:model-value="changeFilter" mandatory density="compact" color="primary">
-          <v-btn value="pending">表达／表情待审核</v-btn><v-btn value="adopted">已采用</v-btn><v-btn value="rejected">不要的</v-btn></v-btn-toggle>
-        <v-btn v-if="learner.data.value?.enabled" variant="text" :loading="run.busy.value" @click="learnNow">现在学一次</v-btn>
-      </div>
-      <ErrorNote v-if="review.error.value" title="没有保存成功" :error="review.error.value" />
-      <ErrorNote v-if="run.error.value" title="没有开始学习" :error="run.error.value" />
-      <div v-for="(item, kind) in kinds" :key="kind" class="review-group">
+  <Panel title="学到的内容">
+    <template #actions>
+      <v-btn-toggle :model-value="filter" mandatory @update:model-value="changeFilter">
+        <v-btn value="pending">待审核</v-btn><v-btn value="adopted">已采用</v-btn><v-btn value="rejected">不要的</v-btn></v-btn-toggle>
+      <v-btn v-if="learner.data.value?.enabled" variant="tonal" :loading="run.busy.value" @click="learnNow">现在学一次</v-btn>
+    </template>
+    <ErrorNote v-if="review.error.value" title="没有保存成功" :error="review.error.value" />
+    <ErrorNote v-if="run.error.value" title="没有开始学习" :error="run.error.value" />
+    <div v-for="(item, kind) in kinds" :key="kind" class="review-group">
+      <div class="inline">
         <h3>{{ item.title }}</h3>
-        <template v-if="kind === 'jargon'">
-          <p class="muted">有推断词义即自动用于上下文，无需审核；尚无词义的继续积累用例。人工固定后不被后续推断覆盖。</p>
-          <v-btn-toggle :model-value="jargonFilter" @update:model-value="changeJargonFilter" mandatory density="compact" color="primary">
-            <v-btn value="pending">自动学习</v-btn><v-btn value="adopted">人工固定</v-btn><v-btn value="rejected">已禁用</v-btn>
-          </v-btn-toggle>
-        </template>
-        <ErrorNote v-if="lists[kind].error.value" :title="`读取${item.title}失败`" :error="lists[kind].error.value" />
-        <p v-if="lists[kind].data.value && !lists[kind].data.value.items.length" class="muted">没有内容</p>
-        <article v-for="entry in lists[kind].data.value?.items || []" :key="entry.id" class="review-card">
-          <template v-if="kind === 'expressions'">
-            <div class="form-grid">
-              <v-text-field v-model="editOf(kind, entry).situation" label="什么时候" />
-              <v-text-field v-model="editOf(kind, entry).style" label="怎么说" />
-            </div>
-          </template>
+        <v-btn-toggle v-if="kind === 'jargon'" :model-value="jargonFilter" mandatory class="ml-auto" @update:model-value="changeJargonFilter">
+          <v-btn value="pending">自动学习</v-btn><v-btn value="adopted">人工固定</v-btn><v-btn value="rejected">已禁用</v-btn>
+        </v-btn-toggle>
+      </div>
+      <p v-if="kind === 'jargon'" class="muted small">有推断词义就自动用于上下文；人工固定后不被后续推断覆盖。</p>
+      <ResourceState :resource="lists[kind]" :error-title="`读取${item.title}失败`" :empty="!lists[kind].data.value?.items.length" empty-text="没有内容" compact v-slot="{ data }">
+        <article v-for="entry in data.items" :key="entry.id" class="review-card">
+          <div v-if="kind === 'expressions'" class="form-grid">
+            <v-text-field v-model="editOf(kind, entry).situation" label="什么时候" />
+            <v-text-field v-model="editOf(kind, entry).style" label="怎么说" />
+          </div>
           <template v-else-if="kind === 'jargon'">
             <p><strong>{{ entry.term }}</strong> <span class="muted">出现 {{ entry.count }} 次</span></p>
             <p class="muted">最新推断：{{ entry.latest_meaning || '尚未推断，继续积累用例' }}</p>
             <v-text-field v-model="editOf(kind, entry).meaning" label="修订词义（保存后人工固定）" />
           </template>
-          <template v-else>
-            <div class="sticker">
-              <img :src="`${kinds.stickers.path}/${entry.id}/image`" alt="表情" loading="lazy" />
-              <div class="sticker-fields">
-                <v-text-field v-model="editOf(kind, entry).description" label="描述" />
-                <v-text-field v-model="editOf(kind, entry).text" label="图上的字" />
-                <v-combobox v-model="editOf(kind, entry).emotions" label="情绪" multiple chips closable-chips />
-              </div>
+          <div v-else class="sticker">
+            <img :src="`${kinds.stickers.path}/${entry.id}/image`" alt="表情" loading="lazy" />
+            <div class="sticker-fields">
+              <v-text-field v-model="editOf(kind, entry).description" label="描述" />
+              <v-text-field v-model="editOf(kind, entry).text" label="图上的字" />
+              <v-combobox v-model="editOf(kind, entry).emotions" label="情绪" multiple chips closable-chips />
             </div>
-          </template>
-          <div class="review-actions">
+          </div>
+          <div class="inline">
             <v-btn v-if="selectedFilter(kind) !== 'adopted'" color="primary" variant="tonal" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'adopted')">{{ kind === 'jargon' ? '保存并固定词义' : '采用' }}</v-btn>
             <v-btn v-if="selectedFilter(kind) === 'adopted'" variant="tonal" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'adopted')">保存修改</v-btn>
             <v-btn v-if="selectedFilter(kind) !== 'rejected'" variant="text" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'rejected')">{{ kind === 'jargon' ? '禁用' : '不要' }}</v-btn>
             <v-btn v-if="selectedFilter(kind) !== 'pending'" variant="text" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'pending')">{{ kind === 'jargon' ? '恢复自动词义' : '放回待审核' }}</v-btn>
             <v-btn v-if="kind === 'expressions' && filter === 'adopted'" variant="text" size="small" @click="openExample(entry)">加到角色样例</v-btn>
           </div>
-          <DevOnly label="原始数据"><pre>{{ JSON.stringify(entry, null, 2) }}</pre></DevOnly>
+          <DevOnly label="原始数据" :json="entry" />
         </article>
-        <div v-if="lists[kind].data.value && (lists[kind].data.value.offset > 0 || lists[kind].data.value.total > lists[kind].data.value.limit)" class="review-actions">
-          <v-btn size="small" variant="text" :disabled="lists[kind].loading.value || review.busy.value || lists[kind].data.value.offset === 0"
-            @click="changePage(kind, lists[kind].data.value.offset - lists[kind].data.value.limit)">上一页</v-btn>
-          <span>第 {{ Math.floor(lists[kind].data.value.offset / lists[kind].data.value.limit) + 1 }} 页 · 共 {{ lists[kind].data.value.total }} 条</span>
-          <v-btn size="small" variant="text" :disabled="lists[kind].loading.value || review.busy.value || lists[kind].data.value.offset + lists[kind].data.value.limit >= lists[kind].data.value.total"
-            @click="changePage(kind, lists[kind].data.value.offset + lists[kind].data.value.limit)">下一页</v-btn>
+        <div v-if="data.offset > 0 || data.total > data.limit" class="inline pager">
+          <v-btn size="small" variant="text" :disabled="lists[kind].loading.value || review.busy.value || data.offset === 0"
+            @click="changePage(kind, data.offset - data.limit)">上一页</v-btn>
+          <span class="muted small">第 {{ Math.floor(data.offset / data.limit) + 1 }} 页 · 共 {{ data.total }} 条</span>
+          <v-btn size="small" variant="text" :disabled="lists[kind].loading.value || review.busy.value || data.offset + data.limit >= data.total"
+            @click="changePage(kind, data.offset + data.limit)">下一页</v-btn>
         </div>
-      </div>
-    </section>
+      </ResourceState>
+    </div>
+  </Panel>
 
-    <section class="surface">
-      <h2>群友的反应（最近 7 天）</h2>
-      <ErrorNote v-if="effects.error.value" title="读取回复效果失败" :error="effects.error.value" />
-      <template v-if="effects.data.value">
-        <p v-if="!effects.data.value.enabled" class="muted">没有开启观察，可以在上面的学习设置里打开。</p>
-        <p v-else-if="!effects.data.value.distribution.samples" class="muted">还没有记录</p>
-        <div v-else class="effects">
-          <div v-for="[key, label] in effectLabels" :key="key"><span>{{ label }}</span><strong>{{ effects.data.value.distribution.states[key] }}</strong></div>
-        </div>
-        <DevOnly label="原始统计"><pre>{{ JSON.stringify(effects.data.value, null, 2) }}</pre></DevOnly>
-      </template>
-    </section>
-    <DevOnly label="学习服务状态"><pre>{{ JSON.stringify(learner.data.value, null, 2) }}</pre></DevOnly>
+  <Panel title="群友的反应" description="最近 7 天">
+    <ResourceState :resource="effects" error-title="读取回复效果失败" v-slot="{ data }">
+      <p v-if="!data.enabled" class="muted">没有开启观察，可以在上面的学习设置里打开。</p>
+      <p v-else-if="!data.distribution.samples" class="muted">还没有记录。</p>
+      <StatGrid v-else :items="effectStats(data)" />
+      <DevOnly label="原始统计" :json="data" />
+    </ResourceState>
+  </Panel>
+  <DevOnly label="学习服务状态" :json="learner.data.value" />
 
-    <v-dialog :model-value="example !== null" max-width="560" @update:model-value="value => { if (!value) example = null }">
-      <v-card v-if="example" title="加到角色样例">
-        <v-card-text class="example-form">
-          <p class="muted">会写进这个群所用角色包的人工样例，重启后生效。用同一个角色包的群都会受影响。</p>
-          <v-textarea v-model="example.context" label="情境" rows="2" auto-grow />
-          <v-textarea v-model="example.line" label="台词" rows="2" auto-grow />
-          <v-combobox v-model="example.tags" label="标签" multiple chips closable-chips />
-          <ErrorNote v-if="addExample.error.value" title="没有加成功" :error="addExample.error.value" />
-        </v-card-text>
-        <v-card-actions><v-spacer /><v-btn @click="example = null">取消</v-btn>
-          <v-btn color="primary" :loading="addExample.busy.value" @click="submitExample">加入</v-btn></v-card-actions>
-      </v-card>
-    </v-dialog>
-  </div>
+  <FormDialog :model-value="example !== null" title="加到角色样例" :busy="addExample.busy.value" @update:model-value="value => { if (!value) example = null }">
+    <template v-if="example">
+      <p class="muted">会写进这个群所用角色包的人工样例，用同一个角色包的群都会受影响。重启后生效。</p>
+      <v-textarea v-model="example.context" label="情境" rows="2" auto-grow />
+      <v-textarea v-model="example.line" label="台词" rows="2" auto-grow />
+      <v-combobox v-model="example.tags" label="标签" multiple chips closable-chips />
+      <ErrorNote v-if="addExample.error.value" title="没有加成功" :error="addExample.error.value" />
+    </template>
+    <template #actions><v-btn color="primary" :loading="addExample.busy.value" @click="submitExample">加入</v-btn></template>
+  </FormDialog>
 </template>
 
 <style scoped>
-.review-head{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-.review-head h2{margin:0 auto 0 0 !important}
-.review-group{margin-top:16px}
-.review-group h3{font-size:15px;margin:0 0 8px}
-.review-card{border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;display:grid;gap:10px}
+.review-group{display:grid;gap:var(--sp-3)}
+.review-group + .review-group{border-top:1px solid var(--line);padding-top:var(--sp-4)}
+.review-group p{margin:0}
+.review-card{border:1px solid var(--line);border-radius:var(--radius);padding:var(--sp-3);display:grid;gap:var(--sp-3)}
 .review-card p{margin:0}
-.review-actions{display:flex;gap:6px;flex-wrap:wrap}
-.sticker{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap}
-.sticker img{width:120px;height:120px;object-fit:contain;border:1px solid var(--line);border-radius:8px;background:var(--list-heading-bg)}
-.sticker-fields{flex:1 1 280px;display:grid;gap:10px}
-.effects{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-top:8px}
-.effects>div{border:1px solid var(--line);border-radius:10px;padding:10px}
-.effects span{display:block;color:var(--muted);font-size:13px}
-.effects strong{font-size:22px}
-.example-form{display:grid;gap:12px}
+.pager{justify-content:center}
+.sticker{display:flex;gap:var(--sp-4);align-items:flex-start;flex-wrap:wrap}
+.sticker img{width:120px;height:120px;object-fit:contain;border:1px solid var(--line);border-radius:var(--radius);background:var(--hover)}
+.sticker-fields{flex:1 1 280px;display:grid;gap:var(--sp-3)}
 </style>

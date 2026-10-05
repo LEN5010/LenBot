@@ -36,8 +36,8 @@ def panel_config(panel_root):
     (persona / "examples.yaml").write_text("[]\n", encoding="utf-8")
     config = {"compaction": {"input_tokens": 2000},
         "mode": "isolated",
-        "scene": "group:80001",
-        "bot_qq": "90001",
+        "scene": "onebot:group:80001",
+        "bot_id": 'onebot:90001',
         "timezone": "Asia/Shanghai",
         "database": "data/panel.sqlite3",
         "persona": "persona",
@@ -81,7 +81,7 @@ def test_unauthed_http_and_websocket_are_rejected(panel_config, panel_root):
             "persona_aliases": [], "relationships": {}, "behavior_addendum": None,
         }).status_code == 401
         assert client.post("/api/chat-test/messages", json={
-            "uid": "80002", "nickname": "测试者", "text": "不会入库", "mention_bot": True,
+            "uid": 'onebot:80002', "nickname": "测试者", "text": "不会入库", "mention_bot": True,
             "reply_to": None,
         }).status_code == 401
         assert client.post("/api/auth/logout").status_code == 401
@@ -109,7 +109,7 @@ def test_virtual_sender_cannot_use_configured_bot_identity(panel_config, panel_r
     with TestClient(create_app(panel_config, root=panel_root)) as client:
         assert _login(client).status_code == 200
         response = client.post("/api/chat-test/messages", json={
-            "uid": panel_config.bot_qq, "nickname": "伪装自身", "text": "不能保存的虚拟消息",
+            "uid": panel_config.bot_id, "nickname": "伪装自身", "text": "不能保存的虚拟消息",
             "mention_bot": False, "reply_to": None,
         })
         assert response.status_code == 422
@@ -261,10 +261,10 @@ def test_turn_lookup_is_scoped_to_configured_scene(panel_config, panel_root):
         store.end_call(local_call, response, None, append_to_scene=panel_config.scene)
         store.complete_tool(panel_config.scene, "shared-provider-id", "本场景的合成结果")
         store.end_turn(local_turn, "settled")
-        other_turn = store.start_turn("group:80002")
+        other_turn = store.start_turn("onebot:group:80002")
         other_call = store.start_call(other_turn, "mind", request)
-        store.end_call(other_call, response, None, append_to_scene="group:80002")
-        store.complete_tool("group:80002", "shared-provider-id", "其他场景不可见的合成结果")
+        store.end_call(other_call, response, None, append_to_scene="onebot:group:80002")
+        store.complete_tool("onebot:group:80002", "shared-provider-id", "其他场景不可见的合成结果")
         store.end_turn(other_turn, "settled")
 
     with TestClient(create_app(panel_config, root=panel_root)) as client:
@@ -299,11 +299,11 @@ def test_scene_persona_rejects_scope_smuggling_without_any_file_or_runtime_chang
         saved = client.get("/api/chat-test/scene-persona").json()
         baseline = saved_files()
         proposed = {"persona_aliases": ["合成本群称呼"],
-                    "relationships": {"70001": "合成关系"},
+                    "relationships": {'onebot:70001': "合成关系"},
                     "behavior_addendum": "本群简短回答。"}
         for field, value in (("persona", "other-persona"), ("model", "other-model"),
                              ("models", {"mind": "other-model"}),
-                             ("scene", "group:80002"), ("root", "/private/tmp/other")):
+                             ("scene", "onebot:group:80002"), ("root", "/private/tmp/other")):
             response = client.put("/api/chat-test/scene-persona", json={**proposed, field: value})
             assert response.status_code == 422, (field, response.text)
             assert saved_files() == baseline, field

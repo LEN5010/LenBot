@@ -22,7 +22,7 @@ from ...work.store import TERMINAL, Task, TaskStore
 class CleanupSelection(BaseModel):
     model_config = STRICT
     task_ids: list[Annotated[int, Field(gt=0)]] = Field(min_length=1, max_length=100)
-    requester: str = Field(pattern=r'^[1-9][0-9]*$')
+    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
     operation: Literal['temporary', 'environment']
 
     @model_validator(mode='after')
@@ -34,7 +34,7 @@ class CleanupSelection(BaseModel):
 
 class CloseEnvironment(BaseModel):
     model_config = STRICT
-    requester: str = Field(pattern=r'^[1-9][0-9]*$')
+    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
 
 
 def register_host_task_storage(app: FastAPI, *, runtime: NetworkRuntime,

@@ -16,7 +16,7 @@ CREATE VIRTUAL TABLE message_search USING fts5(
 );
 CREATE TABLE notices (
     id INTEGER PRIMARY KEY, scene TEXT NOT NULL, kind TEXT NOT NULL,
-    platform_id TEXT, time REAL NOT NULL, received_at REAL NOT NULL, raw TEXT NOT NULL
+    platform_id TEXT, time REAL NOT NULL, received_at REAL NOT NULL, raw TEXT NOT NULL, body TEXT NOT NULL
 );
 CREATE INDEX scene_notices ON notices(scene,id);
 CREATE INDEX recalled_messages ON notices(scene,platform_id)

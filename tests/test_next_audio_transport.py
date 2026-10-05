@@ -10,14 +10,14 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
 from len_bot.next.config import HostConfig
-from len_bot.next.media.audio import parse_record
+from len_bot.next.platform.onebot_audio import parse_record
 from len_bot.next.platform.onebot import OneBot
 
 
 def host_source(onebot):
     binding = {'provider': 'fixture', 'model': 'synthetic', 'context_window_tokens': 4096}
     return {"compaction": {"input_tokens": 2000},
-        'mode': 'isolated-multi', 'bot_qq': '90001', 'timezone': 'UTC', 'database': 'unused.db',
+        'mode': 'isolated-multi', 'bot_id': 'onebot:90001', 'timezone': 'UTC', 'database': 'unused.db',
         'delivery': 'onebot', 'onebot': onebot,
         'models': {
             'providers': {'fixture': {'api': 'openai-chat', 'base_url': 'http://127.0.0.1:9/v1',
@@ -25,7 +25,7 @@ def host_source(onebot):
             'roles': {'mind': binding,
                       'asr': {'provider': 'fixture', 'model': 'synthetic-audio'}},
         },
-        'scenes': {'group:80001': {'persona': 'unused-role'}},
+        'scenes': {'onebot:group:80001': {'persona': 'unused-role'}},
     }
 
 
@@ -60,18 +60,18 @@ async def test_configured_asr_accepts_wav_above_chat_message_limit(mode):
             config = HostConfig.model_validate_json(json.dumps(host_source({
                 'mode': mode, 'ws_url': f'ws://127.0.0.1:{port}',
             })))
-            async with OneBot(config.onebot, bot_qq=config.bot_qq,
+            async with OneBot(config.onebot, bot_id=config.bot_id,
                               on_event=lambda event: None, on_error=lambda error: None) as bot:
                 await request(bot, config)
     else:
         config = HostConfig.model_validate_json(json.dumps(host_source({
             'mode': mode, 'listen_host': '127.0.0.1', 'listen_port': 0,
         })))
-        async with OneBot(config.onebot, bot_qq=config.bot_qq,
+        async with OneBot(config.onebot, bot_id=config.bot_id,
                           on_event=lambda event: None, on_error=lambda error: None) as bot:
             port = bot.addresses[0][1]
             async with connect(f'ws://127.0.0.1:{port}', proxy=None, additional_headers={
-                'X-Self-ID': config.bot_qq, 'X-Client-Role': 'Universal',
+                'X-Self-ID': config.bot_id.split(':', 1)[1], 'X-Client-Role': 'Universal',
             }) as websocket:
                 async with asyncio.TaskGroup() as group:
                     group.create_task(peer(websocket))

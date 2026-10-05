@@ -1,7 +1,8 @@
 <script setup>
 import { onBeforeUnmount, ref } from 'vue'
 import { useAction } from '../../../composables/useResource.js'
-import ErrorNote from '../../components/ErrorNote.vue'
+import ErrorNote from '../../ui/ErrorNote.vue'
+import AdvancedFields from '../../ui/AdvancedFields.vue'
 
 const props = defineProps({ profile: { type: Object, required: true }, preview: { type: Function, required: true }, disabled: Boolean })
 const emit = defineEmits(['imported'])
@@ -22,7 +23,7 @@ async function load() {
   })
   if (!result) return
   emit('imported', result.profile)
-  done.value = '已载入表单，未保存角色。可先试聊，再明确保存采用。'
+  done.value = '已载入到表单，还没保存。可以先试聊，满意再保存。'
   file.value = null
 }
 async function download() {
@@ -31,22 +32,28 @@ async function download() {
   if (!result) return
   clearDownload()
   downloadUrl.value = URL.createObjectURL(new Blob([JSON.stringify(result.profile, null, 2) + '\n'], { type: 'application/json' }))
-  done.value = '草稿文件已准备好，点击下载链接保存。后续表单修改需重新生成；角色文件未改。'
+  done.value = '草稿文件准备好了，点下载链接保存。之后再改表单需要重新生成。'
 }
 </script>
+
 <template>
-  <details class="surface draft-file">
-    <summary>导入／导出角色草稿</summary>
-    <p class="muted">JSON 只包含本页的设定与样例，不改角色 ID、工具权限或素材。载入会替换当前表单，保存才采用；完整角色迁移使用角色包 ZIP。</p>
-    <v-file-input v-model="file" label="角色表单草稿 JSON" accept="application/json,.json" prepend-icon="" :disabled="disabled || action.busy.value" />
-    <div class="actions">
-      <v-btn variant="tonal" :disabled="!file || disabled || action.busy.value" @click="load">载入草稿到表单</v-btn>
-      <v-btn variant="text" :disabled="disabled || action.busy.value" @click="download">生成当前草稿文件</v-btn>
-      <a v-if="downloadUrl" :href="downloadUrl" download="persona-profile-draft.json">下载刚生成的草稿 JSON</a>
+  <AdvancedFields label="导入／导出角色草稿" class="draft-file">
+    <div class="body">
+      <p class="muted small">草稿只包含这一页的设定和样例。载入会替换当前表单，保存后才生效；整个角色搬家请用导入导出里的 ZIP。</p>
+      <v-file-input v-model="file" label="角色草稿 JSON" accept="application/json,.json" prepend-icon="" :disabled="disabled || action.busy.value" />
+      <div class="inline">
+        <v-btn variant="tonal" :disabled="!file || disabled || action.busy.value" @click="load">载入到表单</v-btn>
+        <v-btn variant="text" :disabled="disabled || action.busy.value" @click="download">生成当前草稿文件</v-btn>
+        <a v-if="downloadUrl" :href="downloadUrl" download="persona-profile-draft.json">下载草稿 JSON</a>
+      </div>
+      <v-progress-linear v-if="action.busy.value" indeterminate color="primary" />
+      <ErrorNote v-if="action.error.value" title="草稿没有处理成功" :error="action.error.value" />
+      <p v-if="done" class="muted small">{{ done }}</p>
     </div>
-    <v-progress-linear v-if="action.busy.value" indeterminate />
-    <ErrorNote v-if="action.error.value" title="草稿未完成" :error="action.error.value" />
-    <p v-if="done" class="muted">{{ done }}</p>
-  </details>
+  </AdvancedFields>
 </template>
-<style scoped>.draft-file[open]{display:grid;gap:12px}.draft-file summary{cursor:pointer}.draft-file p{margin:0}.actions{display:flex;gap:10px;flex-wrap:wrap}</style>
+<style scoped>
+.draft-file :deep(.advanced-grid){display:block}
+.body{display:grid;gap:var(--sp-3)}
+.body p{margin:0}
+</style>

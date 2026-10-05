@@ -21,7 +21,7 @@ class HostLifecycle:
 
     def require_restart(self) -> None:
         if not self.restartable or self.shutdown is None:
-            raise RuntimeError('当前直接运行宿主；使用 len-bot 启动器后可在面板重启')
+            raise RuntimeError('当前宿主不具备重启能力；请使用 len-bot 启动器运行')
         if self.intent == 'stop':
             raise RuntimeError('宿主正在停止')
 

@@ -188,7 +188,7 @@ class HostTrials:
                         'local': source.memory.local.model_copy(update={'directory': root / 'memory'}),
                         'ingest': None, 'summaries': False})
                 candidate = source.model_copy(update={'mode':'isolated', 'onebot':None, 'delivery':'simulated',
-                    'database':root / 'state.db', 'persona':root / 'persona-snapshot', 'owner_qq':None,
+                    'database':root / 'state.db', 'persona':root / 'persona-snapshot', 'owners':[],
                     'permissions': IdentitySettings(), 'panel':None, 'plugins':[], 'worker':None, 'tasks':source.tasks.model_copy(update={'enabled':False}),
                     'learning':None, 'proactive':None, 'transcribe_audio':False, 'memory':memory,
                     'web_read':None, 'web_search':None})

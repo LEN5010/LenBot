@@ -29,7 +29,7 @@ def test_permission_write_uses_selected_persona(tmp_path: Path, field: str) -> N
         (role / 'examples.yaml').write_text('[]\n', encoding='utf-8')
     binding = {'provider': 'fixture', 'model': 'unused', 'context_window_tokens': 8192}
     source = {"compaction": {"input_tokens": 2000},
-        'mode': 'isolated-multi', 'bot_qq': '90001', 'timezone': 'UTC',
+        'mode': 'isolated-multi', 'bot_id': 'onebot:90001', 'timezone': 'UTC',
         'database': 'state.sqlite3', 'delivery': 'simulated',
         'onebot': {'mode': 'forward_ws', 'ws_url': 'ws://127.0.0.1:9'},
         'panel': {'host': '127.0.0.1', 'port': 0, 'username': 'fixture',
@@ -37,7 +37,7 @@ def test_permission_write_uses_selected_persona(tmp_path: Path, field: str) -> N
         'models': {'providers': {'fixture': {'api': 'openai-chat', 'base_url': 'http://127.0.0.1:9/v1',
                                              'api_key': 'synthetic-unused'}},
                    'roles': {'mind': binding}},
-        'scenes': {'group:80001': {'persona': 'first'}, 'group:80002': {'persona': 'second'}},
+        'scenes': {'onebot:group:80001': {'persona': 'first'}, 'onebot:group:80002': {'persona': 'second'}},
     }
     (tmp_path / 'lenbot.config.json').write_text(json.dumps(source), encoding='utf-8')
     config = load_host_config(tmp_path)
@@ -54,12 +54,12 @@ def test_permission_write_uses_selected_persona(tmp_path: Path, field: str) -> N
                     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://testserver') as client:
                         assert (await client.post('/api/auth/login', json={
                             'username': 'fixture', 'password': 'synthetic-password'})).status_code == 200
-                        read_url = f'/api/host/{"capabilities" if field == "tools" else "skills"}?scene=group:80001'
-                        write_url = f'/api/host/scenes/group:80001/role-{field}'
+                        read_url = f'/api/host/{"capabilities" if field == "tools" else "skills"}?scene=onebot:group:80001'
+                        write_url = f'/api/host/scenes/onebot:group:80001/role-{field}'
                         selected = (await client.get(read_url)).json()[f'role_{field}']
                         assert selected['persona']['name'] == 'first'
                         assert selected['restart_required'] is False
-                        assert (await client.put('/api/host/settings/scenes/group:80001/persona',
+                        assert (await client.put('/api/host/settings/scenes/onebot:group:80001/persona',
                                                  json={'persona': 'second'})).status_code == 200
                         before = {name: (tmp_path / name / 'persona.yaml').read_bytes() for name in ('first', 'second')}
                         stale = await client.put(write_url, json={'directory': selected['directory'], field: 'all'})
@@ -71,7 +71,7 @@ def test_permission_write_uses_selected_persona(tmp_path: Path, field: str) -> N
                         saved = await client.put(write_url, json={'directory': current['directory'], field: 'all'})
                         assert saved.status_code == 200, saved.text
                         assert saved.json()['persona']['name'] == 'second'
-                        assert saved.json()['affected_scenes'] == ['group:80001', 'group:80002']
+                        assert saved.json()['affected_scenes'] == ['onebot:group:80001', 'onebot:group:80002']
                         assert getattr(load_persona(tmp_path / 'first'), field) == []
                         assert getattr(load_persona(tmp_path / 'second'), field) == 'all'
                 finally:

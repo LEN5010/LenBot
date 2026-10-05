@@ -29,7 +29,7 @@ def register_host_audio(app: FastAPI, *, runtime, user) -> None:
         return {"items": rows[:limit], "next_offset": offset + limit if len(rows) > limit else None,
                 "automatic": config.transcribe_audio, "timezone": config.timezone,
                 "limits": config.audio.model_dump(mode="json"),
-                "onebot_ws_frame_bytes": config.onebot.max_frame_bytes,
+                "onebot_ws_frame_bytes": None if config.onebot is None else config.onebot.max_frame_bytes,
                 "available": config.models.roles.asr is not None and service.platform is not None,
                 "worker_error": service.errors.get(scene), "stopping": service.closing}
 

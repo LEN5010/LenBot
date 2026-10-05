@@ -9,7 +9,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from ...config import HostConfig, _read_root
-from .settings import _body, _prepare, _read_saved
+from .settings import _body
+from ...configuration.editing import _prepare, _read_saved
 from ...configuration.mcp import SERVICE_NAME
 from ...runtime.network import NetworkRuntime
 

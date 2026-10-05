@@ -15,17 +15,3 @@ services:
     cpus: 2
     mem_limit: 3g
     pids_limit: 256
-  openviking:
-    image: lenbot-openviking:memory-forget
-    container_name: lenbot-openviking
-    restart: 'no'
-    ports:
-    - 127.0.0.1:1933:1933
-    volumes:
-    - ../../state/services/openviking:/service
-    user: '501:20'
-    cpus: 2
-    mem_limit: 4g
-    pids_limit: 256
-    depends_on:
-    - embeddings

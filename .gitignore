@@ -75,6 +75,8 @@ node_modules/
 # Local business state, personal role packages and evaluation runs
 /state/
 /plugins/
+/plugin-installations/
+/.plugin-candidates/
 /plugin-data/
 /personas/
 /data/eval/runs/
@@ -86,3 +88,8 @@ node_modules/
 
 # Local task deliveries shared read-only with OneBot
 /file_assets/
+
+# Public replay example: local configuration and results
+/examples/replay/lenbot.config.json
+/examples/replay/chat.sqlite3*
+/examples/replay/runs/

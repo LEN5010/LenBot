@@ -1,6 +1,10 @@
 name = "gscore_adapter"
 version = "1.0.0"
 interface = 1
+requires_lenbot = ">=0.1,<1"
+requires_python = ">=3.13"
+platforms = ["linux", "darwin", "win32"]
+reload = "plugin"
 authors = ["LEN5010"]
 license = "AGPL-3.0-or-later"
 description = "/gs桥接独立GSUID Core；图文经宿主发送，/gs连接显式重连，gscore_status读取状态。"

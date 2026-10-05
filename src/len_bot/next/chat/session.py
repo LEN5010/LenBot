@@ -260,11 +260,11 @@ class Chat:
                 if self.expression_service is not None and scene in self.expression_service.scenes:
                     recent = self.store.recent_context_messages(scene, limit=8)
                     query = "\n".join(self.context.render(message) for message in recent
-                                      if not message.is_self and message.sender.uid not in self.config.attention.other_bot_qqs)
+                                      if not message.is_self and message.sender.uid not in self.config.attention.other_bot_ids)
                     if query:
                         selected = await self.expression_service.select(
                             scene, query, turn_id=turn_id, direct=direct,
-                            exclude_uids=(self.config.bot_qq, *self.config.attention.other_bot_qqs))
+                            exclude_uids=(self.config.bot_id, *self.config.attention.other_bot_ids))
                         if selected:
                             self.expression_ids = [item["id"] for item in selected]
                             learned = Template((PROMPTS / "next_learned_expressions.md").read_text()).substitute(

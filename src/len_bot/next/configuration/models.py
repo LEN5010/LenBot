@@ -47,7 +47,7 @@ class Binding(BaseModel):
     max_output_tokens: int = Field(default=1024, gt=0)
     timeout_seconds: float = Field(default=60.0, gt=0, allow_inf_nan=False)
     reasoning_effort: str | None = None
-    history_policy: Literal["native", "antigravity-chat"] = "native"
+    history_policy: Literal["native", "omit-reasoning"] = "native"
 
     @field_validator("provider", "model")
     @classmethod

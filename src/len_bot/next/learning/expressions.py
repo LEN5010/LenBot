@@ -207,7 +207,7 @@ class ExpressionLearner:
         return True
 
     def _exclude_uids(self, scene: str) -> tuple[str, ...]:
-        return (self.config.bot_qq, *self.config.scenes[scene].attention.other_bot_qqs)
+        return (self.config.bot_id, *self.config.scenes[scene].attention.other_bot_ids)
 
     def _scan(self, scene: str, after: int, *, through: int | None = None, limit: int | None = None
               ) -> tuple[int, list[tuple[int, ChatMessage, float]]]:

@@ -34,7 +34,7 @@ def _chat_inputs(tmp_path, *, tools: str | list[str], web_read: dict | None):
     (persona / "boundaries.md").write_text("仅限测试。", encoding="utf-8")
     (persona / "examples.yaml").write_text("[]\n", encoding="utf-8")
     (root / "lenbot.config.json").write_text(json.dumps({"compaction": {"input_tokens": 2000},
-        "mode": "isolated", "scene": "group:80001", "bot_qq": "90001",
+        "mode": "isolated", "scene": "onebot:group:80001", "bot_id": 'onebot:90001',
         "timezone": "UTC", "database": "data/web-permissions.sqlite3",
         "persona": "persona", "web_read": web_read,
         "models": {
@@ -58,25 +58,25 @@ async def test_saved_web_document_is_readable_only_in_its_scene(tmp_path):
     group_secret = "其他群的私有正文标记。"
     private_secret = "私聊的私有正文标记。"
     with Store(tmp_path / "web-permissions.sqlite3") as store:
-        local_id = store.save_web_page("group:80001", _page(local_content))
-        group_id = store.save_web_page("group:80002", _page(group_secret))
-        private_id = store.save_web_page("private:80003", _page(private_secret))
+        local_id = store.save_web_page("onebot:group:80001", _page(local_content))
+        group_id = store.save_web_page("onebot:group:80002", _page(group_secret))
+        private_id = store.save_web_page("onebot:private:80003", _page(private_secret))
 
-        assert store.web_page("group:80001", local_id) == _page(local_content)
-        assert store.web_page("group:80001", group_id) is None
-        assert store.web_page("group:80001", private_id) is None
-        assert store.web_page("group:80001", 999_999) is None
+        assert store.web_page("onebot:group:80001", local_id) == _page(local_content)
+        assert store.web_page("onebot:group:80001", group_id) is None
+        assert store.web_page("onebot:group:80001", private_id) is None
+        assert store.web_page("onebot:group:80001", 999_999) is None
 
         settings = WebReadSettings()
         result = await execute_web_read(
-            store, "group:80001", settings, WebReadArguments(document=local_id, offset=0)
+            store, "onebot:group:80001", settings, WebReadArguments(document=local_id, offset=0)
         )
         assert local_content in result
 
         for document in (group_id, private_id, 999_999):
             with pytest.raises(ValueError) as failure:
                 await execute_web_read(
-                    store, "group:80001", settings,
+                    store, "onebot:group:80001", settings,
                     WebReadArguments(document=document, offset=0),
                 )
             assert group_secret not in str(failure.value)

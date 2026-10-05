@@ -40,7 +40,7 @@ class Frame(BaseModel):
 
     @property
     def scene(self) -> str:
-        return ('group:' if self.target_type == 'group' else 'private:') + self.target_id
+        return ('onebot:group:' if self.target_type == 'group' else 'onebot:private:') + self.target_id
 
 
 def parse_frame(raw: str | bytes) -> Frame:

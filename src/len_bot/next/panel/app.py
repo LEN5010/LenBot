@@ -39,6 +39,7 @@ from .routes.jargon import register_host_jargon
 from .routes.stickers import register_host_stickers
 from .routes.reply_effects import register_host_reply_effects
 from ..runtime.network import NetworkRuntime
+from ..platform.platform_tools import scene_title
 from .auth import changes_socket, install_panel_auth
 
 
@@ -47,7 +48,9 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
         raise ValueError("Multi-scene host panel requires panel configuration in lenbot.config.json")
 
     runtime.budget.trials_root = root / ".runtime" / "chat-tests"
-    write_lock = asyncio.Lock()
+    if runtime.management is None:
+        runtime.bind_management(root, HostLifecycle() if lifecycle is None else lifecycle)
+    write_lock = runtime.config_write_lock
     trials = HostTrials(config, runtime, root, write_lock=write_lock)
 
     @asynccontextmanager
@@ -72,7 +75,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
 
     user = install_panel_auth(app, config.panel, on_logout=logged_out)
     register_host_restart(app, root=root, running=config, runtime=runtime, trials=trials,
-                          lifecycle=HostLifecycle() if lifecycle is None else lifecycle,
+                          lifecycle=runtime.management.lifecycle,
                           user=user, write_lock=write_lock)
     register_host_operations(app, runtime=runtime, user=user)
     register_host_trials(app, trials, user)
@@ -106,14 +109,14 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
     @app.get("/api/host/state")
     async def state(_: str = Depends(user)):
         return {
-            "bot_qq": config.bot_qq,
+            "bot_id": config.bot_id,
             "timezone": config.timezone,
             "delivery": config.delivery,
             "connection": {
-                "mode": config.onebot.mode,
-                "connected": runtime.platform.connected,
+                "mode": "simulated" if config.onebot is None else config.onebot.mode,
+                "connected": False if runtime.platform is None else runtime.platform.connected,
                 "status": runtime.status,
-                "addresses": runtime.platform.addresses,
+                "addresses": [] if runtime.platform is None else runtime.platform.addresses,
                 "last_error": runtime.last_runtime_error or runtime.last_platform_error,
                 "can_connect": runtime.can_connect,
                 "accepting": runtime.accepting,
@@ -139,6 +142,27 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
                  "latest_error": item["errors"][0] if item["errors"] else None} for item in runtime.mcp.state()
             ],
         }
+
+    # Group names and private nicknames come from OneBot once per process; they
+    # only label scenes in the panel and are not stored.
+    titles: dict[str, str] = {}
+
+    @app.get("/api/host/scene-titles")
+    async def scene_titles(_: str = Depends(user)):
+        missing = [scene for scene in config.scenes if scene not in titles]
+        if runtime.platform is None or not runtime.platform.connected:
+            missing = []
+        results = await asyncio.gather(*(scene_title(scene, runtime.platform.call) for scene in missing),
+                                       return_exceptions=True)
+        errors = {}
+        for scene, result in zip(missing, results):
+            if isinstance(result, Exception):
+                errors[scene] = f"{type(result).__name__}: {result}"
+            elif isinstance(result, BaseException):
+                raise result
+            else:
+                titles[scene] = result
+        return {"titles": {scene: titles[scene] for scene in config.scenes if scene in titles}, "errors": errors}
 
     @app.post("/api/host/connection/connect", status_code=202)
     async def connect(_: str = Depends(user)):
@@ -169,7 +193,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
         return {
             "scene": scene,
             "timezone": config.scene_timezone(scene),
-            "bot_qq": config.bot_qq,
+            "bot_id": config.bot_id,
             "persona": {"id": chat.persona.id, "name": chat.persona.name},
             "delivery": config.delivery,
             "voice_mode": config.scenes[scene].voice_mode,

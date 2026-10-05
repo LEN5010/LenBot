@@ -1,7 +1,7 @@
-"""Background extraction of actual stored messages into the selected memory backend.
+"""Background extraction of actual stored messages into local memory.
 
 The separate processing database owns successful positions and real call/task
-receipts. A service commit receipt is not a completed extraction.
+results.
 """
 
 from __future__ import annotations
@@ -16,8 +16,7 @@ from typing import TYPE_CHECKING, Sequence
 
 from .service import MemoryService
 from .extract import extract_local
-from .local import LocalMemory, LocalMemoryChange
-from .openviking import OpenVikingMemory
+from .local import LocalMemoryChange
 from ..models.client import ChatModel
 from ..models.slots import ModelSlots
 from ..platform.messages import ChatMessage
@@ -36,16 +35,14 @@ def _error_text(error: BaseException) -> str:
 
 
 class MemoryIngestor:
-    """One worker per configured scene; request/retry/refresh only signal work."""
+    """One worker per configured scene; request/retry only signal work."""
 
     def __init__(self, config: SharedConfig, store: Store, memory: MemoryService,
-                 scenes: Sequence[str], *, model: ChatModel | None,
+                 scenes: Sequence[str], *, model: ChatModel,
                  slots: ModelSlots | None = None):
         settings = memory.settings.ingest
         if settings is None:
             raise ValueError("memory ingestion is not configured")
-        if isinstance(memory.backend, LocalMemory) and model is None:
-            raise ValueError("local memory ingestion requires models.roles.memory")
         self.config = config
         self.store = store
         self.memory = memory
@@ -56,7 +53,6 @@ class MemoryIngestor:
         self.jobs = memory.jobs
         self._wake = {scene: asyncio.Event() for scene in self.scenes}
         self._force: set[str] = set()
-        self._refresh: set[str] = set()
         self._workers: dict[str, asyncio.Task[None]] = {}
         self.errors: dict[str, BaseException] = {}
         for scene in self.scenes:
@@ -68,15 +64,6 @@ class MemoryIngestor:
                 raise ValueError(
                     f"scene {scene}: unfinished {latest['backend']} memory job "
                     f"{latest['id']} cannot be processed by {memory.settings.backend}")
-            if latest["backend"] == "openviking":
-                task_id = latest["details"].get("task_id")
-                if latest["status"] == "submitted" and task_id:
-                    memory.pending_native_tasks[scene] = task_id
-                elif (latest["status"] in {"failed", "interrupted"}
-                      and latest["details"].get("native_phase") == "submitting"
-                      and not task_id):
-                    # The commit may have happened, even without a receipt here.
-                    memory.pending_native_tasks[scene] = "submission outcome unknown"
 
     def start(self) -> None:
         if self._workers:
@@ -108,10 +95,8 @@ class MemoryIngestor:
         self._wake[scene].set()
 
     def retry(self, scene: str) -> dict:
-        """Explicitly reprocess the same failed local source range, never OV."""
+        """Explicitly reprocess the same failed local source range."""
         self._scene(scene)
-        if not isinstance(self.memory.backend, LocalMemory):
-            raise ValueError("OpenViking ingestion must refresh its original task, not rearchive messages")
         latest = self.jobs.latest(scene)
         if latest is None or latest["backend"] != "local" or latest["status"] not in {"failed", "interrupted"}:
             raise ValueError("no failed or interrupted local memory range to retry")
@@ -120,20 +105,6 @@ class MemoryIngestor:
         self.jobs.details(job)
         self._wake[scene].set()
         return job
-
-    def refresh(self, scene: str) -> None:
-        """Re-read an existing OV task; never create another service session."""
-        self._scene(scene)
-        if not isinstance(self.memory.backend, OpenVikingMemory):
-            raise ValueError("only OpenViking has native extraction tasks")
-        latest = self.jobs.latest(scene)
-        if (latest is None or latest["backend"] != "openviking"
-                or latest["status"] not in {"submitted", "failed"}
-                or not latest["details"].get("task_id")):
-            raise ValueError("no OpenViking task reference is available to refresh")
-        self._refresh.add(scene)
-        self.memory.pending_native_tasks[scene] = latest["details"]["task_id"]
-        self._wake[scene].set()
 
     async def _worker(self, scene: str) -> None:
         try:
@@ -159,22 +130,8 @@ class MemoryIngestor:
                 raise ValueError(f"scene {scene}: unfinished {latest['backend']} job blocks backend change")
             if latest["status"] == "queued":
                 self._force.discard(scene)
-                await self._run(scene, latest)
+                await self._run_local(scene, latest)
                 return True
-            if latest["status"] == "submitted":
-                self._force.discard(scene)
-                refresh = scene in self._refresh
-                self._refresh.discard(scene)
-                if latest["error"] is None or refresh:
-                    await self._poll_native(scene, latest)
-                    return False
-                return False
-            if (latest["status"] == "failed" and scene in self._refresh
-                    and latest["details"].get("task_id")):
-                self._force.discard(scene)
-                self._refresh.discard(scene)
-                await self._poll_native(scene, latest)
-                return False
             if latest["status"] in {"failed", "interrupted", "running"}:
                 self._force.discard(scene)
                 return False
@@ -202,14 +159,8 @@ class MemoryIngestor:
         job = self.jobs.create(scene, self.memory.settings.backend, rows[0][0], rows[-1][0])
         job["details"]["message_count"] = len(rows)
         self.jobs.details(job)
-        await self._run(scene, job)
+        await self._run_local(scene, job)
         return True
-
-    async def _run(self, scene: str, job: dict) -> None:
-        if isinstance(self.memory.backend, LocalMemory):
-            await self._run_local(scene, job)
-        else:
-            await self._submit_native(scene, job)
 
     def _selected_input(self, scene: str, job: dict) -> list[tuple[int, ChatMessage, float, str | None]]:
         """Read under the scene write lock, after any earlier forget has finished."""
@@ -303,111 +254,6 @@ class MemoryIngestor:
                 job["details"]["summaries"] = await self.memory.summarizer.refresh_after_writes(scene, written)
             self.jobs.details(job)
 
-    async def _submit_native(self, scene: str, job: dict) -> None:
-        try:
-            async with self.memory.write_lock(scene):
-                rows = self._selected_input(scene, job)
-                if not rows:
-                    return
-                job["details"]["native_phase"] = "submitting"
-                self.jobs.status(job, "running")
-                self.memory.pending_native_tasks[scene] = "submitting"
-                async with asyncio.timeout(self.settings.timeout_seconds):
-                    receipt = await self.memory.backend.ingest(
-                        scene, [message for _, message, _, _ in rows],
-                        persona_ids=[persona_id for _, _, _, persona_id in rows])
-        except asyncio.CancelledError:
-            self.jobs.status(job, "failed", "Process stopped while OpenViking submission outcome was unknown")
-            raise
-        except Exception as error:
-            self.jobs.status(job, "failed", _error_text(error))
-            return
-        job["details"]["receipt"] = asdict(receipt)
-        if receipt.status == "skipped":
-            job["details"]["native_phase"] = "skipped"
-            self.jobs.status(job, "complete")
-            self.memory.pending_native_tasks.pop(scene, None)
-            return
-        job["details"]["task_id"] = receipt.task_id
-        job["details"]["native_phase"] = "submitted"
-        self.jobs.status(job, "submitted")
-        self.memory.pending_native_tasks[scene] = receipt.task_id
-
-    async def _poll_native(self, scene: str, job: dict) -> None:
-        task_id = job["details"].get("task_id")
-        if not task_id:
-            raise ValueError(f"OpenViking submitted job {job['id']} has no task reference")
-        self.memory.pending_native_tasks[scene] = task_id
-        try:
-            async with self.memory.write_lock(scene):
-                task = await self.memory.backend.ingest_status(scene, task_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            # Keep the accepted receipt and require an explicit refresh after
-            # this failed observation; do not resubmit or call it complete.
-            self.jobs.status(job, "submitted", _error_text(error))
-            return
-        job["details"]["native_task"] = asdict(task)
-        if task.status == "completed":
-            job["details"]["native_phase"] = "completed"
-            self.jobs.status(job, "complete")
-            self._refresh.discard(scene)
-            self.memory.pending_native_tasks.pop(scene, None)
-            if self.memory.settings.summaries and task.memories_extracted_total != 0:
-                await self._refresh_native_overview(scene, job)
-        elif task.status in {"failed", "cancelled"}:
-            job["details"]["native_phase"] = task.status
-            self.jobs.status(job, "failed", task.error or f"OpenViking task {task.status}")
-            self._refresh.discard(scene)
-            self.memory.pending_native_tasks.pop(scene, None)
-        else:
-            self.jobs.status(job, "submitted")
-
-    async def _refresh_native_overview(self, scene: str, job: dict) -> None:
-        """A derived-content operation; its failure never reopens successful extraction."""
-        refresh = {"mode": "semantic_and_vectors", "recursive": True,
-                   "wait": True, "started": self.store.now(), "directories": [], "requests": [],
-                   "complete": False}
-        job["details"]["overview_refresh"] = refresh
-        self.jobs.details(job)
-        try:
-            async with self.memory.write_lock(scene):
-                directories = await self.memory.backend.memory_directories(scene)
-                refresh["directories"] = list(directories)
-                self.jobs.details(job)
-                for path in directories:
-                    request = {"path": path, "started": self.store.now()}
-                    refresh["requests"].append(request)
-                    self.jobs.details(job)
-                    try:
-                        result = await self.memory.backend.refresh_overview(scene, path)
-                        request["result"] = result.model_dump()
-                        request["complete"] = result.failed_records == 0 and result.unsupported_records == 0
-                    except asyncio.CancelledError:
-                        request["error"] = "Process stopped while native overview outcome was unknown"
-                        raise
-                    except Exception as error:
-                        request["error"] = _error_text(error)
-                        raise
-                    finally:
-                        request["ended"] = self.store.now()
-                        self.jobs.details(job)
-                    if not request["complete"]:
-                        refresh["complete"] = False
-                        break
-                else:
-                    refresh["complete"] = True
-        except asyncio.CancelledError:
-            refresh["error"] = "Process stopped while native overview outcome was unknown"
-            raise
-        except Exception as error:
-            refresh["error"] = _error_text(error)
-            LOG.exception("Native memory overview refresh failed for %s", scene)
-        finally:
-            refresh["ended"] = self.store.now()
-            self.jobs.details(job)
-
 
 @asynccontextmanager
 async def open_memory_ingestor(config: SharedConfig, store: Store,
@@ -417,16 +263,8 @@ async def open_memory_ingestor(config: SharedConfig, store: Store,
     if memory is None or memory.settings.ingest is None:
         yield None
         return
-    if isinstance(memory.backend, LocalMemory):
-        async with ChatModel(config.model_settings("memory")) as model:
-            ingestor = MemoryIngestor(config, store, memory, scenes, model=model, slots=slots)
-            ingestor.start()
-            try:
-                yield ingestor
-            finally:
-                await ingestor.close()
-    else:
-        ingestor = MemoryIngestor(config, store, memory, scenes, model=None, slots=slots)
+    async with ChatModel(config.model_settings("memory")) as model:
+        ingestor = MemoryIngestor(config, store, memory, scenes, model=model, slots=slots)
         ingestor.start()
         try:
             yield ingestor

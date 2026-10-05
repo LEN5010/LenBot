@@ -4,7 +4,10 @@ import { tasksApi } from '../../api/tasks.js'
 import { useAction } from '../../../composables/useResource.js'
 import { developerDetails } from '../../../composables/useDeveloperMode.js'
 import { formatTime } from '../../time.js'
-import ErrorNote from '../../components/ErrorNote.vue'
+import Panel from '../../ui/Panel.vue'
+import ErrorNote from '../../ui/ErrorNote.vue'
+import LoadMore from '../../ui/LoadMore.vue'
+import CodeBlock from '../../ui/CodeBlock.vue'
 import { eventLabel } from './taskLabels.js'
 
 const props = defineProps({
@@ -38,42 +41,38 @@ function parts(record) {
 </script>
 
 <template>
-  <section class="surface events">
-    <h2>过程</h2>
+  <Panel title="过程">
     <ErrorNote v-if="reading.error.value" title="读取这一步失败" :error="reading.error.value" />
-    <p v-if="!rows.length" class="muted">还没有记录</p>
-    <ol>
+    <p v-if="!rows.length" class="muted">还没有记录。</p>
+    <ol class="events">
       <li v-for="event in rows" :key="event.id">
-        <button type="button" class="line" @click="open(event)">
-          <span class="muted">{{ formatTime(event.created, timezone) }}</span>
+        <button type="button" class="line" :aria-expanded="Boolean(full[event.id])" @click="open(event)">
+          <span class="muted small">{{ formatTime(event.created, timezone) }}</span>
           <span>{{ eventLabel(event.event_type) }}{{ event.tool_name ? ` · ${event.tool_name}` : '' }}</span>
         </button>
         <div v-if="full[event.id]" class="body">
           <template v-for="(part, index) in parts(full[event.id])" :key="index">
-            <pre v-if="part.type === 'text'">{{ part.text }}</pre>
+            <CodeBlock v-if="part.type === 'text'" :text="part.text" />
             <img v-else :src="`data:${part.mimeType};base64,${part.data}`" alt="任务里的图片" loading="lazy" />
           </template>
           <ErrorNote v-if="full[event.id].body.error" title="这一步出错了" :error="String(full[event.id].body.error)" />
-          <p v-if="!parts(full[event.id]).length && !full[event.id].body.error && !developerDetails" class="muted">这一步没有文字内容</p>
-          <pre v-if="developerDetails" class="raw">{{ JSON.stringify(full[event.id], null, 2) }}</pre>
+          <p v-if="!parts(full[event.id]).length && !full[event.id].body.error && !developerDetails" class="muted small">这一步没有文字内容</p>
+          <CodeBlock v-if="developerDetails" :text="JSON.stringify(full[event.id], null, 2)" />
         </div>
       </li>
     </ol>
-    <v-btn v-if="next !== null" size="small" variant="text" :loading="more.busy.value" @click="loadMore">显示更多</v-btn>
+    <LoadMore v-if="next !== null" :loading="more.busy.value" @more="loadMore" />
     <ErrorNote v-if="more.error.value" title="读取更多记录失败" :error="more.error.value" />
-  </section>
+  </Panel>
 </template>
 
 <style scoped>
-.events{display:grid;gap:8px}
-ol{list-style:none;margin:0;padding:0;display:grid}
-li{border-bottom:1px solid var(--line)}
-li:last-child{border-bottom:0}
-.line{display:grid;grid-template-columns:110px 1fr;gap:12px;width:100%;text-align:left;padding:8px 0;background:none;border:0;cursor:pointer;color:inherit;font:inherit}
-.line:hover span:last-child{color:var(--primary)}
-.body{display:grid;gap:8px;padding:0 0 10px 122px}
-.body pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font-size:13px}
-.body img{max-width:100%;height:auto;border-radius:8px}
-.raw{background:var(--code-bg);padding:8px;border-radius:8px}
-@media(max-width:600px){.body{padding-left:0}}
+.events{list-style:none;margin:0;padding:0;display:grid}
+.events li + li{border-top:1px solid var(--line)}
+.line{display:grid;grid-template-columns:110px 1fr;gap:var(--sp-3);width:100%;text-align:left;padding:var(--sp-2) var(--sp-1);background:none;border:0;border-radius:var(--radius-sm);cursor:pointer;color:inherit;font:inherit}
+.line:hover{background:var(--hover)}
+.body{display:grid;gap:var(--sp-2);padding:0 0 var(--sp-3) 122px}
+.body p{margin:0}
+.body img{max-width:100%;height:auto;border-radius:var(--radius)}
+@media(max-width:600px){.body{padding-left:0}.line{grid-template-columns:1fr}}
 </style>

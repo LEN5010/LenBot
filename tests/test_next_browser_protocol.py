@@ -40,7 +40,7 @@ def test_browser_native_frames():
             response_mode = 'mismatch'
             with pytest.raises(ValueError, match='native RPC id'):
                 await client.start()
-    with tempfile.TemporaryDirectory(prefix='lb-bsk-', dir='/private/tmp') as directory:
+    with tempfile.TemporaryDirectory(prefix='lb-bsk-', dir='/tmp') as directory:
         asyncio.run(exercise(Path(directory)))
 
 
@@ -73,7 +73,7 @@ def test_human_wait_uses_native_deadline_not_normal_rpc_deadline():
             assert reply['outcome'] == 'completed'
             assert [request['method'] for request in seen] == ['tool.request_help']
             assert seen[0]['params']['session_id'] == 'fixture-session'
-    with tempfile.TemporaryDirectory(prefix='lb-bsk-wait-', dir='/private/tmp') as directory:
+    with tempfile.TemporaryDirectory(prefix='lb-bsk-wait-', dir='/tmp') as directory:
         asyncio.run(exercise(Path(directory)))
 
 

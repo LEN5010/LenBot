@@ -102,7 +102,8 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                 "registered": name in chat.toolset.allowed_tool_names,
                 "discovered": name in chat.toolset.discovered_tools,
                 "deferred": name in DEFERRED_NAMES,
-                "reasons": tool_unavailable_reasons(chat.config, chat.persona, name),
+                "reasons": tool_unavailable_reasons(chat.config, chat.persona, name,
+                                                    host_management=chat.toolset.host_management is not None),
             })
         for tool in (([] if runtime.plugins is None else runtime.plugins.tools_for(scene))
                      + ([] if runtime.mcp is None else runtime.mcp.tools_for(scene))):
@@ -191,7 +192,7 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
         persona = load_persona(path).model_copy(update={field: value})
         affected = [key for key, value in saved.scenes.items() if value.persona == path]
         for key in affected:
-            build_tools(saved.scene_config(key), persona, platform=saved.delivery == "onebot")
+            build_tools(saved.scene_config(key), persona, platform=saved.delivery == "onebot", host_management=True)
             if saved.worker is not None:
                 select_skills(scene_skill_catalog(saved, key), persona.skills)
         metadata = persona.model_dump(exclude={"voice", "boundaries", "examples", "knowledge"})

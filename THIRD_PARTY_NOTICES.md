@@ -1,41 +1,53 @@
-# Third-party components
+# 第三方组件与来源
 
-LenBot 原创代码采用 AGPL-3.0-only。第三方依赖和独立服务保留各自许可证，不能把它们统一改称为 AGPL。发布源码含根目录 LICENSE 和 NOTICE；镜像另附构建时实际安装依赖的元数据与可取得的原许可证文件。
+LenBot 的原创代码采用 AGPL-3.0-only，插件模板和计数示例采用 GPL-3.0-only，见 [NOTICE](NOTICE)。第三方依赖和独立服务保留各自的许可证，不因被 LenBot 使用而改成 AGPL 或 GPL。
 
-## 构建依赖资料
+## 依赖的许可证清单
 
-- Python 清单来自锁定构建环境的已安装分发元数据，不从包名猜许可证；分别保留 License-Expression、License、许可证分类及实际文件。
-- 前端清单来自 npm ci 的实际 node_modules，包含可能只参与构建而未打入面板的包；清单不是逐模块打包归属证明。
-- 元数据没有许可证或许可文件时明确记录缺项，不把空值解释为公共领域或自动补许可证。发布者需核对这些缺项与实际分发内容。
-- 基础镜像、操作系统包、浏览器、容器镜像内的独立工具还有各自说明，不声称以下资料已经覆盖整台机器的所有软件。
-- 当前 `docker/next-worker` 配方也保留项目声明、实际安装的 Python 分发、全局 npm 工具和独立浏览器包元数据/许可文件；浏览器发行物、系统包及未取得的声明不由这些清单替代。构建配方已经接线不代表镜像已经构建或来源全部核对完毕。
+构建时会自动收集实际安装的依赖的许可证资料，随发行物一起分发：
 
-宿主镜像通过 Debian 的 `docker-cli` 包提供 Docker 客户端；发行物保留该系统包安装的 `/usr/share/doc/docker-cli/copyright`，不把客户端声明成宿主原创代码，也不在宿主内安装 daemon。
-
-## 设计参考与独立服务
-
-| 项目 | 在本项目中的用途 | 是否直接随宿主分发该项目源码 |
+| 位置 | 内容 | 怎么查看 |
 |---|---|---|
-| MaiBot | 聊天、表达学习及注意力的设计参考 | 本条不声明引入其源码；需逐份保留实际复制代码的版权 |
-| AstrBot | 工具循环、插件与管理方式的设计参考 | 本条不声明引入其源码；需逐份保留实际复制代码的版权 |
-| OpenViking | 可选原生记忆 HTTP 服务，宿主实现客户端 | 服务独立部署；源码包附[定点扩展补丁](deploy/current/memory-forget.md)，不含完整上游检出 |
-| Pi | 可选任务容器中的工作进程，使用其原生协议 | 单独安装，依任务镜像的实际依赖保留其许可证 |
-| BrowserSkill | 可选账号浏览守护进程、浏览器扩展与文件助手 | 专用环境独立部署；源码包附[远程文件扩展补丁和配方](deploy/current/browserskill-files.md)，不含完整上游检出 |
+| 面板 | `npm ci` 后实际 `node_modules` 里各包的元数据和许可证原文 | 已部署的面板访问 `/assets/licenses/frontend/index.json`，再按清单里的相对路径查看原文 |
+| 宿主镜像 | Python 依赖、面板依赖的许可证资料 | 镜像内 `/usr/share/lenbot/licenses/` |
+| 任务镜像 | 项目声明、实际安装的 Python 包、全局 npm 工具和浏览器包的许可证资料 | 镜像内对应的许可证目录 |
 
-源码引用、独立服务使用和直接复制代码不是同一件事。这里没有把研究仓库的整个 LICENSE 当成已完成全部来源核对；实际复制片段和随包第三方材料仍需发布前逐项确认。用户个人角色、知识、聊天及插件内容不随通用框架默认发布，也不因根许可证自动获得再分发许可。
+说明：
 
-## 表达提示选段
+- 清单读取的是各包自己声明的元数据（License-Expression、License、许可证分类和随包文件），不按包名推测。
+- 包没有声明许可证或没有许可证文件时，清单会明确记为缺项，不当作公共领域，也不替它补许可证。
+- 面板清单包含只在构建时使用、没有打进最终 JavaScript 的包。
+- 镜像里的操作系统包、浏览器和其他独立工具有各自的版权说明，这些清单不能覆盖整台机器上的所有软件。宿主镜像里的 Docker 客户端来自 Debian 的 `docker-cli` 包，版权说明保留在 `/usr/share/doc/docker-cli/copyright`。
 
-`next_response_choice.md` 与 `next_expression_principles.md` 使用维护者提供的「智脑 Z（10.1）」与「NVWA Cosmos TT」预设选段，并做角色称呼及群聊语境的字面替换；实际位置、采用段落与替换清单见[表达材料来源](developer/expression-materials.md)。这些选段不标成 LenBot 原创文本。提供的预设顶层没有独立许可证字段，仓库不为其推定或改写许可；发行资料需按实际取得的授权保留相应来源和许可说明。完整预设、研究原件与其中脚本未打入宿主。
+## 面板随附的资料
 
-## 面板实际随包的资料
+- **图标**：使用 `@mdi/js` 7.4.47 的 SVG 图标和 Vuetify 的 `mdi-svg` 图标集，不分发图标字体。`@mdi/js` 的原 LICENSE（Pictogrammers Free License：图标采用 Apache 2.0，代码采用 MIT）随包保留。
+- **字体**：样式里只列出字体族名称，使用系统已安装的字体，不下载也不打包字体文件。
 
-- 面板使用锁定的 `@mdi/js` 7.4.47 SVG 图标及 Vuetify 的 `mdi-svg` 图标集，不安装或分发 `@mdi/font` 字体。保留该包原 `LICENSE`（Pictogrammers Free License，分别说明图标的 Apache 2.0 和代码的 MIT 许可），不将整个图标包改称 MIT 或 AGPL。
-- `npm run build` 从本次实际 `node_modules` 收集包元数据与原许可/版权文件，放入面板 `assets/licenses/frontend/`，随源码包与 wheel 原字节分发。已部署面板可在 `/assets/licenses/frontend/index.json` 查清单，再按清单相对路径查看原文。包含构建期包不表示它们都被打进运行 JavaScript，缺项仍明确保留。
-- 当前 CSS 的 Inter、系统中文字体等是本机字体族选择，不含远程字体下载或打包字体文件；不能把 CSS 中出现字体名视作字体再分发。
+## 独立服务
 
-旧核心退役时已一并移除旧内置日历插件及其 Sarasa 字体，当前源码包与 wheel 均不再携带这些材料。旧版本的原件与许可仍可从版本历史核对；删除整份材料不改变其原有许可。
+下面这些服务由用户单独安装和运行，LenBot 只通过它们的接口连接：
 
-## 源码与许可证获取
+| 项目 | 用途 | 说明 |
+|---|---|---|
+| [Pi](https://github.com/earendil-works/pi) | 后台任务容器里的工作进程 | 任务镜像安装 npm 包 `@earendil-works/pi-coding-agent`，许可证资料随任务镜像保留 |
+| BrowserSkill | 账号浏览的守护进程、浏览器扩展和文件助手 | 独立部署；源码包只附带[远程文件补丁和配方](deploy/current/browserskill-files.md)，不含完整上游代码 |
+| OneBot v11 实现 | 登录 QQ、收发消息 | 由用户自选并单独运行 |
+| [GSUID Core](https://github.com/Genshin-bots/gsuid_core) | 内置插件 `gscore_adapter` 连接的服务 | 插件按其公开协议独立编写，来源记录见[协议来源](src/len_bot/next/builtin_plugins/gscore_adapter/SOURCE.md) |
 
-源码安装使用同一份源码包中的 LICENSE、NOTICE、依赖锁和构建材料。容器的许可证与依赖资料在 /usr/share/lenbot/licenses；网络部署者应保留构建所用的完整对应源码，并按项目许可证提供获取途径。当前开发版尚未完成完整发布验收，不将本说明当成发布验收通过。
+## 设计参考
+
+LenBot 在设计时参考了这些开源项目的思路，在此致谢：
+
+- [MaiBot](https://github.com/Mai-with-u/MaiBot)：群聊参与、表达学习和注意力。
+- [AstrBot](https://github.com/AstrBotDevs/AstrBot)：工具循环、插件和管理面板。
+
+这里列的是设计思路上的参考。如果发现仓库里有直接取自这些项目、却没有保留原版权说明的代码，请提 Issue，我们会补上。
+
+## 不随项目分发的内容
+
+用户自己的角色、知识、聊天记录和私人插件不属于本项目，不随源码或发行物分发，也不因本项目的许可证而获得再分发许可。`examples/personas/companion/` 中的示例角色和表情由维护者原创，随项目以 AGPL-3.0-only 分发。
+
+## 获取源码
+
+源码包含 LICENSE、NOTICE、依赖锁文件和构建材料。通过网络向他人提供 LenBot 服务时，按 AGPL-3.0 的要求，需要让用户能获取你实际运行版本的完整对应源码。

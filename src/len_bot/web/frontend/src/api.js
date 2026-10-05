@@ -1,4 +1,6 @@
 // Shared API client: cookie session (same-origin), no retries or optimistic writes.
+import { reactive } from 'vue'
+
 let onUnauthorized = () => {}
 let sessionGeneration = 0
 export function setUnauthorizedHandler(handler) {
@@ -44,9 +46,17 @@ export function queryString(values) {
   return new URLSearchParams(Object.entries(values).filter(([, value]) => value !== '' && value !== null && value !== undefined)).toString()
 }
 
+// Group names and private nicknames read from QQ; until one arrives the
+// scene shows by its number.
+export const sceneTitles = reactive({})
+
+export function sceneNumber(id) {
+  const [platform, kind, ...parts] = id.split(':')
+  return `${platform} · ${kind === 'group' ? '群' : kind === 'private' ? '私聊' : kind} ${parts.join(':')}`
+}
+
 export function sceneName(id) {
   if (id === 'global-safe') return '公共素材'
   if (!id) return '全部场景'
-  const [kind, ...parts] = id.split(':')
-  return `${kind === 'group' ? '群聊' : kind === 'private' ? '私聊' : kind} ${parts.join(':')}`
+  return sceneTitles[id] || sceneNumber(id)
 }

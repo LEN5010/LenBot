@@ -48,7 +48,7 @@ watch(value, text => emit('update:modelValue', text), { immediate: true })
 
 <template>
   <div class="picker">
-    <v-btn-toggle v-model="mode" mandatory density="comfortable" color="primary" class="modes">
+    <v-btn-toggle v-model="mode" mandatory class="modes">
       <v-btn value="once">一次</v-btn><v-btn value="daily">每天/每周</v-btn><v-btn value="every">每隔</v-btn><v-btn value="custom">自己写</v-btn>
     </v-btn-toggle>
     <div v-if="mode === 'once'" class="row">
@@ -67,17 +67,16 @@ watch(value, text => emit('update:modelValue', text), { immediate: true })
     </div>
     <v-text-field v-else v-model="custom" label="时间写法" persistent-hint
       hint="例如 2026-10-02T09:00:00+08:00、every 2h，或 cron:30 9 * * 1-5（工作日 9:30）" />
-    <p v-if="mode === 'once' && oneTime === ''" role="alert" class="time-error">{{ timezone }} 在这个日期跳过了所选时间，请选择实际存在的时间，或在“自己写”中填写带明确 UTC 偏移的时间。</p>
-    <p class="muted">按 {{ timezone }} 的时间{{ value ? `，保存为 ${value}` : '' }}</p>
+    <p v-if="mode === 'once' && oneTime === ''" role="alert" class="problem small">{{ timezone }} 在这一天没有这个时间（夏令时跳过了）。换一个时间，或者选自己写，填带 UTC 偏移的时间。</p>
+    <p class="muted small">按 {{ timezone }} 的时间{{ value ? `，保存为 ${value}` : '' }}</p>
   </div>
 </template>
 
 <style scoped>
-.picker{display:grid;gap:12px}
-.modes{flex-wrap:wrap;height:auto}
-.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.picker{display:grid;gap:var(--sp-3)}
+.modes{flex-wrap:wrap;height:auto;justify-self:start}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-3)}
 .time{max-width:200px}
-.days{display:flex;flex-wrap:wrap;gap:0 4px}
-.picker p{margin:0;font-size:13px}
-.picker .time-error{color:var(--error-text)}
+.days{display:flex;flex-wrap:wrap;gap:0 var(--sp-1)}
+.picker p{margin:0}
 </style>

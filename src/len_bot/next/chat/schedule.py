@@ -33,7 +33,7 @@ class ScheduleArguments(BaseModel):
     when: datetime | int | Cron
     note: str = Field(min_length=1)
     target: str = Field(alias="for", pattern=r"^(self|[1-9][0-9]*)$")
-    requester: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
+    requester: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]*:[^:\s/\\]+$")
 
     @field_validator("when", mode="before", json_schema_input_type=str)
     @classmethod
@@ -79,7 +79,7 @@ class ScheduleCancelArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     id: int = Field(gt=0)
-    requester: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
+    requester: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]*:[^:\s/\\]+$")
 
 
 SCHEDULE_TOOLS = [
@@ -89,7 +89,7 @@ SCHEDULE_TOOLS = [
         "或 cron:<分钟> <小时> <日> <月> <星期>，按场景时区；每字段支持 *、数字、a-b、逗号列表、*/n 与 a-b/n，"
         "星期 0-6（0 为周日），日与星期不能同时限制，不支持英文名、L、W、#。"
         "缺失/重复时刻明确报错或阻止后续，不自动顺延、选偏移。"
-        "for=self 是未来自己要做的事，for=QQ 是提醒对象；requester 是实际请求人 QQ，Bot 自主安排用 null。"
+        "for=self 是未来自己要做的事，for=账号 是提醒对象；requester 是实际请求人的账号，Bot 自主安排用 null。"
         "相对时间请结合原话和当前时刻理解；返回已保存不等于提醒已发。",
         "parameters": ScheduleArguments.model_json_schema(),
     }},
@@ -99,7 +99,7 @@ SCHEDULE_TOOLS = [
         "parameters": ScheduleListArguments.model_json_schema(),
     }},
     {"type": "function", "function": {
-        "name": "schedule_cancel", "description": "取消当前场景未完成的一次性或周期安排；requester 为实际操作者 QQ，"
+        "name": "schedule_cancel", "description": "取消当前场景未完成的一次性或周期安排；requester 为实际操作者的账号，"
         "本人可取消自己创建的，管理者可取消他人的；Bot 自主取消用 null，只能取消自主安排。"
         "取消周期安排停止后续唤醒，不撤回已交给会话的过去次数。",
         "parameters": ScheduleCancelArguments.model_json_schema(),
@@ -114,41 +114,41 @@ def effective_settings(config: LabConfig) -> ScheduleSettings:
 
 
 def identity_roles(settings: ScheduleSettings, requester: str, group_role: str | None,
-                   root_owner: str | None = None) -> set[str]:
-    return roles_for(requester, owner=root_owner, scoped_owner=settings.owner,
+                   root_owners: tuple[str, ...] | list[str] = ()) -> set[str]:
+    return roles_for(requester, owners=root_owners, scoped_owner=settings.owner,
                      admins=settings.admins, whitelist=settings.whitelist, group_role=group_role)
 
 
 def check_creation(settings: ScheduleSettings, *, requester: str | None, target: str,
-                   bot_qq: str, group_role: str | None, root_owner: str | None = None) -> None:
+                   bot_id: str, group_role: str | None, root_owners: tuple[str, ...] | list[str] = ()) -> None:
     if not settings.enabled:
         raise PermissionError("当前场景已关闭安排创建与到期执行")
     if requester is None:
         if target != "self":
-            raise PermissionError("涉及人的提醒必须填写实际请求人 QQ")
+            raise PermissionError("涉及人的提醒必须填写实际请求人的账号")
         if not settings.autonomous:
             raise PermissionError("当前场景未开放 Bot 自主安排")
         return
-    if requester == bot_qq:
+    if requester == bot_id:
         raise PermissionError("Bot 自主安排使用 requester=null，不作为人类请求人")
-    roles = identity_roles(settings, requester, group_role, root_owner)
+    roles = identity_roles(settings, requester, group_role, root_owners)
     capability = "own" if target in {"self", requester} else "others"
     if not roles.intersection(getattr(settings, capability)):
-        raise PermissionError(f"QQ {requester} 没有创建{'本人安排' if capability == 'own' else '他人提醒'}的权限")
+        raise PermissionError(f"账号 {requester} 没有创建{'本人安排' if capability == 'own' else '他人提醒'}的权限")
 
 
 def check_cancellation(settings: ScheduleSettings, *, requester: str | None,
-                       creator: str | None, bot_qq: str, group_role: str | None, root_owner: str | None = None) -> None:
-    if requester == bot_qq:
+                       creator: str | None, bot_id: str, group_role: str | None, root_owners: tuple[str, ...] | list[str] = ()) -> None:
+    if requester == bot_id:
         raise PermissionError("Bot 自主取消使用 requester=null，不作为人类操作者")
     if requester == creator:
         return
-    if requester is None or not identity_roles(settings, requester, group_role, root_owner).intersection(settings.manage):
+    if requester is None or not identity_roles(settings, requester, group_role, root_owners).intersection(settings.manage):
         raise PermissionError("只能取消自己创建的安排，或由有管理能力的账号取消")
 
 
 def platform_role(store: Store, config: LabConfig, requester: str | None) -> str | None:
-    if requester is None or not config.scene.startswith("group:"):
+    if requester is None or config.scene.split(":", 2)[1] != "group":
         return None
     return store.latest_sender_role(config.scene, requester)
 
@@ -169,7 +169,7 @@ def describe(item: Schedule, *, preview: bool = False) -> str:
     note = item.note
     if preview and len(note) > 160:
         note = note[:160] + "…（说明预览；用 schedule_list 查看全文）"
-    creator = "Bot 自主" if item.requester is None else f"QQ {item.requester}"
+    creator = "Bot 自主" if item.requester is None else f"账号 {item.requester}"
     if item.interval_seconds is None and item.cron is None:
         timing = f"原定 {display_time(item.due_at, item.timezone)} ({item.timezone})"
     else:
@@ -190,7 +190,7 @@ def describe(item: Schedule, *, preview: bool = False) -> str:
 
 
 def wake_text(item: Schedule, now: float) -> str:
-    creator = "Bot 自主" if item.requester is None else f"QQ {item.requester}"
+    creator = "Bot 自主" if item.requester is None else f"账号 {item.requester}"
     timing = ""
     recurring = item.interval_seconds is not None or item.cron is not None
     if recurring:
@@ -225,7 +225,7 @@ def create_arrangement(store: Store, config: LabConfig, args: ScheduleArguments,
     if args.requester in config.permissions.blacklist:
         raise PermissionError('当前黑名单账号不能创建安排')
     check_creation(effective_settings(config), requester=args.requester, target=args.target,
-                   bot_qq=config.bot_qq, root_owner=config.owner_qq, group_role=platform_role(store, config, args.requester))
+                   bot_id=config.bot_id, root_owners=config.owners, group_role=platform_role(store, config, args.requester))
     return ScheduleStore(store).create_schedule(config.scene, due_at=when, timezone=config.timezone,
                                  note=args.note, target=args.target, requester=args.requester,
                                  limit=config.schedules.max_pending, interval_seconds=interval_seconds,
@@ -238,7 +238,7 @@ def cancel_arrangement(store: Store, config: LabConfig, *, id: int,
     if requester != item.requester and requester in config.permissions.blacklist:
         raise PermissionError('黑名单账号只能取消本人的安排')
     check_cancellation(effective_settings(config), requester=requester, creator=item.requester,
-                       bot_qq=config.bot_qq, root_owner=config.owner_qq, group_role=platform_role(store, config, requester))
+                       bot_id=config.bot_id, root_owners=config.owners, group_role=platform_role(store, config, requester))
     return ScheduleStore(store).cancel_schedule(config.scene, item.id)
 
 

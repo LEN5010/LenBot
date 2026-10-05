@@ -12,22 +12,22 @@ from len_bot.next.tools.mcp_host import MCPToolError, text_result
 
 
 def config(tmp_path, services):
-    value = {"compaction": {"input_tokens": 2000}, 'mode':'isolated-multi','bot_qq':'90001','timezone':'UTC','database':'state.db',
+    value = {"compaction": {"input_tokens": 2000}, 'mode':'isolated-multi','bot_id':'onebot:90001','timezone':'UTC','database':'state.db',
         'onebot':{'mode':'reverse_ws','listen_host':'127.0.0.1','listen_port':0},
         'models':{'providers':{'local':{'api':'openai-chat','base_url':'http://127.0.0.1:9/v1','api_key':'synthetic'}},
             'roles':{role:{'provider':'local','model':'fixture','context_window_tokens':8192} for role in ['mind']}},
-        'scenes':{'group:80001':{'persona':'role'}},'mcp':services}
+        'scenes':{'onebot:group:80001':{'persona':'role'}},'mcp':services}
     (tmp_path/'lenbot.config.json').write_text(json.dumps(value))
     return load_host_config(tmp_path)
 
 
 def test_mcp_root_resolves_cwd_and_validates_scene_references(tmp_path):
-    service={'enabled':True,'scenes':['group:80001'],'transport':{'type':'stdio','command':'python','args':['server.py'],'env':{'KEY':'synthetic'}}}
+    service={'enabled':True,'scenes':['onebot:group:80001'],'transport':{'type':'stdio','command':'python','args':['server.py'],'env':{'KEY':'synthetic'}}}
     parsed=config(tmp_path,{'fixture':service})
     assert parsed.mcp['fixture'].transport.cwd==tmp_path
     assert parsed.mcp['fixture'].transport.env=={'KEY':'synthetic'}
-    assert parsed.scene_config('group:80001').scene=='group:80001'
-    service['scenes']=['group:80002']
+    assert parsed.scene_config('onebot:group:80001').scene=='onebot:group:80001'
+    service['scenes']=['onebot:group:80002']
     with pytest.raises(ValueError,match='unconfigured scenes'):config(tmp_path,{'fixture':service})
     service['scenes']=[]
     with pytest.raises(ValueError,match='at least one scene'):config(tmp_path,{'fixture':service})

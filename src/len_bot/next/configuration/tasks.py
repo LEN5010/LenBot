@@ -143,15 +143,15 @@ class TaskSettings(BaseModel):
     @field_validator("owner")
     @classmethod
     def valid_owner(cls, value: str | None) -> str | None:
-        if value is not None and re.fullmatch(r"[1-9][0-9]*", value) is None:
-            raise ValueError("owner must be a positive QQ number as text")
+        if value is not None and re.fullmatch(r"[a-z][a-z0-9_-]*:[^:\s/\\]+", value) is None:
+            raise ValueError("owner must be a platform:account identity")
         return value
 
     @field_validator("admins", "whitelist")
     @classmethod
-    def valid_qqs(cls, values: list[str]) -> list[str]:
-        if any(re.fullmatch(r"[1-9][0-9]*", value) is None for value in values):
-            raise ValueError("must contain positive QQ numbers as text")
+    def valid_identities(cls, values: list[str]) -> list[str]:
+        if any(re.fullmatch(r"[a-z][a-z0-9_-]*:[^:\s/\\]+", value) is None for value in values):
+            raise ValueError("must contain platform:account identities")
         return values
 
     @field_validator("delegate_roles", "manage_roles", "long_running_roles")

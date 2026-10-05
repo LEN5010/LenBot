@@ -12,8 +12,8 @@ from len_bot.eval.cases import (
 
 
 FIXTURE = Path(__file__).parent / "fixtures/eval/replay_cases.json"
-SCENE = "group:80001"
-BOT = "90001"
+SCENE = "onebot:group:80001"
+BOT = 'onebot:90001'
 
 
 def _source() -> dict:
@@ -28,7 +28,7 @@ def _write(tmp_path: Path, source: dict) -> Path:
 
 def test_synthetic_structured_cases_keep_original_onebot_envelopes_and_boundaries():
     source = _source()
-    loaded = load_cases(FIXTURE, set_name="coherence", scene=SCENE, bot_qq=BOT)
+    loaded = load_cases(FIXTURE, set_name="coherence", scene=SCENE, bot_id=BOT)
 
     assert loaded.format == "structured-development"
     assert loaded.source == source["source"]
@@ -50,7 +50,7 @@ def test_initial_database_relative_path_resolves_beside_case_file_without_changi
     source["cases"][0]["initial_database"] = " snapshots/seed.sqlite3 "
     path = _write(tmp_path, source)
 
-    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
 
     expected = (tmp_path / " snapshots/seed.sqlite3 ").resolve()
     assert loaded.cases[0].initial_database == expected
@@ -66,7 +66,7 @@ def test_initial_database_absolute_path_is_not_read_or_rebased(tmp_path):
     source["cases"][1]["initial_database"] = str(absolute)
     path = _write(tmp_path, source)
 
-    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
 
     assert loaded.cases[1].initial_database == absolute
     assert loaded.cases[0].initial_database is None
@@ -78,7 +78,7 @@ def test_initial_database_does_not_expand_home_or_environment_tokens(tmp_path, l
     source = _source()
     source["cases"][0]["initial_database"] = literal
     path = _write(tmp_path, source)
-    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
     assert loaded.cases[0].initial_database == (tmp_path / literal).resolve()
 
 
@@ -89,7 +89,7 @@ def test_initial_database_requires_a_nonblank_json_path_string(tmp_path, value):
     path = _write(tmp_path, source)
 
     with pytest.raises(ValueError) as failure:
-        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+        load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
     assert str(path) in str(failure.value)
     assert "correction-restart" in str(failure.value)
     assert "initial_database" in str(failure.value)
@@ -101,7 +101,7 @@ def test_unresolvable_initial_database_reports_case_and_raw_path(tmp_path):
     source["cases"][0]["initial_database"] = "bad\x00path.sqlite3"
     path = _write(tmp_path, source)
     with pytest.raises(ValueError) as failure:
-        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+        load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
     assert str(path) in str(failure.value)
     assert "correction-restart" in str(failure.value)
     assert "initial_database" in str(failure.value)
@@ -114,7 +114,7 @@ def test_explicit_case_start_time_preserves_platform_event_time_and_words(tmp_pa
     source["cases"][0]["start_time"] = 1790000300.25
     path = _write(tmp_path, source)
 
-    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
 
     assert loaded.cases[0].start_time == 1790000300.25
     assert loaded.cases[1].start_time is None
@@ -128,7 +128,7 @@ def test_case_start_time_accepts_integer_json_seconds_as_float(tmp_path):
     source["cases"][0]["start_time"] = 1735689600
     path = _write(tmp_path, source)
 
-    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
     assert loaded.cases[0].start_time == 1735689600.0
     assert type(loaded.cases[0].start_time) is float
     assert loaded.cases[0].steps[0].event == original_event
@@ -147,7 +147,7 @@ def test_case_start_time_rejects_nonnumber_nonfinite_or_unrepresentable_values(t
     path = _write(tmp_path, source)
 
     with pytest.raises(ValueError) as failure:
-        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+        load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
     assert str(path) in str(failure.value)
     assert fragment in str(failure.value)
 
@@ -176,7 +176,7 @@ def test_replay_case_structure_rejects_invalid_values_with_path_and_fragment(tmp
     path = _write(tmp_path, source)
 
     with pytest.raises(ValueError) as failure:
-        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+        load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
     assert str(path) in str(failure.value)
     assert field in str(failure.value)
     assert "raw=" in str(failure.value)
@@ -187,13 +187,13 @@ def test_replay_case_ids_are_unique_and_set_matches_selected_name(tmp_path):
     source["cases"][1]["id"] = source["cases"][0]["id"]
     path = _write(tmp_path, source)
     with pytest.raises(ValueError, match="case-insensitive paths"):
-        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+        load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
 
     source["cases"][1]["id"] = "second-case"
     source["cases"][1]["set"] = "another-set"
     path = _write(tmp_path, source)
     with pytest.raises(ValueError) as failure:
-        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+        load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
     assert "second-case" in str(failure.value)
     assert "another-set" in str(failure.value)
     assert str(path) in str(failure.value)
@@ -206,7 +206,7 @@ def test_case_ids_differing_only_by_case_are_rejected_for_case_insensitive_outpu
     path = _write(tmp_path, source)
 
     with pytest.raises(ValueError) as failure:
-        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+        load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
     assert str(path) in str(failure.value)
     assert "cases[1]" in str(failure.value)
     assert "'A' and 'a'" in str(failure.value)
@@ -216,8 +216,8 @@ def test_case_ids_differing_only_by_case_are_rejected_for_case_insensitive_outpu
     (lambda event: event.update(message="not an array"), "message must be a OneBot segment array"),
     (lambda event: event.pop("sender"), "sender"),
     (lambda event: event["message"].append({"type": "text", "data": {"text": 3}}), "message[2]"),
-    (lambda event: event.update(group_id="89999"), "scene/self_id"),
-    (lambda event: event.update(self_id="90002"), "scene/self_id"),
+    (lambda event: event.update(group_id='onebot:89999'), "scene/self_id"),
+    (lambda event: event.update(self_id='onebot:90002'), "scene/self_id"),
 ])
 def test_replay_message_uses_actual_onebot_parser_and_configured_scene(tmp_path, change, fragment):
     source = _source()
@@ -227,7 +227,7 @@ def test_replay_message_uses_actual_onebot_parser_and_configured_scene(tmp_path,
     path = _write(tmp_path, source)
 
     with pytest.raises(ValueError) as failure:
-        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+        load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
     assert str(path) in str(failure.value)
     assert "correction-restart" in str(failure.value)
     assert fragment in str(failure.value)
@@ -237,7 +237,7 @@ def test_replay_message_uses_actual_onebot_parser_and_configured_scene(tmp_path,
 def test_natural_language_draft_is_not_inferred_as_onebot_steps(tmp_path):
     path = _write(tmp_path, {"cases": [{"question": "自然语言草稿", "expected": "不能猜原事件"}]})
     with pytest.raises(ValueError) as failure:
-        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+        load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
     assert str(path) in str(failure.value)
     assert "format" in str(failure.value)
 
@@ -246,12 +246,12 @@ def test_bad_json_and_nonstandard_constant_report_raw_fragment(tmp_path):
     path = tmp_path / "cases.json"
     path.write_bytes(b'{"format":"structured-development", "cases": [}\n')
     with pytest.raises(ValueError) as failure:
-        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+        load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
     assert str(path) in str(failure.value)
     assert '"cases": [}' in str(failure.value)
 
     path.write_text('{"format":"structured-development", "source":"synthetic", "cases":NaN}', encoding="utf-8")
     with pytest.raises(ValueError) as failure:
-        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+        load_cases(path, set_name="coherence", scene=SCENE, bot_id=BOT)
     assert str(path) in str(failure.value)
     assert "NaN" in str(failure.value)

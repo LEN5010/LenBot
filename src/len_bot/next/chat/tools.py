@@ -30,6 +30,7 @@ from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from ..trials.replay_images import RecordedImages
 from ..trials.replay_web import RecordedWeb
 from .scene_control import SCENE_CONTROL_TOOL, SceneControlArguments
+from .host_manage import HOST_MANAGE_TOOL, HostManageArguments
 from .schedule import SCHEDULE_TOOLS, execute_schedule
 from ..storage.store import ImageAsset, Store, encode
 from ..work.store import TaskStore
@@ -40,15 +41,16 @@ from ..tools.web_search import WEB_SEARCH_TOOL, WebSearchArguments, execute_web_
 if TYPE_CHECKING:
     from .expression import ChatExpression
     from ..work.service import WorkTasks
+    from ..runtime.management import HostManagement
 
 
 class SayArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     content: str = Field(min_length=1)
     end_turn: bool = Field(default=False, description="这是本轮最后一次表达，成功后本轮即可结束；还需查看工具结果或继续行动时保持 false。")
-    reply_to: str | None = Field(default=None, description="需要引用时填本场景已有平台消息 ID；直接接话可省略。")
+    reply_to: str | None = Field(default=None, description="默认不填，直接接话。群里同时有几个话头、不引用会让人认错你在回哪句时，才填该平台消息 ID。")
     mention: str | None = Field(default=None, pattern=r"^[0-9]+$",
-        description="需要提醒特定对象时填实际 QQ；连续对话中对象清楚时可省略。")
+        description="默认不填。要叫不在当前对话里的人，或不 @ 会让人认错对象时，才填对方的实际账号。")
 
 
 class ReactArguments(BaseModel):
@@ -109,7 +111,7 @@ def tool_catalog(*, platform: bool) -> list[dict]:
     }}
     catalog = [say, REACT_TOOL, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
             *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, DELEGATE_TOOL, TASK_TOOL,
-            SEND_FILE_TOOL, OPEN_FORWARD_TOOL, MEMBER_INFO_TOOL, TRANSCRIBE_TOOL, SCENE_CONTROL_TOOL, TOOL_SEARCH]
+            SEND_FILE_TOOL, OPEN_FORWARD_TOOL, MEMBER_INFO_TOOL, TRANSCRIBE_TOOL, SCENE_CONTROL_TOOL, HOST_MANAGE_TOOL, TOOL_SEARCH]
     return [{**tool, "function": {**tool["function"],
              "parameters": model_schema(tool["function"]["parameters"])}} for tool in catalog]
 
@@ -119,10 +121,12 @@ def tool_result(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
 
 
-def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> list[str]:
+def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str, *, host_management: bool = False) -> list[str]:
     reasons = []
     if persona.tools != "all" and name not in persona.tools:
         reasons.append("角色没有允许这个工具")
+    if name == 'host_manage' and not host_management:
+        reasons.append('此会话没有接入宿主管理服务')
     if (name == "react" and not persona.stickers
             and not (config.learning is not None and config.learning.collect_stickers)):
         reasons.append("角色没有表情素材，本群也没有开启收集表情")
@@ -153,12 +157,12 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> 
         reasons.append("角色没有资料文件")
     if name in {"open_forward", "member_info", "transcribe"} and config.delivery != "onebot":
         reasons.append("模拟发送时用不了")
-    if name == "member_info" and not config.scene.startswith("group:"):
+    if name == "member_info" and config.scene.split(":", 2)[1] != "group":
         reasons.append("只能在群里用")
     return reasons
 
 
-def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[dict]:
+def build_tools(config: LabConfig, persona: Persona, *, platform: bool, host_management: bool = False) -> list[dict]:
     if persona.tools != "all":
         for name in ("web_read", "web_search", "look", "persona_knowledge", "memory", "react"):
             if name in persona.tools:
@@ -166,7 +170,7 @@ def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[
                 if reasons:
                     raise ValueError(f"角色开放 {name} 但无法装配：{'；'.join(reasons)}")
     allowed = [tool for tool in tool_catalog(platform=platform)
-               if not tool_unavailable_reasons(config, persona, tool["function"]["name"])]
+               if not tool_unavailable_reasons(config, persona, tool["function"]["name"], host_management=host_management)]
     names = {tool["function"]["name"] for tool in allowed}
     if "schedule" in names and not {"schedule_list", "schedule_cancel"} <= names:
         raise ValueError("角色开放 schedule 时必须同时开放 schedule_list 和 schedule_cancel")
@@ -207,6 +211,9 @@ class SceneTools:
         self.upload_file, self.platform_call = upload_file, platform_call
         self.notify, self.now = notify, now
         self.scene_control: Callable[[SceneControlArguments], dict] | None = None
+        self.host_management: HostManagement | None = None
+        # Only an accepted restart in this live turn waits for its final store write.
+        self.restart_after_turn = False
         self.replay_web = None if config.replay_web is None else RecordedWeb(config.replay_web)
         self.replay_images = (None if config.replay_images is None else
                               RecordedImages(config.replay_images, max_bytes=config.images.max_bytes))
@@ -215,7 +222,8 @@ class SceneTools:
         """Replace the actual external capability set after service startup/closure."""
         config, persona = self.config, self.persona
         send_message, upload_file, platform_call = self.expression.send_message, self.upload_file, self.platform_call
-        allowed = build_tools(config, persona, platform=send_message is not None)
+        allowed = build_tools(config, persona, platform=send_message is not None,
+                              host_management=self.host_management is not None)
         if self.scene_control is None:
             allowed = [tool for tool in allowed if tool["function"]["name"] != "scene_control"]
         # Plugin and MCP tools are always low-frequency and still need the role's permission.
@@ -289,6 +297,15 @@ class SceneTools:
             return self.expression.context.render(expression.message), expression, None
         if call.name == "scene_control":
             return tool_result(self.scene_control(SceneControlArguments.model_validate(call.arguments))), None, None
+        if call.name == 'host_manage':
+            try:
+                arguments = HostManageArguments.model_validate(call.arguments)
+            except ValueError as error:
+                raise ValueError(f'Invalid host_manage arguments: {repr(call.arguments)[:500]}; {error}') from error
+            result = await self.host_management.execute(self.config.scene, arguments)
+            if arguments.action == 'restart':
+                self.restart_after_turn = True
+            return tool_result(result), None, None
         if call.name == "recall_chat":
             return recall_chat(self.store, self.config.scene, self.config.timezone,
                                RecallArguments.model_validate(call.arguments)), None, None

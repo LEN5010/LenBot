@@ -1,10 +1,14 @@
 LenBot
 Copyright (C) 2026 LEN5010
 
-LenBot's original code is distributed under GNU AGPL version 3 only.
-See LICENSE for the complete license text.
+LenBot's original code is licensed under the GNU Affero General Public
+License version 3 only (AGPL-3.0-only). See LICENSE for the full text.
 
-Dependencies and separately installed services retain their own licenses.
-Their inclusion or use does not replace their existing copyright notices.
-See THIRD_PARTY_NOTICES.md and the dependency-license files accompanying
-built distributions for the actual component metadata and notices.
+The example plugin in developer/examples/counter is licensed under the
+GNU General Public License version 3 only (GPL-3.0-only); see its own
+LICENSE file. The plugin template repository
+(https://github.com/lendevs/lenbot-plugin-template) uses the same license.
+
+Dependencies and separately installed services keep their own licenses and
+copyright notices. See THIRD_PARTY_NOTICES.md and the dependency license
+files that accompany built distributions.

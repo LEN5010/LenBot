@@ -3,7 +3,7 @@
 from typing import Literal
 
 
-HistoryPolicy = Literal['native', 'antigravity-chat']
+HistoryPolicy = Literal['native', 'omit-reasoning']
 
 
 def project_messages(messages: list[dict], policy: HistoryPolicy) -> list[dict]:

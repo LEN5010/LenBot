@@ -26,7 +26,7 @@ def cost(store, scene, amount, currency='USD', *, end=True):
     return call
 
 
-@pytest.mark.parametrize('value',[{'messages_per_hour':0},{'scene_messages_per_hour':{'group:1':False}},
+@pytest.mark.parametrize('value',[{'messages_per_hour':0},{'scene_messages_per_hour':{'onebot:group:1':False}},
                                  {'scene_daily_model_cost':{'nickname':'1'}},{'daily_model_cost':'NaN'},
                                  {'daily_model_cost':'-1'},{'currency':'usd'}])
 def test_invalid_resource_configuration(value):
@@ -39,10 +39,10 @@ def test_global_budget_includes_removed_scenes_and_stopped_trials(tmp_path):
     with Store(path,now=lambda:now) as store:
         cfg=settings(path,daily_model_cost='0.3')
         budget=ModelBudget(cfg,store,None);budget.trials_root=tmp_path/'trials'
-        cost(store,'group:89999','0.1')
+        cost(store,'onebot:group:89999','0.1')
         trial=budget.trials_root/'stopped'/'state.db'
-        with Store(trial,now=lambda:now) as other: cost(other,'group:80001','0.2')
-        with pytest.raises(LimitReached,match='全局'):budget.check('group:80002')
+        with Store(trial,now=lambda:now) as other: cost(other,'onebot:group:80001','0.2')
+        with pytest.raises(LimitReached,match='全局'):budget.check('onebot:group:80002')
         assert budget.totals(None,now-1,now+1)['known_amounts']=={'USD':Decimal('0.3')}
 
 
@@ -51,10 +51,10 @@ def test_inflight_is_not_settled_unknown_but_completed_unknown_denies(tmp_path):
     with Store(tmp_path/'state.db',now=lambda:at[0]) as store:
         budget=ModelBudget(settings(tmp_path/'state.db',daily_model_cost='1'),store,None)
         at[0]+=1
-        call=cost(store,'group:80001',None,end=False)
-        budget.check('group:80001')
+        call=cost(store,'onebot:group:80001',None,end=False)
+        budget.check('onebot:group:80001')
         store.end_call(call,None,None,'provider did not report usage')
-        with pytest.raises(LimitReached,match='费用未知'):budget.check('group:80001')
+        with pytest.raises(LimitReached,match='费用未知'):budget.check('onebot:group:80001')
 
 
 def test_budget_rechecks_after_waiting_for_slot_and_releases_on_rejection(tmp_path):
@@ -63,11 +63,11 @@ def test_budget_rechecks_after_waiting_for_slot_and_releases_on_rejection(tmp_pa
             slots=ModelSlots(1)
             slots.admit=ModelBudget(settings(tmp_path/'state.db',daily_model_cost='1'),store,None).check
             async def waiting():
-                async with slots.slot(scene='group:80001'):
+                async with slots.slot(scene='onebot:group:80001'):
                     pytest.fail('settled budget was not applied at actual admission')
-            async with slots.slot(scene='group:80001'):
+            async with slots.slot(scene='onebot:group:80001'):
                 queued=asyncio.create_task(waiting());await asyncio.sleep(0)
-                cost(store,'group:80001','1')
+                cost(store,'onebot:group:80001','1')
             with pytest.raises(LimitReached):await queued
             # Rejecting one allowance does not leak the shared slot.
             slots.admit=None
@@ -79,13 +79,13 @@ def test_budget_rechecks_after_waiting_for_slot_and_releases_on_rejection(tmp_pa
 def test_hourly_send_gate_is_scene_local_and_counts_unconfirmed(tmp_path):
     at=[1790618400.]
     with Store(tmp_path/'state.db',now=lambda:at[0]) as store:
-        cfg=settings(tmp_path/'state.db',messages_per_hour=1);cfg.scene='group:80001'
-        msg=ChatMessage('fixture','qq',cfg.scene,None,Sender('90001','fixture',None,None),at[0],
+        cfg=settings(tmp_path/'state.db',messages_per_hour=1);cfg.scene='onebot:group:80001'
+        msg=ChatMessage('fixture','onebot','onebot:90001',cfg.scene,None,Sender('onebot:90001','fixture',None,None),at[0],
                         [Segment('text',{'text':'合成未确认原话'})],None,False,True,'unconfirmed')
         store.start_outgoing(msg, persona_id='synthetic')
         with pytest.raises(LimitReached):check_speech(store,cfg)
-        cfg.scene='group:80002';check_speech(store,cfg)
-        cfg.scene='group:80001';at[0]+=3600;check_speech(store,cfg)
+        cfg.scene='onebot:group:80002';check_speech(store,cfg)
+        cfg.scene='onebot:group:80001';at[0]+=3600;check_speech(store,cfg)
 
 
 def test_memory_costs_remain_counted_when_backend_disabled(tmp_path):
@@ -96,7 +96,7 @@ def test_memory_costs_remain_counted_when_backend_disabled(tmp_path):
                 jobs.db.execute('INSERT INTO memory_embedding_calls(scene,purpose,started,ended,request,cost) VALUES(?,?,?,?,?,?)',
                     ('public','index',1790618400.,1790618400.,'{}','{"currency":"USD","amount":"1"}'))
         budget=ModelBudget(settings(path,daily_model_cost='1'),store,None)
-        with pytest.raises(LimitReached):budget.check('group:80001')
+        with pytest.raises(LimitReached):budget.check('onebot:group:80001')
 
 
 def test_trial_budget_uses_explicit_root_and_requires_migrated_sidecar(tmp_path):
@@ -104,11 +104,11 @@ def test_trial_budget_uses_explicit_root_and_requires_migrated_sidecar(tmp_path)
     path=root/'nested'/'state.db'
     trial=root/'.runtime'/'chat-tests'/'closed'/'state.db'
     with Store(trial,now=lambda:1790618400.) as other:
-        cost(other,'group:80001','1')
+        cost(other,'onebot:group:80001','1')
     with Store(path,now=lambda:1790618400.) as store:
         cfg=settings(path,daily_model_cost='1')
         with pytest.raises(LimitReached):
-            ModelBudget(cfg,store,None,root=root).check('group:80001')
+            ModelBudget(cfg,store,None,root=root).check('onebot:group:80001')
         with MemoryJobs(trial.with_name(trial.name+'.memory.sqlite3')) as jobs:
             jobs.db.execute('PRAGMA user_version=3')
         with pytest.raises(ValueError,match='migrate_memory_jobs'):
@@ -116,8 +116,8 @@ def test_trial_budget_uses_explicit_root_and_requires_migrated_sidecar(tmp_path)
 
 
 @pytest.mark.parametrize('value',[{'request_days':0},{'timeline_days':31},
-    {'message_days':{'nickname':1}},{'message_days':{'group:1':0}},
-    {'message_days':{'group:1':True}},{'message_days':{'private:1':'2'}}])
+    {'message_days':{'nickname':1}},{'message_days':{'onebot:group:1':0}},
+    {'message_days':{'onebot:group:1':True}},{'message_days':{'onebot:private:1':'2'}}])
 def test_retention_configuration_rejects_ambiguous_or_unmetered_windows(value):
     from len_bot.next.runtime.retention import RetentionSettings
     with pytest.raises(ValidationError):

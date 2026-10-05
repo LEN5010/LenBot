@@ -7,7 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 from len_bot.next.models.asr import ASRBinding, ASRProtocolError, AudioSettings, parse_transcription
-from len_bot.next.media.audio import TranscribeArguments, parse_record
+from len_bot.next.media.audio import TranscribeArguments
+from len_bot.next.platform.onebot_audio import parse_record
 from len_bot.next.configuration.models import Models
 
 
@@ -88,22 +89,21 @@ def test_automatic_transcription_requires_explicit_runtime_binding(tmp_path):
     import json
     from len_bot.next.config import load_host_config
     model = {'provider':'fixture','model':'synthetic','context_window_tokens':4096}
-    source = {"compaction": {"input_tokens": 2000}, 'mode':'isolated-multi','bot_qq':'90001','timezone':'UTC','database':'state.db',
+    source = {"compaction": {"input_tokens": 2000}, 'mode':'isolated-multi','bot_id':'onebot:90001','timezone':'UTC','database':'state.db',
         'onebot':{'mode':'reverse_ws','listen_host':'127.0.0.1','listen_port':0},
         'models':{'providers':{'fixture':{'api':'openai-chat','base_url':'http://127.0.0.1:9/v1','api_key':'synthetic'}},
                   'roles':{'mind':model}},
-        'scenes':{'group:80001':{'persona':'role','transcribe_audio':True}}}
+        'scenes':{'onebot:group:80001':{'persona':'role','transcribe_audio':True}}}
     def load():
         (tmp_path/'lenbot.config.json').write_text(json.dumps(source))
         return load_host_config(tmp_path)
     with pytest.raises(ValueError,match='transcribe_audio requires'):
         load()
     source['models']['roles']['asr']={'provider':'fixture','model':'exact-audio'}
-    with pytest.raises(ValueError,match='onebot delivery'):
-        load()
+    assert load().scene_config('onebot:group:80001').transcribe_audio is True
     source['delivery']='onebot'
-    assert load().scene_config('group:80001').transcribe_audio is True
-    source['scenes']['group:80001']['transcribe_audio']=False
+    assert load().scene_config('onebot:group:80001').transcribe_audio is True
+    source['scenes']['onebot:group:80001']['transcribe_audio']=False
     source['models']['roles'].pop('asr')
     assert load().models.roles.asr is None
     with pytest.raises(ValidationError):
@@ -173,13 +173,13 @@ def test_daily_budget_accepts_asr_only_with_explicit_same_currency_price(tmp_pat
     import json
     from len_bot.next.config import load_host_config
     binding={'provider':'fixture','model':'synthetic','context_window_tokens':4096}
-    source={"compaction": {"input_tokens": 2000}, 'mode':'isolated-multi','bot_qq':'90001','timezone':'UTC','database':'state.db',
+    source={"compaction": {"input_tokens": 2000}, 'mode':'isolated-multi','bot_id':'onebot:90001','timezone':'UTC','database':'state.db',
         'onebot':{'mode':'reverse_ws','listen_host':'127.0.0.1','listen_port':0},
         'limits':{'currency':'USD','daily_model_cost':'1'},
         'models':{'providers':{'fixture':{'api':'openai-chat','base_url':'http://127.0.0.1:9/v1','api_key':'synthetic'}},
                   'roles':{'mind':binding,'asr':{'provider':'fixture','model':'synthetic-audio'}},
                   'prices':{'fixture':{'synthetic':{'currency':'USD','input':'1','output':'1','cache_read':'1'}}}},
-        'scenes':{'group:80001':{'persona':'role'}}}
+        'scenes':{'onebot:group:80001':{'persona':'role'}}}
     def load():
         (tmp_path/'lenbot.config.json').write_text(json.dumps(source))
         return load_host_config(tmp_path)

@@ -66,7 +66,7 @@ async def run() -> None:
                 tasks.create_task(runner.run())
                 async for line in input_lines():
                     try:
-                        result = runner.receive(parse_input(line, config.bot_qq))
+                        result = runner.receive(parse_input(line, config.bot_id))
                     except Exception as error:
                         result = {"status": "error", "error": f"{type(error).__name__}: {error}",
                                   "input_fragment": line[:500]}

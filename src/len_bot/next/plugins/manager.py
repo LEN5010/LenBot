@@ -10,10 +10,27 @@ import shutil
 from ..chat.tools import tool_catalog
 from ..config import HostConfig
 from ..configuration.plugin import PluginSettings
-from ..panel.routes.settings import _prepare, _read_saved
-from ..runtime.network import NetworkRuntime
+from ..configuration.editing import _read_saved, save_config
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..runtime.network import NetworkRuntime
 from .host import PluginHost
 from .install import PluginInstaller
+from .manifest import Manifest, discover, read_manifest
+
+
+def plugin_manifest(saved: HostConfig, name: str, installer: PluginInstaller | None = None) -> Manifest:
+    if installer is not None and (installer.records / (name + '.json')).is_file():
+        record = installer.read(name)
+        if record.candidate is not None:
+            return read_manifest(installer.candidates / name)
+    found, _ = discover([] if saved.plugins is None else saved.plugins.paths)
+    directories = found.get(name, [])
+    if len(directories) != 1:
+        raise ValueError(f"插件 {name} 未找到" if not directories else
+                         f"插件 {name} 在多个目录出现：{[str(item) for item in directories]}")
+    return read_manifest(directories[0])
 
 
 class PluginManager:
@@ -26,12 +43,7 @@ class PluginManager:
 
     async def save(self, edit: Callable[[dict, HostConfig], None]) -> HostConfig:
         async with self.write_lock:
-            path, temporary, candidate = await asyncio.to_thread(_prepare, self.root, edit)
-            try:
-                temporary.replace(path)
-            finally:
-                temporary.unlink(missing_ok=True)
-            return candidate
+            return await asyncio.to_thread(save_config, self.root, self.running, edit)
 
     def _binding(self, name: str, saved: HostConfig) -> None:
         current, selected = self.running.plugins, saved.plugins
@@ -59,6 +71,18 @@ class PluginManager:
             self.runtime.chats[scene].config.plugins = list(names)
 
     async def apply(self, name: str, saved: HostConfig) -> None:
+        metadata = self.installer.records / (name + '.json')
+        if metadata.is_file():
+            record = self.installer.read(name)
+            if record.candidate is not None:
+                if (saved.plugins is None or name in saved.plugins.disabled) and self.runtime.plugins is not None:
+                    if name in self.runtime.plugins.plugins:
+                        await self.runtime.plugins.stop_plugin(name)
+                        self.runtime.refresh_external_tools()
+                return
+        if saved.plugins is not None and name in saved.plugins.configured and name not in saved.plugins.disabled:
+            if plugin_manifest(saved, name).reload == 'host':
+                return
         if self.runtime.plugins is None:
             self.runtime.plugins = PluginHost(self.running, core_tools={
                 item['function']['name'] for item in tool_catalog(platform=True)})
@@ -74,12 +98,14 @@ class PluginManager:
         saved = await asyncio.to_thread(_read_saved, self.root)
         if saved.plugins is None or name not in saved.plugins.configured:
             raise ValueError(f'根配置没有插件 {name}，请先配置并启用')
+        metadata = self.installer.records / (name + '.json')
+        if metadata.is_file() and self.installer.read(name).candidate is not None:
+            raise ValueError('先应用或取消候选版本，再重载已安装源码')
+        if plugin_manifest(saved, name).reload == 'host':
+            raise ValueError('这个插件声明需要宿主重启，请使用重启入口')
         await self.apply(name, saved)
 
-    async def install(self, url: str, *, ref: str | None = None) -> dict:
-        saved = await asyncio.to_thread(_read_saved, self.root)
-        directory, manifest, output = await self.installer.install(
-            url, [] if saved.plugins is None else saved.plugins.paths, ref=ref)
+    async def _register_candidate(self, manifest: Manifest, output: str) -> dict:
         name = manifest.name
 
         def register(source: dict, previous: HostConfig) -> None:
@@ -89,46 +115,70 @@ class PluginManager:
             paths = [] if previous.plugins is None else previous.plugins.paths
             if self.installer.directory not in paths:
                 plugins.setdefault('paths', []).append('plugins')
-            plugins[name] = {}
-            plugins.setdefault('disabled', []).append(name)
+            if name not in plugins:
+                plugins[name] = {}
+                plugins.setdefault('disabled', []).append(name)
 
-        saved = await self.save(register)
-        await self.apply(name, saved)
-        try:
-            output += '\n' + await self.installer.dependencies(manifest)
-        except Exception as error:
-            record = self.runtime.plugins.plugins[name]
-            record.status, record.error = 'failed', self.runtime.plugins.report_error(name, '安装依赖', error)
-            raise
-        needs_config = any('default' not in field.model_fields_set for field in manifest.config.values())
-        if not needs_config:
-            def enable(source: dict, _: HostConfig) -> None:
-                source['plugins']['disabled'].remove(name)
-            saved = await self.save(enable)
-            await self.apply(name, saved)
-        return {'name': name, 'directory': str(directory), 'needs_config': needs_config, 'output': output.strip(),
-                'source': await self.installer.details(name)}
+        self.installer.directory.mkdir(exist_ok=True)
+        await self.save(register)
+        return {'name': name, 'version': manifest.version,
+                'needs_config': any('default' not in field.model_fields_set for field in manifest.config.values()),
+                'output': output.strip(), 'source': await self.installer.details(name)}
+
+    async def install(self, url: str, *, ref: str | None = None, switch_source: bool = False) -> dict:
+        saved = await asyncio.to_thread(_read_saved, self.root)
+        manifest, _, output = await self.installer.prepare_git(
+            url, [] if saved.plugins is None else saved.plugins.paths, ref=ref, switch_source=switch_source)
+        return await self._register_candidate(manifest, output)
+
+    async def import_zip(self, data: bytes, filename: str, *, switch_source: bool = False) -> dict:
+        saved = await asyncio.to_thread(_read_saved, self.root)
+        manifest, _, output = await self.installer.prepare_zip(
+            data, filename, [] if saved.plugins is None else saved.plugins.paths, switch_source=switch_source)
+        return await self._register_candidate(manifest, output)
 
     async def update(self, name: str, *, ref: str | None = None) -> dict:
-        self.installer.managed_path(name)
-        if self.runtime.plugins is not None and name in self.runtime.plugins.plugins:
-            try:
-                await self.runtime.plugins.stop_plugin(name)
-            finally:
-                self.runtime.refresh_external_tools()
+        saved = await asyncio.to_thread(_read_saved, self.root)
+        manifest, _, output = await self.installer.prepare_update(
+            name, [] if saved.plugins is None else saved.plugins.paths, ref=ref)
+        return await self._register_candidate(manifest, output)
+
+    async def apply_candidate(self, name: str) -> dict:
+        saved = await asyncio.to_thread(_read_saved, self.root)
+        record = self.installer.read(name)
         try:
-            manifest, output = await self.installer.update(name, ref=ref)
-        except Exception as error:
+            await self.installer.check_apply(name, saved.plugins.configured[name])
+            if record.application == 'host':
+                record.requested, record.error = True, None
+                self.installer.write(record)
+                return {'name': name, 'restart_required': True}
             if self.runtime.plugins is not None and name in self.runtime.plugins.plugins:
-                record = self.runtime.plugins.plugins[name]
-                record.status, record.error = 'failed', self.runtime.plugins.report_error(name, '更新', error)
+                try:
+                    await self.runtime.plugins.stop_plugin(name)
+                finally:
+                    self.runtime.refresh_external_tools()
+            await asyncio.to_thread(self.installer.apply_files, name)
+            await self.apply(name, saved)
+            loaded = self.runtime.plugins.plugins[name]
+            if loaded.error is not None:
+                raise RuntimeError(loaded.error)
+        except Exception as error:
+            self.installer.failed(name, error)
             raise
-        await self.reload(name)
-        return {'name': name, 'version': manifest.version, 'output': output,
-                'source': await self.installer.details(name)}
+        return {'name': name, 'restart_required': False}
+
+    async def cancel(self, name: str) -> dict:
+        if self.installer.read(name).installed is None:
+            await self.uninstall(name)
+            return {'name': name}
+        await self.installer.cancel(name)
+        saved = await asyncio.to_thread(_read_saved, self.root)
+        if self.installer.read(name).installed is not None:
+            await self.apply(name, saved)
+        return {'name': name}
 
     async def uninstall(self, name: str) -> None:
-        self.installer.managed_path(name)
+        self.installer.read(name)
         if self.runtime.plugins is not None and name in self.runtime.plugins.plugins:
             try:
                 await self.runtime.plugins.stop_plugin(name)

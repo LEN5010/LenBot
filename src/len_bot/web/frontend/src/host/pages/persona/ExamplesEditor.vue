@@ -2,6 +2,7 @@
 // Operator-managed scenario/line references: the first eight, or up to eight with selected tags.
 import { computed, watch } from 'vue'
 import { mdiArrowUp, mdiClose, mdiPlus } from '@mdi/js'
+import Panel from '../../ui/Panel.vue'
 
 const examples = defineModel('examples', { type: Array, required: true })
 const tags = defineModel('tags', { type: Array, required: true })
@@ -17,18 +18,16 @@ function up(index) {
 </script>
 
 <template>
-  <section class="surface examples">
-    <h2>样例</h2>
-    <p class="muted">保留具体情境和对应说法，可以从已有记录选原句。这些是表达参考，不是本群已经发生的事。</p>
+  <Panel title="样例" description="写具体的情境和它在那时说的话，可以从聊天记录里挑原句。">
     <v-select v-if="available.length" v-model="tags" :items="available" label="只给它看带这些标签的样例" multiple chips closable-chips
       hint="不选就用前 8 条；选了就用带这些标签的，最多 8 条" persistent-hint />
     <p v-if="!examples.length" class="muted">还没有样例。</p>
-    <ol>
+    <ol class="plain-list list">
       <li v-for="(example, index) in examples" :key="index">
         <div class="fields">
-          <v-textarea v-model="example.context" label="场合" rows="1" auto-grow density="compact" hide-details />
-          <v-textarea v-model="example.line" label="它说的话" rows="1" auto-grow density="compact" hide-details />
-          <v-combobox v-model="example.tags" :items="available" label="标签（可不填）" multiple chips closable-chips density="compact" hide-details />
+          <v-textarea v-model="example.context" label="场合" rows="1" auto-grow />
+          <v-textarea v-model="example.line" label="它说的话" rows="1" auto-grow />
+          <v-combobox v-model="example.tags" :items="available" label="标签（可不填）" multiple chips closable-chips />
         </div>
         <div class="actions">
           <v-btn v-if="index" :icon="mdiArrowUp" variant="text" size="small" aria-label="上移" @click="up(index)" />
@@ -36,15 +35,15 @@ function up(index) {
         </div>
       </li>
     </ol>
-    <div><v-btn :prepend-icon="mdiPlus" variant="text" @click="add">加一条样例</v-btn></div>
-  </section>
+    <v-btn :prepend-icon="mdiPlus" variant="text" color="primary" class="add" @click="add">加一条样例</v-btn>
+  </Panel>
 </template>
 
 <style scoped>
-.examples{display:grid;gap:12px}
-.examples p{margin:0}
-ol{list-style:none;margin:0;padding:0;display:grid;gap:12px}
-li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;border:1px solid var(--line);border-radius:10px;padding:12px}
-.fields{display:grid;gap:8px}
+p{margin:0}
+.list{display:grid;gap:var(--sp-3)}
+.list li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--sp-2);border:1px solid var(--line);border-radius:var(--radius);padding:var(--sp-3)}
+.fields{display:grid;gap:var(--sp-2)}
 .actions{display:flex;flex-direction:column}
+.add{justify-self:start}
 </style>

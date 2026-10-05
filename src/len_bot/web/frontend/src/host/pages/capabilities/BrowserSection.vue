@@ -5,9 +5,14 @@ import { browserApi } from '../../api/browser.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify, readPendingRestart } from '../../store.js'
 import { clone, numberOrBlank, same } from '../../forms.js'
-import SettingSection from '../../components/SettingSection.vue'
-import ErrorNote from '../../components/ErrorNote.vue'
-import DevOnly from '../../components/DevOnly.vue'
+import SettingSection from '../../ui/SettingSection.vue'
+import { confirm } from '../../../composables/useConfirm.js'
+import ResourceState from '../../ui/ResourceState.vue'
+import ErrorNote from '../../ui/ErrorNote.vue'
+import ObjectList from '../../ui/ObjectList.vue'
+import ObjectRow from '../../ui/ObjectRow.vue'
+import StatusBadge from '../../ui/StatusBadge.vue'
+import DevOnly from '../../ui/DevOnly.vue'
 
 const emit = defineEmits(['dirty'])
 const browser = useResource(() => browserApi.read())
@@ -42,7 +47,7 @@ async function pair() {
   if (result) pairing.value = result.pairing_link
 }
 async function revoke(id) {
-  if (!window.confirm('取消这台设备的授权？它正在进行的浏览器操作会断开。')) return
+  if (!await confirm({ title: '取消这台设备的授权？', text: '它正在进行的浏览器操作会断开。', confirmLabel: '取消授权', danger: true })) return
   const result = await act.run(async () => {
     await browserApi.revoke(id)
     return (await browserApi.devices()).devices
@@ -50,7 +55,7 @@ async function revoke(id) {
   if (result) { devices.value = result; notify('已取消授权') }
 }
 async function release(item) {
-  if (!window.confirm('关闭这个任务留下的浏览器会话？')) return
+  if (!await confirm({ title: `关闭任务 #${item.id} 留下的浏览器会话？`, confirmLabel: '关闭会话' })) return
   const result = await act.run(() => browserApi.release({ scene: item.scene, task_id: item.id, session_id: session.value || null }))
   if (result) { await browser.reload(); notify('已关闭') }
 }
@@ -58,11 +63,10 @@ const finished = status => ['done', 'failed', 'cancelled'].includes(status)
 </script>
 
 <template>
-  <ErrorNote v-if="browser.error.value" title="读取账号浏览器设置失败" :error="browser.error.value" />
-  <template v-if="browser.data.value">
-    <SettingSection title="账号浏览器" description="主人发起的任务可以使用专用账号浏览器。宿主连接 daemon；浏览器电脑安装对应扩展，远程文件往返还需 Native Messaging 文件助手。"
+  <ResourceState :resource="browser" error-title="读取账号浏览器设置失败">
+    <SettingSection title="账号浏览器" description="主人发起的任务可以使用专用账号浏览器。浏览器所在电脑需要安装对应扩展；远程传文件还需要文件助手。"
       :dirty="dirty" :problem="problem" :saving="save.busy.value" :error="save.error.value" @save="submit">
-      <v-switch :model-value="draft !== null" color="primary" label="启用账号浏览器" hide-details
+      <v-switch :model-value="draft !== null" label="启用账号浏览器"
         @update:model-value="value => draft = value ? (saved ? clone(saved) : blank()) : null" />
       <div v-if="draft" class="form-grid">
         <v-text-field v-model="draft.socket" label="守护进程 socket 路径" hint="完整路径" persistent-hint />
@@ -76,47 +80,41 @@ const finished = status => ['done', 'failed', 'cancelled'].includes(status)
           @update:model-value="value => draft.max_response_bytes = numberOrBlank(value)" />
       </div>
 
-    <div v-if="browser.data.value.running" class="browser-actions">
-      <div class="row">
-        <v-btn variant="outlined" :loading="act.busy.value" @click="check">查看连接和设备</v-btn>
-        <v-btn variant="outlined" :disabled="act.busy.value" @click="pair">生成配对链接</v-btn>
-      </div>
-      <ErrorNote v-if="act.error.value" title="操作没有成功" :error="act.error.value" />
-      <div v-if="pairing" class="pairing">
-        <p>在专用浏览器的扩展里粘贴这个链接完成配对，只能用一次：</p>
-        <code>{{ pairing }}</code>
-        <v-btn size="small" variant="text" @click="pairing = ''">隐藏</v-btn>
-      </div>
-      <ul v-if="devices" class="devices">
-        <li v-for="device in devices" :key="device.device_id">{{ device.label }}
-          <v-btn size="small" variant="text" color="error" :disabled="act.busy.value" @click="revoke(device.device_id)">取消授权</v-btn></li>
-        <li v-if="!devices.length" class="muted">还没有配对的设备</li>
-      </ul>
-      <DevOnly v-if="live" label="守护进程状态"><pre>{{ JSON.stringify(live, null, 2) }}</pre></DevOnly>
-    </div>
+      <template v-if="browser.data.value.running">
+        <h3>连接与设备</h3>
+        <div class="inline">
+          <v-btn variant="tonal" :loading="act.busy.value" @click="check">查看连接和设备</v-btn>
+          <v-btn variant="tonal" :disabled="act.busy.value" @click="pair">生成配对链接</v-btn>
+        </div>
+        <ErrorNote v-if="act.error.value" title="操作没有成功" :error="act.error.value" />
+        <v-alert v-if="pairing" type="info" closable @click:close="pairing = ''">
+          在专用浏览器的扩展里粘贴这个链接完成配对，只能用一次：<code class="pairing">{{ pairing }}</code></v-alert>
+        <ObjectList v-if="devices" divided>
+          <ObjectRow v-for="device in devices" :key="device.device_id" :title="device.label">
+            <template #actions><v-btn size="small" variant="text" color="error" :disabled="act.busy.value" @click="revoke(device.device_id)">取消授权</v-btn></template>
+          </ObjectRow>
+          <li v-if="!devices.length" class="muted">还没有配对的设备</li>
+        </ObjectList>
+        <DevOnly v-if="live" label="守护进程状态" :json="live" />
+      </template>
 
-    <div v-if="browser.data.value.occupied.length" class="occupied">
-      <h3>还占着浏览器的任务</h3>
-      <ul>
-        <li v-for="item in browser.data.value.occupied" :key="item.id">
-          <span>{{ sceneName(item.scene) }} · {{ item.goal }}</span>
-          <v-btn size="small" variant="outlined" :disabled="act.busy.value || !finished(item.status)" @click="release(item)">关闭会话</v-btn>
-        </li>
-      </ul>
-      <DevOnly>
-        <v-text-field v-model="session" label="要关闭的会话 ID" hint="任务没有记下会话时，从守护进程状态里找到并填写" persistent-hint />
-      </DevOnly>
-    </div>
+      <template v-if="browser.data.value.occupied.length">
+        <h3>还占着浏览器的任务</h3>
+        <ObjectList divided>
+          <ObjectRow v-for="item in browser.data.value.occupied" :key="item.id" :title="item.goal" :subtitle="`${sceneName(item.scene)} · 任务 #${item.id}`">
+            <template #meta><StatusBadge kind="task" :value="item.status" /></template>
+            <template #actions><v-btn size="small" variant="text" :disabled="act.busy.value || !finished(item.status)" @click="release(item)">关闭会话</v-btn></template>
+          </ObjectRow>
+        </ObjectList>
+        <DevOnly>
+          <v-text-field v-model="session" label="要关闭的会话 ID" hint="任务没有记下会话时，从守护进程状态里找到并填写" persistent-hint />
+        </DevOnly>
+      </template>
     </SettingSection>
-  </template>
+  </ResourceState>
 </template>
 
 <style scoped>
-.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:16px}
-.browser-actions,.occupied{display:grid;gap:10px}
-.row{display:flex;gap:8px;flex-wrap:wrap}
-.pairing code{display:block;white-space:pre-wrap;overflow-wrap:anywhere}
-.devices,.occupied ul{list-style:none;margin:0;padding:0}
-.devices li,.occupied li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0}
-h3{font-size:15px;margin:0}
+h3{margin-top:var(--sp-2)}
+.pairing{display:block;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:var(--sp-1)}
 </style>
