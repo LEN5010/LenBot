@@ -53,6 +53,8 @@ class AttentionState:
     quiet_notice_until: float | None = None
     limit_notice_until: float | None = None
     temporary_quiet: TemporaryQuiet | None = None
+    # Operator switch from the panel: no turns until turned back on, without an end time.
+    paused: bool = False
 
     def contact(self, at: float, duration: float) -> None:
         if self.last_contact_at is None or at > self.last_contact_at:
@@ -169,6 +171,8 @@ class SceneRunner:
         self.resume = self.chat.restore()
 
     def quiet_period(self, now: float) -> tuple[float, float] | None:
+        if self.state.paused:
+            return now, math.inf
         configured = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
         temporary = self.state.temporary_quiet
         if temporary is None or not temporary.started <= now < temporary.until:
@@ -178,6 +182,8 @@ class SceneRunner:
         return min(configured[0], temporary.started), min(configured[1], temporary.until)
 
     def quiet_direct(self, now: float) -> str:
+        if self.state.paused:
+            return 'defer'
         configured = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
         mode = 'allow' if configured is None else self.settings.quiet_hours.direct
         temporary = self.state.temporary_quiet
@@ -191,7 +197,8 @@ class SceneRunner:
         return {'scene': self.config.scene, 'timezone': self.config.timezone,
                 'attention': self.settings.model_dump(mode='json'),
                 'temporary_quiet': None if self.state.temporary_quiet is None else asdict(self.state.temporary_quiet),
-                'quiet_until': None if period is None else period[1],
+                'paused': self.state.paused,
+                'quiet_until': None if period is None or self.state.paused else period[1],
                 'direct': self.quiet_direct(now),
                 'scope': Template((Path(__file__).resolve().parents[2] / 'prompts' / 'next_scene_control.md').read_text()).substitute(scene=self.config.scene).strip()}
 
@@ -201,6 +208,17 @@ class SceneRunner:
         state.temporary_quiet = (None if seconds is None else
                                  TemporaryQuiet(now, now + seconds, direct, requester))
         self.clear_quiet_wake(state, now, None if seconds is None else (now, now + seconds))
+        self.save_state(state)
+        self.changed.set()
+        self.chat.notify()
+        return self.control_state()
+
+    def set_paused(self, paused: bool) -> dict:
+        """Turn chat off or on for this scene; messages are still stored while off."""
+        state = copy.deepcopy(self.state)
+        state.paused = paused
+        # Turning back on does not answer what was said while off; it stays as context.
+        state.pending = None
         self.save_state(state)
         self.changed.set()
         self.chat.notify()
@@ -321,7 +339,9 @@ class SceneRunner:
                    "wake_channel": state.pending.channel if state.pending else None}
         if blocked:
             receipt['reason'] = 'blacklisted: saved without wake or automatic media processing'
-        if period is not None:
+        if state.paused:
+            receipt["paused"] = True
+        elif period is not None:
             receipt["quiet_until"] = datetime.fromtimestamp(period[1], ZoneInfo(self.config.timezone)).isoformat()
         return receipt
 
@@ -709,6 +729,8 @@ class SceneRunner:
         wake_at, _ = self.proactive.next_at(self.config.scene, self.config.proactive, self.config.timezone,
                                             self.settings.quiet_hours, now, exclude,
                                             observed_since=self.observed_since())
+        if self.state.paused:
+            return None, observe_until
         temporary = self.state.temporary_quiet
         if wake_at is not None and temporary is not None and now < temporary.until:
             wake_at = max(wake_at, temporary.until)

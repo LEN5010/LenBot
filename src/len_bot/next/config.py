@@ -616,13 +616,13 @@ def _load_host_source(path: Path, source: dict) -> HostConfig:
                 browser[field] = Path(browser[field])
     plugins = source.get("plugins")
     if isinstance(plugins, dict):
-        paths = plugins.get("paths", [])
+        paths = plugins.get("paths", ["plugins"])
         if not isinstance(paths, list):
             raise ValueError("plugins.paths must be a list of directory path strings")
         plugins["paths"] = [_resolved_path(root, value, within_root=False, field=f"plugins.paths[{index}]")
                             for index, value in enumerate(paths)]
         plugins["data_directory"] = _resolved_path(
-            root, plugins.get("data_directory", "plugin-data"), within_root=True, field="plugins.data_directory",
+            root, plugins.get("data_directory", "plugins/.data"), within_root=True, field="plugins.data_directory",
         )
     services = source.get("mcp")
     if isinstance(services, dict):
