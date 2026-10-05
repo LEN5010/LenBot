@@ -225,7 +225,7 @@ const facts = name => {
           </Panel>
           <form @submit.prevent="savePaths">
             <AdvancedFields label="插件目录">
-              <v-textarea v-model="paths.paths" rows="2" auto-grow label="额外的插件目录" hint="每行一个，相对路径从 LenBot 目录算起" persistent-hint />
+              <v-textarea v-model="paths.paths" rows="2" auto-grow label="插件目录" hint="每行一个，相对路径从 LenBot 目录算起，默认 plugins" persistent-hint />
               <v-text-field v-model="paths.data_directory" label="插件数据目录" hint="插件保存自己数据的地方" persistent-hint />
               <ErrorNote v-if="errorOf('paths')" title="没有保存成功" :error="errorOf('paths')" />
               <v-btn type="submit" color="primary" class="justify-self-start" :loading="save.busy.value && active === 'paths'" :disabled="!pathsDirty">保存插件目录</v-btn>

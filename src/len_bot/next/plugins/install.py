@@ -91,9 +91,11 @@ class Installation(BaseModel):
 class PluginInstaller:
     def __init__(self, root: Path):
         self.root = root
+        # Everything plugin-related stays under the instance's plugins/: installed
+        # sources by name, and dot directories that discovery never treats as plugins.
         self.directory = root / 'plugins'
-        self.records = root / 'plugin-installations'
-        self.candidates = root / '.plugin-candidates'
+        self.records = self.directory / '.installations'
+        self.candidates = self.directory / '.candidates'
 
     def read(self, name: str) -> Installation:
         path = self.records / (name + '.json')
@@ -104,7 +106,7 @@ class PluginInstaller:
             raise ValueError(f'{path}: {error}; raw={raw[:500]!r}') from error
 
     def write(self, record: Installation) -> None:
-        self.records.mkdir(exist_ok=True)
+        self.records.mkdir(parents=True, exist_ok=True)
         path = self.records / (record.name + '.json')
         descriptor, temporary = tempfile.mkstemp(prefix='.installation-', dir=self.records)
         try:
@@ -166,7 +168,7 @@ class PluginInstaller:
         else:
             dependencies_changed = bool(manifest.dependencies)
         record.application = 'host' if manifest.reload == 'host' or dependencies_changed else 'plugin'
-        self.candidates.mkdir(exist_ok=True)
+        self.candidates.mkdir(parents=True, exist_ok=True)
         target = self.candidates / name
         if target.exists():
             shutil.rmtree(target)
@@ -178,7 +180,7 @@ class PluginInstaller:
     async def prepare_git(self, url: str, paths: list[Path], *, ref: str | None = None,
                           switch_source: bool = False) -> tuple[Manifest, Installation, str]:
         url = repository_url(url)
-        self.candidates.mkdir(exist_ok=True)
+        self.candidates.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='.git-', dir=self.candidates) as temporary:
             checkout = Path(temporary) / 'checkout'
             output = await run_command('git', 'clone', '--', url, str(checkout))
@@ -192,7 +194,7 @@ class PluginInstaller:
 
     async def prepare_zip(self, data: bytes, filename: str, paths: list[Path], *,
                           switch_source: bool = False) -> tuple[Manifest, Installation, str]:
-        self.candidates.mkdir(exist_ok=True)
+        self.candidates.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='.zip-', dir=self.candidates) as temporary:
             checkout = Path(temporary) / 'checkout'
             checkout.mkdir()

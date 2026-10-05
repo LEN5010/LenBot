@@ -96,6 +96,8 @@ def initialize(root: Path, item: FirstSetup) -> dict:
     (role_path / 'boundaries.md').write_text(persona.boundaries, encoding='utf-8')
     (role_path / 'examples.yaml').write_text('[]\n', encoding='utf-8')
     load_persona(role_path)
+    # Plugins are installed into, or dropped by hand into, the instance's plugins/.
+    (root / 'plugins').mkdir(exist_ok=True)
     fd, filename = tempfile.mkstemp(prefix='.lenbot-setup-', suffix='.json', dir=root)
     temporary = Path(filename)
     try:

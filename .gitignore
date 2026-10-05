@@ -75,9 +75,6 @@ node_modules/
 # Local business state, personal role packages and evaluation runs
 /state/
 /plugins/
-/plugin-installations/
-/.plugin-candidates/
-/plugin-data/
 /personas/
 /data/eval/runs/
 *.sqlite3
