@@ -55,7 +55,7 @@ OneBot ──> 平台适配器 ──> 消息入库 ──┬─> 插件规则�
 
 ## 角色与学习
 
-角色包由 `persona/` 读取，说明见[角色包](personas.md)。提示词在 `src/len_bot/prompts/`，原则说明见[表达材料](expression-materials.md)。
+角色包由 `persona/` 读取，说明见[角色包](personas.md)。提示词在 `src/len_bot/prompts/`，原则说明见[群聊表达](expression-materials.md)。
 
 `learning/` 从群聊里学习，每个群分别开关，各自绑定模型：
 

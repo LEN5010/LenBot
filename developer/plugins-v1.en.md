@@ -13,7 +13,7 @@ requires_python = ">=3.13"
 platforms = ["linux", "darwin", "win32"]
 reload = "plugin"
 authors = ["Plugin maintainer"]
-license = "MIT"
+license = "GPL-3.0-only"
 description = "A separate counter for each scene"
 ```
 
@@ -108,4 +108,6 @@ PluginTest runs real lifecycle, matching, tool validation, scene permissions and
 
 The local harness provides no model, memory service or worker and raises an explicit error for those capabilities. A plugin's own external network calls still execute. Use an explicit test instance for service integration.
 
-Publish a standalone repository containing source, manifest, documentation and a license. Release ZIPs contain the same root package. Set your own author/license, update version and compatibility ranges, document configuration/data changes, and test the published package. The [plugin template](https://github.com/lendevs/lenbot-plugin-template) already includes a test workflow and a tag workflow that attaches an importable ZIP to each GitHub Release.
+Publish a standalone repository containing source, manifest, documentation and a license. Release ZIPs contain the same root package. Set your own name and authors, update version and compatibility ranges, document configuration/data changes, and test the published package. The [plugin template](https://github.com/lendevs/lenbot-plugin-template) already includes a test workflow and a tag workflow that attaches an importable ZIP to each GitHub Release.
+
+**License**: the LenBot host is AGPL-3.0-only; the plugin template and the counter example are GPL-3.0-only. Plugins run in the host process, so GPL-3.0 is the recommended plugin license; section 13 of GPLv3 permits combining GPLv3 works with AGPLv3 works. If you choose another license, check its compatibility with GPLv3 and AGPLv3 yourself.

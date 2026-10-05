@@ -40,7 +40,7 @@ LenBot 的基本单位是群聊场景。每个群（或私聊）都有一个一�
 从源码运行需要 uv 和 Node.js 22（用来构建面板）：
 
 ```sh
-git clone https://github.com/LEN5010/LenBot.git
+git clone https://github.com/lendevs/LenBot.git
 cd LenBot
 ./scripts/install.sh      # 安装依赖并构建面板，不启动
 uv run --no-sync len-bot  # 第一次会打印向导链接

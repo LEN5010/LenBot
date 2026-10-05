@@ -6,7 +6,7 @@ requires_python = ">=3.13"
 platforms = ["linux", "darwin", "win32"]
 reload = "plugin"
 authors = ["LEN5010"]
-license = "AGPL-3.0-only"
+license = "GPL-3.0-only"
 description = "每群独立计数：命令和全文规则直接回复，另提供只读工具，不主动调用模型。"
 
 [config.label]

@@ -35,7 +35,7 @@ LenBot 有三种运行方式，跑的是同一个程序，读的也是同一种�
 ## 从源码运行
 
 ```sh
-git clone https://github.com/LEN5010/LenBot.git
+git clone https://github.com/lendevs/LenBot.git
 cd LenBot
 ./scripts/install.sh
 uv run --no-sync len-bot

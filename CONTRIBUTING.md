@@ -96,3 +96,7 @@ uv run --no-sync python scripts/build_release.py /tmp/lenbot-release
 - 问题和改动分别用[缺陷模板](.github/ISSUE_TEMPLATE/bug.md)和 [PR 模板](.github/PULL_REQUEST_TEMPLATE.md)。
 - 提交前跑 `git diff --check`。真实配置、数据库、凭据、个人角色和构建产物都不要提交。
 - 提交说明写清行为变化、核对了什么、还有什么没确认。
+
+## 许可证
+
+提交到本仓库的代码按 [AGPL-3.0-only](LICENSE) 授权；`developer/examples/counter/` 和插件模板按 GPL-3.0-only 授权。第三方材料的来源和许可写在 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md)，引入新的第三方代码或素材时一起更新。

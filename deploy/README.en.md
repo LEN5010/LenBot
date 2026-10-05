@@ -35,7 +35,7 @@ The instance directory holds everything for one bot:
 ## Running from source
 
 ```sh
-git clone https://github.com/LEN5010/LenBot.git
+git clone https://github.com/lendevs/LenBot.git
 cd LenBot
 ./scripts/install.sh
 uv run --no-sync len-bot

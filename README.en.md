@@ -40,7 +40,7 @@ All three run the same program. On first start without a configuration, `len-bot
 Running from source needs uv and Node.js 22 (to build the panel):
 
 ```sh
-git clone https://github.com/LEN5010/LenBot.git
+git clone https://github.com/lendevs/LenBot.git
 cd LenBot
 ./scripts/install.sh      # install dependencies and build the panel; does not start
 uv run --no-sync len-bot  # prints the setup wizard link on first run

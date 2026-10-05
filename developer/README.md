@@ -5,7 +5,7 @@
 | [架构](architecture.md) | 各部分做什么、数据怎么流动 |
 | [上下文与模型输入](context.md) | 请求组装、预算、压缩和续接协议 |
 | [角色包](personas.md) | 角色目录结构和写法 |
-| [表达材料](expression-materials.md) | 群聊表达原则的来源 |
+| [群聊表达](expression-materials.md) | 表达原则和提示词分工 |
 | [插件接口 v1](plugins-v1.md)（[English](plugins-v1.en.md)） | 插件清单、装饰器、上下文、测试和发布 |
 | [内置插件](builtin-plugins.md) | 随程序提供的四个插件 |
 | [插件目录](plugin-catalog.md) | 静态插件目录的格式 |

@@ -96,3 +96,7 @@ This rebuilds the panel in a copy and produces the sdist, the wheel and the Linu
 - Use the [bug template](.github/ISSUE_TEMPLATE/bug.md) and the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
 - Run `git diff --check` before committing. Never commit real configuration, databases, credentials, personal personas or build output.
 - Commit messages say what behavior changed, what you checked and what is still unconfirmed.
+
+## License
+
+Code contributed to this repository is licensed under [AGPL-3.0-only](LICENSE); `developer/examples/counter/` and the plugin template are GPL-3.0-only. Sources and licenses of third-party material are listed in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md); update it when you bring in third-party code or assets.
