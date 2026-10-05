@@ -11,3 +11,5 @@ Install the host and pytest/pytest-asyncio, then run `uv run --no-sync pytest -q
 The host panel installs this standalone Git repository directly. Prepare the candidate, save configuration, apply it, then enable it and select scenes. The v* tag workflow creates an importable ZIP and attaches it to a GitHub Release. It packages plugin source and documentation, without instance data.
 
 Before publishing, select a fixed host revision you tested in CI, update the manifest version and tag that commit. Document configuration and data migrations. Downgrading source does not undo data changes. The host repository's developer/plugins-v1.en.md documents the public interface.
+
+CI pins the tested host commit. Push that host revision to the configured repository before publishing the template; the remote workflow has not run yet.
