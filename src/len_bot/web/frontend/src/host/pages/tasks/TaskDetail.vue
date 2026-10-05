@@ -106,7 +106,7 @@ function created(task) {
 <template>
   <ResourceState :resource="detail" error-title="读取任务失败">
   <div v-if="task" class="task">
-    <Panel :title="task.goal" :description="`平台账号 ${task.requester} 发起 · ${at(task.created)}${task.ended ? ` · ${at(task.ended)} 结束` : ''}`">
+    <Panel :title="task.goal" :description="`${task.requester} 发起 · ${at(task.created)}${task.ended ? ` · ${at(task.ended)} 结束` : ''}`">
       <template #actions><StatusBadge kind="task" :value="task.status" /></template>
       <FactList :items="facts(task)" class="facts" />
       <ErrorNote v-if="task.error" title="任务出错了" :error="task.error" />
@@ -149,7 +149,7 @@ function created(task) {
         <v-textarea v-model="followUp" label="接着做" rows="2" auto-grow hint="在原来的基础上继续，例如“再加一张图表”" persistent-hint />
         <v-btn variant="tonal" :disabled="!validIdentity || !followUp.trim()" :loading="act.busy.value" @click="send('continue', { text: followUp })">继续</v-btn>
       </div>
-      <p v-if="!validIdentity" class="muted small">在页面上方填写你的 平台账号 后才能操作。</p>
+      <p v-if="!validIdentity" class="muted small">在页面上方填写你的账号后才能操作。</p>
     </Panel>
     <ErrorNote v-if="act.error.value" title="操作没有成功" :error="act.error.value" />
 
@@ -158,7 +158,7 @@ function created(task) {
       <ObjectList divided>
         <ObjectRow v-for="file in detail.data.value.files" :key="file.id" :title="file.name"
           :subtitle="`${(file.size / 1024).toFixed(1)} KB${file.note ? ` · ${file.note}` : ''}${file.exists ? '' : ' · 本地副本已不在'}`">
-          <ErrorNote v-if="file.upload?.error" title="发送到 平台账号 失败" :error="file.upload.error" />
+          <ErrorNote v-if="file.upload?.error" title="发送到 QQ 失败" :error="file.upload.error" />
           <template #meta><StatusBadge v-if="file.upload" kind="upload" :value="file.upload.status" /></template>
           <template #actions><v-btn size="small" variant="text" :disabled="!file.exists" :loading="download.busy.value" @click="save(file)">下载</v-btn></template>
         </ObjectRow>

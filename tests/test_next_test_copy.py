@@ -81,3 +81,15 @@ def test_copy_reports_original_boundary_error(tmp_path, blocked):
         assert json.loads((target / 'lenbot.config.json').read_text()) == original
     assert result.returncode != 0
     assert json.loads((source / 'lenbot.config.json').read_text()) == original
+
+
+def test_copy_points_absolute_instance_paths_at_the_copy(tmp_path):
+    source, target = tmp_path / 'source', tmp_path / 'target'
+    original = source_instance(source)
+    original['plugins']['data_directory'] = str(source.resolve() / 'plugin-data')
+    (source / 'lenbot.config.json').write_text(json.dumps(original))
+    result = command(source, target, 8089)
+    assert result.returncode == 0, result.stderr
+    copied = json.loads((target / 'lenbot.config.json').read_text())
+    assert copied['plugins']['data_directory'] == str(target.absolute() / 'plugin-data')
+    assert copied['plugins']['paths'] == ['plugins']

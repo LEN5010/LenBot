@@ -1,4 +1,4 @@
-"""Actual 账号 identities shared by task and schedule capability checks."""
+"""Actual platform account identities shared by task and schedule capability checks."""
 from collections.abc import Sequence
 import re
 

@@ -41,12 +41,12 @@ async function submit() {
       :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
       <p>主人：<strong>{{ permissions.data.value.owners.length ? permissions.data.value.owners.join('、') : '未设置' }}</strong>，在连接设置里修改。主人拥有全部权限。</p>
       <h3>所有群通用的名单</h3>
-      <v-combobox v-for="[field, label] in lists" :key="field" v-model="draft.global_identities[field]" :label="`${label} 平台账号`"
+      <v-combobox v-for="[field, label] in lists" :key="field" v-model="draft.global_identities[field]" :label="`${label}账号`"
         :hint="listHints[field]" persistent-hint multiple chips closable-chips />
       <v-switch :model-value="draft.scene_identities !== null" label="本群另外加名单"
         @update:model-value="value => draft.scene_identities = value ? { admins: [], whitelist: [], blacklist: [] } : null" />
       <template v-if="draft.scene_identities">
-        <v-combobox v-for="[field, label] in lists" :key="field" v-model="draft.scene_identities[field]" :label="`本群${label} 平台账号`"
+        <v-combobox v-for="[field, label] in lists" :key="field" v-model="draft.scene_identities[field]" :label="`本群${label}账号`"
           multiple chips closable-chips />
       </template>
       <h3>本群谁可以做什么</h3>
@@ -56,11 +56,11 @@ async function submit() {
       </div>
       <AdvancedFields label="只对任务或提醒生效的名单">
         <template v-for="[key, label] in [['task_identities', '任务'], ['schedule_identities', '提醒']]" :key="key">
-          <v-text-field :model-value="draft[key].owner ?? ''" :label="`${label}主人 平台账号`"
+          <v-text-field :model-value="draft[key].owner ?? ''" :label="`${label}主人账号`"
             :hint="`在${label}权限里按主人对待，其他功能不受影响`" persistent-hint
             @update:model-value="value => draft[key].owner = value.trim() || null" />
-          <v-combobox v-model="draft[key].admins" :label="`${label}管理员 平台账号`" multiple chips closable-chips />
-          <v-combobox v-model="draft[key].whitelist" :label="`${label}白名单 平台账号`" multiple chips closable-chips />
+          <v-combobox v-model="draft[key].admins" :label="`${label}管理员账号`" multiple chips closable-chips />
+          <v-combobox v-model="draft[key].whitelist" :label="`${label}白名单账号`" multiple chips closable-chips />
         </template>
       </AdvancedFields>
     </SettingSection>

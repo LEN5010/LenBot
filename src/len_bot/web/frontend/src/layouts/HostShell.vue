@@ -33,7 +33,7 @@ const status = computed(() => {
   const state = host.state
   if (!state) return { text: host.stateError ? '状态读取失败' : '读取中', tone: host.stateError ? 'error' : 'neutral' }
   if (state.connection.connected && state.connection.accepting) return { text: '在线', tone: 'success' }
-  return state.connection.status === 'running' ? { text: '平台账号 未连接', tone: 'warning' } : { kind: 'runtime', value: state.connection.status }
+  return state.connection.status === 'running' ? { text: 'QQ 未连接', tone: 'warning' } : { kind: 'runtime', value: state.connection.status }
 })
 const restartItems = computed(() => {
   const value = host.restart
@@ -49,7 +49,7 @@ function refresh() {
 }
 onMounted(refresh)
 watch(() => route.name, refresh)
-// Names are asked for once 平台账号 is connected and while any scene still lacks one.
+// Names are asked for once QQ is connected and while any scene still lacks one.
 watch(() => host.state?.connection.connected && host.state.scenes.some(item => !sceneTitles[item.scene]),
   missing => { if (missing) readSceneTitles() }, { immediate: true })
 watch(mobile, value => { drawer.value = !value })

@@ -64,7 +64,7 @@ async function submit() {
 <template>
   <SettingSection v-if="draft" title="连接 QQ" description="LenBot 通过 OneBot（例如 NapCat、SnowLuma）收发 QQ 消息。改动重启后生效。"
     :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
-    <p class="bot">Bot 的平台账号：<strong>{{ saved.bot_id }}</strong></p>
+    <p class="bot">Bot 账号：<strong>{{ saved.bot_id }}</strong></p>
     <v-select :model-value="draft.onebot === null ? null : draft.onebot.mode" label="连接方式" :items="[
       { title: '不连接 OneBot（模拟面板）', value: null },
       { title: 'LenBot 去连 OneBot（正向 WebSocket）', value: 'forward_ws' },
@@ -85,7 +85,7 @@ async function submit() {
       { title: '真实发送到 QQ', value: 'onebot' }, { title: '模拟发送（只在面板里看到回复）', value: 'simulated' }]"
       hint="刚开始调试时用模拟发送，确认没问题再改成真实发送" persistent-hint />
     <div class="form-grid">
-      <v-textarea :model-value="draft.owners.join('\n')" label="主人平台账号（每行一个）" rows="2"
+      <v-textarea :model-value="draft.owners.join('\n')" label="主人账号（每行一个）" rows="2"
         hint="例如 onebot:70001；留空表示没有主人" persistent-hint @update:model-value="value => draft.owners = value.split('\n').map(item => item.trim()).filter(Boolean)" />
       <v-text-field v-model="draft.timezone" label="时区" hint="影响时间显示、安静时段和提醒，例如 Asia/Shanghai" persistent-hint />
     </div>

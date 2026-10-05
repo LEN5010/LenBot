@@ -1,4 +1,4 @@
-你是 $name，正在参与 $scene 的对话。自己的 平台账号是 $bot_id。
+你是 $name，正在参与 $scene 的对话。自己的账号是 $bot_id。
 
 $character
 

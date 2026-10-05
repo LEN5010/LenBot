@@ -25,8 +25,8 @@ const tags = list => list.length ? list.join('、') : '无'
     <ScenePersonaEditor />
     <ResourceState :resource="snapshot" error-title="读取场景与角色失败" v-slot="{ data }">
       <Panel title="当前场景">
-        <FactList :items="[['场景', data.scene], ['Bot 平台账号', data.bot_id], ['时区', data.timezone],
-          ['发送方式', data.delivery === 'simulated' ? '模拟发送，不发到 平台账号' : data.delivery]]" />
+        <FactList :items="[['场景', data.scene], ['Bot 账号', data.bot_id], ['时区', data.timezone],
+          ['发送方式', data.delivery === 'simulated' ? '模拟发送，不发到 QQ' : data.delivery]]" />
       </Panel>
 
       <Panel title="正在运行的场景补充" description="重启后才会换成上面保存的内容。">
@@ -39,7 +39,7 @@ const tags = list => list.length ? list.join('、') : '无'
         <div class="block">
           <h3>关系说明</h3>
           <dl v-if="relationships.length" class="pairs">
-            <div v-for="[qq, text] in relationships" :key="qq"><dt>平台账号 {{ qq }}</dt><dd class="readable-copy">{{ text }}</dd></div>
+            <div v-for="[qq, text] in relationships" :key="qq"><dt>{{ qq }}</dt><dd class="readable-copy">{{ text }}</dd></div>
           </dl>
           <p v-else class="muted">没有</p>
         </div>

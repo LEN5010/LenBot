@@ -45,12 +45,12 @@ const imageUrl = (message, image) => `${path}/messages/${message.seq}/images/${i
       <ol class="chat-list">
         <li v-for="item in items" :key="item.key" :class="item.message ? { mine: item.message.is_self } : 'notice'">
           <template v-if="item.notice">
-            <span>{{ item.notice.raw.user_id ? `平台账号 ${item.notice.raw.user_id} ` : '' }}{{ noticeLabel(item.notice.kind) }} · {{ formatTime(item.time, timezone) }}</span>
+            <span>{{ item.notice.raw.user_id ? `${item.notice.raw.user_id} ` : '' }}{{ noticeLabel(item.notice.kind) }} · {{ formatTime(item.time, timezone) }}</span>
             <DevOnly label="平台原文" :json="item.notice.raw" />
           </template>
           <template v-else>
             <div class="meta"><strong>{{ name(item.message) }}</strong>
-              <span v-if="!item.message.is_self">平台账号 {{ item.message.sender.uid }}</span>
+              <span v-if="!item.message.is_self">{{ item.message.sender.uid }}</span>
               <span>{{ formatTime(item.time, timezone) }}</span>
               <StatusBadge v-if="item.message.recalled" text="已撤回" />
               <StatusBadge v-if="item.message.is_self && item.message.send_status !== 'sent'" kind="message" :value="item.message.send_status" /></div>

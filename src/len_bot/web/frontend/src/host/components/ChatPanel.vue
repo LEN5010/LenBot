@@ -1,6 +1,6 @@
 <script setup>
 // A test conversation: type as a made-up group member, see the Bot's simulated
-// replies, and open any reply round to see what happened. Nothing goes to 平台账号.
+// replies, and open any reply round to see what happened. Nothing goes to QQ.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from '../../api.js'
 import { useAction, useResource } from '../../composables/useResource.js'
@@ -81,7 +81,7 @@ const receiptText = { stored: '已收到，这条消息不会叫醒 Bot', duplic
         <ol class="messages">
           <li v-if="!messages.length" class="empty muted">发一条消息开始聊吧</li>
           <li v-for="message in messages" :key="message.seq" :class="{ self: message.is_self }">
-            <span class="who">{{ message.is_self ? view.persona?.name : (message.sender?.nickname || `平台账号 ${message.sender?.uid}`) }}
+            <span class="who">{{ message.is_self ? view.persona?.name : (message.sender?.nickname || message.sender?.uid) }}
               · {{ formatTime(message.time, view.timezone, { date: false }) }}</span>
             <div class="bubble">{{ message.text }}</div>
             <StatusBadge v-if="message.is_self && message.send_status !== 'simulated'" dot kind="message" :value="message.send_status" />
@@ -91,7 +91,7 @@ const receiptText = { stored: '已收到，这条消息不会叫醒 Bot', duplic
         <form v-if="view.running" class="composer" @submit.prevent="submit">
           <div v-if="!isPrivate" class="identity">
             <v-text-field v-model="nickname" label="昵称" density="compact" hide-details />
-            <v-text-field v-model="uid" label="平台账号"  density="compact" hide-details />
+            <v-text-field v-model="uid" label="账号" placeholder="onebot:QQ号" density="compact" hide-details />
             <v-checkbox v-model="mention" label="@ Bot" density="compact" hide-details />
           </div>
           <v-select v-if="replies.length" v-model="replyTo" :items="replies" label="引用一条消息（可不选）" density="compact" clearable hide-details />

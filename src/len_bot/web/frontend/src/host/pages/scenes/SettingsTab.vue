@@ -68,7 +68,7 @@ const dirty = computed(() => sceneDirty.value || tasksDirty.value)
 watch(() => dirty.value || Boolean(saved.value && persona.value !== saved.value.persona),
   value => emit('dirty', value), { immediate: true })
 const personaOptions = computed(() => [...new Set(Object.values(settings.data.value?.saved.scenes || {}).map(item => item.persona))])
-const duplicate平台账号 = computed(() => new Set(relationships.value.map(row => row.qq)).size !== relationships.value.length)
+const duplicateAccount = computed(() => new Set(relationships.value.map(row => row.qq)).size !== relationships.value.length)
 
 function toggleQuiet(value) {
   draft.value.attention.quiet_hours = value ? { start: '23:00', end: '07:00', direct: 'defer', notice_text: null } : null
@@ -129,7 +129,7 @@ async function removeScene() {
             <v-combobox v-model="draft.attention.keywords" label="关键词" multiple chips closable-chips
               hint="群里出现这些词时，Bot 会留意要不要接话" persistent-hint />
           </template>
-          <v-combobox v-model="draft.attention.other_bot_ids" label="群里其他 Bot 的 平台账号" multiple chips closable-chips
+          <v-combobox v-model="draft.attention.other_bot_ids" label="群里其他 Bot 的账号" placeholder="onebot:QQ号" multiple chips closable-chips
             hint="这些账号的普通消息不会叫醒 Bot，避免两个 Bot 互相聊个没完" persistent-hint />
           <v-switch :model-value="draft.attention.quiet_hours !== null" label="每天的安静时段" @update:model-value="toggleQuiet" />
           <div v-if="draft.attention.quiet_hours" class="form-grid">
@@ -163,11 +163,11 @@ async function removeScene() {
           <h3>和群友的关系</h3>
           <RowEditor :items="relationships" :make="() => ({ qq: '', text: '' })" add-label="添加关系" columns="160px minmax(0,1fr)">
             <template #default="{ item }">
-              <v-text-field v-model="item.qq" label="平台账号"  />
+              <v-text-field v-model="item.qq" label="账号" placeholder="onebot:QQ号" />
               <v-textarea v-model="item.text" label="关系说明" rows="1" auto-grow placeholder="例如：群主，和 Bot 是老朋友" />
             </template>
           </RowEditor>
-          <p v-if="duplicate平台账号" class="problem">有重复的 平台账号，请合并成一条</p>
+          <p v-if="duplicateAccount" class="problem">有重复的账号，请合并成一条</p>
           <v-textarea :model-value="draft.scene_persona.behavior_addendum ?? ''" label="本群的额外要求" rows="2" auto-grow
             hint="例如：这个群聊技术话题，回复可以长一点" persistent-hint
             @update:model-value="value => draft.scene_persona.behavior_addendum = value || null" />
@@ -195,7 +195,7 @@ async function removeScene() {
         </Panel>
 
         <SaveBar :on-save="submit" :dirty="dirty" :saving="save.busy.value" :error="save.error.value" label="保存本群设置"
-          :problem="duplicate平台账号 ? '和群友的关系里有重复的 平台账号' : ''" @discard="adopt" />
+          :problem="duplicateAccount ? '和群友的关系里有重复的账号' : ''" @discard="adopt" />
       </form>
 
       <Panel title="角色与移除">

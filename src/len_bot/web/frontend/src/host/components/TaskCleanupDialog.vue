@@ -54,7 +54,7 @@ async function run() {
         <template #meta><StatusBadge :text="item.status === 'complete' ? '清理完成' : '未完成'" :tone="item.status === 'complete' ? 'success' : 'error'" /></template>
       </ObjectRow>
     </ObjectList>
-    <p v-if="!validIdentity" class="problem">先在页面上方填写你的 平台账号</p>
+    <p v-if="!validIdentity" class="problem">先在页面上方填写你的账号</p>
     <template #actions>
       <v-btn v-if="!result" color="error" :loading="clean.busy.value" :disabled="!validIdentity" @click="run">{{ title }}</v-btn>
     </template>

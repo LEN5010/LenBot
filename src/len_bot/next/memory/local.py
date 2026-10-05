@@ -513,7 +513,7 @@ class LocalMemory:
         documents: list[MemoryDocument] = []
         for user in dict.fromkeys(users):
             if re.fullmatch(r"[a-z][a-z0-9_-]*:[^:\s/\\]+", user) is None:
-                raise ValueError(f"profile 账号 must be a platform sender identity: {user!r}")
+                raise ValueError(f"profile account must be a platform sender identity: {user!r}")
             for filename in ("profile.md", "preferences.md"):
                 path = f"people/{user}/{filename}"
                 target = self._target(scene, path, file=True)
