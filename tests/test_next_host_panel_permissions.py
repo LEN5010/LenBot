@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 
 from len_bot.next.config import load_host_config
 from len_bot.next.panel.app import create_app
@@ -16,7 +17,8 @@ from len_bot.next.storage.store import Store
 from len_bot.web.auth import hash_password
 
 
-def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -> None:
+@pytest.mark.parametrize('onebot', [None, {'mode': 'forward_ws', 'ws_url': 'ws://127.0.0.1:9'}])
+def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path, onebot) -> None:
     root = tmp_path / "host"
     root.mkdir()
     role = root / "persona"
@@ -32,7 +34,7 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
     source = {"compaction": {"input_tokens": 2000},
         "mode": "isolated-multi", "bot_qq": "90001", "timezone": "UTC",
         "database": "host.sqlite3", "delivery": "simulated",
-        "onebot": {"mode": "forward_ws", "ws_url": "ws://127.0.0.1:9"},
+        "onebot": onebot,
         "panel": {"host": "127.0.0.1", "port": 0, "username": "host-operator",
                   "password_hash": hash_password("synthetic-password", salt="synthetic-salt")},
         "models": {
@@ -199,6 +201,7 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                     finally:
                         await app.state.trials.close()
                     assert (await client.get("/api/host/state")).status_code == 401
-                await runtime.platform.close()
+                if runtime.platform is not None:
+                    await runtime.platform.close()
 
     asyncio.run(exercise())

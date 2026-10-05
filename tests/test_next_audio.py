@@ -99,8 +99,7 @@ def test_automatic_transcription_requires_explicit_runtime_binding(tmp_path):
     with pytest.raises(ValueError,match='transcribe_audio requires'):
         load()
     source['models']['roles']['asr']={'provider':'fixture','model':'exact-audio'}
-    with pytest.raises(ValueError,match='onebot delivery'):
-        load()
+    assert load().scene_config('group:80001').transcribe_audio is True
     source['delivery']='onebot'
     assert load().scene_config('group:80001').transcribe_audio is True
     source['scenes']['group:80001']['transcribe_audio']=False

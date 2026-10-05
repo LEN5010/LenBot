@@ -180,7 +180,7 @@ class ReversePublic(OneBotPublic):
 class ConnectionChange(BaseModel):
     model_config = STRICT
 
-    onebot: Annotated[ForwardPublic | ReversePublic, Field(discriminator="mode")]
+    onebot: Annotated[ForwardPublic | ReversePublic, Field(discriminator="mode")] | None
     access_token: str | None = Field(default=None, repr=False)
     owner_qq: str | None
     timezone: str
@@ -203,8 +203,10 @@ class PanelChange(BaseModel):
 
 def _project(config: HostConfig) -> dict:
     models = config.models
-    onebot = config.onebot.model_dump(mode="json", exclude={"access_token"})
-    onebot["access_token_configured"] = bool(config.onebot.access_token)
+    onebot = None
+    if config.onebot is not None:
+        onebot = config.onebot.model_dump(mode="json", exclude={"access_token"})
+        onebot["access_token_configured"] = bool(config.onebot.access_token)
     return {
         "limits": config.limits.model_dump(mode="json"),
         "retention": None if config.retention is None else config.retention.model_dump(mode="json"),
@@ -501,10 +503,12 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
         def edit(source: dict, saved: HostConfig) -> None:
             if change.access_token == "":
                 raise ValueError("access_token replacement must not be empty")
-            onebot = change.onebot.model_dump(mode="json")
-            onebot["access_token"] = (
-                saved.onebot.access_token if change.access_token is None else change.access_token
-            )
+            onebot = None
+            if change.onebot is not None:
+                onebot = change.onebot.model_dump(mode="json")
+                onebot["access_token"] = (
+                    "" if saved.onebot is None else saved.onebot.access_token
+                ) if change.access_token is None else change.access_token
             source.update(
                 onebot=onebot,
                 owner_qq=change.owner_qq,

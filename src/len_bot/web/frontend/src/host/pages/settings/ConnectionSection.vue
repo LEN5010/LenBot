@@ -14,6 +14,7 @@ const draft = ref(null), token = ref('')
 const save = useAction()
 
 function onebotBody(value) {
+  if (value === null) return null
   const common = {
     mode: value.mode, action_transport: value.action_transport,
     http_url: value.action_transport === 'http' ? value.http_url : null,
@@ -34,6 +35,17 @@ const dirty = computed(() => token.value !== '' || !same(body(draft.value), body
 watch(dirty, value => emit('dirty', value), { immediate: true })
 
 function changeMode(mode) {
+  if (mode === null) {
+    draft.value.onebot = null
+    draft.value.delivery = 'simulated'
+    token.value = ''
+    return
+  }
+  if (draft.value.onebot === null) {
+    draft.value.onebot = { action_transport: 'websocket', http_url: null,
+      request_timeout_seconds: 10, ping_interval_seconds: 20, ping_timeout_seconds: 20,
+      max_frame_bytes: 1048576, upload_visible_root: null }
+  }
   const onebot = draft.value.onebot
   draft.value.onebot = mode === 'forward_ws'
     ? { ...onebot, mode, ws_url: onebot.ws_url ?? 'ws://127.0.0.1:3001' }
@@ -53,9 +65,11 @@ async function submit() {
   <SettingSection v-if="draft" title="连接 QQ" description="LenBot 通过 OneBot（例如 NapCat、SnowLuma）收发 QQ 消息。改动重启后生效。"
     :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
     <p class="bot">Bot 的 QQ：<strong>{{ saved.bot_qq }}</strong></p>
-    <v-select :model-value="draft.onebot.mode" label="连接方式" :items="[
+    <v-select :model-value="draft.onebot === null ? null : draft.onebot.mode" label="连接方式" :items="[
+      { title: '不连接 OneBot（模拟面板）', value: null },
       { title: 'LenBot 去连 OneBot（正向 WebSocket）', value: 'forward_ws' },
       { title: '等 OneBot 来连 LenBot（反向 WebSocket）', value: 'reverse_ws' }]" @update:model-value="changeMode" />
+    <template v-if="draft.onebot !== null">
     <v-text-field v-if="draft.onebot.mode === 'forward_ws'" v-model="draft.onebot.ws_url" label="OneBot 地址"
       hint="OneBot 里配置的 WebSocket 服务地址，例如 ws://127.0.0.1:3001" persistent-hint />
     <div v-else class="form-grid">
@@ -64,9 +78,10 @@ async function submit() {
         @update:model-value="value => draft.onebot.listen_port = numberOrBlank(value)" />
     </div>
     <v-text-field v-model="token" type="password" autocomplete="new-password" label="访问令牌"
-      :placeholder="saved.onebot.access_token_configured ? '已设置，留空保持不变' : '未设置'"
+      :placeholder="saved.onebot !== null && saved.onebot.access_token_configured ? '已设置，留空保持不变' : '未设置'"
       hint="和 OneBot 里配置的 token 一致；不需要就留空" persistent-hint />
-    <v-select v-model="draft.delivery" label="发送方式" :items="[
+    </template>
+    <v-select v-model="draft.delivery" :disabled="draft.onebot === null" label="发送方式" :items="[
       { title: '真实发送到 QQ', value: 'onebot' }, { title: '模拟发送（只在面板里看到回复）', value: 'simulated' }]"
       hint="刚开始调试时用模拟发送，确认没问题再改成真实发送" persistent-hint />
     <div class="form-grid">
@@ -75,6 +90,7 @@ async function submit() {
       <v-text-field v-model="draft.timezone" label="时区" hint="影响时间显示、安静时段和提醒，例如 Asia/Shanghai" persistent-hint />
     </div>
     <AdvancedFields>
+      <template v-if="draft.onebot !== null">
       <v-select v-model="draft.onebot.action_transport" label="发送通道" :items="[{ title: 'WebSocket', value: 'websocket' }, { title: 'HTTP', value: 'http' }]"
         hint="一般保持 WebSocket" persistent-hint />
       <v-text-field v-if="draft.onebot.action_transport === 'http'" v-model="draft.onebot.http_url" label="OneBot HTTP 地址" />
@@ -87,6 +103,7 @@ async function submit() {
       <v-text-field :model-value="draft.onebot.max_frame_bytes" type="number" label="单条数据上限（字节）" hint="收到的单条消息数据超过这个大小会被拒绝" persistent-hint
         @update:model-value="value => draft.onebot.max_frame_bytes = numberOrBlank(value)" />
       <v-text-field v-model="draft.onebot.upload_visible_root" label="OneBot 可见的文件目录" hint="发送任务生成的文件时使用，OneBot 那边看到的绝对路径；不发文件就留空" persistent-hint />
+      </template>
       <v-text-field :model-value="draft.max_steps" type="number" label="每次回复最多步数" hint="Bot 一次回复里最多思考和调用工具几步" persistent-hint
         @update:model-value="value => draft.max_steps = numberOrBlank(value)" />
       <v-text-field :model-value="draft.turn_timeout_seconds" type="number" label="每次回复最长时间（秒）"

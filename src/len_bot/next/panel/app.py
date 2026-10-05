@@ -113,10 +113,10 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
             "timezone": config.timezone,
             "delivery": config.delivery,
             "connection": {
-                "mode": config.onebot.mode,
-                "connected": runtime.platform.connected,
+                "mode": "simulated" if config.onebot is None else config.onebot.mode,
+                "connected": False if runtime.platform is None else runtime.platform.connected,
                 "status": runtime.status,
-                "addresses": runtime.platform.addresses,
+                "addresses": [] if runtime.platform is None else runtime.platform.addresses,
                 "last_error": runtime.last_runtime_error or runtime.last_platform_error,
                 "can_connect": runtime.can_connect,
                 "accepting": runtime.accepting,

@@ -89,3 +89,13 @@ uv run --no-sync python -m len_bot.next.maintenance.migrate_memory_jobs
 独立实例配置 `onebot:null`、`delivery:"simulated"`、`panel:null`，使用同一 `len-bot` 入口，stdin逐行输入原生OneBot JSON。模型和显式开放的任务出网仍可能真实执行；不是全环境离线沙箱。
 
 此入口不接实时插件／MCP／账号浏览／自动ASR。已有 `replay_web`、`replay_images` 只在明确准备固定材料时使用；缺材料就报错，不补联网。它们不是日常开发或发布的必选流程。
+
+## 测试实例副本
+
+停止源实例后复制到不存在的目标目录：
+
+```sh
+uv run python -m len_bot.next.maintenance.test_copy /实际/instance /实际/test-instance --panel-port 8089
+```
+
+命令持源实例锁，整份复制文件并保留权限和符号链接；只将发送改为 simulated、OneBot 改为 null、面板端口改为指定值。其他配置保持，配置校验失败直接报告原错。原文件和外置任务目录不会自动搬迁；绝对路径与符号链接仍指向原位置，启动副本前明确核对这些引用。副本可通过面板试聊，模型、插件和已启用的任务服务仍正常执行。

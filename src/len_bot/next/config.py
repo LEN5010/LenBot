@@ -328,13 +328,10 @@ class HostConfig(SharedConfig):
             raise ValueError(f'Per-scene replay materials require the explicit stdin host, not platform input: {recorded!r}')
         if self.onebot is None:
             incompatible = [name for name, enabled in (
-                ('delivery', self.delivery != 'simulated'), ('panel', self.panel is not None),
-                ('plugins', self.plugins is not None), ('mcp', bool(self.mcp)),
-                ('account_browser', self.account_browser is not None),
-                ('automatic audio transcription', any(scene.transcribe_audio for scene in self.scenes.values())),
+                ('delivery', self.delivery != 'simulated'),
             ) if enabled]
             if incompatible:
-                raise ValueError(f'stdin host requires simulated delivery and no platform/production services: {incompatible!r}')
+                raise ValueError(f'host without OneBot requires simulated delivery: {incompatible!r}')
         return self
 
     @field_validator("mcp")
@@ -363,8 +360,8 @@ class HostConfig(SharedConfig):
                 raise ValueError(f"scenes.{scene}.tasks owner, admins and whitelist must not include bot_qq")
             if settings.tasks.enabled and self.worker is None:
                 raise ValueError(f"scenes.{scene}.tasks.enabled requires global worker settings")
-            if settings.transcribe_audio and (self.models.roles.asr is None or self.delivery != "onebot"):
-                raise ValueError(f"scenes.{scene}.transcribe_audio requires explicit models.roles.asr and onebot delivery")
+            if settings.transcribe_audio and self.models.roles.asr is None:
+                raise ValueError(f"scenes.{scene}.transcribe_audio requires explicit models.roles.asr")
             if settings.proactive is not None and not scene.startswith("group:"):
                 raise ValueError(f"scenes.{scene}.proactive is only supported for group scenes")
             if settings.proactive is not None and (settings.learning is None or not settings.learning.reply_effects):

@@ -33,9 +33,11 @@ async def run_stdin(runtime: NetworkRuntime, *, manage_signals: bool) -> None:
             if service is not None:
                 service.start()
         runtime.audio.start()
+        if runtime.plugins is not None:
+            await runtime.plugins.start()
         runtime.refresh_external_tools()
         runtime._status('running')
-        runtime._emit({'type': 'runtime', 'status': 'ready', 'input': 'stdin', 'delivery': 'simulated',
+        runtime._emit({'type': 'runtime', 'status': 'ready', 'input': 'stdin' if runtime.config.panel is None else 'panel', 'delivery': 'simulated',
                        'scenes': list(runtime.runners),
                        'notice': 'No OneBot connection or platform outlet. Models and explicitly enabled task '
                                  'containers/public egress still execute normally and may cost money.'})
@@ -46,6 +48,9 @@ async def run_stdin(runtime: NetworkRuntime, *, manage_signals: bool) -> None:
                 pending.extend(running)
 
                 async def feed() -> None:
+                    if runtime.config.panel is not None:
+                        await runtime.stopped.wait()
+                        return
                     async for line in input_lines():
                         try:
                             runtime._receive(parse_input(line, runtime.config.bot_qq))
@@ -81,7 +86,7 @@ async def run_stdin(runtime: NetworkRuntime, *, manage_signals: bool) -> None:
         runtime.stop()
         failures: list[BaseException] = []
         # Each cleanup owns its own error; still close the other live units.
-        for name, service in (('tasks', runtime.tasks), ('learning', runtime.learning),
+        for name, service in (('plugins', runtime.plugins), ('tasks', runtime.tasks), ('learning', runtime.learning),
                               ('jargon', runtime.jargon), ('stickers', runtime.sticker_collection),
                               ('reply effects', runtime.reply_effects), ('audio', runtime.audio),
                               ('MCP', runtime.mcp)):

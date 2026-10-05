@@ -204,7 +204,7 @@ class NetworkRuntime:
 
     def _emit(self, result: dict) -> None:
         if self.platform is None:
-            result = {**result, 'input_source': 'stdin'}
+            result = {**result, 'input_source': 'stdin' if self.config.panel is None else 'panel'}
         def clean_value(text):
             if self.plugins is not None:
                 for name in self.plugins.plugins:
