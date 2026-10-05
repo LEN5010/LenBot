@@ -1,0 +1,55 @@
+{
+  "mode": "isolated",
+  "scene": "onebot:group:80001",
+  "bot_id": "onebot:90002",
+  "timezone": "Asia/Shanghai",
+  "persona": "../personas/companion",
+  "database": "chat.sqlite3",
+  "delivery": "simulated",
+  "models": {
+    "providers": {
+      "main": {
+        "api": "openai-chat",
+        "base_url": "https://your-provider.example/v1",
+        "api_key": "填写你的 API Key"
+      }
+    },
+    "roles": {
+      "mind": {
+        "provider": "main",
+        "model": "填写模型名",
+        "context_window_tokens": 128000,
+        "max_output_tokens": 4096,
+        "timeout_seconds": 120.0
+      }
+    }
+  },
+  "compaction": {
+    "input_tokens": 60000
+  },
+  "max_steps": 8,
+  "turn_timeout_seconds": 240.0,
+  "limits": {
+    "messages_per_hour": null
+  },
+  "attention": {
+    "only_direct": true,
+    "direct_idle_seconds": 0,
+    "direct_max_seconds": 0.1,
+    "focus_seconds": 0,
+    "activity": 0
+  },
+  "evaluation": {
+    "profiles": {
+      "current": {
+        "voice_mode": "direct"
+      }
+    },
+    "sets": {
+      "expression": "cases.json"
+    },
+    "repetitions": 1,
+    "case_timeout_seconds": 300.0,
+    "runs_directory": "runs"
+  }
+}

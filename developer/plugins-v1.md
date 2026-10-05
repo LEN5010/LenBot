@@ -174,6 +174,6 @@ async def check():
 
 `scenes` 和 `owners` 可在构造器指定；`message(text, scene=..., sender=...)` 模拟实际身份，返回是否被接管。`deliveries` 包含插件、场景、组合内容、reply_to 和 simulated 状态；`events()` 查看实际记录的插件事件。处理器或启动失败会使本次测试报错，退出上下文会停止插件并删除临时实例。它不提供模型、记忆或工作服务，这些调用明确报错；插件自行调用外部网络仍会执行，同进程测试不是沙箱。
 
-独立仓库模板内容在 [plugin-template](plugin-template/README.md)，当前是待发布到组织的本地准备件。模板 CI 安装指定宿主源码版本再执行实际插件测试；标签发布工作流将清单、入口、README 和 LICENSE 打成可导入 ZIP。发布前填写自己的 name／authors／license，更新版本及兼容范围。插件许可证不因使用宿主接口而自动等于模板许可证。
+在 GitHub 上打开[插件模板仓库](https://github.com/lendevs/lenbot-plugin-template)，点 Use this template 生成自己的仓库。模板 CI 安装指定版本的宿主再跑插件测试；打 `v*` 标签时，发布工作流把清单、入口、README 和 LICENSE 打成可导入的 ZIP 挂到 Release。发布前填写自己的 name／authors／license，更新版本及兼容范围。插件许可证不因使用宿主接口而自动等于模板许可证。
 
 [English](plugins-v1.en.md)

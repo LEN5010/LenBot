@@ -41,8 +41,9 @@ build-backend = "uv_build"
 # The source distribution includes panel sources and deployment recipes;
 # the wheel contains runtime code and the built panel, not its build tools.
 [tool.uv.build-backend]
-source-include = [".github/**", "uv.lock", ".dockerignore", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "scripts/**", "docker/**", "deploy/**", "developer/**"]
-source-exclude = ["src/len_bot/web/frontend/node_modules", "**/__pycache__", "**/*.pyc", "**/.lenbot-instance.lock"]
+source-include = [".github/**", "uv.lock", ".dockerignore", "AGENTS.md", "CONTRIBUTING.md", "CONTRIBUTING.en.md", "README.en.md", "SECURITY.md", "scripts/**", "docker/**", "deploy/**", "developer/**", "examples/**"]
+source-exclude = ["src/len_bot/web/frontend/node_modules", "**/__pycache__", "**/*.pyc", "**/.lenbot-instance.lock",
+                  "examples/replay/lenbot.config.json", "examples/replay/chat.sqlite3*", "examples/replay/runs"]
 wheel-exclude = [
     "**/.lenbot-instance.lock",
     "/src/len_bot/web/frontend/**",

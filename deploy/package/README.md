@@ -47,7 +47,7 @@ macOS 另有 `start.command`／`stop.command`／`restart.command`，注册服务
 
 ## 升级
 
-取得**另一版本**的部署包。先停止宿主与独立试聊，按[离线维护](../current/operations.md#升级与文件锁)备份实例、外置任务目录与记忆文件；旧程序目录不等于数据备份。
+取得**另一版本**的部署包。先停止宿主与独立试聊，按[离线维护](../current/operations.md#升级与备份)备份实例、外置任务目录与记忆文件；旧程序目录不等于数据备份。
 
 ```sh
 "$HOME/lenbot/service" stop
@@ -67,10 +67,4 @@ macOS 另有 `start.command`／`stop.command`／`restart.command`，注册服务
 
 ## 可选能力
 
-QQ、任务镜像、本地记忆、账号浏览和 ASR 的配置见 [deploy/current](../current/README.md)。普通聊天不要求全装，Docker 宿主另用 [Docker 配方](../current/docker.md)。本包生成不代表镜像已上传或版本已公开发布。
-
-## 已核对范围
-
-macOS 本机已从成品包完成全新安装、launchd 注册不启动、显式启停、服务重启和面板重启；独立合成实例经过停机备份、版本环境升级、插件恢复与 current 切换后可重新启动，配置、人工角色、停用插件源码和独立数据保持。该历史验证使用尚未公开的业务格式 36，不能作为当前公开基线 v1 的安装或数据转换验证。
-
-Linux ARM64 已完成非 root 新安装及模板生成，原生 systemd 启停和完整升级仍待核对。以上操作没有连接真实 QQ，也不证明全平台模型／记忆／浏览器功能通过。
+OneBot、向量记忆、语音转写、后台任务和账号浏览的配置见[可选服务](../current/README.md)，普通聊天不需要全装。

@@ -1,136 +1,96 @@
-# 部署与启动
+# 可选服务与配置
 
-唯一宿主入口为 `len-bot`，运行参数只来自实例根 `lenbot.config.json`。安装、迁移、启动分开执行；服务模板不自动重启。角色管理与离线转换见[使用与维护](operations.md)。
+部署方式的选择见[部署](../README.md)。这里说明聊天之外各项服务怎么接，以及怎样把 LenBot 作为系统服务运行。所有设置都在面板里改，最终都写进实例根目录的 `lenbot.config.json`。
 
-## 安装成品（macOS／Linux）
+## OneBot
 
-平台部署包包含 wheel 和[安装入口](../package/README.md)：解压后 `./install.sh install "$HOME/lenbot"`，再用生成的 `run` 完成首次向导；安装不启动业务。版本化程序、原生服务与停机升级也由该入口说明。下文保留单独 wheel 的手工安装方式。
+LenBot 通过 OneBot v11 收发 QQ 消息，自己不登录 QQ。需要一个已经登录 QQ、开着 OneBot WebSocket 的实现，连接方式二选一：
 
-单独使用 wheel 时，在新实例目录创建环境并安装实际取得的文件：
+- **正向 WebSocket**：LenBot 去连 OneBot 的地址，例如 `ws://127.0.0.1:3001`。
+- **反向 WebSocket**：LenBot 监听一个端口，等 OneBot 连进来。
 
-```sh
-uv venv --python 3.13 .venv
-uv pip install --python .venv/bin/python /path/to/len_bot-0.1.0-py3-none-any.whl
-```
+两边配置了访问令牌时要一致。面板设置页可以改连接，首页能看到连接状态；连接断了可以在首页手动重连。
 
-wheel 已带面板，不运行 npm，不复制维护者的角色、配置或业务库。普通聊天不要求 Docker 或 ASR。
+发送方式 `delivery` 有两种：`onebot` 真实发到 QQ，`simulated` 只在本地记录。两种情况模型调用都会计费。
 
-从实例目录执行 `.venv/bin/len-bot`，打开终端打印的首次配置链接。填实际模型地址、名称、上下文窗口及凭据；向导创建新的角色包，不依赖私人角色。建议先选模拟发送。尚未准备 OneBot 时可选反向 WebSocket，只在本机等待连接，再到面板试聊；它不会自己登录 QQ。
+## 模型
 
-首次向导只填写一个聊天模型，它结合完整上下文判断回应、台词和工具；可以文字、独立表情或旁听。口吻材料、原人工样例与明确启用的学习参考照常使用。旧双阶段配置需按运行手册停机更新，不自动改绑模型。
+模型页先添加服务商，再给各个用途绑定模型。服务商接口有三种：`openai-chat`（聊天）、`openai-audio`（语音转写）、`openai-embeddings`（向量）。
 
-### 最小演示
-
-1. 创建角色“群聊伙伴”：身份填“和大家一起聊天、记事和做事的群聊伙伴”，表达填“自然白话，按问题说清楚；闲聊说到点上就停”。保存后重新执行同一启动命令，登录面板的对话测试，发“你好，介绍一下自己”。创建试聊本身不调用模型，发送后才调用。
-2. 在能力 → 插件启用内置 clock，并选定场景。真实 OneBot 接入后发送 `/时间`，由插件直接回复，不唤醒聊天模型；随后再问一句与时间有关的话，主脑上下文可见插件处理和回复。
-3. 需要文件工作时，再按下文配置独立任务环境、模型和账号权限；启用 group_digest，发送 `/群工作 请把周六九点读书会、周日下午两点手工课整理成 CSV`。任务页看到完成后下载登记文件。生成、登记与 QQ 上传是不同结果，未启用任务时此项不属于普通聊天承诺。
-
-### 源码开发安装
-
-仅从源码构建时需要 Node.js 22：
-
-```sh
-./scripts/install.sh
-# 仅需要独立任务时构建，根 worker.image 与标签一致
-docker build -t lenbot-worker:local -f docker/next-worker/Dockerfile .
-```
-
-## 日常启动与可选服务
-
-已安装下述服务的本地实例，日常按顺序启动，不重新安装或迁移：
-
-```sh
-docker compose -f deploy/current/services.compose.yaml up -d
-./deploy/current/start-asr.sh   # 单独终端；已有 ASR 进程时不重复启动
-# 另一个终端，从实例根启动 Bot
-.venv/bin/len-bot
-```
-
-只用聊天不要求 Docker 或 ASR；只启动根配置实际采用的服务。停止时先 Ctrl-C 停 Bot、再停 ASR，最后 `docker compose -f deploy/current/services.compose.yaml stop`，不删除服务卷。
-
-本机源码实例在配套服务就绪后，可双击 `deploy/current/start.command`，或在实例根执行 `.venv/bin/len-bot`。启动器只运行现有环境，不安装、不迁移、不覆盖配置；终端 Ctrl-C 停止 Bot。面板明确重启会等待旧宿主退出后启动一次新宿主，异常不自动拉起，见[保存与重启](operations.md#保存与重启)。
-
-| 服务 | 本机部署入口 | 私有数据／配置 |
+| 用途 | 做什么 | 必需 |
 |---|---|---|
-| LenBot 面板 | 根 `panel`；本机为 `http://127.0.0.1:11307` | `lenbot.config.json` |
-| Ollama 向量 | `http://127.0.0.1:11434/v1`；`bge-m3:567m`、1024 维 | `state/services/embeddings/` |
-| ASR | `http://127.0.0.1:18171/v1`；`large-v3-turbo-q5_0` | [安装与配置](asr.md) |
-| SnowLuma | 独立 QQ 登录／OneBot 服务 | SnowLuma 自己的配置和登录状态 |
+| mind | 群聊主脑，判断、说话、调工具 | 是 |
+| vision | 看图 | 否 |
+| memory | 后台整理记忆、写目录摘要 | 否 |
+| learner | 学说法、黑话，判断回复效果 | 否 |
+| worker | 后台任务里的 Pi | 否 |
+| asr | 语音转写 | 否 |
 
-服务客户端不等于服务本身：Compose 与 ASR 启动脚本使用现成实现，不添加协议代理。它们自己的配置不覆盖 LenBot 根参数；所有服务均不自动重启。
+上下文窗口、输出上限、超时都按服务商文档填写。模型拒绝请求时，LenBot 直接报错，不会自动缩小参数或换模型重试。换掉 mind 的接口或模型可能让已有会话无法续接。
 
-## 配置与连接
+费用和上限在模型页的花费与上限里设置，价格要自己填；没填价格的调用记为费用未知。
 
-- 没有根配置时，`len-bot` 仅显示本机首次向导；保存后退出，不自动连接 QQ。已有配置时，同一命令直接启动业务宿主，不能当作无副作用校验。
-- 运行中在面板保存；需要重启的修改由用户明确重启生效，手工编辑前先停机。升级不覆盖模型、人格、人工样例或群名单。
-- `delivery: "onebot"` 真实发送，`"simulated"` 只模拟发送；两者的模型调用都可能计费。
-- SnowLuma 须登录且实际监听 OneBot 端口，WebUI／VNC 在线不足以证明连接就绪。首次连接失败后面板仍可用，首页可明确手动连接；按钮只用本次启动快照，不热读保存值。已结束的业务运行须重启，不由按钮重建。
-- 面板默认回环监听，远端用 SSH 转发；自建 HTTPS 入口按实际代理和 cookie 配置，不因失败放宽监听或会话限制。
-- `react` 需要角色 `stickers/index.yaml` 和真实原件；知识工具需要实际文档。插件／MCP／账号浏览同样必须有实际代码或服务，不能只开空开关。
+## 记忆与向量检索
 
-## 本地记忆与向量检索
-
-记忆使用宿主本地文件，可按需配置向量检索、后台整理与目录摘要。向量服务使用显式绑定的 embeddings 接口；Compose 示例为 Ollama，不由宿主安装或自动换模型。语音转写另见 [ASR](asr.md)。
-
-可选向量检索使用 Ollama 时，先启动 embeddings 服务并准备所选模型：
+记忆默认用本地 Markdown 和全文检索，不需要额外服务。想加向量检索，准备一个 embeddings 服务，在面板里绑定。用仓库自带的 Ollama 配方：
 
 ```sh
 docker compose -f deploy/current/services.compose.yaml up -d embeddings
 docker exec lenbot-embeddings ollama pull bge-m3:567m
 ```
 
-服务就绪后在面板填写实际模型绑定；服务启动不代表已验证聊天召回效果。
+然后在面板填 `http://127.0.0.1:11434/v1`、模型 `bge-m3:567m`、1024 维。换向量模型后需要停机重建索引，见[使用与维护](operations.md#记忆维护)。
 
-## 独立任务与浏览器
+## 语音转写
 
-根配置必须同时给出实际 `worker`、`models.roles.worker`、场景 `tasks.enabled`、主人或授权账号，以及角色允许的 `delegate/task/tool_search`。采用内置技能还需实际技能目录。
+自动转写群里的语音需要一个 OpenAI 兼容的转写服务，绑定到 `asr` 用途，再在群设置里打开。本地部署 whisper.cpp 的方法见 [ASR](asr.md)。
 
-技能目录存在不等于角色已允许使用：角色的 `skills` 也要包含对应名称（如 `html-document`），或明确选择全部。任务环境的 `skills` 列表才是本次实际装配的技能；空列表时不会读取新建的技能文件。修改后在新任务或明确续接中使用，不会改写已经结束的会话。
+## 后台任务
 
-- `worker.docker_binary` 用 Docker CLI 绝对路径，`docker_host` 用 `docker context inspect` 得到的本机 Unix socket；运行身份必须有访问权限。
-- `workspace_root`、`runtime_root`、交付根分开，均为 Docker 主机可见的实际路径。容器 `uid/gid` 必须能读写这些目录；Mac 常用 `id -u`／`id -g`，不照抄 Linux 镜像账号。
-- SnowLuma 在容器中时，将交付根只读挂入，例如 `file_assets` → `/lenbot-files`，并设置 `onebot.upload_visible_root` 为容器内路径。文件登记、本地可读、QQ 上传成功是不同结果。
-- 任务保持 `network=none`、独立工作区与宿主管道；公共浏览走任务镜像 Chromium 和宿主明确出口。独立账号浏览另需专用守护进程、扩展、文件助手与账号配对；远程文件链见 [BrowserSkill 配套服务](browserskill-files.md)。
-- 更新宿主不会自动更新任务镜像。共享资料、环境放弃和归档规则见[任务维护](operations.md#任务资料与环境)。可选的实例级硬上限见[任务存储池](task-storage.md)，目录用量与池配额分别显示。
+后台任务把长工作交给独立 Docker 容器里的 Pi 执行，聊天不用等它做完。要启用，需要：
 
-当前任务 Dockerfile 已从干净源码在 Linux ARM64 完整构建，并以镜像默认非 root 用户、断网环境实际生成中文两页 A4 PDF、手机截图和逐页打印预览；不是仅在旧任务镜像上追加文件。此项证明构建及本地渲染可用，不代表该新镜像已经运行过完整模型任务或完成 QQ 上传。
+1. 构建任务镜像：`docker build -t lenbot-worker:local -f docker/next-worker/Dockerfile .`
+2. 在能力页配置任务环境：Docker 命令的绝对路径、Docker socket、工作目录、运行目录和交付目录。三个目录要分开，Docker 主机能访问，容器的 `uid/gid` 能读写。
+3. 绑定 `worker` 用途的模型。
+4. 在群设置里开启任务，并在设置页的权限里给出谁能发起任务。
+5. 角色的工具许可里包含 `delegate`、`task` 和 `tool_search`；要用技能时，角色的技能许可也要包含它。
 
-## Linux 服务部署
+任务容器没有网络，模型和公网请求都经过宿主转发，真实密钥不进容器。
 
-发行文件放 `/opt/lenbot/releases/<版本>`，实例放 `/opt/lenbot/instance`。服务账号拥有实例及其中的 `.venv`，插件依赖安装到这一个环境；程序发行包与业务数据分开。先安装系统 Git，并将 uv 放到 `/usr/local/bin/uv`，再创建新实例：
+要把任务产物发到 QQ，OneBot 那边也要能读到交付目录：把交付目录只读挂进 OneBot 所在的容器，并把 `onebot.upload_visible_root` 设成容器里看到的路径。
+
+升级 LenBot 不会自动更新任务镜像，需要时重新构建。给任务目录加硬上限见[任务存储池](task-storage.md)。
+
+## 账号浏览
+
+账号浏览让任务使用主人自己登录的浏览器，需要单独的守护进程、浏览器扩展、文件助手和配对，见[浏览器配套组件](../browser/README.md)和[文件传输](browserskill-files.md)。普通的公开网页浏览在任务镜像里就能用，不需要这些。
+
+## 面板访问
+
+面板默认只监听本机地址，例如 `http://127.0.0.1:8088`。从别的机器访问时用 SSH 端口转发，或者自己配置 HTTPS 反向代理，不要直接把监听地址改成公网。
+
+## 作为系统服务运行
+
+`len-bot` 是一个前台进程：Ctrl-C 停止，面板里的重启由它自己完成。服务管理器只需要启动它，不需要自动拉起；异常退出时去看日志，处理后再启动。
+
+**部署包**自带 `service` 命令，管理 systemd 用户服务或 launchd 服务，见[部署包](../package/README.md#原生服务)。
+
+**源码或手动安装**在 Linux 上可以用 [systemd 模板](lenbot.service)：
 
 ```sh
-sudo useradd --system --user-group --home-dir /opt/lenbot/instance --no-create-home lenbot
-sudo install -d -o lenbot -g lenbot -m 0700 /opt/lenbot/instance
-sudo -H -u lenbot /usr/local/bin/uv venv --python 3.13 /opt/lenbot/instance/.venv
-sudo -H -u lenbot /usr/local/bin/uv pip install --python /opt/lenbot/instance/.venv/bin/python /path/to/len_bot-0.1.0-py3-none-any.whl
-cd /opt/lenbot/instance
-sudo -H -u lenbot .venv/bin/len-bot
-```
-
-最后一条在无配置时显示首次向导，已有配置时启动 Bot。已有用户和实例继续使用，不重复创建或递归改属主。服务模板允许写实例根；使用外部数据目录时增加相应 `ReadWritePaths`。uv 和 Git 在服务 PATH 中可执行，Python 环境不再放在只读源码目录。
-
-明确配置后安装发行包中的 systemd 模板；`daemon-reload` 不启动或开机自启：
-
-```sh
-sudo install -m 0644 /path/to/release/deploy/current/lenbot.service /etc/systemd/system/lenbot.service
+sudo install -m 0644 deploy/current/lenbot.service /etc/systemd/system/lenbot.service
+# 按实际情况修改 User、WorkingDirectory、ExecStart 和 ReadWritePaths
 sudo systemctl daemon-reload
 sudo systemctl start lenbot
 sudo journalctl -u lenbot -n 100 --no-pager
 ```
 
-用 `sudo systemctl stop lenbot` 停止。面板重启由同一个启动器完成；systemd 配置为 `Restart=no`。真实发送配置下启动会连接 OneBot 并恢复已有安排／后台工作。
+模板里的工作目录是实例目录，`ExecStart` 指向实例里的 `.venv/bin/len-bot`，`ReadWritePaths` 要包含实例目录和配置里实例外的任务目录。模板设为 `Restart=no`，也不会开机自启，需要时自己 `enable`。
 
-## Docker 宿主与插件环境
+macOS 上可以双击 [start.command](start.command)，它在仓库根目录执行 `.venv/bin/len-bot`。
 
-[Docker 完整部署](docker.md)提供基础 Compose、可选任务挂载、新卷离线初始化、非 root socket 接入、macOS Desktop 路径与离线升级。镜像带 Git／SSH／uv 和 Docker 客户端；实例数据与版本化 Python 环境分别使用原生卷，普通聊天不挂 socket。
+**Docker** 见 [Docker 部署](docker.md)。
 
-任务启用时，工作／运行／交付路径在 daemon 主机与宿主容器中一致；本次所选技能复制进任务运行目录，不直接绑定镜像内的 Python 安装路径。应用参数仍只读根配置，复制的 Compose 配方只管进程、端口与挂载。
+## 本机配套服务
 
-## 升级成品
-
-停止实例和试聊，按[离线维护](operations.md#升级与文件锁)备份。用 `uv pip install --python .venv/bin/python /path/to/新版本.whl` 替换程序，重建 Python 环境时先运行 `.venv/bin/python -m len_bot.next.maintenance.plugin_dependencies` 安装原插件声明依赖；再从同一实例目录用 `.venv/bin/python -m len_bot.next.maintenance.migrate` 和 `-m len_bot.next.maintenance.migrate_memory_jobs` 执行该版本要求的离线转换，最后 `.venv/bin/len-bot` 启动。安装不改根配置与角色；任务镜像单独升级，不自动迁移或重启。
-
-## 分发
-
-宿主镜像可用 `docker build -f deploy/current/Dockerfile -t lenbot-current:local .` 构建。独立任务还需匹配的任务镜像与Docker连接；普通聊天不用装任务环境。打包步骤只见[开发指南](../../CONTRIBUTING.md#构建与提交)，发行能力限制只见根[README](../../README.md#限制与验收)。
+[services.compose.yaml](services.compose.yaml) 是向量服务（Ollama）的配方，[start-asr.sh](start-asr.sh) 启动本地转写。它们是独立服务，各有自己的配置，LenBot 只通过地址连接，不会替你安装或启动。日常顺序：先启动配套服务，再启动 LenBot；停止时反过来。

@@ -27,8 +27,10 @@ def build_deployments(wheel: Path, project: Path, output: Path, requirements: Pa
             shutil.copy2(requirements, bundle / 'requirements.txt')
             shutil.copytree(project / 'deploy', bundle / 'deploy', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
             shutil.copytree(project / 'developer', bundle / 'developer')
+            shutil.copytree(project / 'examples', bundle / 'examples', ignore=shutil.ignore_patterns(
+                'lenbot.config.json', 'chat.sqlite3*', 'runs'))
             shutil.copytree(project / '.github', bundle / '.github')
-            for resource in ('CONTRIBUTING.md', 'AGENTS.md', 'SECURITY.md'):
+            for resource in ('CONTRIBUTING.md', 'CONTRIBUTING.en.md', 'AGENTS.md', 'SECURITY.md'):
                 shutil.copy2(project / resource, bundle / resource)
             # Keep the published guides' relative links without bundling the whole source tree.
             for pattern in ('src/len_bot/next/builtin_plugins/*/README.md',

@@ -1,0 +1,32 @@
+- file: happy.png
+  description: 笑脸：眯眼咧嘴笑，脸颊泛红。适合：开心、被逗笑、替别人高兴。
+  emotions:
+  - 开心
+  - 被逗笑
+  tags:
+  - 笑
+  - 开心
+- file: speechless.png
+  description: 无语：一字眼一字嘴，额头一滴汗。适合：无语、被整无奈了、懒得吐槽。
+  emotions:
+  - 无语
+  - 无奈
+  tags:
+  - 无语
+  - 汗
+- file: confused.png
+  description: 疑惑：一只眼睛大一只小，嘴角往下，头顶问号。适合：没看懂、怀疑、等对方解释。
+  emotions:
+  - 疑惑
+  - 怀疑
+  tags:
+  - 问号
+  - 疑惑
+- file: agree.png
+  description: 赞同：微笑脸，右下角一个绿色对勾。适合：同意、收到、没问题。
+  emotions:
+  - 赞同
+  - 收到
+  tags:
+  - 对勾
+  - 同意

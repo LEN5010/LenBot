@@ -2,7 +2,7 @@
 
 [中文](plugins-v1.md)
 
-A plugin is a Python package containing `plugin.toml`, `__init__.py`, and exactly one `Plugin` subclass. Copy [counter](examples/counter/) or use the locally prepared [repository template](plugin-template/README.en.md). Plugins run in the host process and share its Python environment.
+A plugin is a Python package containing `plugin.toml`, `__init__.py`, and exactly one `Plugin` subclass. Copy [counter](examples/counter/), or click Use this template on the [plugin template repository](https://github.com/lendevs/lenbot-plugin-template). Plugins run in the host process and share its Python environment.
 
 ```toml
 name = "counter"
@@ -108,4 +108,4 @@ PluginTest runs real lifecycle, matching, tool validation, scene permissions and
 
 The local harness provides no model, memory service or worker and raises an explicit error for those capabilities. A plugin's own external network calls still execute. Use an explicit test instance for service integration.
 
-Publish a standalone repository containing source, manifest, documentation and a license. Release ZIPs contain the same root package. Set your own author/license, update version and compatibility ranges, document configuration/data changes, and test the published package. The [template content](plugin-template/README.en.md) is prepared locally; its public organization repository remains unpublished until created.
+Publish a standalone repository containing source, manifest, documentation and a license. Release ZIPs contain the same root package. Set your own author/license, update version and compatibility ranges, document configuration/data changes, and test the published package. The [plugin template](https://github.com/lendevs/lenbot-plugin-template) already includes a test workflow and a tag workflow that attaches an importable ZIP to each GitHub Release.

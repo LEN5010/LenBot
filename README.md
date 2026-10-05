@@ -1,64 +1,72 @@
 # LenBot
 
-基于 Python、asyncio 和 SQLite 的 QQ 群聊助手，通过 OneBot v11 接入。支持多场景会话、角色表达、本地记忆、独立任务和管理面板；尚未公开发布。
+[English](README.en.md)
 
-## 开始使用
+LenBot 是一个长期待在群里的聊天 Agent。它通过 OneBot v11 接入 QQ，用 Python、asyncio 和 SQLite 写成，自带网页管理面板。
 
-普通使用选择 **Linux／macOS 成品部署包**：内含已构建面板的 wheel、锁定依赖清单和安装入口，只需 uv（Python 3.13 可由 uv 安装），不用 Node.js。取得当前构建产物并解压后：
+## 设计思路
+
+LenBot 的基本单位是群聊场景。每个群（或私聊）都有一个一直存在的 Agent 会话：
+
+- 群友的消息、插件发来的通知、后台任务的进展，都作为输入进入同一个运行时，由这个会话统一处理。
+- Agent 自己决定什么时候开口、说什么、发不发表情、要不要把一件长工作交给后台任务。
+- 宿主负责记清每件事的实际状态：任务做到哪一步了，话有没有真的发出去，文件有没有真的送到。
+
+事件路由仍然保留：精确命令、关键词规则由插件直接处理，不必经过模型。但协调整个群聊行为的是 Agent，它不只是某条命令触发的一个功能。
+
+## 能做什么
+
+| 范围 | 内容 |
+|---|---|
+| 群聊 | 每个场景一份持久会话；自己判断回不回、回谁；表情、引用、提及；长对话自动压缩成回想 |
+| 角色 | 角色包包含设定、说话方式、底线、样例、知识和表情，可导入导出，改动前可以先试聊 |
+| 记忆 | 本地 Markdown 记忆，按群隔离；全文检索，可选向量检索；后台整理，可以修改、删除和彻底遗忘 |
+| 后台任务 | 长工作交给独立 Docker 容器里的 Pi 执行，可以追问、取消、续接；产物登记后可以发到群里 |
+| 工具 | 网页搜索与阅读、看图、语音转写、合并转发、群成员资料、MCP，以及浏览器任务 |
+| 插件 | 同进程 Python 插件：命令、规则、定时、工具和技能；支持 Git 和 ZIP 安装、版本检查、单插件重载 |
+| 学习 | 从群聊里学说法、黑话和表情，观察群友对回复的反应；每一项都能在面板里采用、修改或停用 |
+| 管理 | 面板管理模型、预算、权限、提醒和日志；主人也可以在群里用一句话改设置 |
+
+## 运行方式
+
+三种方式运行的是同一个程序。`len-bot` 第一次启动时没有配置，会打开网页向导：连接 OneBot、读出 Bot 账号、填主人和模型，保存后进入面板。
+
+| 方式 | 适合 | 说明 |
+|---|---|---|
+| 部署包 | Linux／macOS 日常使用 | 只需要 [uv](https://docs.astral.sh/uv/)，自带服务启停和停机升级，见[部署包](deploy/package/README.md) |
+| Docker | 服务器、NAS、Windows（WSL2） | 实例数据放在命名卷里，见 [Docker 部署](deploy/current/docker.md) |
+| 源码 | 开发、想跟着主线走 | `uv` 直接从源码启动，见下文和[开发指南](CONTRIBUTING.md) |
+
+从源码运行需要 uv 和 Node.js 22（用来构建面板）：
 
 ```sh
-./install.sh install "$HOME/lenbot"
-"$HOME/lenbot/run"     # 首次向导连接平台、测试模型并保存后进入面板
+git clone https://github.com/LEN5010/LenBot.git
+cd LenBot
+./scripts/install.sh      # 安装依赖并构建面板，不启动
+uv run --no-sync len-bot  # 第一次会打印向导链接
 ```
 
-安装后 `instance/` 保存根配置和业务数据，`releases/<版本>/` 保存程序与可写依赖环境。启动、停止、重启和停机升级见[成品包说明](deploy/package/README.md)。也可手工安装独立 wheel；Docker 用户可在新卷中[直接离线初始化](deploy/current/docker.md#直接初始化新卷)，不必先在主机装 wheel。Windows 本轮使用 WSL2／Docker。
+源码目录本身就是实例目录：配置、数据库、角色和运行数据都在仓库根目录，已在 `.gitignore` 中排除。
 
-当前产物由[打包命令](CONTRIBUTING.md#构建与提交)生成，尚未公开发布；下载链接以实际 Release 为准，不把本地构建当作已上传。修改源码时再安装 Node.js 22 并执行 `./scripts/install.sh`。
+刚开始建议选**模拟发送**：Bot 照常收消息、想回复，但不会真的发到 QQ，可以先在面板里试聊。要真聊天，还需要一个已登录 QQ 的 OneBot v11 实现。模型按调用计费，模拟发送也一样。
 
-QQ 聊天还需一个 OneBot v11 服务；可先在面板试聊。Docker 和 ASR 均为可选能力。完整步骤和一个最小演示见[部署说明](deploy/current/README.md)。
-
-`lenbot.config.json` 是唯一运行配置，包含凭据，不进 Git。运行中从面板保存，提示重启的修改由用户明确重启生效；手工修改前先停机。`delivery: "onebot"` 会真实发送到 QQ，`"simulated"` 仅模拟发送，模型仍可能计费。
+`lenbot.config.json` 是唯一的运行配置，里面有密钥，不要提交到 Git。运行时在面板里改，需要重启的修改会提示；手工编辑前先停机。
 
 ## 文档
 
-| 要做什么 | 入口 |
+| 想做什么 | 去哪看 |
 |---|---|
-| 成品安装、原生服务与停机升级 | [平台包说明](deploy/package/README.md) |
-| Docker、新卷初始化与任务挂载 | [Docker 部署](deploy/current/docker.md) |
-| 可选服务、模型与 QQ 接入 | [部署说明](deploy/current/README.md) |
-| 角色、任务资料、数据升级与记忆维护 | [使用与离线维护](deploy/current/operations.md) |
-| 本地语音转写 | [ASR](deploy/current/asr.md) |
-| 插件接口、示例与分发 | [插件开发](developer/README.md) |
-| 源码职责、开发与打包 | [开发指南](CONTRIBUTING.md) |
-| 群聊表达材料与原文采用 | [表达材料来源](developer/expression-materials.md) |
-| 工程约束／第三方来源 | [AGENTS.md](AGENTS.md)／[第三方材料](THIRD_PARTY_NOTICES.md) |
+| 选择部署方式、可选服务 | [部署](deploy/README.md) |
+| 日常使用、角色、插件和任务维护 | [使用与维护](deploy/current/operations.md) |
+| 了解内部结构 | [架构](developer/architecture.md) |
+| 写插件 | [插件开发](developer/README.md)，[插件模板](https://github.com/lendevs/lenbot-plugin-template) |
+| 参与开发、构建发行包 | [开发指南](CONTRIBUTING.md) |
+| 写或调整角色包 | [角色包](developer/personas.md)，[示例角色](examples/personas/companion/) |
 
-维护者的设计、计划和运行记录在本机 `docs/`，不随 Git 或发行包发布。
+## 现状
 
-## 能力
-
-| 范围 | 实现 |
-|---|---|
-| 聊天与角色 | 持久会话、注意力与消息合并、压缩恢复、主脑直接表达；设定、知识、样例、表情、头像、角色包和草稿试聊 |
-| 记忆 | 本地 Markdown／全文及可选向量检索；召回、可选后台整理、修改历史与遗忘 |
-| 任务 | 独立容器、Pi RPC、追问／确认、取消续接、选定资料、技能、文件登记与显式上传 |
-| 工具 | 搜索、网页读取、看图、QQ 语音转写、公共浏览、独立账号浏览任务、插件与 MCP |
-| 学习与管理 | 表达学习、自动黑话及人工纠正、可关闭的表情采集、回复效果、提醒与主动话题；权限、预算、费用及时间线 |
-
-插件目前支持静态目录、Git 链接安装、配置选群和单插件重载；尚无市场发布后端、ZIP 插件导入或宿主版本范围检查。角色包 ZIP 导入是另一项能力，见[插件维护](deploy/current/operations.md#插件安装维护)。
-
-能力需要根配置、角色许可和真实服务同时就绪；未安装的服务不注册占位工具，个人插件不默认启用。
-
-管理员可通过群聊保存日常设置并明确请求重启；需要在面板允许 `host_manage` 和 `tool_search`，操作人须为主人或全局配置管理员。说明与字段按需披露，具体见[对话管理](deploy/current/operations.md#群聊对话管理)。
-
-## 限制与验收
-
-- 记忆普通删除保留修改历史；完整遗忘清除该文件及其历史，原聊天与外部备份仍保留。
-- 任务支持实例级 ext4／APFS 存储池硬上限、离线入池、用量查看与文件清理。公共与账号浏览均支持任务文件上传／下载；账号文件传输使用[配套 BrowserSkill 扩展与文件助手](deploy/current/browserskill-files.md)。
-- ASR 处理本场景 QQ 语音，不接受任意本地音视频，也不提供 TTS。
-- macOS 全新环境已完成试聊和任务文件演示，Linux ARM64 容器已完成安装、首次配置、模型试聊和插件依赖安装；Linux 原生 systemd、完整桌面操作、真实 QQ 交付与语音质量不在这些记录的验证范围内。
-- 仅保留当前运行核心和显式离线历史格式工具，不再支持旧核心启动。
+LenBot 还没有发布正式版本。目前只有 OneBot（QQ）一个平台适配器，提示词和面板只有中文，不提供 TTS。已知问题和验证范围写在每个版本的发行说明里。
 
 ## 许可证
 
-原创代码采用 [AGPL-3.0-only](LICENSE)，见 [NOTICE](NOTICE)。第三方依赖、独立服务与个人角色保持各自许可。源码包包含源码和部署材料，wheel 包含当前核心及已构建面板；[本地打包](CONTRIBUTING.md#构建与提交)不等于上传或正式发布。
+原创代码采用 [AGPL-3.0-only](LICENSE)，见 [NOTICE](NOTICE)。第三方依赖和独立服务保持各自的许可，见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md)。
