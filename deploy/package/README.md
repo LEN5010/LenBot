@@ -47,7 +47,7 @@ macOS 另有 `start.command`／`stop.command`／`restart.command`，注册服务
 
 ## 升级
 
-取得**另一版本**的部署包。先停止宿主与独立试聊，按[离线维护](../current/operations.md#升级与文件锁)备份实例、外置任务目录及实际采用的记忆服务；旧程序目录不等于数据备份。
+取得**另一版本**的部署包。先停止宿主与独立试聊，按[离线维护](../current/operations.md#升级与文件锁)备份实例、外置任务目录与记忆文件；旧程序目录不等于数据备份。
 
 ```sh
 "$HOME/lenbot/service" stop
@@ -57,7 +57,7 @@ macOS 另有 `start.command`／`stop.command`／`restart.command`，注册服务
 "$HOME/lenbot/service" start
 ```
 
-升级安装新版本环境、执行当前业务库／记忆处理库离线迁移、恢复已配置插件依赖，成功后切换 `current`；根配置、人工角色和插件 Git ref 保持。独立任务／记忆服务镜像按本版组件说明单独升级。
+升级安装新版本环境、执行当前业务库／记忆处理库离线迁移、恢复已配置插件依赖，成功后切换 `current`；根配置、人工角色和插件 Git ref 保持。独立任务镜像与账号浏览组件按本版组件说明单独升级。
 
 尚未完成首次配置的实例只升级程序，不自动生成配置；已初始化但未首次启动、因而没有业务库时，迁移明确报告无库可迁移，不创建空库。已存在的坏库或不支持格式仍报原错并停止升级，不用空库替代。
 
@@ -67,7 +67,7 @@ macOS 另有 `start.command`／`stop.command`／`restart.command`，注册服务
 
 ## 可选能力
 
-QQ、任务镜像、双记忆、账号浏览和 ASR 的安装见 [deploy/current](../current/README.md)。普通聊天不要求全装，Docker 宿主另用 [Docker 配方](../current/docker.md)。本包生成不代表镜像已上传或版本已公开发布。
+QQ、任务镜像、本地记忆、账号浏览和 ASR 的配置见 [deploy/current](../current/README.md)。普通聊天不要求全装，Docker 宿主另用 [Docker 配方](../current/docker.md)。本包生成不代表镜像已上传或版本已公开发布。
 
 ## 已核对范围
 

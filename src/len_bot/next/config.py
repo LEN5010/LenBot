@@ -17,7 +17,7 @@ from .models.asr import AudioSettings
 from .runtime.identity import IdentitySettings, combine_identities
 from .models.limits import ResourceLimits
 from .configuration.mcp import MCPService, SERVICE_NAME
-from .memory.service import MemorySettings, LocalMemoryConfig, OpenVikingMemoryConfig
+from .memory.service import MemorySettings
 from .models.client import ModelSettings
 from .runtime.operations import LoggingSettings
 from .runtime.retention import RetentionSettings
@@ -43,8 +43,6 @@ from .configuration.maintenance import (
     MediaArchiveSettings,
     TaskArchiveSettings,
     ReminderImportSettings,
-    PersonaMemoryExportSettings,
-    MemoryTransferSettings,
     EvaluationSettings,
     ReplayClockSettings,
 )
@@ -75,9 +73,6 @@ class SharedConfig(BaseModel):
     web_read: WebReadSettings | None = None
     web_search: WebSearchSettings | None = None
     memory: MemorySettings | None = None
-    replay_memory: Path | None = None
-    memory_transfer: MemoryTransferSettings | None = None
-    persona_memory_export: PersonaMemoryExportSettings | None = None
     worker: WorkerSettings | None = None
     images: ImageSettings = Field(default_factory=ImageSettings)
     audio: AudioSettings = Field(default_factory=AudioSettings)
@@ -88,14 +83,6 @@ class SharedConfig(BaseModel):
     task_archive: TaskArchiveSettings | None = None
     models: Models
 
-    @model_validator(mode='after')
-    def recorded_memory_has_no_live_client(self):
-        if self.replay_memory is not None:
-            if self.onebot is not None or self.delivery != 'simulated':
-                raise ValueError('replay_memory requires explicit simulated input, not a platform connection')
-            if not isinstance(self.memory, OpenVikingMemoryConfig) or self.memory.ingest is not None:
-                raise ValueError('replay_memory requires openviking memory with automatic ingest disabled')
-        return self
 
     @model_validator(mode="after")
     def budget_prices(self):
@@ -105,7 +92,7 @@ class SharedConfig(BaseModel):
         if asr is not None and (asr.price is None or asr.price.currency != self.limits.currency):
             raise ValueError("日金额预算要求 ASR 显式配置同币种 price")
         bindings = [getattr(self.models.roles, role) for role in ("mind","vision","memory","worker","learner")]
-        if isinstance(self.memory, LocalMemoryConfig) and self.memory.local.embedding is not None:
+        if self.memory is not None and self.memory.local.embedding is not None:
             bindings.append(self.memory.local.embedding)
         for binding in bindings:
             if binding is None:
@@ -117,30 +104,14 @@ class SharedConfig(BaseModel):
 
     @model_validator(mode="after")
     def memory_provider_exists(self) -> SharedConfig:
-        if self.memory_transfer is not None and (
-                self.memory is None or self.memory.backend == self.memory_transfer.source.backend):
-            raise ValueError('memory_transfer requires an explicit target memory with a different backend')
-        if self.memory_transfer is not None:
-            source = self.memory_transfer.source
-            if self.memory_transfer.resume_failed and (
-                    not isinstance(self.memory, LocalMemoryConfig) or self.memory.ingest is None
-                    or not isinstance(source, OpenVikingMemoryConfig)):
-                raise ValueError('memory_transfer.resume_failed requires native source and local target with ingest enabled')
-            if isinstance(source, LocalMemoryConfig) and source.local.embedding is not None:
-                if source.local.embedding.provider not in self.models.providers:
-                    raise ValueError('memory_transfer.source.local.embedding.provider references an unknown provider')
-            if isinstance(self.memory, OpenVikingMemoryConfig):
-                missing = set(self.memory_transfer.scenes) - self.memory.openviking.scenes.keys()
-                if missing:
-                    raise ValueError(f'memory_transfer target lacks native scene identities: {sorted(missing)!r}')
-        if isinstance(self.memory, LocalMemoryConfig) and self.memory.local.embedding is not None:
+        if self.memory is not None and self.memory.local.embedding is not None:
             provider = self.memory.local.embedding.provider
             if provider not in self.models.providers:
                 raise ValueError(f"memory.local.embedding.provider references unknown provider {provider!r}")
-        if (isinstance(self.memory, LocalMemoryConfig) and self.memory.ingest is not None
+        if (self.memory is not None and self.memory.ingest is not None
                 and self.models.roles.memory is None):
             raise ValueError("local memory ingest requires explicit models.roles.memory")
-        if (isinstance(self.memory, LocalMemoryConfig) and self.memory.summaries
+        if (self.memory is not None and self.memory.summaries
                 and self.models.roles.memory is None):
             raise ValueError("local memory summaries require explicit models.roles.memory")
         if self.worker is not None:
@@ -270,7 +241,7 @@ class LabConfig(SharedConfig, SceneSettings):
 
     @model_validator(mode="after")
     def bot_is_not_schedule_requester(self) -> LabConfig:
-        if (self.replay_web is not None or self.replay_images is not None or self.replay_memory is not None) and (
+        if (self.replay_web is not None or self.replay_images is not None) and (
                 self.onebot is not None or self.panel is not None or self.delivery != 'simulated'):
             raise ValueError('replay materials require isolated stdin, simulated delivery and no panel')
         _check_schedule_identity(self.bot_qq, self.schedules)
@@ -298,8 +269,6 @@ class LabConfig(SharedConfig, SceneSettings):
             raise ValueError("plugins require the isolated-multi host, not the single-scene lab or replay")
         if self.transcribe_audio:
             raise ValueError("automatic audio transcription requires the isolated-multi host")
-        if isinstance(self.memory, OpenVikingMemoryConfig) and set(self.memory.openviking.scenes) != {self.scene}:
-            raise ValueError("memory.openviking.scenes must contain only the configured scene")
         if self.history_import is not None and self.history_import.scenes != [self.scene]:
             raise ValueError("history_import.scenes must contain only the configured scene")
         if self.reminder_import is not None and self.reminder_import.scenes != [self.scene]:
@@ -310,8 +279,6 @@ class LabConfig(SharedConfig, SceneSettings):
             raise ValueError('media_archive.scenes must contain only the configured scene')
         if self.task_archive is not None and self.task_archive.scenes != [self.scene]:
             raise ValueError('task_archive.scenes must contain only the configured scene')
-        if self.memory_transfer is not None and self.memory_transfer.scenes != [self.scene]:
-            raise ValueError('memory_transfer.scenes must contain only the configured scene')
         if self.replay_clock is not None:
             incompatible = [
                 field for field, enabled in (
@@ -319,15 +286,13 @@ class LabConfig(SharedConfig, SceneSettings):
                     ("panel", self.panel is not None),
                     ("web_read", self.web_read is not None and self.replay_web is None),
                     ("web_search", self.web_search is not None and self.replay_web is None),
-                    ("memory", self.memory is not None and self.replay_memory is None),
+                    ("memory", self.memory is not None),
                     ("models.roles.vision", self.models.roles.vision is not None and self.replay_images is None),
                     ("history_import", self.history_import is not None),
                     ('reminder_import', self.reminder_import is not None),
                     ('media_import', self.media_import is not None),
                     ('media_archive', self.media_archive is not None),
                     ('task_archive', self.task_archive is not None),
-                    ('memory_transfer', self.memory_transfer is not None),
-                    ('persona_memory_export', self.persona_memory_export is not None),
                     ("worker", self.worker is not None),
                     ("delivery", self.delivery != "simulated"),
                 ) if enabled
@@ -366,7 +331,6 @@ class HostConfig(SharedConfig):
                 ('delivery', self.delivery != 'simulated'), ('panel', self.panel is not None),
                 ('plugins', self.plugins is not None), ('mcp', bool(self.mcp)),
                 ('account_browser', self.account_browser is not None),
-                ('live native memory', isinstance(self.memory, OpenVikingMemoryConfig) and self.replay_memory is None),
                 ('automatic audio transcription', any(scene.transcribe_audio for scene in self.scenes.values())),
             ) if enabled]
             if incompatible:
@@ -389,8 +353,6 @@ class HostConfig(SharedConfig):
 
     @model_validator(mode="after")
     def bot_is_not_schedule_requester(self) -> HostConfig:
-        if isinstance(self.memory, OpenVikingMemoryConfig) and set(self.memory.openviking.scenes) != set(self.scenes):
-            raise ValueError("memory.openviking.scenes must exactly match configured scenes")
         for scene, settings in self.scenes.items():
             try:
                 _check_schedule_identity(self.bot_qq, settings.schedules)
@@ -449,10 +411,6 @@ class HostConfig(SharedConfig):
             unknown = set(self.task_archive.scenes) - self.scenes.keys()
             if unknown:
                 raise ValueError(f'task_archive.scenes are not configured: {sorted(unknown)!r}')
-        if self.memory_transfer is not None:
-            unknown = set(self.memory_transfer.scenes) - self.scenes.keys()
-            if unknown:
-                raise ValueError(f'memory_transfer.scenes are not configured: {sorted(unknown)!r}')
         return self
 
     def scene_config(self, scene: str) -> LabConfig:
@@ -468,8 +426,6 @@ class HostConfig(SharedConfig):
         shared['media_import'] = None
         shared['media_archive'] = None
         shared['task_archive'] = None
-        shared['memory_transfer'] = None
-        shared['persona_memory_export'] = None
         local = {name: getattr(self.scenes[scene], name) for name in SceneSettings.model_fields}
         shared["timezone"] = self.scene_timezone(scene)
         del local["timezone"]
@@ -559,26 +515,6 @@ def _resolve_history_paths(root: Path, source: dict) -> None:
 
 
 def _resolve_memory_path(root: Path, source: dict) -> None:
-    if source.get('replay_memory') is not None:
-        source['replay_memory'] = _resolved_path(root, source['replay_memory'], within_root=True,
-                                                field='replay_memory')
-    templates = source.get('persona_memory_export')
-    if isinstance(templates, dict):
-        templates['destination'] = _resolved_path(root, templates.get('destination'), within_root=True,
-                                                   field='persona_memory_export.destination')
-        if isinstance(templates.get('personas'), list):
-            for index, item in enumerate(templates['personas']):
-                if isinstance(item, dict):
-                    item['persona'] = _resolved_path(root, item.get('persona'), within_root=False,
-                                                      field=f'persona_memory_export.personas.{index}.persona')
-    transfer = source.get('memory_transfer')
-    if isinstance(transfer, dict):
-        transfer['archive'] = _resolved_path(root, transfer.get('archive'), within_root=True,
-                                             field='memory_transfer.archive')
-        original = transfer.get('source')
-        if isinstance(original, dict) and isinstance(original.get('local'), dict):
-            original['local']['directory'] = _resolved_path(root, original['local'].get('directory'),
-                within_root=False, field='memory_transfer.source.local.directory')
     memory = source.get("memory")
     if isinstance(memory, dict) and isinstance(memory.get("local"), dict):
         memory["local"]["directory"] = _resolved_path(

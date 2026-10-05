@@ -47,7 +47,9 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
         raise ValueError("Multi-scene host panel requires panel configuration in lenbot.config.json")
 
     runtime.budget.trials_root = root / ".runtime" / "chat-tests"
-    write_lock = asyncio.Lock()
+    if runtime.management is None:
+        runtime.bind_management(root, HostLifecycle() if lifecycle is None else lifecycle)
+    write_lock = runtime.config_write_lock
     trials = HostTrials(config, runtime, root, write_lock=write_lock)
 
     @asynccontextmanager
@@ -72,7 +74,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
 
     user = install_panel_auth(app, config.panel, on_logout=logged_out)
     register_host_restart(app, root=root, running=config, runtime=runtime, trials=trials,
-                          lifecycle=HostLifecycle() if lifecycle is None else lifecycle,
+                          lifecycle=runtime.management.lifecycle,
                           user=user, write_lock=write_lock)
     register_host_operations(app, runtime=runtime, user=user)
     register_host_trials(app, trials, user)

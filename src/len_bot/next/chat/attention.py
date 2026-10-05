@@ -691,6 +691,9 @@ class SceneRunner:
         self.emit(result)
         if result["status"] == "limited" and channel == "direct":
             await self.limit_notice(LimitReached(result["error"], result["limit_until"]))
+        if self.chat.toolset.restart_after_turn:
+            self.chat.toolset.restart_after_turn = False
+            await self.chat.toolset.host_management.finish_turn()
 
     def observed_since(self) -> float | None:
         return self.started_at if self.config.delivery == "simulated" else self.connected_since()

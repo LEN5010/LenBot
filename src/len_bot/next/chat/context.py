@@ -88,6 +88,8 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
         )
     if "send_file" in names:
         system += "\n" + (PROMPTS / "next_files.md").read_text()
+    if 'host_manage' in names:
+        system += '\n' + (PROMPTS / 'next_host_manage.md').read_text()
     if "delegate" in names and skills:
         system += "\n" + Template((PROMPTS / "next_skills.md").read_text()).substitute(
             catalog=encode([{"name": skill.name, "description": skill.description}

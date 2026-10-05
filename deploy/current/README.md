@@ -6,7 +6,14 @@
 
 平台部署包包含 wheel 和[安装入口](../package/README.md)：解压后 `./install.sh install "$HOME/lenbot"`，再用生成的 `run` 完成首次向导；安装不启动业务。版本化程序、原生服务与停机升级也由该入口说明。下文保留单独 wheel 的手工安装方式。
 
-取得 `len_bot-0.1.0-py3-none-any.whl` 后，在一个新目录按根 [README](../../README.md#开始使用) 安装。wheel 已带面板，不运行 npm，不复制维护者的 `personas/`、配置或业务库。uv 可准备 Python 3.13；普通聊天不安装 Docker、OpenViking 或 ASR。
+单独使用 wheel 时，在新实例目录创建环境并安装实际取得的文件：
+
+```sh
+uv venv --python 3.13 .venv
+uv pip install --python .venv/bin/python /path/to/len_bot-0.1.0-py3-none-any.whl
+```
+
+wheel 已带面板，不运行 npm，不复制维护者的角色、配置或业务库。普通聊天不要求 Docker 或 ASR。
 
 从实例目录执行 `.venv/bin/len-bot`，打开终端打印的首次配置链接。填实际模型地址、名称、上下文窗口及凭据；向导创建新的角色包，不依赖私人角色。建议先选模拟发送。尚未准备 OneBot 时可选反向 WebSocket，只在本机等待连接，再到面板试聊；它不会自己登录 QQ。
 
@@ -39,19 +46,18 @@ docker compose -f deploy/current/services.compose.yaml up -d
 .venv/bin/len-bot
 ```
 
-只用聊天不要求 Docker、OpenViking 或 ASR；只启动根配置实际采用的服务。停止时先 Ctrl-C 停 Bot、再停 ASR，最后 `docker compose -f deploy/current/services.compose.yaml stop`，不删除服务卷。
+只用聊天不要求 Docker 或 ASR；只启动根配置实际采用的服务。停止时先 Ctrl-C 停 Bot、再停 ASR，最后 `docker compose -f deploy/current/services.compose.yaml stop`，不删除服务卷。
 
 本机源码实例在配套服务就绪后，可双击 `deploy/current/start.command`，或在实例根执行 `.venv/bin/len-bot`。启动器只运行现有环境，不安装、不迁移、不覆盖配置；终端 Ctrl-C 停止 Bot。面板明确重启会等待旧宿主退出后启动一次新宿主，异常不自动拉起，见[保存与重启](operations.md#保存与重启)。
 
 | 服务 | 本机部署入口 | 私有数据／配置 |
 |---|---|---|
 | LenBot 面板 | 根 `panel`；本机为 `http://127.0.0.1:11307` | `lenbot.config.json` |
-| OpenViking | `http://127.0.0.1:1933`，API 服务 | `state/services/openviking/` 中 `ov.conf`、`templates/`、`data/` |
 | Ollama 向量 | `http://127.0.0.1:11434/v1`；`bge-m3:567m`、1024 维 | `state/services/embeddings/` |
 | ASR | `http://127.0.0.1:18171/v1`；`large-v3-turbo-q5_0` | [安装与配置](asr.md) |
 | SnowLuma | 独立 QQ 登录／OneBot 服务 | SnowLuma 自己的配置和登录状态 |
 
-服务客户端不等于服务本身：Compose、ASR 启动脚本与 OpenViking 镜像使用现成实现，不添加协议代理。它们自己的配置不覆盖 LenBot 根参数；所有服务均不自动重启。
+服务客户端不等于服务本身：Compose 与 ASR 启动脚本使用现成实现，不添加协议代理。它们自己的配置不覆盖 LenBot 根参数；所有服务均不自动重启。
 
 ## 配置与连接
 
@@ -62,26 +68,18 @@ docker compose -f deploy/current/services.compose.yaml up -d
 - 面板默认回环监听，远端用 SSH 转发；自建 HTTPS 入口按实际代理和 cookie 配置，不因失败放宽监听或会话限制。
 - `react` 需要角色 `stickers/index.yaml` 和真实原件；知识工具需要实际文档。插件／MCP／账号浏览同样必须有实际代码或服务，不能只开空开关。
 
-## 可选外部服务
+## 本地记忆与向量检索
 
-普通聊天不要求Docker、记忆或ASR服务。按需要选择：
+记忆使用宿主本地文件，可按需配置向量检索、后台整理与目录摘要。向量服务使用显式绑定的 embeddings 接口；Compose 示例为 Ollama，不由宿主安装或自动换模型。语音转写另见 [ASR](asr.md)。
 
-- 本地记忆直接使用宿主文件后端；OpenViking使用独立服务与场景用户，VLM／embedding在服务自己的配置中设置，分类见[记忆模板](memory-templates.md)。
-- 向量服务通过配置的embeddings接口接入；当前Compose示例使用Ollama与bge-m3，不由宿主安装或自动换模型。
-- 本地语音转写安装只见[ASR说明](asr.md)。
-- 外部服务使用自身配置，不能覆盖LenBot根运行参数。示例Compose不会自动重启服务；用户自行选择是否启用。
-
-首次构建原生记忆镜像时，把固定提交 `a09a9d20a8e07d08973aee177802d00e08df29e6` 的 OpenViking 源码放入独立目录，应用[完整遗忘扩展](memory-forget.md)后构建 Compose 使用的标签：
+可选向量检索使用 Ollama 时，先启动 embeddings 服务并准备所选模型：
 
 ```sh
-git -C /path/to/openviking-source apply "$PWD/deploy/current/openviking-forget.patch"
-docker build -f "$PWD/deploy/current/Dockerfile.openviking" \
-  -t lenbot-openviking:memory-forget /path/to/openviking-source
 docker compose -f deploy/current/services.compose.yaml up -d embeddings
 docker exec lenbot-embeddings ollama pull bge-m3:567m
 ```
 
-Ollama首次拉取须等待其服务就绪。OpenViking服务密钥与每场景用户填写在对应配置，创建模板后再启动，不把服务启动当作聊天召回效果。
+服务就绪后在面板填写实际模型绑定；服务启动不代表已验证聊天召回效果。
 
 ## 独立任务与浏览器
 

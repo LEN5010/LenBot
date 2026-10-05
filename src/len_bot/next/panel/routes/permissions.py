@@ -9,7 +9,8 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from ...runtime.identity import IdentitySettings
 from ...configuration.tasks import TaskRole
-from .settings import _body, _prepare, _read_saved
+from .settings import _body
+from ...configuration.editing import _prepare, _read_saved
 
 
 class CapabilityMatrix(BaseModel):

@@ -4,13 +4,13 @@
 
 一个目录包含 `plugin.toml`、`__init__.py`，并恰好定义一个 `Plugin` 子类。可直接复制 [counter](examples/counter/)，只使用 `len_bot.next.plugin`，不需要引用 Chat、Store 或 NetworkRuntime。
 
-清单必填 `name`（等于目录名）、`version`、`interface = 1`、`authors`、`license`、`description`。可选 `repository`（源码仓库 HTTP(S) URL）、`homepage`（使用说明 HTTP(S) URL）。它们显示在插件详情。
+清单必填 `name`（等于目录名）、`version`、`interface = 1`、`authors`、`license`、`description`。可选 `repository`（源码仓库 HTTP(S) URL）、`homepage`（使用说明 HTTP(S) URL）。当前只检查接口代次相等，version 是非空展示字符串，没有宿主／Python 版本范围字段或兼容版本自动选择。
 
 `dependencies = ["包名>=版本"]` 声明 Python 依赖，支持 uv 的 requirement 写法。宿主只在用户主动安装或更新时安装依赖，不在捕获 ImportError 后自行安装重试。当前环境已有版本作为约束，冲突原样报出，不自动替换其他插件或宿主正在使用的包。
 
 ## 安装与维护
 
-- 在面板「发现」选择目录条目，或手填完整 HTTP(S) 或 `ssh://` Git 仓库 URL。可选 ref 为标签、分支或提交，留空使用仓库默认分支。仓库根就是插件目录内容，第一版不支持 ZIP、本地路径或多插件仓库子目录；私有仓库使用本机 Git 凭据配置，URL 不放密码。
+- 在面板「发现」选择目录条目，或手填完整 HTTP(S) 或 `ssh://` Git 仓库 URL。可选 ref 为标签、分支或提交，留空使用仓库默认分支。仓库根就是插件目录内容，当前安装器不支持 ZIP、本地路径或多插件仓库子目录；私有仓库使用本机 Git 凭据配置，URL 不放密码。
 - 安装器把源码放在实例 `plugins/<name>` 并登记搜索路径。没有必填参数的插件直接加载；需要参数时先以停用状态保留，填写后启用。单群使用还需在群的插件列表中打开。
 - 保存插件配置或群启用会直接应用目标插件。根 `plugins.disabled` 仅记录停用的已配置插件名，停用保留参数、群选择和数据。
 - 「重载」先撤下该插件的命令／工具，取消它的处理与后台任务，执行 stop，再重新导入并执行 start，刷新工具和只读技能。其他插件与聊天不重启；处理中调用会中断，使用插件文件的在途工作不承诺无损。

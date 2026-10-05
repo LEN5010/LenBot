@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
-import json
-import os
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Literal
@@ -14,7 +10,6 @@ from typing import Annotated, Literal
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
-from ...chat.tools import build_tools
 from ...configuration.types import STRICT
 from ...configuration.chat import (
     Compaction,
@@ -25,20 +20,18 @@ from ...configuration.chat import (
     TextDelivery,
     WebReadSettings,
 )
-from ...config import HostConfig, _load_host_source, _read_root
+from ...config import HostConfig
+from ...configuration.editing import _read_saved, restart_summary, save_config
 from ...configuration.learning import LearningSettings
 from ...configuration.models import Roles
-from ...persona.profile import Persona, load_persona
+from ...persona.profile import Persona
 from ...models.asr import AudioSettings
 from ...runtime.operations import LoggingSettings
 from ...models.limits import ResourceLimits
 from ...runtime.retention import RetentionSettings
-from ...tools.skills import select_skills
-from ...plugins.manifest import scene_skill_catalog
 from ...models.pricing import ModelPrice
 from ...tools.web_search import WebSearchSettings
-from ...memory.service import RecallSettings, LocalMemoryConfig, OpenVikingMemoryConfig
-from ...memory.openviking import NativeMemoryPolicy
+from ...memory.service import RecallSettings
 from ...memory.embeddings import EmbeddingBinding
 from len_bot.web.auth import hash_password
 
@@ -118,36 +111,13 @@ class LocalMemoryChange(RecallSettings):
     summaries: bool
 
 
-class MemorySceneIdentityChange(BaseModel):
-    model_config = STRICT
-    user_id: str
-    api_key: str | None = Field(default=None, repr=False)
-
-
 class SceneCreate(SceneBindingChange):
     scene: str
-    memory_identity: MemorySceneIdentityChange | None = None
-
-
-class OpenVikingChangeSettings(BaseModel):
-    model_config = STRICT
-    base_url: str
-    account_id: str
-    timeout_seconds: float
-    public_root: str | None
-    memory_policy: NativeMemoryPolicy | None = None
-    scenes: dict[str, MemorySceneIdentityChange]
-
-
-class OpenVikingMemoryChange(RecallSettings):
-    backend: Literal["openviking"]
-    openviking: OpenVikingChangeSettings
-    summaries: bool = False
 
 
 class MemoryChange(BaseModel):
     model_config = STRICT
-    memory: Annotated[LocalMemoryChange | OpenVikingMemoryChange, Field(discriminator="backend")] | None
+    memory: LocalMemoryChange | None
 
 
 class WorkerChange(BaseModel):
@@ -181,14 +151,7 @@ def _memory_settings(config: HostConfig) -> dict | None:
     memory = config.memory
     if memory is None:
         return None
-    if isinstance(memory, LocalMemoryConfig):
-        return memory.model_dump(mode="json")
-    result = memory.model_dump(mode="json", exclude={"openviking": {"scenes"}})
-    result["openviking"]["scenes"] = {
-        scene: {"user_id": identity.user_id, "api_key_configured": bool(identity.api_key)}
-        for scene, identity in memory.openviking.scenes.items()
-    }
-    return result
+    return memory.model_dump(mode="json")
 
 
 class OneBotPublic(BaseModel):
@@ -330,70 +293,11 @@ def _snapshot(running: HostConfig, saved: HostConfig) -> dict:
     }
 
 
-def restart_summary(root: Path, running: HostConfig, personas: dict[str, Persona]) -> dict:
-    """Which parts of the saved root config and persona packages differ from what is running."""
-    saved = _read_saved(root)
-    loaded: dict[Path, Persona] = {}
-    changed_personas = {}
-    for scene, settings in saved.scenes.items():
-        if scene not in personas:
-            continue
-        if settings.persona not in loaded:
-            loaded[settings.persona] = load_persona(settings.persona)
-        if loaded[settings.persona] != personas[scene]:
-            changed_personas[str(settings.persona)] = loaded[settings.persona].name
-    return {
-        "sections": [name for name in HostConfig.model_fields
-                     if name != "scenes" and getattr(running, name) != getattr(saved, name)],
-        "scenes": sorted(scene for scene in running.scenes.keys() | saved.scenes.keys()
-                         if running.scenes.get(scene) != saved.scenes.get(scene)),
-        "personas": [{"path": path, "name": name} for path, name in sorted(changed_personas.items())],
-    }
-
-
-def _prepare(root: Path, edit: Callable[[dict, HostConfig], None]
-             ) -> tuple[Path, Path, HostConfig]:
-    path, original = _read_root(root)
-    saved = _load_host_source(path, copy.deepcopy(original))
-    edit(original, saved)
-    candidate = _load_host_source(path, copy.deepcopy(original))
-    personas = {path: load_persona(path)
-                for path in dict.fromkeys(settings.persona for settings in candidate.scenes.values())}
-    for scene, settings in candidate.scenes.items():
-        build_tools(candidate.scene_config(scene), personas[settings.persona],
-                    platform=candidate.delivery == "onebot")
-        if candidate.worker is not None:
-            select_skills(scene_skill_catalog(candidate, scene),
-                          personas[settings.persona].skills)
-
-    descriptor, name = tempfile.mkstemp(prefix=".lenbot-config-", suffix=".json", dir=path.parent)
-    temporary = Path(name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(original, stream, ensure_ascii=False, allow_nan=False, indent=2)
-            stream.write("\n")
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
-    return path, temporary, candidate
-
-
-def _mind_binding(config: HostConfig) -> tuple[str, str, str]:
-    binding = config.models.roles.mind
-    provider = config.models.providers[binding.provider]
-    return provider.api, provider.base_url, binding.model
-
-
 def _validation_detail(error: ValidationError) -> str:
     return "; ".join(
         f"{'.'.join(map(str, item['loc']))}: {item['msg']}"
         for item in error.errors(include_input=False)
     )
-
-
-def _read_saved(root: Path) -> HostConfig:
-    path, source = _read_root(root)
-    return _load_host_source(path, source)
 
 
 async def _body(request: Request, kind: type[BaseModel]) -> BaseModel:
@@ -421,23 +325,7 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
     async def save(edit: Callable[[dict, HostConfig], None]) -> dict:
         async with write_lock:
             try:
-                path, temporary, candidate = await asyncio.to_thread(_prepare, root, edit)
-                try:
-                    if _mind_binding(candidate) != _mind_binding(running):
-                        raise ValueError(
-                            "运行中不能保存大脑协议、地址或模型变更；即使此刻没有历史，"
-                            "当前进程仍可能写入旧绑定。请先停机，再显式转换可移植历史。根配置未保存"
-                        )
-                    if running.worker is not None and candidate.worker is not None:
-                        if any(getattr(running.worker, key) != getattr(candidate.worker, key)
-                               for key in ("docker_host", "workspace_root", "runtime_root", "storage_pool")):
-                            raise ValueError(
-                                "运行中不能保存任务 Docker 地址、工作区、运行目录或存储池的迁移；"
-                                "先停机清理任务容器，再搬迁原文件和修改根配置。根配置未保存"
-                            )
-                    temporary.replace(path)
-                finally:
-                    temporary.unlink(missing_ok=True)
+                candidate = await asyncio.to_thread(save_config, root, running, edit)
             except (ValueError, OSError) as error:
                 raise HTTPException(422 if isinstance(error, ValueError) else 500,
                                     f"{type(error).__name__}: {error}") from error
@@ -512,12 +400,6 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
             if change.scene in saved.scenes:
                 raise ValueError(f"场景已存在：{change.scene}")
             source["scenes"][change.scene] = {"persona": change.persona, "attention": {"only_direct": True}}
-            if isinstance(saved.memory, OpenVikingMemoryConfig):
-                if change.memory_identity is None or change.memory_identity.api_key is None:
-                    raise ValueError("远端记忆新增场景需要明确的 user_id 与 api_key")
-                source["memory"]["openviking"]["scenes"][change.scene] = change.memory_identity.model_dump()
-            elif change.memory_identity is not None:
-                raise ValueError("当前未配置远端记忆，不接收场景远端身份")
         return await save(edit)
 
     @app.put("/api/host/settings/scenes/{scene}/persona")
@@ -535,8 +417,6 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
             if scene not in saved.scenes:
                 raise ValueError(f"保存配置没有场景：{scene}")
             del source["scenes"][scene]
-            if isinstance(saved.memory, OpenVikingMemoryConfig):
-                del source["memory"]["openviking"]["scenes"][scene]
         return await save(edit)
 
     @app.put("/api/host/settings/scenes/{scene}")
@@ -648,17 +528,6 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                 source["memory"] = None
                 return
             result = memory.model_dump(mode="json")
-            if isinstance(memory, OpenVikingMemoryChange):
-                previous = saved.memory
-                same_service = (isinstance(previous, OpenVikingMemoryConfig)
-                                and previous.openviking.base_url.rstrip("/") == memory.openviking.base_url.rstrip("/")
-                                and previous.openviking.account_id == memory.openviking.account_id)
-                for scene, identity in memory.openviking.scenes.items():
-                    if identity.api_key is None:
-                        old = previous.openviking.scenes.get(scene) if same_service else None
-                        if old is None or old.user_id != identity.user_id:
-                            raise ValueError(f"memory.openviking.scenes.{scene}.api_key is required for this identity")
-                        result["openviking"]["scenes"][scene]["api_key"] = old.api_key
             source["memory"] = result
 
         return await save(edit)

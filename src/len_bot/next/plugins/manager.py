@@ -10,10 +10,23 @@ import shutil
 from ..chat.tools import tool_catalog
 from ..config import HostConfig
 from ..configuration.plugin import PluginSettings
-from ..panel.routes.settings import _prepare, _read_saved
-from ..runtime.network import NetworkRuntime
+from ..configuration.editing import _read_saved, save_config
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..runtime.network import NetworkRuntime
 from .host import PluginHost
 from .install import PluginInstaller
+from .manifest import Manifest, discover, read_manifest
+
+
+def plugin_manifest(saved: HostConfig, name: str) -> Manifest:
+    found, _ = discover([] if saved.plugins is None else saved.plugins.paths)
+    directories = found.get(name, [])
+    if len(directories) != 1:
+        raise ValueError(f"插件 {name} 未找到" if not directories else
+                         f"插件 {name} 在多个目录出现：{[str(item) for item in directories]}")
+    return read_manifest(directories[0])
 
 
 class PluginManager:
@@ -26,12 +39,7 @@ class PluginManager:
 
     async def save(self, edit: Callable[[dict, HostConfig], None]) -> HostConfig:
         async with self.write_lock:
-            path, temporary, candidate = await asyncio.to_thread(_prepare, self.root, edit)
-            try:
-                temporary.replace(path)
-            finally:
-                temporary.unlink(missing_ok=True)
-            return candidate
+            return await asyncio.to_thread(save_config, self.root, self.running, edit)
 
     def _binding(self, name: str, saved: HostConfig) -> None:
         current, selected = self.running.plugins, saved.plugins

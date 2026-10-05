@@ -198,9 +198,18 @@ async def run(lifecycle: HostLifecycle) -> None:
                 runtime = NetworkRuntime(config, scenes, store, mind, vision=vision, slots=slots,
                                          memory=memory, ingestor=ingestor, tasks=tasks, budget=budget, learning=learning, jargon=jargon,
                                          expression_service=expression_service, sticker_collection=sticker_collection,
-                                         reply_effects=reply_effects, plugins=plugins, mcp=mcp)
+                                         reply_effects=reply_effects, plugins=plugins, mcp=mcp, lifecycle=lifecycle)
                 if config.panel is None:
-                    await runtime.run()
+                    lifecycle.shutdown = runtime.stop
+                    loop = asyncio.get_running_loop()
+                    for sig in (signal.SIGINT, signal.SIGTERM):
+                        loop.add_signal_handler(sig, lifecycle.stop)
+                    try:
+                        await runtime.run(manage_signals=False)
+                    finally:
+                        lifecycle.shutdown = None
+                        for sig in (signal.SIGINT, signal.SIGTERM):
+                            loop.remove_signal_handler(sig)
                 else:
                     app = create_app(config, runtime, root=Path.cwd(), lifecycle=lifecycle)
                     server = HostPanelServer(uvicorn.Config(

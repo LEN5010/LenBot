@@ -8,6 +8,8 @@ import logging
 import sqlite3
 from collections.abc import Callable
 from collections import deque
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..chat.attention import SceneRunner
 from ..media.audio import AudioService
@@ -17,6 +19,7 @@ from ..tools.skills import select_skills
 from ..config import LabConfig, SharedConfig
 from ..configuration.onebot import OneBotForward
 from .operations import credentials, redact, redact_record
+from .lifecycle import HostLifecycle
 from ..platform.messages import parse_message, parse_notice
 from ..models.client import ChatModel
 from ..models.slots import ModelSlots
@@ -36,6 +39,9 @@ from ..tools.mcp_host import MCPHost
 from ..storage.store import Store, encode
 from ..work.service import WorkTasks
 
+if TYPE_CHECKING:
+    from .management import HostManagement
+
 
 class NetworkRuntime:
     def __init__(self, config: SharedConfig, scene_configs: list[tuple[LabConfig, Persona]],
@@ -52,6 +58,7 @@ class NetworkRuntime:
                  expression_service: ExpressionService | None = None,
                  plugins: PluginHost | None = None,
                  mcp: MCPHost | None = None,
+                 lifecycle: HostLifecycle | None = None,
                  on_update: Callable[[], None] | None = None):
         self.config, self.store = config, store
         self.log_secrets = credentials(config)
@@ -94,6 +101,8 @@ class NetworkRuntime:
         self.stopped = asyncio.Event()
         self.connection_requested = asyncio.Event()
         self.retention = Retention(self)
+        self.config_write_lock = asyncio.Lock()
+        self.management: HostManagement | None = None
         self.accepting = config.onebot is None
         self.storage_error: sqlite3.Error | None = None
         self.platform = (None if config.onebot is None else OneBot(
@@ -123,6 +132,8 @@ class NetworkRuntime:
                 audio_service=self.audio,
                 on_update=self.notify,
             )
+        if lifecycle is not None:
+            self.bind_management(config._instance_root, lifecycle)
         self.runners: dict[str, SceneRunner] = {}
         for scene, chat in self.chats.items():
             self.runners[scene] = SceneRunner(
@@ -134,6 +145,14 @@ class NetworkRuntime:
             plugins.bind(self)
         if mcp is not None:
             mcp.on_update = self.refresh_external_tools
+
+    def bind_management(self, root: Path, lifecycle: HostLifecycle) -> None:
+        from .management import HostManagement
+
+        self.management = HostManagement(root, self, lifecycle)
+        for chat in self.chats.values():
+            chat.toolset.host_management = self.management
+            chat.set_external_tools(list(chat.toolset.external.values()))
 
     def refresh_external_tools(self) -> None:
         if self.mcp is not None:

@@ -150,7 +150,7 @@ def knowledge_target(root: Path, filename: str) -> Path:
 def validate_dependencies(config: HostConfig, path: Path, candidate: Persona) -> list[str]:
     affected = [key for key, value in config.scenes.items() if value.persona == path]
     for key in affected:
-        build_tools(config.scene_config(key), candidate, platform=config.delivery == 'onebot')
+        build_tools(config.scene_config(key), candidate, platform=config.delivery == 'onebot', host_management=True)
         if config.worker is not None:
             select_skills(scene_skill_catalog(config, key), candidate.skills)
     return affected

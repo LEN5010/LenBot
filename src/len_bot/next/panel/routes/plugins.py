@@ -14,10 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from ...configuration.plugin import PLUGIN_NAME, PLUGIN_RESERVED, PluginCatalogSettings
 from ...plugins.catalog import CatalogView, PluginCatalog
 from ...config import HostConfig, _read_root
-from .settings import _body, _read_saved
+from .settings import _body
+from ...configuration.editing import _read_saved
 from ...runtime.network import NetworkRuntime
 from ...plugins.manifest import ConfigField, ConfigItem, Manifest, discover, read_manifest, redact_values
-from ...plugins.manager import PluginManager
+from ...plugins.manager import plugin_manifest
 from ...plugins.install import repository_url, revision_ref
 from ...plugins.store import PluginStore
 
@@ -106,18 +107,9 @@ def _available(saved: HostConfig) -> tuple[dict[str, list[dict]], list[str]]:
     return available, errors
 
 
-def _manifest(saved: HostConfig, name: str) -> Manifest:
-    found, _ = discover([] if saved.plugins is None else saved.plugins.paths)
-    directories = found.get(name, [])
-    if len(directories) != 1:
-        raise ValueError(f"插件 {name} 未找到" if not directories else
-                         f"插件 {name} 在多个目录出现：{[str(item) for item in directories]}")
-    return read_manifest(directories[0])
-
-
 def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, running: HostConfig,
                           user: Callable[[Request], str], write_lock: asyncio.Lock) -> None:
-    manager = PluginManager(root, runtime, running, write_lock)
+    manager = runtime.management.plugins
     catalog = PluginCatalog()
 
     def require_name(name: str) -> None:
@@ -271,7 +263,7 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
                 if name not in disabled:
                     disabled.append(name)
                 return
-            manifest = _manifest(saved, name)
+            manifest = plugin_manifest(saved, name)
             previous = plugins.get(name, {})
             values = {}
             for key, value in change.config.items():

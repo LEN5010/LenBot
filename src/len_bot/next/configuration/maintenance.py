@@ -9,7 +9,6 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .types import STRICT, EpochSeconds, _FiniteSeconds, _valid_scene, _valid_timezone
-from ..memory.service import MemorySettings, OpenVikingMemoryConfig
 
 
 class PanelSettings(BaseModel):
@@ -130,50 +129,6 @@ class ReminderImportSettings(BaseModel):
     @classmethod
     def valid_timezone(cls, value: str) -> str:
         return _valid_timezone(value)
-
-
-class PersonaMemoryTemplate(BaseModel):
-    model_config = STRICT
-    persona: Path
-    self_type: str = Field(pattern=r'^lenbot_[a-z][a-z0-9_]{0,63}$')
-    promises_type: str = Field(pattern=r'^lenbot_[a-z][a-z0-9_]{0,63}$')
-
-
-class PersonaMemoryExportSettings(BaseModel):
-    model_config = STRICT
-    destination: Path
-    personas: list[PersonaMemoryTemplate] = Field(min_length=1)
-
-    @model_validator(mode='after')
-    def distinct_types(self):
-        names = [name for item in self.personas for name in (item.self_type, item.promises_type)]
-        reserved = {'lenbot_portrait', 'lenbot_events', 'lenbot_bot', 'lenbot_commitments', 'lenbot_participant_commitments'}
-        if len(names) != len(set(names)) or set(names) & reserved:
-            raise ValueError(f'角色专用原生类别须全局唯一，不覆盖现有共享类别：{names!r}')
-        return self
-
-
-class MemoryTransferSettings(BaseModel):
-    model_config = STRICT
-    operation: Literal['export', 'import']
-    source: MemorySettings
-    archive: Path
-    scenes: list[str] = Field(min_length=1)
-    public_scene: str
-    resume_failed: bool = False
-
-    @field_validator('scenes')
-    @classmethod
-    def valid_scenes(cls, value: list[str]) -> list[str]:
-        return _history_scenes(value, 'memory_transfer')
-
-    @model_validator(mode='after')
-    def selected_identity(self):
-        if self.public_scene not in self.scenes:
-            raise ValueError('memory_transfer.public_scene must be among selected scenes')
-        if isinstance(self.source, OpenVikingMemoryConfig) and set(self.source.openviking.scenes) != set(self.scenes):
-            raise ValueError('memory_transfer.source must have exactly the selected native scene identities')
-        return self
 
 
 class EvaluationProfile(BaseModel):

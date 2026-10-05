@@ -53,6 +53,6 @@ SCENE_CONTROL_TOOL = {'type': 'function', 'function': {
     'description': '查看当前场景参与设置(status)，或按实际请求人QQ临时安静(quiet)/恢复(resume)。'
         'quiet须给seconds（最多7天），direct默认allow仍回应本场景直接消息（群内@/回复，私聊本会话全部消息）；defer连直接消息也延后，须面板提前恢复。'
         '当前轮可收尾确认；暂停其他大脑参与及系统唤醒，不取消任务或阻止插件固定命令回复。'
-        'resume只结束临时安静，不撤销根配置安静时段。持久设置仍需面板保存。',
+        'resume只结束临时安静，不撤销根配置安静时段。持久设置通过已开放的 host_manage 或面板保存。',
     'parameters': SceneControlArguments.model_json_schema(),
 }}
