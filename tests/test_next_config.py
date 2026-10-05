@@ -25,15 +25,15 @@ from len_bot.next.config import (
 from len_bot.next.configuration.learning import LearningSettings
 from len_bot.next.configuration.chat import QuietHours, ScenePersona
 from len_bot.next.persona.profile import load_persona
-from len_bot.next.storage.store import FORMAT_VERSION
+from len_bot.next.storage.store import FORMAT_VERSION, Store
 from len_bot.web.auth import hash_password
 
 
 def _config(persona: str) -> dict:
     return {"compaction": {"input_tokens": 6000},
         "mode": "isolated",
-        "scene": "group:80001",
-        "bot_qq": "90001",
+        "scene": "onebot:group:80001",
+        "bot_id": 'onebot:90001',
         "timezone": "Asia/Shanghai",
         "database": "data/isolated-chat.db",
         "persona": persona,
@@ -61,16 +61,16 @@ def _host_config() -> dict:
     del source["persona"]
     source["onebot"] = {"mode": "reverse_ws", "listen_host": "127.0.0.1", "listen_port": 0}
     source["scenes"] = {
-        "group:80001": {
+        "onebot:group:80001": {
             "persona": "personas/group", "attention": {
                 "activity": 0.7, "quiet_hours": {
                     "start": "01:00", "end": "07:30", "direct": "defer",
                 },
             },
         },
-        "private:80002": {
+        "onebot:private:80002": {
             "persona": "../private-persona", "voice_mode": "direct",
-            "schedules": {"owner": "80002"},
+            "schedules": {"owner": 'onebot:80002'},
         },
     }
     return source
@@ -294,7 +294,7 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.attention.max_extensions == 2
     assert config.attention.only_direct is False
     assert config.attention.keywords == []
-    assert config.attention.other_bot_qqs == []
+    assert config.attention.other_bot_ids == []
     assert config.attention.quiet_hours is None
     assert (config.attention.named_idle_seconds, config.attention.named_max_seconds) == (3.0, 8.0)
     assert config.attention.keyword_cooldown_seconds == 60.0
@@ -388,23 +388,23 @@ def test_explicit_multiscene_host_roundtrips_and_derives_existing_scene_contract
 
     assert isinstance(host, HostConfig)
     assert host.database == root / "data/isolated-chat.db"
-    assert host.bot_qq == "90001" and host.max_model_requests == 4
+    assert host.bot_id == 'onebot:90001' and host.max_model_requests == 4
     assert host.delivery == "simulated"
     assert host.panel is None
     assert host.history_import is None
     assert isinstance(host.onebot, OneBotReverse)
-    assert list(host.scenes) == ["group:80001", "private:80002"]
-    assert host.scenes["group:80001"].persona == root / "personas/group"
-    assert host.scenes["private:80002"].persona == tmp_path / "private-persona"
+    assert list(host.scenes) == ["onebot:group:80001", "onebot:private:80002"]
+    assert host.scenes["onebot:group:80001"].persona == root / "personas/group"
+    assert host.scenes["onebot:private:80002"].persona == tmp_path / "private-persona"
     assert HostConfig.model_validate_json(host.model_dump_json()) == host
 
-    group = host.scene_config("group:80001")
-    private = host.scene_config("private:80002")
+    group = host.scene_config("onebot:group:80001")
+    private = host.scene_config("onebot:private:80002")
     assert isinstance(group, LabConfig) and isinstance(private, LabConfig)
     assert group.mode == private.mode == "isolated"
-    assert group.scene == "group:80001" and private.scene == "private:80002"
+    assert group.scene == "onebot:group:80001" and private.scene == "onebot:private:80002"
     assert group.database == private.database == host.database
-    assert group.bot_qq == private.bot_qq == host.bot_qq
+    assert group.bot_id == private.bot_id == host.bot_id
     assert group.onebot == private.onebot == host.onebot
     assert group.panel is None and private.panel is None
     assert group.persona == root / "personas/group"
@@ -412,13 +412,13 @@ def test_explicit_multiscene_host_roundtrips_and_derives_existing_scene_contract
     assert group.attention.activity == 0.7
     assert group.attention.quiet_hours.start == WallTime(1, 0)
     assert private.attention.activity == 0.3
-    assert private.voice_mode == "direct" and private.schedules.owner == "80002"
+    assert private.voice_mode == "direct" and private.schedules.owner == 'onebot:80002'
     assert group.model_settings("mind").model == private.model_settings("mind").model == "sample-mind"
     assert group.model_settings("mind").reasoning_effort == "high"
     assert LabConfig.model_validate_json(group.model_dump_json()) == group
     assert LabConfig.model_validate_json(private.model_dump_json()) == private
-    with pytest.raises(ValueError, match="group:99999.*not configured"):
-        host.scene_config("group:99999")
+    with pytest.raises(ValueError, match="onebot:group:99999.*not configured"):
+        host.scene_config("onebot:group:99999")
     assert "synthetic-secret-marker" not in repr(host)
 
 
@@ -437,8 +437,8 @@ def test_host_panel_configuration_resolves_assets_without_leaking_into_scene_vie
     assert host.panel.port == 0
     assert host.panel.assets_dir == tmp_path / "host-static"
     assert host.panel.cookie_secure is True
-    assert host.scene_config("group:80001").panel is None
-    assert host.scene_config("private:80002").panel is None
+    assert host.scene_config("onebot:group:80001").panel is None
+    assert host.scene_config("onebot:private:80002").panel is None
     assert HostConfig.model_validate_json(host.model_dump_json()) == host
     assert host.model_settings("mind").model == "sample-mind"
     assert "synthetic-host-password" not in repr(host)
@@ -451,7 +451,7 @@ def test_host_learning_binding_and_group_settings_roundtrip_without_changing_oth
         "provider": "sample", "model": "sample-learner", "context_window_tokens": 16384,
         "max_output_tokens": 512, "temperature": 0.3,
     }
-    source["scenes"]["group:80001"]["learning"] = {
+    source["scenes"]["onebot:group:80001"]["learning"] = {
         "min_messages": 8, "batch_size": 24, "idle_seconds": 20.5,
         "max_age_seconds": 120.0, "auto_adopt": False,
     }
@@ -461,31 +461,31 @@ def test_host_learning_binding_and_group_settings_roundtrip_without_changing_oth
     assert host.models.roles.learner.model == "sample-learner"
     assert host.model_settings("learner").model == "sample-learner"
     assert host.model_settings("mind").model == "sample-mind"
-    assert host.scenes["group:80001"].learning == LearningSettings(
+    assert host.scenes["onebot:group:80001"].learning == LearningSettings(
         min_messages=8, batch_size=24, idle_seconds=20.5,
         max_age_seconds=120.0, auto_adopt=False,
     )
-    assert host.scene_config("group:80001").learning is host.scenes["group:80001"].learning
-    assert host.scenes["private:80002"].learning is None
+    assert host.scene_config("onebot:group:80001").learning is host.scenes["onebot:group:80001"].learning
+    assert host.scenes["onebot:private:80002"].learning is None
     assert HostConfig.model_validate_json(host.model_dump_json()) == host
 
-    source["scenes"]["group:80001"]["learning"] = {}
+    source["scenes"]["onebot:group:80001"]["learning"] = {}
     (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
-    assert load_host_config(root).scenes["group:80001"].learning == LearningSettings()
-    assert load_host_config(root).scenes["group:80001"].learning.extract is True
-    assert load_host_config(root).scenes["group:80001"].learning.embedding is None
+    assert load_host_config(root).scenes["onebot:group:80001"].learning == LearningSettings()
+    assert load_host_config(root).scenes["onebot:group:80001"].learning.extract is True
+    assert load_host_config(root).scenes["onebot:group:80001"].learning.embedding is None
 
 
 def test_learning_read_only_embedding_is_explicit_in_host_and_replay_lab(tmp_path):
     embedding = {"provider": "sample", "model": "sample-embed", "dimensions": 8}
     host_root = tmp_path / "host"
     source = _host_config()
-    source["scenes"]["group:80001"]["learning"] = {"extract": False, "embedding": embedding}
+    source["scenes"]["onebot:group:80001"]["learning"] = {"extract": False, "embedding": embedding}
     _write_config(host_root, source)
     host = load_host_config(host_root)
     assert host.models.roles.learner is None
-    assert host.scenes["group:80001"].learning.embedding.model == "sample-embed"
-    assert host.scene_config("group:80001").learning is host.scenes["group:80001"].learning
+    assert host.scenes["onebot:group:80001"].learning.embedding.model == "sample-embed"
+    assert host.scene_config("onebot:group:80001").learning is host.scenes["onebot:group:80001"].learning
     assert HostConfig.model_validate_json(host.model_dump_json()) == host
     with pytest.raises(ValueError, match="models.roles.learner is not configured"):
         host.model_settings("learner")
@@ -522,7 +522,7 @@ def test_learning_settings_reject_invalid_values(changes):
 def test_jargon_extraction_has_an_independent_explicit_binding(tmp_path):
     root = tmp_path / "host"
     source = _host_config()
-    source["scenes"]["group:80001"]["learning"] = {"extract": False, "jargon_extract": True}
+    source["scenes"]["onebot:group:80001"]["learning"] = {"extract": False, "jargon_extract": True}
     _write_config(root, source)
     with pytest.raises(ValueError, match="requires explicit models.roles.learner"):
         load_host_config(root)
@@ -531,8 +531,8 @@ def test_jargon_extraction_has_an_independent_explicit_binding(tmp_path):
     }
     (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
     loaded = load_host_config(root)
-    assert loaded.scenes["group:80001"].learning.jargon_extract is True
-    assert loaded.scenes["group:80001"].learning.extract is False
+    assert loaded.scenes["onebot:group:80001"].learning.jargon_extract is True
+    assert loaded.scenes["onebot:group:80001"].learning.extract is False
     assert LearningSettings().jargon_extract is False
 
     lab_root = tmp_path / "lab"
@@ -549,7 +549,7 @@ def test_jargon_extraction_has_an_independent_explicit_binding(tmp_path):
 def test_sticker_collection_requires_vision_not_learner(tmp_path):
     root = tmp_path / "host"
     source = _host_config()
-    source["scenes"]["group:80001"]["learning"] = {"extract": False, "collect_stickers": True}
+    source["scenes"]["onebot:group:80001"]["learning"] = {"extract": False, "collect_stickers": True}
     _write_config(root, source)
     with pytest.raises(ValueError, match="collect_stickers requires explicit models.roles.vision"):
         load_host_config(root)
@@ -558,7 +558,7 @@ def test_sticker_collection_requires_vision_not_learner(tmp_path):
     }
     (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
     loaded = load_host_config(root)
-    assert loaded.scenes["group:80001"].learning.collect_stickers is True
+    assert loaded.scenes["onebot:group:80001"].learning.collect_stickers is True
     assert loaded.models.roles.learner is None
     assert LearningSettings().collect_stickers is False
 
@@ -573,7 +573,7 @@ def test_sticker_collection_requires_vision_not_learner(tmp_path):
 def test_reply_effects_require_learner_and_host(tmp_path):
     root = tmp_path / "host"
     source = _host_config()
-    source["scenes"]["group:80001"]["learning"] = {"extract": False, "reply_effects": True}
+    source["scenes"]["onebot:group:80001"]["learning"] = {"extract": False, "reply_effects": True}
     _write_config(root, source)
     with pytest.raises(ValueError, match="learning requires explicit models.roles.learner"):
         load_host_config(root)
@@ -581,7 +581,7 @@ def test_reply_effects_require_learner_and_host(tmp_path):
         "provider": "sample", "model": "sample-learner", "context_window_tokens": 8192,
     }
     (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
-    assert load_host_config(root).scenes["group:80001"].learning.reply_effects is True
+    assert load_host_config(root).scenes["onebot:group:80001"].learning.reply_effects is True
     assert LearningSettings().reply_effects is False
     with pytest.raises(ValidationError):
         LearningSettings.model_validate({"reply_effects": "true"})
@@ -604,9 +604,9 @@ def test_learning_settings_reject_nonfinite_seconds(field, value):
 def test_learning_requires_explicit_host_group_and_learner_binding(tmp_path):
     root = tmp_path / "host"
     source = _host_config()
-    source["scenes"]["group:80001"]["learning"] = {}
+    source["scenes"]["onebot:group:80001"]["learning"] = {}
     _write_config(root, source)
-    with pytest.raises(ValueError, match="scenes.group:80001.learning requires explicit models.roles.learner"):
+    with pytest.raises(ValueError, match="scenes.onebot:group:80001.learning requires explicit models.roles.learner"):
         load_host_config(root)
 
     source["models"]["roles"]["learner"] = {
@@ -617,9 +617,9 @@ def test_learning_requires_explicit_host_group_and_learner_binding(tmp_path):
         load_host_config(root)
 
     source["models"]["roles"]["learner"]["provider"] = "sample"
-    source["scenes"]["private:80002"]["learning"] = {}
+    source["scenes"]["onebot:private:80002"]["learning"] = {}
     (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
-    with pytest.raises(ValueError, match="scenes.private:80002.learning is only supported for group scenes"):
+    with pytest.raises(ValueError, match="scenes.onebot:private:80002.learning is only supported for group scenes"):
         load_host_config(root)
 
     lab_root = tmp_path / "lab"
@@ -629,23 +629,23 @@ def test_learning_requires_explicit_host_group_and_learner_binding(tmp_path):
     with pytest.raises(ValueError, match="learning requires the isolated-multi host"):
         load_config(lab_root)
 
-    source["scenes"]["private:80002"]["learning"] = {"extract": False}
+    source["scenes"]["onebot:private:80002"]["learning"] = {"extract": False}
     (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
-    with pytest.raises(ValueError, match="scenes.private:80002.learning is only supported for group scenes"):
+    with pytest.raises(ValueError, match="scenes.onebot:private:80002.learning is only supported for group scenes"):
         load_host_config(root)
 
 
 def test_learning_embedding_rejects_unknown_provider_and_invalid_binding(tmp_path):
     root = tmp_path / "host"
     source = _host_config()
-    source["scenes"]["group:80001"]["learning"] = {
+    source["scenes"]["onebot:group:80001"]["learning"] = {
         "extract": False, "embedding": {"provider": "missing", "model": "sample-embed"},
     }
     _write_config(root, source)
     with pytest.raises(ValueError, match="learning.embedding.provider references unknown provider"):
         load_host_config(root)
 
-    source["scenes"]["group:80001"]["learning"]["embedding"] = {
+    source["scenes"]["onebot:group:80001"]["learning"]["embedding"] = {
         "provider": "sample", "model": "sample-embed", "dimensions": 0,
     }
     (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
@@ -687,30 +687,30 @@ def test_scene_persona_overrides_roundtrip_without_cross_scene_inheritance(tmp_p
     single_source = _config("personas/example")
     single_source.update(
         persona_aliases=[" 小例 ", "例子"],
-        relationships={"80002": " 熟悉，但先看本轮原话 "},
+        relationships={'onebot:80002': " 熟悉，但先看本轮原话 "},
         behavior_addendum=" 这个场景偏重简短回答。 ",
     )
     _write_config(single_root, single_source)
     single = load_config(single_root)
     assert single.persona_aliases == [" 小例 ", "例子"]
-    assert single.relationships == {"80002": " 熟悉，但先看本轮原话 "}
+    assert single.relationships == {'onebot:80002': " 熟悉，但先看本轮原话 "}
     assert single.behavior_addendum == " 这个场景偏重简短回答。 "
     assert LabConfig.model_validate_json(single.model_dump_json()) == single
 
     host_root = tmp_path / "host"
     host_source = _host_config()
-    host_source["scenes"]["group:80001"].update(
+    host_source["scenes"]["onebot:group:80001"].update(
         persona_aliases=["群内外号"],
-        relationships={"80002": "群内熟人"},
+        relationships={'onebot:80002': "群内熟人"},
         behavior_addendum="少开玩笑",
     )
     _write_config(host_root, host_source)
     host = load_host_config(host_root)
     assert HostConfig.model_validate_json(host.model_dump_json()) == host
-    group = host.scene_config("group:80001")
-    private = host.scene_config("private:80002")
+    group = host.scene_config("onebot:group:80001")
+    private = host.scene_config("onebot:private:80002")
     assert (group.persona_aliases, group.relationships, group.behavior_addendum) == (
-        ["群内外号"], {"80002": "群内熟人"}, "少开玩笑",
+        ["群内外号"], {'onebot:80002': "群内熟人"}, "少开玩笑",
     )
     assert private.persona_aliases == [] and private.relationships == {}
     assert private.behavior_addendum is None
@@ -723,8 +723,8 @@ def test_scene_persona_overrides_roundtrip_without_cross_scene_inheritance(tmp_p
     ("relationships", []),
     ("relationships", {"0": "熟人"}),
     ("relationships", {"01": "熟人"}),
-    ("relationships", {"80002": "  "}),
-    ("relationships", {"80002": 3}),
+    ("relationships", {'onebot:80002': "  "}),
+    ("relationships", {'onebot:80002': 3}),
     ("behavior_addendum", "  "),
     ("behavior_addendum", 3),
     ("unexpected_scene_field", "not accepted"),
@@ -748,18 +748,18 @@ def test_multiscene_persona_overrides_reject_wrong_place_or_invalid_scene(tmp_pa
     if placement == "top":
         source["persona_aliases"] = ["不得全局继承"]
     else:
-        source["scenes"]["group:80001"]["relationships"] = {"not-qq": "熟人"}
+        source["scenes"]["onebot:group:80001"]["relationships"] = {"not-qq": "熟人"}
     _write_config(root, source)
 
     with pytest.raises(ValueError) as failure:
         load_host_config(root)
-    assert ("persona_aliases" if placement == "top" else "scenes.group:80001.relationships") in str(failure.value)
+    assert ("persona_aliases" if placement == "top" else "scenes.onebot:group:80001.relationships") in str(failure.value)
 
 
 def test_scene_persona_write_contract_requires_all_three_fields():
     values = {
         "persona_aliases": ["群内称呼"],
-        "relationships": {"80002": "熟悉"},
+        "relationships": {'onebot:80002': "熟悉"},
         "behavior_addendum": None,
     }
     assert ScenePersona.model_validate_json(json.dumps(values)).model_dump() == values
@@ -774,7 +774,7 @@ def test_scene_persona_write_contract_requires_all_three_fields():
     ("persona_aliases", "not a list"),
     ("persona_aliases", ["  "]),
     ("relationships", {"0": "熟悉"}),
-    ("relationships", {"80002": "\n "}),
+    ("relationships", {'onebot:80002': "\n "}),
     ("behavior_addendum", " "),
     ("behavior_addendum", 3),
 ])
@@ -789,7 +789,7 @@ def test_scene_persona_public_save_preserves_unedited_root_values_and_relative_p
     root = tmp_path / "isolated"
     source = _config("personas/relative-package")
     source["persona_aliases"] = ["原称呼"]
-    source["relationships"] = {"80002": "原说明"}
+    source["relationships"] = {'onebot:80002': "原说明"}
     source["behavior_addendum"] = "原行为补充"
     source["evaluation"] = {
         "profiles": {"same-model": {"voice_mode": "direct"}},
@@ -801,12 +801,12 @@ def test_scene_persona_public_save_preserves_unedited_root_values_and_relative_p
     persona_path.write_bytes(b"operator-owned persona source\n")
 
     assert read_scene_persona(root).model_dump() == {
-        "persona_aliases": ["原称呼"], "relationships": {"80002": "原说明"},
+        "persona_aliases": ["原称呼"], "relationships": {'onebot:80002': "原说明"},
         "behavior_addendum": "原行为补充",
     }
     changes = ScenePersona(
         persona_aliases=[" 新称呼 ", "第二个"],
-        relationships={"80003": " 熟人，保留空白 "},
+        relationships={'onebot:80003': " 熟人，保留空白 "},
         behavior_addendum=None,
     )
     save_scene_persona(root, changes)
@@ -1017,7 +1017,7 @@ def test_replay_clock_rejects_invalid_values(tmp_path, clock, field):
         "provider": "sample", "model": "synthetic-vision", "context_window_tokens": 4096,
     }), "models.roles.vision"),
     (lambda source: source.update(history_import={
-        "source": "old.sqlite3", "backup": "backup.sqlite3", "scenes": ["group:80001"],
+        "source": "old.sqlite3", "backup": "backup.sqlite3", "scenes": ["onebot:group:80001"],
     }), "history_import"),
 ])
 def test_replay_clock_rejects_entries_without_shared_time_source(tmp_path, change, field):
@@ -1091,13 +1091,13 @@ def test_scene_persona_save_rejects_malformed_root_without_writing(tmp_path):
         (lambda source: source.pop("onebot"), "onebot"),
         (lambda source: source.update(onebot=None, delivery="onebot"), "onebot"),
         (lambda source: source.update(scenes={}), "scenes"),
-        (lambda source: source["scenes"].update({"group:0": {"persona": "personas/invalid"}}), "group:<QQ>"),
-        (lambda source: source.update(scene="group:80001"), "scene"),
+        (lambda source: source["scenes"].update({"onebot:group:0": {"persona": "personas/invalid"}}), "platform:group:id"),
+        (lambda source: source.update(scene="onebot:group:80001"), "scene"),
         (lambda source: source.update(persona="personas/group"), "persona"),
-        (lambda source: source["scenes"]["group:80001"].update(database="other.db"), "database"),
-        (lambda source: source["scenes"]["group:80001"].pop("persona"), "scenes.group:80001.persona"),
+        (lambda source: source["scenes"]["onebot:group:80001"].update(database="other.db"), "database"),
+        (lambda source: source["scenes"]["onebot:group:80001"].pop("persona"), "scenes.onebot:group:80001.persona"),
         (lambda source: source["models"]["roles"]["mind"].update(provider="missing"), "models.roles.mind.provider"),
-        (lambda source: source["scenes"]["private:80002"]["schedules"].update(owner="90001"), "bot_qq"),
+        (lambda source: source["scenes"]["onebot:private:80002"]["schedules"].update(owner='onebot:90001'), "bot_id"),
     ],
 )
 def test_multiscene_host_rejects_invalid_or_unowned_settings(tmp_path, change, field):
@@ -1152,7 +1152,7 @@ def test_history_import_paths_and_explicit_scene_scope_roundtrip(tmp_path):
     single_source = _config("personas/example")
     single_source["history_import"] = {
         "source": "../offline-old.sqlite3", "backup": "data/pre-import.sqlite3",
-        "scenes": ["group:80001"],
+        "scenes": ["onebot:group:80001"],
     }
     _write_config(single_root, single_source)
 
@@ -1171,7 +1171,7 @@ def test_history_import_paths_and_explicit_scene_scope_roundtrip(tmp_path):
     host_source = _host_config()
     host_source["history_import"] = {
         "source": "../offline-old.sqlite3", "backup": "data/pre-import.sqlite3",
-        "scenes": ["private:80002"], "recent_messages": 17,
+        "scenes": ["onebot:private:80002"], "recent_messages": 17,
     }
     _write_config(host_root, host_source)
 
@@ -1181,23 +1181,23 @@ def test_history_import_paths_and_explicit_scene_scope_roundtrip(tmp_path):
     assert host == load_host_config(host_root)
     assert host.history_import.source == tmp_path / "offline-old.sqlite3"
     assert host.history_import.backup == host_root / "data/pre-import.sqlite3"
-    assert host.history_import.scenes == ["private:80002"]
+    assert host.history_import.scenes == ["onebot:private:80002"]
     assert host.history_import.recent_messages == 17
     assert HostConfig.model_validate_json(host.model_dump_json()) == host
-    assert host.scene_config("private:80002").history_import is None
-    assert host.scene_config("group:80001").history_import is None
-    assert host.history_import.scenes == ["private:80002"]
+    assert host.scene_config("onebot:private:80002").history_import is None
+    assert host.scene_config("onebot:group:80001").history_import is None
+    assert host.history_import.scenes == ["onebot:private:80002"]
 
 
 @pytest.mark.parametrize(
     ("mode", "scenes", "field"),
     [
         ("isolated", [], "scenes"),
-        ("isolated", ["group:80001", "group:80001"], "repeat"),
-        ("isolated", ["group:0"], "group:<QQ>"),
-        ("isolated", ["private:80002"], "only the configured scene"),
-        ("isolated-multi", ["group:80001", "group:80001"], "repeat"),
-        ("isolated-multi", ["group:99999"], "not configured"),
+        ("isolated", ["onebot:group:80001", "onebot:group:80001"], "repeat"),
+        ("isolated", ["onebot:group:0"], "platform:group:id"),
+        ("isolated", ["onebot:private:80002"], "only the configured scene"),
+        ("isolated-multi", ["onebot:group:80001", "onebot:group:80001"], "repeat"),
+        ("isolated-multi", ["onebot:group:99999"], "not configured"),
     ],
 )
 def test_history_import_rejects_invalid_scene_selection(tmp_path, mode, scenes, field):
@@ -1237,7 +1237,7 @@ def test_history_import_rejects_invalid_paths_limits_and_fields(tmp_path, change
     source = _config("personas/example")
     source["history_import"] = {
         "source": "../offline-old.sqlite3", "backup": "data/pre-import.sqlite3",
-        "scenes": ["group:80001"],
+        "scenes": ["onebot:group:80001"],
     }
     change(source["history_import"])
     _write_config(root, source)
@@ -1268,7 +1268,7 @@ def test_instance_config_rejects_retired_rollback_settings(tmp_path, mode, field
     root = tmp_path / "lab"
     source = _config("personas/example") if mode == "isolated" else _host_config()
     source[field] = {"target": "old.sqlite3", "backup": "old-before.sqlite3",
-                     "scenes": ["group:80001"]}
+                     "scenes": ["onebot:group:80001"]}
     _write_config(root, source)
 
     with pytest.raises(ValueError) as failure:
@@ -1283,22 +1283,23 @@ def test_offline_version_upgrade_cli_selects_explicit_multiscene_root(tmp_path):
     source = _host_config()
     source["database"] = "isolated.sqlite3"
     _write_config(root, source)
-    fixture = Path(__file__).parent / "fixtures/next/migration/v9-synthetic.sqlite3"
-    shutil.copyfile(fixture, root / "isolated.sqlite3")
-
+    with Store(root / "isolated.sqlite3"):
+        pass
     completed = subprocess.run(
         [sys.executable, "-m", "len_bot.next.maintenance.migrate"], cwd=root,
         text=True, capture_output=True, check=False,
     )
-
     assert completed.returncode == 0, completed.stderr
-    assert "Offline migration completed" in completed.stdout
+    assert "business format 1" in completed.stdout
     with sqlite3.connect(root / "isolated.sqlite3") as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == FORMAT_VERSION
-    with sqlite3.connect(root / "isolated.sqlite3.v9.bak") as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
-    with sqlite3.connect(root / "isolated.sqlite3.v10.bak") as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 10
+    with sqlite3.connect(root / "isolated.sqlite3") as db:
+        db.execute("PRAGMA user_version=36")
+    rejected = subprocess.run(
+        [sys.executable, "-m", "len_bot.next.maintenance.migrate"], cwd=root,
+        text=True, capture_output=True, check=False,
+    )
+    assert rejected.returncode != 0 and "Unsupported business database format" in rejected.stderr
 
 
 @pytest.mark.parametrize("port", [0, 65535])
@@ -1596,9 +1597,9 @@ def test_image_limits_reject_invalid_values(tmp_path, images, field):
         {
             "enabled": False,
             "max_pending": 7,
-            "owner": "80002",
-            "admins": ["80003"],
-            "whitelist": ["80003", "80004"],
+            "owner": 'onebot:80002',
+            "admins": ['onebot:80003'],
+            "whitelist": ['onebot:80003', 'onebot:80004'],
             "own": ["owner", "admin", "member"],
             "others": ["admin", "group_manager"],
             "manage": ["owner", "whitelist"],
@@ -1636,9 +1637,9 @@ def test_schedule_configuration_accepts_explicit_permissions_and_roundtrips(tmp_
         ({"own": ["owner", "unknown"]}, "own"),
         ({"others": ["member", "member"]}, "others"),
         ({"manage": ["admin", "admin"]}, "manage"),
-        ({"owner": "90001"}, "bot_qq"),
-        ({"admins": ["90001"]}, "bot_qq"),
-        ({"whitelist": ["90001"]}, "bot_qq"),
+        ({"owner": 'onebot:90001'}, "bot_id"),
+        ({"admins": ['onebot:90001']}, "bot_id"),
+        ({"whitelist": ['onebot:90001']}, "bot_id"),
     ],
 )
 def test_schedule_configuration_rejects_invalid_permissions(tmp_path, schedules, field):
@@ -1659,7 +1660,7 @@ def test_isolated_attention_accepts_explicit_short_direct_timing(tmp_path):
     source["attention"] = {
         "only_direct": True,
         "keywords": ["  然然  ", "开播"],
-        "other_bot_qqs": ["90002"],
+        "other_bot_ids": ['onebot:90002'],
         "direct_idle_seconds": 0.02,
         "direct_max_seconds": 0.05,
         "named_idle_seconds": 0.03,
@@ -1679,7 +1680,7 @@ def test_isolated_attention_accepts_explicit_short_direct_timing(tmp_path):
     attention = load_config(root).attention
     assert (attention.direct_idle_seconds, attention.direct_max_seconds, attention.max_extensions) == (0.02, 0.05, 0)
     assert attention.only_direct is True
-    assert attention.keywords == ["然然", "开播"] and attention.other_bot_qqs == ["90002"]
+    assert attention.keywords == ["然然", "开播"] and attention.other_bot_ids == ['onebot:90002']
     assert (attention.named_idle_seconds, attention.named_max_seconds) == (0.03, 0.06)
     assert (attention.focus_seconds, attention.focus_idle_seconds, attention.focus_max_seconds) == (0.2, 0.04, 0.08)
     assert (attention.ambient_min_interval_seconds, attention.ambient_max_interval_seconds) == (0.05, 0.1)
@@ -1778,9 +1779,9 @@ def test_quiet_hours_reject_invalid_configuration(tmp_path, quiet, field):
         (lambda source: source.update(attention={"keywords": ["  "]}), "keywords"),
         (lambda source: source.update(attention={"keywords": ["然然", " 然然 "]}), "keywords"),
         (lambda source: source.update(attention={"keywords": [123]}), "keywords"),
-        (lambda source: source.update(attention={"other_bot_qqs": ["0"]}), "other_bot_qqs"),
-        (lambda source: source.update(attention={"other_bot_qqs": ["abc"]}), "other_bot_qqs"),
-        (lambda source: source.update(attention={"other_bot_qqs": [90002]}), "other_bot_qqs"),
+        (lambda source: source.update(attention={"other_bot_ids": ["0"]}), "other_bot_ids"),
+        (lambda source: source.update(attention={"other_bot_ids": ["abc"]}), "other_bot_ids"),
+        (lambda source: source.update(attention={"other_bot_ids": [90002]}), "other_bot_ids"),
         (lambda source: source.update(attention={"named_idle_seconds": -1}), "named_idle_seconds"),
         (lambda source: source.update(attention={"named_idle_seconds": 9}), "named_idle_seconds"),
         (lambda source: source.update(attention={"named_max_seconds": 0}), "named_max_seconds"),
@@ -2074,16 +2075,16 @@ def test_scene_timezone_override_is_explicit_and_scene_local(tmp_path):
     root = tmp_path / "host"
     source = _host_config()
     source["timezone"] = "Asia/Shanghai"
-    source["scenes"]["group:80001"]["timezone"] = "Europe/Berlin"
+    source["scenes"]["onebot:group:80001"]["timezone"] = "Europe/Berlin"
     _write_config(root, source)
     loaded = load_host_config(root)
-    assert loaded.scene_config("group:80001").timezone == "Europe/Berlin"
-    assert loaded.scene_timezone("group:80001") == "Europe/Berlin"
-    other = [scene for scene in loaded.scenes if scene != "group:80001"]
+    assert loaded.scene_config("onebot:group:80001").timezone == "Europe/Berlin"
+    assert loaded.scene_timezone("onebot:group:80001") == "Europe/Berlin"
+    other = [scene for scene in loaded.scenes if scene != "onebot:group:80001"]
     for scene in other:
         assert loaded.scene_config(scene).timezone == "Asia/Shanghai"
     assert loaded.timezone == "Asia/Shanghai"
-    source["scenes"]["group:80001"]["timezone"] = "Mars/Olympus"
+    source["scenes"]["onebot:group:80001"]["timezone"] = "Mars/Olympus"
     (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
     with pytest.raises(ValueError, match="unknown timezone"):
         load_host_config(root)
@@ -2092,23 +2093,23 @@ def test_scene_timezone_override_is_explicit_and_scene_local(tmp_path):
 def test_proactive_is_host_group_only_with_local_active_hours(tmp_path):
     root = tmp_path / "host"
     source = _host_config()
-    source["scenes"]["group:80001"]["proactive"] = {"idle_seconds": 3600.0, "start": "20:00", "end": "02:00"}
-    source["scenes"]["group:80001"]["learning"] = {"extract": False, "reply_effects": True}
+    source["scenes"]["onebot:group:80001"]["proactive"] = {"idle_seconds": 3600.0, "start": "20:00", "end": "02:00"}
+    source["scenes"]["onebot:group:80001"]["learning"] = {"extract": False, "reply_effects": True}
     source["models"]["roles"]["learner"] = dict(source["models"]["roles"]["mind"])
     _write_config(root, source)
-    proactive = load_host_config(root).scene_config("group:80001").proactive
+    proactive = load_host_config(root).scene_config("onebot:group:80001").proactive
     assert (proactive.idle_seconds, proactive.start.isoformat(), proactive.end.isoformat()) == (
         3600.0, "20:00:00", "02:00:00")
     for invalid, message in (({"start": "10:00", "end": "10:00"}, "start and end must differ"),
                              ({"idle_seconds": 60.0}, "greater than or equal to 600"),
                              ({"start": "9:00"}, "local HH:MM"),
                              ({"idle_seconds": "3600"}, "valid number")):
-        source["scenes"]["group:80001"]["proactive"] = invalid
+        source["scenes"]["onebot:group:80001"]["proactive"] = invalid
         (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
         with pytest.raises(ValueError, match=message):
             load_host_config(root)
-    source["scenes"]["group:80001"]["proactive"] = None
-    source["scenes"]["private:70001"] = {**source["scenes"]["group:80001"], "proactive": {}}
+    source["scenes"]["onebot:group:80001"]["proactive"] = None
+    source["scenes"]["onebot:private:70001"] = {**source["scenes"]["onebot:group:80001"], "proactive": {}}
     (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
     with pytest.raises(ValueError, match="proactive is only supported for group scenes"):
         load_host_config(root)
@@ -2147,14 +2148,14 @@ def test_local_memory_summaries_require_explicit_memory_model(tmp_path):
 ])
 def test_proactive_has_actual_time_outside_quiet_hours(tmp_path, active, quiet, valid):
     source = _host_config()
-    scene = source['scenes']['group:80001']
+    scene = source['scenes']['onebot:group:80001']
     scene['proactive'] = dict(zip(('start', 'end'), active))
     scene['attention'] = {'quiet_hours': dict(zip(('start', 'end'), quiet))}
     scene['learning'] = {'extract': False, 'reply_effects': True}
     source['models']['roles']['learner'] = dict(source['models']['roles']['mind'])
     _write_config(tmp_path / "host", source)
     if valid:
-        assert load_host_config(tmp_path / "host").scenes['group:80001'].proactive is not None
+        assert load_host_config(tmp_path / "host").scenes['onebot:group:80001'].proactive is not None
     else:
         with pytest.raises(ValueError, match='entirely covered'):
             load_host_config(tmp_path / "host")
@@ -2162,7 +2163,7 @@ def test_proactive_has_actual_time_outside_quiet_hours(tmp_path, active, quiet, 
 
 def test_proactive_requires_actual_reply_judgments(tmp_path):
     source = _host_config()
-    source['scenes']['group:80001']['proactive'] = {}
+    source['scenes']['onebot:group:80001']['proactive'] = {}
     _write_config(tmp_path / "host", source)
     with pytest.raises(ValueError, match='requires learning.reply_effects'):
         load_host_config(tmp_path / "host")

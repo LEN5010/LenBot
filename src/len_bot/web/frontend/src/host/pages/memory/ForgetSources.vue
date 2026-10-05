@@ -40,7 +40,7 @@ function toggle(item, on) {
     <h3>要跳过的聊天消息（可选）</h3>
     <form class="search" @submit.prevent="search">
       <v-text-field v-model="text" label="消息里的文字" />
-      <v-text-field v-model="who" label="发言人 QQ" inputmode="numeric" />
+      <v-text-field v-model="who" label="发言人 平台账号"  />
       <v-btn type="submit" variant="tonal" :loading="page.loading.value">查找</v-btn>
     </form>
     <ErrorNote v-if="page.error.value" title="查找消息失败" :error="page.error.value" />

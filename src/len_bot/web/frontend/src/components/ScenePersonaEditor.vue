@@ -36,8 +36,8 @@ const problem = computed(() => {
   if (blank >= 0) return `补充称呼第 ${blank + 1} 项是空的，不需要就删掉。`
   const seen = new Set()
   for (const [index, row] of draft.value.relationships.entries()) {
-    if (!/^[1-9][0-9]*$/.test(row.qq)) return `关系第 ${index + 1} 行的 QQ 只能填数字。`
-    if (seen.has(row.qq)) return `QQ ${row.qq} 出现了两次，请合并成一行。`
+    if (!/^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(row.qq)) return `关系第 ${index + 1} 行的 平台账号 只能填数字。`
+    if (seen.has(row.qq)) return `平台账号 ${row.qq} 出现了两次，请合并成一行。`
     seen.add(row.qq)
     if (!row.description.trim()) return `关系第 ${index + 1} 行的说明是空的，不需要就删掉。`
   }
@@ -72,10 +72,10 @@ async function submit() {
       </div>
       <div class="group">
         <h3>关系说明</h3>
-        <p class="muted small">一位群友一行，同一个 QQ 只能出现一次。</p>
+        <p class="muted small">一位群友一行，同一个 平台账号 只能出现一次。</p>
         <RowEditor :items="draft.relationships" :make="() => ({ qq: '', description: '' })" add-label="添加关系" empty-text="还没有关系说明。"
           columns="minmax(120px,180px) minmax(0,1fr)" v-slot="{ item }">
-          <v-text-field v-model="item.qq" label="QQ" inputmode="numeric" hide-details="auto" />
+          <v-text-field v-model="item.qq" label="平台账号"  hide-details="auto" />
           <v-textarea v-model="item.description" label="说明" rows="1" auto-grow hide-details="auto" />
         </RowEditor>
       </div>

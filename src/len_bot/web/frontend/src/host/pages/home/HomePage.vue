@@ -110,7 +110,7 @@ const connectionNotes = {
         <span class="hero-mark"><img :src="markUrl" alt="" /><span class="hero-dot" /></span>
         <div class="hero-text">
           <h2>{{ online ? 'Bot 在线' : runtimeLabel(state.connection.status) }}</h2>
-          <p>QQ {{ state.bot_qq }} · {{ state.delivery === 'onebot' ? '真实发送到 QQ' : '模拟发送，不会发到 QQ' }} · {{ state.scenes.length }} 个群聊</p>
+          <p>{{ state.bot_id }} · {{ state.delivery === 'onebot' ? '真实发送到 QQ' : '模拟发送，不会发到 QQ' }} · {{ state.scenes.length }} 个群聊</p>
           <LiveStatus :status="events.status.value" @reconnect="events.reconnect" />
         </div>
       </div>

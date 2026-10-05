@@ -25,8 +25,8 @@ class ResourceLimits(BaseModel):
     @classmethod
     def scenes(cls, values):
         import re
-        if any(re.fullmatch(r'(group|private):[1-9][0-9]*', scene) is None for scene in values):
-            raise ValueError('limits scene keys must be actual group/private QQ scenes')
+        if any(re.fullmatch(r'[a-z][a-z0-9_-]*:(group|private):[^:\s/\\]+', scene) is None for scene in values):
+            raise ValueError('limits scene keys must be actual group/private 账号 scenes')
         return values
 
     @field_validator('scene_messages_per_hour')
@@ -50,7 +50,7 @@ def day_window(now: float, timezone: str) -> tuple[float, float]:
 
 def check_speech(store, config) -> None:
     scene = config.scene
-    if not scene.startswith('group:'):
+    if scene.split(':', 2)[1] != 'group':
         return
     limit = config.limits.scene_messages_per_hour.get(scene, config.limits.messages_per_hour)
     if limit is None:

@@ -18,7 +18,7 @@ class RetentionSettings(BaseModel):
     @field_validator('message_days')
     @classmethod
     def scene_days(cls, values):
-        if any(re.fullmatch(r'(group|private):[1-9][0-9]*', scene) is None or days < 1
+        if any(re.fullmatch(r'[a-z][a-z0-9_-]*:(group|private):[^:\s/\\]+', scene) is None or days < 1
                for scene, days in values.items()):
             raise ValueError('message_days requires actual scenes and positive days')
         return values

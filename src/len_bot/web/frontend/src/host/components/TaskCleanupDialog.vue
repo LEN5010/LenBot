@@ -19,7 +19,7 @@ const storage = useResource(() => tasksApi.storage(props.scene, selected.value))
 watch(selected, () => storage.reload())
 const current = computed(() => storage.data.value?.task_id === selected.value ? storage.data.value : null)
 const clean = useAction()
-const validQQ = computed(() => /^[1-9][0-9]*$/.test(props.operator))
+const validIdentity = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
 const title = computed(() => props.operation === 'temporary' ? '清理临时文件' : '释放整个任务环境')
 async function run() {
   const value = await clean.run(() => taskStorageApi.cleanup(props.scene, { task_ids: props.taskIds, requester: props.operator, operation: props.operation }))
@@ -54,9 +54,9 @@ async function run() {
         <template #meta><StatusBadge :text="item.status === 'complete' ? '清理完成' : '未完成'" :tone="item.status === 'complete' ? 'success' : 'error'" /></template>
       </ObjectRow>
     </ObjectList>
-    <p v-if="!validQQ" class="problem">先在页面上方填写你的 QQ</p>
+    <p v-if="!validIdentity" class="problem">先在页面上方填写你的 平台账号</p>
     <template #actions>
-      <v-btn v-if="!result" color="error" :loading="clean.busy.value" :disabled="!validQQ" @click="run">{{ title }}</v-btn>
+      <v-btn v-if="!result" color="error" :loading="clean.busy.value" :disabled="!validIdentity" @click="run">{{ title }}</v-btn>
     </template>
   </FormDialog>
 </template>

@@ -31,7 +31,7 @@ watch(() => props.version, () => detail.reload())
 const task = computed(() => detail.data.value?.task)
 const resourceVersion = ref(0)
 const at = value => formatTime(value, props.settings?.timezone)
-const validQQ = computed(() => /^[1-9][0-9]*$/.test(props.operator))
+const validIdentity = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
 
 const append = ref(''), followUp = ref(''), answer = ref(''), choice = ref(null), resourceDirty = ref(false)
 const dirty = computed(() => Boolean(append.value || followUp.value || answer.value || choice.value !== null || resourceDirty.value))
@@ -106,7 +106,7 @@ function created(task) {
 <template>
   <ResourceState :resource="detail" error-title="读取任务失败">
   <div v-if="task" class="task">
-    <Panel :title="task.goal" :description="`QQ ${task.requester} 发起 · ${at(task.created)}${task.ended ? ` · ${at(task.ended)} 结束` : ''}`">
+    <Panel :title="task.goal" :description="`平台账号 ${task.requester} 发起 · ${at(task.created)}${task.ended ? ` · ${at(task.ended)} 结束` : ''}`">
       <template #actions><StatusBadge kind="task" :value="task.status" /></template>
       <FactList :items="facts(task)" class="facts" />
       <ErrorNote v-if="task.error" title="任务出错了" :error="task.error" />
@@ -125,31 +125,31 @@ function created(task) {
       <p v-if="task.question.message" class="text">{{ task.question.message }}</p>
       <template v-if="canAnswer">
         <div v-if="task.question.method === 'confirm'" class="inline">
-          <v-btn color="primary" :disabled="!validQQ" :loading="act.busy.value" @click="submitAnswer(true)">同意</v-btn>
-          <v-btn variant="tonal" :disabled="!validQQ || act.busy.value" @click="submitAnswer(false)">拒绝</v-btn>
+          <v-btn color="primary" :disabled="!validIdentity" :loading="act.busy.value" @click="submitAnswer(true)">同意</v-btn>
+          <v-btn variant="tonal" :disabled="!validIdentity || act.busy.value" @click="submitAnswer(false)">拒绝</v-btn>
         </div>
         <template v-else-if="task.question.method === 'select'">
           <v-radio-group v-model="choice" hide-details><v-radio v-for="option in task.question.options" :key="option" :label="option" :value="option" /></v-radio-group>
-          <v-btn color="primary" class="start" :disabled="!validQQ || choice === null" :loading="act.busy.value" @click="submitAnswer()">回答</v-btn>
+          <v-btn color="primary" class="start" :disabled="!validIdentity || choice === null" :loading="act.busy.value" @click="submitAnswer()">回答</v-btn>
         </template>
         <template v-else>
           <v-textarea v-model="answer" label="你的回答" rows="2" auto-grow />
-          <v-btn color="primary" class="start" :disabled="!validQQ" :loading="act.busy.value" @click="submitAnswer()">回答</v-btn>
+          <v-btn color="primary" class="start" :disabled="!validIdentity" :loading="act.busy.value" @click="submitAnswer()">回答</v-btn>
         </template>
       </template>
     </Panel>
 
     <Panel v-if="canAppend || canContinue || canCancel" title="操作">
-      <template v-if="canCancel" #actions><v-btn variant="text" color="error" size="small" :disabled="!validQQ" :loading="act.busy.value" @click="send('cancel')">取消任务</v-btn></template>
+      <template v-if="canCancel" #actions><v-btn variant="text" color="error" size="small" :disabled="!validIdentity" :loading="act.busy.value" @click="send('cancel')">取消任务</v-btn></template>
       <div v-if="canAppend" class="compose">
         <v-textarea v-model="append" label="追加要求" rows="2" auto-grow />
-        <v-btn variant="tonal" :disabled="!validQQ || !append.trim()" :loading="act.busy.value" @click="send('append', { text: append })">追加</v-btn>
+        <v-btn variant="tonal" :disabled="!validIdentity || !append.trim()" :loading="act.busy.value" @click="send('append', { text: append })">追加</v-btn>
       </div>
       <div v-if="canContinue" class="compose">
         <v-textarea v-model="followUp" label="接着做" rows="2" auto-grow hint="在原来的基础上继续，例如“再加一张图表”" persistent-hint />
-        <v-btn variant="tonal" :disabled="!validQQ || !followUp.trim()" :loading="act.busy.value" @click="send('continue', { text: followUp })">继续</v-btn>
+        <v-btn variant="tonal" :disabled="!validIdentity || !followUp.trim()" :loading="act.busy.value" @click="send('continue', { text: followUp })">继续</v-btn>
       </div>
-      <p v-if="!validQQ" class="muted small">在页面上方填写你的 QQ 后才能操作。</p>
+      <p v-if="!validIdentity" class="muted small">在页面上方填写你的 平台账号 后才能操作。</p>
     </Panel>
     <ErrorNote v-if="act.error.value" title="操作没有成功" :error="act.error.value" />
 
@@ -158,7 +158,7 @@ function created(task) {
       <ObjectList divided>
         <ObjectRow v-for="file in detail.data.value.files" :key="file.id" :title="file.name"
           :subtitle="`${(file.size / 1024).toFixed(1)} KB${file.note ? ` · ${file.note}` : ''}${file.exists ? '' : ' · 本地副本已不在'}`">
-          <ErrorNote v-if="file.upload?.error" title="发送到 QQ 失败" :error="file.upload.error" />
+          <ErrorNote v-if="file.upload?.error" title="发送到 平台账号 失败" :error="file.upload.error" />
           <template #meta><StatusBadge v-if="file.upload" kind="upload" :value="file.upload.status" /></template>
           <template #actions><v-btn size="small" variant="text" :disabled="!file.exists" :loading="download.busy.value" @click="save(file)">下载</v-btn></template>
         </ObjectRow>

@@ -29,7 +29,7 @@ watch(status, () => list.reload())
 const adding = ref(false), when = ref(''), note = ref(''), forWhom = ref('self'), other = ref('')
 watch(() => adding.value && note.value !== '', value => emit('dirty', value), { immediate: true })
 const create = useAction(), cancelling = useAction()
-const validQQ = computed(() => /^[1-9][0-9]*$/.test(props.operator))
+const validIdentity = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
 async function submit() {
   const result = await create.run(() => schedulesApi.create(props.scene, { requester: props.operator, when: when.value, note: note.value,
     for: forWhom.value === 'self' ? 'self' : other.value.trim() }))
@@ -78,17 +78,17 @@ const statuses = [{ title: '进行中', value: 'active' }, { title: '全部', va
     <ResourceState :resource="list" error-title="读取提醒失败" :empty="!rows.length" empty-text="没有提醒" compact>
       <ObjectList divided>
         <ObjectRow v-for="item in rows" :key="item.id" :title="item.note"
-          :subtitle="`${cadence(item)} · ${item.status === 'pending' ? '下次' : '时间'} ${formatTime(item.due_at, item.timezone)} · ${item.requester === null ? 'Bot 自己定的' : `QQ ${item.requester} 定的`}${item.target !== 'self' ? `，提醒 QQ ${item.target}` : ''}`">
+          :subtitle="`${cadence(item)} · ${item.status === 'pending' ? '下次' : '时间'} ${formatTime(item.due_at, item.timezone)} · ${item.requester === null ? 'Bot 自己定的' : `平台账号 ${item.requester} 定的`}${item.target !== 'self' ? `，提醒 平台账号 ${item.target}` : ''}`">
           <p v-if="item.reason" class="reason">{{ item.reason }}</p>
           <DevOnly label="原始记录" :json="item" />
           <template #meta><StatusBadge kind="schedule" :value="item.status" /></template>
           <template #actions>
             <v-btn v-if="['pending', 'blocked'].includes(item.status)" size="small" variant="text" color="error"
-              :disabled="!validQQ" :loading="cancelling.busy.value" @click="cancel(item)">取消</v-btn>
+              :disabled="!validIdentity" :loading="cancelling.busy.value" @click="cancel(item)">取消</v-btn>
           </template>
         </ObjectRow>
       </ObjectList>
-      <p v-if="rows.some(item => ['pending', 'blocked'].includes(item.status)) && !validQQ" class="muted small">在页面上方填写你的 QQ 后可以取消提醒。</p>
+      <p v-if="rows.some(item => ['pending', 'blocked'].includes(item.status)) && !validIdentity" class="muted small">在页面上方填写你的 平台账号 后可以取消提醒。</p>
       <LoadMore v-if="list.data.value?.next_offset != null" :loading="list.loading.value" @more="list.reload(true)" />
     </ResourceState>
   </Panel>
@@ -99,12 +99,12 @@ const statuses = [{ title: '进行中', value: 'active' }, { title: '全部', va
       <SchedulePicker v-model="when" :timezone="settings.timezone" />
       <v-btn-toggle v-model="forWhom" mandatory>
         <v-btn value="self">提醒我</v-btn><v-btn value="other">提醒别人</v-btn></v-btn-toggle>
-      <v-text-field v-if="forWhom === 'other'" v-model="other" label="对方 QQ" inputmode="numeric" />
-      <p v-if="!validQQ" class="problem">先在页面上方填写你的 QQ</p>
+      <v-text-field v-if="forWhom === 'other'" v-model="other" label="对方 平台账号"  />
+      <p v-if="!validIdentity" class="problem">先在页面上方填写你的 平台账号</p>
       <ErrorNote v-if="create.error.value" title="没有添加成功" :error="create.error.value" />
     </template>
     <template #actions>
-      <v-btn color="primary" :loading="create.busy.value" :disabled="!validQQ || !note.trim() || !when || (forWhom === 'other' && !other.trim())" @click="submit">添加</v-btn>
+      <v-btn color="primary" :loading="create.busy.value" :disabled="!validIdentity || !note.trim() || !when || (forWhom === 'other' && !other.trim())" @click="submit">添加</v-btn>
     </template>
   </FormDialog>
 </template>

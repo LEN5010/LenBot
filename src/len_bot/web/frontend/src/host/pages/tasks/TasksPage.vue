@@ -13,7 +13,7 @@ import ProactiveTab from './ProactiveTab.vue'
 
 const route = useRoute()
 const { scene } = useCurrentScene()
-const tabs = computed(() => [['tasks', '独立任务'], ['schedules', '提醒'], ...(scene.value?.startsWith('group:') ? [['proactive', '主动开话题']] : [])])
+const tabs = computed(() => [['tasks', '独立任务'], ['schedules', '提醒'], ...(scene.value?.split(':', 3)[1] === 'group' ? [['proactive', '主动开话题']] : [])])
 const tab = computed(() => tabs.value.some(([key]) => key === route.query.tab) ? route.query.tab : 'tasks')
 const dirty = reactive({})
 useUnsavedChanges(computed(() => Object.values(dirty).some(Boolean)), { keep: ['id'], onDiscard: () => { for (const key of Object.keys(dirty)) dirty[key] = false } })

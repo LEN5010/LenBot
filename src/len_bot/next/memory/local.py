@@ -26,7 +26,7 @@ from .embeddings import EmbeddingBinding, EmbeddingClient
 from .types import MemoryDocument, MemoryNode, MemoryPage
 
 
-_SCENE = re.compile(r"(group|private):([1-9][0-9]*)\Z")
+_SCENE = re.compile(r"[a-z][a-z0-9_-]*:(group|private):[^:\s/\\]+\Z")
 _INDEX_NAME = ".memory-index.sqlite3"
 # Derived directory summaries: L0 abstract and L1 overview, never indexed content.
 SUMMARY_FILES = (".abstract.md", ".overview.md")
@@ -106,7 +106,7 @@ class LocalMemorySummary:
 def _scene_scope(scene: str) -> str:
     match = _SCENE.fullmatch(scene)
     if match is None:
-        raise ValueError(f"scene must be an existing group:<QQ> or private:<QQ> identity: {scene!r}")
+        raise ValueError(f"scene must be an existing platform:group:id or platform:private:id identity: {scene!r}")
     return scene
 
 
@@ -155,8 +155,8 @@ def _atomic_replace(path: Path, content: str, *, create_only: bool = False) -> N
 
 def scene_overview(root: Path, scene: str) -> str | None:
     """Read a scene root overview only when the recorded source changes have not invalidated it."""
-    category, qq = _SCENE.fullmatch(_scene_scope(scene)).groups()
-    base = root.expanduser().resolve() / ("groups" if category == "group" else "private") / qq
+    _scene_scope(scene)
+    base = root.expanduser().resolve() / "scenes" / scene
     files = [base / name for name in SUMMARY_FILES]
     for path in (base, *files):
         if path.is_symlink():
@@ -276,8 +276,7 @@ class LocalMemory:
         match = _SCENE.fullmatch(scope)
         if match is None:
             raise ValueError(f"invalid memory source scope: {scope!r}")
-        category, qq = match.groups()
-        return self.root / ("groups" if category == "group" else "private") / qq
+        return self.root / "scenes" / scope
 
     @staticmethod
     def _source(scene: str, scope: Literal["scene", "public"]) -> str:
@@ -306,7 +305,7 @@ class LocalMemory:
     def _source_files(self) -> tuple[dict[tuple[str, str], str], list[Path]]:
         files: dict[tuple[str, str], str] = {}
         summaries: list[Path] = []
-        for category in ("public", "groups", "private"):
+        for category in ("public", "scenes"):
             directory = self.root / category
             if not directory.exists():
                 continue
@@ -320,9 +319,9 @@ class LocalMemory:
                     scope, relative = "public", path.relative_to(directory).as_posix()
                 else:
                     position = path.relative_to(directory).parts
-                    if len(position) < 2 or re.fullmatch(r"[1-9][0-9]*", position[0]) is None:
+                    if len(position) < 2 or _SCENE.fullmatch(position[0]) is None:
                         raise ValueError(f"unexpected memory source path: {path}")
-                    scope = f"{'group' if category == 'groups' else 'private'}:{position[0]}"
+                    scope = position[0]
                     relative = Path(*position[1:]).as_posix()
                 actual = self._target(scope, relative, file=True)
                 files[(scope, relative)] = _source_text(actual)
@@ -510,24 +509,24 @@ class LocalMemory:
         async with self._lock(source):
             return await asyncio.to_thread(self._read_sync, source, path)
 
-    def _profiles_sync(self, scene: str, qqs: list[str]) -> list[MemoryDocument]:
+    def _profiles_sync(self, scene: str, users: list[str]) -> list[MemoryDocument]:
         documents: list[MemoryDocument] = []
-        for qq in dict.fromkeys(qqs):
-            if re.fullmatch(r"[1-9][0-9]*", qq) is None:
-                raise ValueError(f"profile QQ must be a real numeric sender identity: {qq!r}")
+        for user in dict.fromkeys(users):
+            if re.fullmatch(r"[a-z][a-z0-9_-]*:[^:\s/\\]+", user) is None:
+                raise ValueError(f"profile 账号 must be a platform sender identity: {user!r}")
             for filename in ("profile.md", "preferences.md"):
-                path = f"people/{qq}/{filename}"
+                path = f"people/{user}/{filename}"
                 target = self._target(scene, path, file=True)
                 if target.exists():
                     documents.append(self._read_sync(scene, path))
         return documents
 
-    async def profiles(self, scene: str, qqs: list[str]) -> list[MemoryDocument]:
-        if len(qqs) > 4:
-            raise ValueError("profiles accepts at most four actual QQ senders")
+    async def profiles(self, scene: str, users: list[str]) -> list[MemoryDocument]:
+        if len(users) > 4:
+            raise ValueError("profiles accepts at most four actual 账号 senders")
         source = _scene_scope(scene)
         async with self._lock(source):
-            return await asyncio.to_thread(self._profiles_sync, source, qqs)
+            return await asyncio.to_thread(self._profiles_sync, source, users)
 
     def _write_sync(self, scope: str, path: str, content: str, reason: str,
                     vector: tuple[float, ...] | None, create_only: bool = False) -> LocalMemoryChange:

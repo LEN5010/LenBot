@@ -53,7 +53,7 @@ async def run_stdin(runtime: NetworkRuntime, *, manage_signals: bool) -> None:
                         return
                     async for line in input_lines():
                         try:
-                            runtime._receive(parse_input(line, runtime.config.bot_qq))
+                            runtime._receive(parse_input(line, runtime.config.bot_id))
                         except sqlite3.Error:
                             raise
                         except Exception as error:

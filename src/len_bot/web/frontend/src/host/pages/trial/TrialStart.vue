@@ -24,7 +24,7 @@ async function submit() {
 
 <template>
   <Panel tag="form" :title="draft ? '先试聊看看' : '开始测试'"
-    :description="draft ? '用上面的设定聊几句，没保存的修改也算在内。回复不会发到 QQ。' : ''" @submit.prevent="submit">
+    :description="draft ? '用上面的设定聊几句，没保存的修改也算在内。回复不会发到 平台账号。' : ''" @submit.prevent="submit">
     <div class="fields">
       <v-select v-if="!draft" v-model="chosen" :items="options" label="用哪个群的设置" />
       <v-select v-model="context" label="开头"

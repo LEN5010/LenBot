@@ -182,7 +182,7 @@ class ConnectionChange(BaseModel):
 
     onebot: Annotated[ForwardPublic | ReversePublic, Field(discriminator="mode")] | None
     access_token: str | None = Field(default=None, repr=False)
-    owner_qq: str | None
+    owners: list[str]
     timezone: str
     delivery: Literal["simulated", "onebot"]
     max_steps: int
@@ -213,8 +213,8 @@ def _project(config: HostConfig) -> dict:
         "processing": {key: (None if getattr(config, key) is None else getattr(config, key).model_dump(mode="json"))
                        for key in ("compaction", "images", "audio", "logging")},
         "connection": {
-            "bot_qq": config.bot_qq,
-            "owner_qq": config.owner_qq,
+            "bot_id": config.bot_id,
+            "owners": config.owners,
             "onebot": onebot,
             "timezone": config.timezone,
             "delivery": config.delivery,
@@ -275,7 +275,7 @@ def _snapshot(running: HostConfig, saved: HostConfig) -> dict:
         "restart_required": {
             "connection": any(
                 getattr(running, name) != getattr(saved, name)
-                for name in ("bot_qq", "owner_qq", "onebot", "timezone", "delivery", "max_steps",
+                for name in ("bot_id", "owners", "onebot", "timezone", "delivery", "max_steps",
                              "turn_timeout_seconds", "max_model_requests", "text_delivery")
             ),
             "limits": running.limits != saved.limits,
@@ -511,7 +511,7 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                 ) if change.access_token is None else change.access_token
             source.update(
                 onebot=onebot,
-                owner_qq=change.owner_qq,
+                owners=change.owners,
                 timezone=change.timezone,
                 delivery=change.delivery,
                 max_steps=change.max_steps,

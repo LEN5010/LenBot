@@ -59,8 +59,8 @@ class SharedConfig(BaseModel):
     limits: ResourceLimits = Field(default_factory=ResourceLimits)
     retention: RetentionSettings | None = None
     max_model_requests: int = Field(default=4, gt=0, strict=True)
-    bot_qq: str
-    owner_qq: str | None = None
+    bot_id: str
+    owners: list[str] = Field(default_factory=list)
     permissions: IdentitySettings = Field(default_factory=IdentitySettings)
     timezone: str
     database: Path
@@ -132,24 +132,26 @@ class SharedConfig(BaseModel):
                 )
         return self
 
-    @field_validator("bot_qq")
+    @field_validator("bot_id")
     @classmethod
-    def valid_bot_qq(cls, value: str) -> str:
-        if re.fullmatch(r"[1-9][0-9]*", value) is None:
-            raise ValueError("must be a QQ number as text")
+    def valid_bot_id(cls, value: str) -> str:
+        if re.fullmatch(r"[a-z][a-z0-9_-]*:[^:\s/\\]+", value) is None:
+            raise ValueError("must be platform:account as text")
         return value
 
-    @field_validator("owner_qq")
+    @field_validator("owners")
     @classmethod
-    def valid_owner_qq(cls, value: str | None) -> str | None:
-        if value is not None and re.fullmatch(r"[1-9][0-9]*", value) is None:
-            raise ValueError("owner_qq must be a positive QQ number as text or null")
-        return value
+    def valid_owners(cls, values: list[str]) -> list[str]:
+        for value in values:
+            cls.valid_bot_id(value)
+        if len(set(values)) != len(values):
+            raise ValueError("owners must contain distinct platform identities")
+        return values
 
     @model_validator(mode="after")
     def owner_is_not_bot(self) -> SharedConfig:
-        if self.owner_qq == self.bot_qq:
-            raise ValueError("owner_qq must not be bot_qq")
+        if self.bot_id in self.owners:
+            raise ValueError("owners must not include bot_id")
         return self
 
     @field_validator("timezone")
@@ -221,10 +223,10 @@ class SharedConfig(BaseModel):
         )
 
 
-def _check_schedule_identity(bot_qq: str, schedules: ScheduleSettings) -> None:
-    if (schedules.owner == bot_qq or bot_qq in schedules.admins
-            or bot_qq in schedules.whitelist):
-        raise ValueError("schedules owner, admins and whitelist must not include bot_qq")
+def _check_schedule_identity(bot_id: str, schedules: ScheduleSettings) -> None:
+    if (schedules.owner == bot_id or bot_id in schedules.admins
+            or bot_id in schedules.whitelist):
+        raise ValueError("schedules owner, admins and whitelist must not include bot_id")
 
 
 class LabConfig(SharedConfig, SceneSettings):
@@ -244,14 +246,14 @@ class LabConfig(SharedConfig, SceneSettings):
         if (self.replay_web is not None or self.replay_images is not None) and (
                 self.onebot is not None or self.panel is not None or self.delivery != 'simulated'):
             raise ValueError('replay materials require isolated stdin, simulated delivery and no panel')
-        _check_schedule_identity(self.bot_qq, self.schedules)
-        if (self.tasks.owner == self.bot_qq or self.bot_qq in self.tasks.admins
-                or self.bot_qq in self.tasks.whitelist):
-            raise ValueError("tasks owner, admins and whitelist must not include bot_qq")
+        _check_schedule_identity(self.bot_id, self.schedules)
+        if (self.tasks.owner == self.bot_id or self.bot_id in self.tasks.admins
+                or self.bot_id in self.tasks.whitelist):
+            raise ValueError("tasks owner, admins and whitelist must not include bot_id")
         if self.tasks.enabled or self.worker is not None:
             raise ValueError("worker tasks require the isolated-multi host, not the single-scene lab or replay")
         if self.learning is not None:
-            if not self.scene.startswith("group:"):
+            if self.scene.split(":", 2)[1] != "group":
                 raise ValueError("learning is only supported for group scenes")
             if (self.learning.extract or self.learning.jargon_extract or self.learning.collect_stickers
                     or self.learning.reply_effects):
@@ -352,17 +354,17 @@ class HostConfig(SharedConfig):
     def bot_is_not_schedule_requester(self) -> HostConfig:
         for scene, settings in self.scenes.items():
             try:
-                _check_schedule_identity(self.bot_qq, settings.schedules)
+                _check_schedule_identity(self.bot_id, settings.schedules)
             except ValueError as error:
                 raise ValueError(f"scenes.{scene}: {error}") from error
-            if (settings.tasks.owner == self.bot_qq or self.bot_qq in settings.tasks.admins
-                    or self.bot_qq in settings.tasks.whitelist):
-                raise ValueError(f"scenes.{scene}.tasks owner, admins and whitelist must not include bot_qq")
+            if (settings.tasks.owner == self.bot_id or self.bot_id in settings.tasks.admins
+                    or self.bot_id in settings.tasks.whitelist):
+                raise ValueError(f"scenes.{scene}.tasks owner, admins and whitelist must not include bot_id")
             if settings.tasks.enabled and self.worker is None:
                 raise ValueError(f"scenes.{scene}.tasks.enabled requires global worker settings")
             if settings.transcribe_audio and self.models.roles.asr is None:
                 raise ValueError(f"scenes.{scene}.transcribe_audio requires explicit models.roles.asr")
-            if settings.proactive is not None and not scene.startswith("group:"):
+            if settings.proactive is not None and scene.split(":", 2)[1] != "group":
                 raise ValueError(f"scenes.{scene}.proactive is only supported for group scenes")
             if settings.proactive is not None and (settings.learning is None or not settings.learning.reply_effects):
                 raise ValueError(f"scenes.{scene}.proactive requires learning.reply_effects to judge actual responses")
@@ -371,7 +373,7 @@ class HostConfig(SharedConfig):
             if unknown:
                 raise ValueError(f"scenes.{scene}.plugins are not configured under root plugins: {unknown!r}")
             if settings.learning is not None:
-                if not scene.startswith("group:"):
+                if scene.split(":", 2)[1] != "group":
                     raise ValueError(f"scenes.{scene}.learning is only supported for group scenes")
                 if ((settings.learning.extract or settings.learning.jargon_extract or settings.learning.reply_effects)
                         and self.models.roles.learner is None):

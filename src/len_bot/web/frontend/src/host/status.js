@@ -2,8 +2,8 @@
 // success, warning, error, info (in progress) or neutral.
 const tables = {
   runtime: {
-    created: ['准备中', 'info'], starting: ['启动中', 'info'], waiting_connection: ['等待 QQ 连接', 'warning'],
-    running: ['运行中', 'success'], connection_failed: ['QQ 连接失败', 'error'], failed: ['业务运行失败', 'error'],
+    created: ['准备中', 'info'], starting: ['启动中', 'info'], waiting_connection: ['等待 平台账号 连接', 'warning'],
+    running: ['运行中', 'success'], connection_failed: ['平台账号 连接失败', 'error'], failed: ['业务运行失败', 'error'],
     stopping: ['正在停止', 'warning'], stopped: ['已停止', 'neutral'],
   },
   turn: {
@@ -12,7 +12,7 @@ const tables = {
     step_limit: ['步数用完', 'error'],
   },
   message: {
-    received: ['收到', 'neutral'], sent: ['已发送', 'success'], simulated: ['模拟发送（未发到 QQ）', 'neutral'],
+    received: ['收到', 'neutral'], sent: ['已发送', 'success'], simulated: ['模拟发送（未发到 平台账号）', 'neutral'],
     failed: ['发送失败', 'error'], unconfirmed: ['不确定是否发出', 'warning'],
   },
   plugin: {
@@ -41,7 +41,7 @@ const tables = {
     idle: ['未转写', 'neutral'], queued: ['排队中', 'neutral'], running: ['转写中', 'info'], complete: ['已转写', 'success'],
     failed: ['转写失败', 'error'], interrupted: ['已中断', 'warning'],
   },
-  upload: { uploaded: ['已发到 QQ', 'success'], failed: ['发送失败', 'error'], unconfirmed: ['不确定是否发出', 'warning'] },
+  upload: { uploaded: ['已发到 平台账号', 'success'], failed: ['发送失败', 'error'], unconfirmed: ['不确定是否发出', 'warning'] },
   live: { connected: ['实时更新中', 'success'], connecting: ['正在连接…', 'info'], closed: ['实时更新已断开', 'warning'] },
 }
 

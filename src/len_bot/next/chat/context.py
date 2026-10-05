@@ -32,7 +32,7 @@ def character_material(config: LabConfig, persona: Persona) -> str:
     if config.persona_aliases:
         scene_details["本场景对你的称呼"] = config.persona_aliases
     if config.relationships:
-        scene_details["关系说明（QQ → 描述）"] = dict(sorted(config.relationships.items()))
+        scene_details["关系说明（账号 → 描述）"] = dict(sorted(config.relationships.items()))
     if config.behavior_addendum is not None:
         scene_details["本场景行为补充"] = config.behavior_addendum
     scene_material = (Template((PROMPTS / "next_scene_persona.md").read_text()).substitute(
@@ -59,7 +59,7 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
     names = (allowed_names - deferred_names) | (set(discovered) & allowed_names)
     deferred = [tool for tool in allowed if tool["function"]["name"] in deferred_names] + list(external)
     system = Template((PROMPTS / "next_mind.md").read_text()).substitute(
-        name=persona.name, scene=config.scene, bot_qq=config.bot_qq,
+        name=persona.name, scene=config.scene, bot_id=config.bot_id,
         character=character_material(config, persona),
         response_choice=Template((PROMPTS / "next_response_choice.md").read_text()).substitute(name=persona.name),
         expression_principles=expression_principles(persona),
@@ -106,7 +106,7 @@ def jargon_context(config: LabConfig, store: Store, messages: list[ChatMessage],
                    intent: str | None = None) -> str | None:
     if config.learning is None:
         return None
-    excluded = (config.bot_qq, *config.attention.other_bot_qqs)
+    excluded = (config.bot_id, *config.attention.other_bot_ids)
     texts = [plain_text(message) for message in messages
              if not message.is_self and message.send_status == "received"
              and message.sender.uid not in excluded]
@@ -125,7 +125,7 @@ def turn_state(config: LabConfig, store: Store, *, now: float,
     """Read the current scene's pending work and per-request reference material."""
     moment = datetime.fromtimestamp(now, ZoneInfo(config.timezone)).isoformat(timespec="seconds")
     state = {"role": "user", "content": f"本轮开始时间：{moment}"}
-    muted_until = store.bot_muted_until(config.scene, config.bot_qq)
+    muted_until = store.bot_muted_until(config.scene, config.bot_id)
     if muted_until is not None:
         state["content"] += "\n平台通知：当前 Bot 禁言至 " + datetime.fromtimestamp(
             muted_until, ZoneInfo(config.timezone)).isoformat(timespec="seconds")

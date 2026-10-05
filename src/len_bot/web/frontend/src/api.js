@@ -46,7 +46,7 @@ export function queryString(values) {
   return new URLSearchParams(Object.entries(values).filter(([, value]) => value !== '' && value !== null && value !== undefined)).toString()
 }
 
-// Group names and private nicknames read from QQ; until one arrives the
+// Group names and private nicknames read from 平台账号; until one arrives the
 // scene shows by its number.
 export const sceneTitles = reactive({})
 

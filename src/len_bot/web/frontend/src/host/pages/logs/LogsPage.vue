@@ -42,7 +42,7 @@ const open = turn => router.replace({ query: { ...route.query, turn: turn ? turn
 const filter = ref('all')
 const system = useResource(() => Promise.all([api('/api/host/logs'), api('/api/host/log-files')]), { immediate: false })
 watch(tab, value => { if (value === 'system' && !system.data.value) system.reload() }, { immediate: true })
-const logLabels = { runtime: '运行状态', receipt: '收到消息', turn: '回复结束', platform_error: 'QQ 连接出错', platform_event: '平台事件' }
+const logLabels = { runtime: '运行状态', receipt: '收到消息', turn: '回复结束', platform_error: '平台账号 连接出错', platform_event: '平台事件' }
 const logItems = computed(() => (system.data.value?.[0].items || [])
   .filter(item => filter.value === 'all' || item.record.error))
 </script>

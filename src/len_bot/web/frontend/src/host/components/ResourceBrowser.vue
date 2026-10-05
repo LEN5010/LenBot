@@ -87,14 +87,14 @@ function sourceLabel(entry) {
     ? (entry.source.reference ? resourceLabel(entry.source.reference) : entry.source.source_path)
     : resourceLabel(entry.source)
 }
-const validOperator = computed(() => /^[1-9][0-9]*$/.test(props.operator))
+const validOperator = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
 const openable = entry => entry.kind === 'directory' || (entry.kind === 'file' && entry.exists && entry.preview !== 'download')
 function details(entry) {
   const lines = [`${purpose[entry.purpose]} · ${size(entry.size)} · ${formatTime(entry.modified)}${entry.kind === 'symlink' ? ' · 符号链接' : ''}${!entry.exists && !entry.deletion ? ' · 副本已不在磁盘' : ''}`]
   if (entry.source) lines.push(`来源：${sourceLabel(entry)}`)
   if (entry.browser_source) lines.push(`${browserKind[entry.browser_source.kind]} · ${entry.browser_source.page_title} · ${entry.browser_source.page_url}`)
   if (entry.registrations.length) lines.push(`登记过交付：${entry.registrations.map(id => `#${id}`).join('、')}`)
-  if (entry.deletion) lines.push(`${formatTime(entry.deletion.created)} · QQ ${entry.deletion.requester} 删除了本地副本`)
+  if (entry.deletion) lines.push(`${formatTime(entry.deletion.created)} · 平台账号 ${entry.deletion.requester} 删除了本地副本`)
   return lines.join('\n')
 }
 </script>
@@ -138,7 +138,7 @@ function details(entry) {
         </ObjectRow>
       </ObjectList>
       <LoadMore v-if="listing.data.value?.next_offset != null" :loading="listing.loading.value" @more="listing.reload(true)" />
-      <p v-if="taskId && !validOperator" class="muted small">在页面上方填写你的 QQ 后可以登记成果、存为共享资料或删除。</p>
+      <p v-if="taskId && !validOperator" class="muted small">在页面上方填写你的 平台账号 后可以登记成果、存为共享资料或删除。</p>
     </div>
   </Panel>
 

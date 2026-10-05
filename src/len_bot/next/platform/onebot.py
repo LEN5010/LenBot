@@ -17,7 +17,8 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from ..configuration.onebot import OneBotForward, OneBotReverse
-from .messages import ChatMessage, SendResult, UploadResult, parse_send_result, parse_upload_result
+from .messages import ChatMessage, SendResult, UploadResult
+from .onebot_messages import parse_send_result, parse_upload_result
 
 
 def _non_json_number(value: str) -> None:
@@ -33,10 +34,10 @@ class OneBotCallError(RuntimeError):
 
 
 class OneBot:
-    def __init__(self, settings: OneBotForward | OneBotReverse, *, bot_qq: str,
+    def __init__(self, settings: OneBotForward | OneBotReverse, *, bot_id: str | None,
                  on_event: Callable[[dict], None], on_error: Callable[[str], None],
                  on_connection_change: Callable[[], None] | None = None):
-        self.settings, self.bot_qq = settings, bot_qq
+        self.settings, self.bot_id = settings, None if bot_id is None else bot_id.split(":", 1)[1]
         self.on_event, self.on_error = on_event, on_error
         self.on_connection_change = on_connection_change
         self._running = False
@@ -159,7 +160,7 @@ class OneBot:
             return connection.respond(HTTPStatus.FORBIDDEN, "OneBot authorization failed\n")
         if request.headers.get("X-Client-Role") != "Universal":
             return connection.respond(HTTPStatus.BAD_REQUEST, "OneBot Universal role is required\n")
-        if request.headers.get("X-Self-ID") != self.bot_qq:
+        if self.bot_id is not None and request.headers.get("X-Self-ID") != self.bot_id:
             return connection.respond(HTTPStatus.FORBIDDEN, "OneBot account does not match\n")
         if self._ws is not None:
             return connection.respond(HTTPStatus.CONFLICT, "OneBot already has an active connection\n")
@@ -208,7 +209,7 @@ class OneBot:
                             raise ValueError(f"OneBot reply has no active request: {echo}")
                         future.set_result(packet)
                     elif packet.get("post_type") in {"message", "notice", "request", "meta_event"}:
-                        if str(packet["self_id"]) != self.bot_qq:
+                        if self.bot_id is not None and str(packet["self_id"]) != self.bot_id:
                             raise ValueError("OneBot event account does not match")
                         self.on_event(packet)
                     else:
@@ -275,9 +276,16 @@ class OneBot:
         user_id = data.get("user_id") if isinstance(data, dict) else None
         if (raw.get("status") != "ok" or type(retcode) is not int or retcode != 0
                 or isinstance(user_id, bool) or not isinstance(user_id, (int, str))
-                or not str(user_id) or str(user_id) != self.bot_qq):
-            raise ValueError(f"{endpoint} get_login_info did not confirm configured bot_qq "
-                             f"{self.bot_qq}; raw={raw!r}")
+                or re.fullmatch(r"[1-9][0-9]*", str(user_id)) is None
+                or (self.bot_id is not None and str(user_id) != self.bot_id)):
+            raise ValueError(f"{endpoint} get_login_info did not confirm configured bot_id "
+                             f"{self.bot_id}; raw={raw!r}")
+        self.bot_id = str(user_id)
+
+    async def identify(self) -> str:
+        await self.wait_connected(self.settings.request_timeout_seconds)
+        await self._verify_identity(self._ws)
+        return "onebot:" + self.bot_id
 
     async def _verify_identity(self, websocket: ClientConnection | ServerConnection) -> None:
         async with self._identity_lock:
@@ -300,12 +308,13 @@ class OneBot:
             self._verified_ws = websocket
 
     async def send_message(self, message: ChatMessage, *, image_bytes: bytes | None = None) -> SendResult:
-        kind, separator, target = message.scene.partition(":")
-        if (not separator or kind not in {"group", "private"} or not target.isdecimal()
+        platform, _, destination = message.scene.partition(":")
+        kind, separator, target = destination.partition(":")
+        if (platform != "onebot" or not separator or kind not in {"group", "private"} or not target.isdecimal()
                 or int(target) <= 0 or str(int(target)) != target):
             return SendResult("failed", None, f"Invalid OneBot scene: {message.scene!r}")
         unsupported = [segment.type for segment in message.segments
-                       if segment.type not in {"text", "at", "reply", "image"}]
+                       if segment.type not in {"text", "mention", "reply", "image"}]
         if unsupported:
             return SendResult("failed", None, f"Unsupported OneBot message segments: {unsupported!r}")
         image_count = sum(segment.type == "image" for segment in message.segments)
@@ -328,9 +337,11 @@ class OneBot:
         wire_image = (None if image_bytes is None else
                       "base64://" + base64.b64encode(image_bytes).decode("ascii"))
         wire_segments = [
-            {"type": segment.type, "data": (
+            {"type": "at" if segment.type == "mention" else "record" if segment.type == "audio" else segment.type, "data": (
                 {"file": wire_image}
-                if segment.type == "image" else segment.data)}
+                if segment.type == "image" else
+                {"qq": "all" if segment.data["user"] == "all" else segment.data["user"].split(":", 1)[1]}
+                if segment.type == "mention" else segment.data)}
             for segment in message.segments
         ]
         params = {"group_id" if kind == "group" else "user_id": int(target),
@@ -347,8 +358,9 @@ class OneBot:
 
     async def upload_file(self, scene: str, file: str, name: str) -> UploadResult:
         """Upload an already registered, OneBot-visible file; return only the API receipt."""
-        kind, separator, target = scene.partition(":")
-        if (not separator or kind not in {"group", "private"} or not target.isdecimal()
+        platform, _, destination = scene.partition(":")
+        kind, separator, target = destination.partition(":")
+        if (platform != "onebot" or not separator or kind not in {"group", "private"} or not target.isdecimal()
                 or int(target) <= 0 or str(int(target)) != target):
             return UploadResult("failed", None, f"Invalid OneBot scene: {scene!r}", None)
         if not file or not name:

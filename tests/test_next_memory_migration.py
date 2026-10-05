@@ -24,8 +24,8 @@ def _format1(path: Path) -> None:
                 status TEXT NOT NULL, started REAL NOT NULL, ended REAL,
                 details TEXT NOT NULL, error TEXT);
             CREATE INDEX memory_jobs_scene ON memory_jobs(scene,id);
-            INSERT INTO memory_cursors VALUES('group:80001', 12, 1790000000.0);
-            INSERT INTO memory_jobs VALUES(3,'group:80001','local',5,12,'complete',1790000001.0,1790000002.0,
+            INSERT INTO memory_cursors VALUES('onebot:group:80001', 12, 1790000000.0);
+            INSERT INTO memory_jobs VALUES(3,'onebot:group:80001','local',5,12,'complete',1790000001.0,1790000002.0,
                 '{{"calls":[],"writes":[{{"path":"people/70001/profile.md"}}],"tools":[]}}',NULL);
         """)
 
@@ -49,7 +49,7 @@ def test_memory_processing_upgrade_keeps_rows_and_adds_summary_runs(tmp_path, st
             db.execute("DROP TABLE memory_summary_runs")
             db.execute("DROP TABLE memory_personas")
             db.execute("PRAGMA user_version=2")
-            db.execute("INSERT INTO memory_exclusions VALUES('group:80001', 7)")
+            db.execute("INSERT INTO memory_exclusions VALUES('onebot:group:80001', 7)")
     before = _rows(path)
     with pytest.raises(ValueError, match=f"format {start} requires offline migration"):
         MemoryJobs(path)
@@ -61,13 +61,13 @@ def test_memory_processing_upgrade_keeps_rows_and_adds_summary_runs(tmp_path, st
         assert old.execute("PRAGMA user_version").fetchone()[0] == start
         assert db.execute("SELECT COUNT(*) FROM memory_summary_runs").fetchone() == (0,)
         assert db.execute("SELECT * FROM memory_exclusions").fetchall() == (
-            [("group:80001", 7)] if start == 2 else [])
+            [("onebot:group:80001", 7)] if start == 2 else [])
     assert _rows(path) == before == _rows(backup)
     with MemoryJobs(path) as jobs:
-        assert jobs.after("group:80001") == 12
-        run = jobs.begin_summary("group:80001", "group:80001", "people", {"messages": []})
+        assert jobs.after("onebot:group:80001") == 12
+        run = jobs.begin_summary("onebot:group:80001", "onebot:group:80001", "people", {"messages": []})
         jobs.recover_summaries()
-        assert jobs.summary_runs("group:80001", "people")[0]["status"] == "interrupted"
+        assert jobs.summary_runs("onebot:group:80001", "people")[0]["status"] == "interrupted"
         assert jobs.summary_run(run)["request"] == {"messages": []}
 
 

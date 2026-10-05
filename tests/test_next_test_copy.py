@@ -15,7 +15,7 @@ from len_bot.next.instance_lock import instance_lock
 def source_instance(root: Path) -> dict:
     root.mkdir()
     source = {
-        'mode': 'isolated-multi', 'bot_qq': '90001', 'owner_qq': '70001',
+        'mode': 'isolated-multi', 'bot_id': 'onebot:90001', 'owners': ['onebot:70001'],
         'timezone': 'UTC', 'database': 'state.db', 'delivery': 'onebot',
         'onebot': {'mode': 'forward_ws', 'ws_url': 'ws://127.0.0.1:9', 'access_token': 'fixture'},
         'panel': {'host': '127.0.0.1', 'port': 8088, 'username': 'fixture',
@@ -26,7 +26,7 @@ def source_instance(root: Path) -> dict:
                    'roles': {'mind': {'provider': 'fixture', 'model': 'fixture',
                                       'context_window_tokens': 8192}}},
         'plugins': {'paths': ['plugins'], 'data_directory': 'plugin-data'},
-        'scenes': {'group:80001': {'persona': 'role'}},
+        'scenes': {'onebot:group:80001': {'persona': 'role'}},
     }
     path = root / 'lenbot.config.json'
     path.write_text(json.dumps(source))

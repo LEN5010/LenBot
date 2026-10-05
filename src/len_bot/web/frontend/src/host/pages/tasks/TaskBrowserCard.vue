@@ -14,7 +14,7 @@ const emit = defineEmits(['changed'])
 const status = useResource(() => browserApi.taskStatus(props.scene, props.task.id), { immediate: false })
 const closing = useAction(), files = ref(false), resourcesVersion = ref(0)
 const canClose = computed(() => props.configured && finished(props.task.status) && props.task.browser_active
-  && props.task.browser_session && /^[1-9][0-9]*$/.test(props.operator))
+  && props.task.browser_session && /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
 watch(() => props.task.browser_active, () => { status.data.value = null })
 async function close() {
   const result = await closing.run(() => taskStorageApi.close(props.scene, props.task.id, props.operator))

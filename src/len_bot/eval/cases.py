@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from len_bot.next.configuration.types import EpochSeconds
-from len_bot.next.platform.messages import parse_message
+from len_bot.next.platform.onebot_messages import parse_message
 
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
@@ -140,7 +140,7 @@ def _reject_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant {value}")
 
 
-def load_cases(path: Path, *, set_name: str, scene: str, bot_qq: str) -> CaseFile:
+def load_cases(path: Path, *, set_name: str, scene: str, bot_id: str) -> CaseFile:
     """Validate one JSON file and its original OneBot envelopes once at ingress."""
     path = Path(path)
     data = path.read_bytes()
@@ -215,9 +215,9 @@ def load_cases(path: Path, *, set_name: str, scene: str, bot_qq: str) -> CaseFil
                 raise ValueError(
                     f"{path}: cases[{index}] id={case.id!r} steps[{position}]: {error}"
                 ) from error
-            if message.scene != scene or str(step.event["self_id"]) != bot_qq:
+            if message.scene != scene or message.bot_id != bot_id:
                 raise ValueError(
                     f"{path}: cases[{index}] id={case.id!r} steps[{position}] scene/self_id "
-                    f"does not match configured {scene}/{bot_qq}; raw={_fragment(step.event)}"
+                    f"does not match configured {scene}/{bot_id}; raw={_fragment(step.event)}"
                 )
     return cases

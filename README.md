@@ -8,7 +8,7 @@
 
 ```sh
 ./install.sh install "$HOME/lenbot"
-"$HOME/lenbot/run"     # 首次向导保存后退出；再次执行才启动业务
+"$HOME/lenbot/run"     # 首次向导连接平台、测试模型并保存后进入面板
 ```
 
 安装后 `instance/` 保存根配置和业务数据，`releases/<版本>/` 保存程序与可写依赖环境。启动、停止、重启和停机升级见[成品包说明](deploy/package/README.md)。也可手工安装独立 wheel；Docker 用户可在新卷中[直接离线初始化](deploy/current/docker.md#直接初始化新卷)，不必先在主机装 wheel。Windows 本轮使用 WSL2／Docker。

@@ -86,10 +86,10 @@ def check_initial_database(path: Path, config: LabConfig) -> None:
             "SELECT seq FROM messages WHERE "
             "(json_extract(body,'$.is_self')=1 AND json_extract(body,'$.sender.uid')!=?) OR "
             "(json_extract(raw,'$.self_id') IS NOT NULL AND CAST(json_extract(raw,'$.self_id') AS TEXT)!=?) LIMIT 1",
-            (config.bot_qq, config.bot_qq),
+            (config.bot_id, config.bot_id),
         ).fetchone()
         if mismatch is not None:
-            raise ValueError(f"Initial database message {mismatch[0]} has a different Bot QQ from {config.bot_qq}: {path}")
+            raise ValueError(f"Initial database message {mismatch[0]} has a different Bot 账号 from {config.bot_id}: {path}")
         previous = db.execute(
             "SELECT request FROM model_calls JOIN turns ON turns.id=model_calls.turn_id "
             "WHERE turns.scene=? AND role='mind' ORDER BY model_calls.id DESC LIMIT 1", (config.scene,),
@@ -119,7 +119,7 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
     if unsupported:
         raise ValueError(f"Development replay does not implement these effective tools: {sorted(unsupported)}")
     cases = load_cases(config.evaluation.sets[set_name], set_name=set_name,
-                       scene=config.scene, bot_qq=config.bot_qq)
+                       scene=config.scene, bot_id=config.bot_id)
     for case in cases.cases:
         if config.models.roles.vision is not None and case.image_materials is None:
             raise ValueError(f"Case {case.id}: vision requires explicit image_materials; live image downloads are not used")

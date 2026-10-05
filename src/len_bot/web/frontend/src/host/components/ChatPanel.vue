@@ -1,6 +1,6 @@
 <script setup>
 // A test conversation: type as a made-up group member, see the Bot's simulated
-// replies, and open any reply round to see what happened. Nothing goes to QQ.
+// replies, and open any reply round to see what happened. Nothing goes to 平台账号.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from '../../api.js'
 import { useAction, useResource } from '../../composables/useResource.js'
@@ -17,7 +17,7 @@ import DevOnly from '../ui/DevOnly.vue'
 const props = defineProps({ apiBase: { type: String, required: true } })
 const state = useResource(() => api(`${props.apiBase}/state`))
 const view = computed(() => state.data.value)
-const isPrivate = computed(() => view.value?.scene?.startsWith('private:') || false)
+const isPrivate = computed(() => view.value?.scene?.startsWith('onebot:private:') || false)
 const messages = computed(() => [...(view.value?.messages || [])].sort((a, b) => a.seq - b.seq))
 const turns = computed(() => [...(view.value?.turns || [])].sort((a, b) => b.started - a.started))
 const thinking = computed(() => turns.value.some(turn => turn.ended == null))
@@ -26,11 +26,11 @@ const uid = ref('10001'), nickname = ref('测试群友'), text = ref(''), mentio
 const replies = computed(() => messages.value.filter(message => message.platform_message_id != null).map(message => ({
   title: message.text.replace(/\s+/g, ' ').slice(0, 60), value: message.platform_message_id })))
 const send = useAction(), receipt = ref(null)
-const ready = computed(() => view.value?.running && /^[1-9][0-9]*$/.test(isPrivate.value ? view.value.scene.slice(8) : uid.value)
+const ready = computed(() => view.value?.running && /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(isPrivate.value ? view.value.scene.slice(8) : uid.value)
   && nickname.value.trim() && text.value.trim())
 async function submit() {
   const result = await send.run(() => api(`${props.apiBase}/messages`, { method: 'POST', body: JSON.stringify({
-    uid: isPrivate.value ? view.value.scene.slice('private:'.length) : uid.value, nickname: nickname.value, text: text.value,
+    uid: isPrivate.value ? view.value.scene.slice('onebot:private:'.length) : uid.value, nickname: nickname.value, text: text.value,
     mention_bot: isPrivate.value ? false : mention.value, reply_to: replyTo.value || null }) }))
   if (!result) return
   receipt.value = result
@@ -81,7 +81,7 @@ const receiptText = { stored: '已收到，这条消息不会叫醒 Bot', duplic
         <ol class="messages">
           <li v-if="!messages.length" class="empty muted">发一条消息开始聊吧</li>
           <li v-for="message in messages" :key="message.seq" :class="{ self: message.is_self }">
-            <span class="who">{{ message.is_self ? view.persona?.name : (message.sender?.nickname || `QQ ${message.sender?.uid}`) }}
+            <span class="who">{{ message.is_self ? view.persona?.name : (message.sender?.nickname || `平台账号 ${message.sender?.uid}`) }}
               · {{ formatTime(message.time, view.timezone, { date: false }) }}</span>
             <div class="bubble">{{ message.text }}</div>
             <StatusBadge v-if="message.is_self && message.send_status !== 'simulated'" dot kind="message" :value="message.send_status" />
@@ -91,7 +91,7 @@ const receiptText = { stored: '已收到，这条消息不会叫醒 Bot', duplic
         <form v-if="view.running" class="composer" @submit.prevent="submit">
           <div v-if="!isPrivate" class="identity">
             <v-text-field v-model="nickname" label="昵称" density="compact" hide-details />
-            <v-text-field v-model="uid" label="QQ" inputmode="numeric" density="compact" hide-details />
+            <v-text-field v-model="uid" label="平台账号"  density="compact" hide-details />
             <v-checkbox v-model="mention" label="@ Bot" density="compact" hide-details />
           </div>
           <v-select v-if="replies.length" v-model="replyTo" :items="replies" label="引用一条消息（可不选）" density="compact" clearable hide-details />

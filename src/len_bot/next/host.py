@@ -100,7 +100,6 @@ async def run(lifecycle: HostLifecycle) -> None:
     if not (root / 'lenbot.config.json').exists():
         from .panel.setup import run_setup
         await run_setup(root)
-        return
     config = load_host_config(root)
     personas = {path: load_persona(path)
                 for path in dict.fromkeys(settings.persona for settings in config.scenes.values())}

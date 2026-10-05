@@ -36,6 +36,5 @@ _FiniteSeconds = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 
 
 def _valid_scene(value: str) -> str:
-    if re.fullmatch(r"(?:group|private):[1-9][0-9]*", value) is None:
-        raise ValueError("must be group:<QQ> or private:<QQ>")
-    return value
+    from ..platform.identity import validate_scene
+    return validate_scene(value)

@@ -1,14 +1,14 @@
-"""Actual QQ identities shared by task and schedule capability checks."""
+"""Actual 账号 identities shared by task and schedule capability checks."""
 from collections.abc import Sequence
 import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-def roles_for(requester: str, *, owner: str | None, scoped_owner: str | None,
+def roles_for(requester: str, *, owners: Sequence[str], scoped_owner: str | None,
               admins: Sequence[str], whitelist: Sequence[str], group_role: str | None) -> set[str]:
     roles = {'member'}
-    if requester in {owner, scoped_owner}:
+    if requester in owners or requester == scoped_owner:
         roles.add('owner')
     if requester in admins:
         roles.add('admin')
@@ -27,9 +27,9 @@ class IdentitySettings(BaseModel):
 
     @field_validator('admins', 'whitelist', 'blacklist')
     @classmethod
-    def actual_qqs(cls, values: list[str]) -> list[str]:
-        if len(set(values)) != len(values) or any(re.fullmatch(r'[1-9][0-9]*', value) is None for value in values):
-            raise ValueError('must contain distinct positive QQ numbers as text')
+    def actual_identities(cls, values: list[str]) -> list[str]:
+        if len(set(values)) != len(values) or any(re.fullmatch(r'[a-z][a-z0-9_-]*:[^:\s/\\]+', value) is None for value in values):
+            raise ValueError('must contain distinct platform:account identities')
         return values
 
 

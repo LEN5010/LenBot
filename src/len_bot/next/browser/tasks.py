@@ -25,8 +25,8 @@ class TaskBrowser:
         self.config, self.records, self.client = config, records, client
 
     def require_owner(self, requester: str) -> None:
-        if self.config.owner_qq is None or requester != self.config.owner_qq:
-            raise PermissionError('账号浏览仅允许根配置的主人QQ')
+        if requester not in self.config.owners:
+            raise PermissionError('账号浏览仅允许根配置的主人账号')
         if self.client is None or self.client.settings.browser_instance_id is None:
             raise ValueError('账号浏览服务尚未配置或未明确绑定专用浏览器')
 

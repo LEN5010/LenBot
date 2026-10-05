@@ -89,24 +89,24 @@ class WorkTasks:
         self.on_update(scene)
 
     def _roles(self, scene: str, requester: str) -> set[str]:
-        if requester == self.config.bot_qq:
-            raise PermissionError("委托与管理任务须使用实际人类 QQ，不能用 Bot 账号")
+        if requester == self.config.bot_id:
+            raise PermissionError("委托与管理任务须使用实际人类 账号，不能用 Bot 账号")
         settings = self.config.scenes[scene].tasks
         identities = self.config.scene_config(scene).permissions
-        return roles_for(requester, owner=self.config.owner_qq, scoped_owner=settings.owner,
+        return roles_for(requester, owners=self.config.owners, scoped_owner=settings.owner,
                          admins=[*settings.admins, *identities.admins], whitelist=[*settings.whitelist, *identities.whitelist],
-                         group_role=self.store.latest_sender_role(scene, requester) if scene.startswith('group:') else None)
+                         group_role=self.store.latest_sender_role(scene, requester) if scene.split(':', 2)[1] == 'group' else None)
 
     def _can_delegate(self, scene: str, requester: str) -> None:
         if not self.accepting:
             raise RuntimeError(f"任务执行器未接受新任务：{self.error or '宿主正在启动或停止'}")
         if requester in self.config.scene_config(scene).permissions.blacklist:
-            raise PermissionError(f'QQ {requester} 在当前场景黑名单中，不能创建或继续任务')
+            raise PermissionError(f'账号 {requester} 在当前场景黑名单中，不能创建或继续任务')
         settings = self.config.scenes[scene].tasks
         if not settings.enabled:
             raise PermissionError("当前场景未开放任务执行")
         if not self._roles(scene, requester).intersection(settings.delegate_roles):
-            raise PermissionError(f"QQ {requester} 没有当前场景的委托任务权限")
+            raise PermissionError(f"账号 {requester} 没有当前场景的委托任务权限")
 
     def _can_manage(self, item: Task, requester: str) -> None:
         if requester != item.requester and requester in self.config.scene_config(item.scene).permissions.blacklist:
@@ -133,7 +133,7 @@ class WorkTasks:
                 "workspace_discard_requested": self.records.workspace_discarded(scene, id),
                 "model_calls": len(costs), "cost": cost_summary(costs), "active_timeout_seconds": self.active_timeout(item),
                 "network": self.egress.status(scene, id),
-                "notice": "done 只表示执行正常结束；文件登记不表示已上传 QQ。出网配置不等于目标连通。"}
+                "notice": "done 只表示执行正常结束；文件登记不表示已上传 账号。出网配置不等于目标连通。"}
 
     def live_snapshot(self, scene: str, id: int) -> dict:
         item = self.records.get(scene, id)
@@ -147,8 +147,8 @@ class WorkTasks:
         roles = self._roles(scene, requester)
         if requester in self.config.scene_config(scene).permissions.blacklist:
             raise PermissionError('黑名单账号不能读取任务过程')
-        if item.account_browser and requester != self.config.owner_qq:
-            raise PermissionError('账号浏览过程仅允许当前根主人QQ读取')
+        if item.account_browser and requester not in self.config.owners:
+            raise PermissionError('账号浏览过程仅允许当前根主人账号读取')
         if requester != item.requester and not roles.intersection(self.config.scenes[scene].tasks.manage_roles):
             raise PermissionError('只能读取本人任务过程，或由当前场景任务管理者读取')
         return item
@@ -288,7 +288,7 @@ class WorkTasks:
         local = datetime.fromtimestamp(self.store.now(), ZoneInfo(timezone))
         midnight = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
         if self.records.count_created(scene, requester, midnight) >= self.config.scenes[scene].tasks.max_daily_tasks:
-            raise PermissionError(f"QQ {requester} 今天在本场景的任务次数已达上限")
+            raise PermissionError(f"账号 {requester} 今天在本场景的任务次数已达上限")
 
     async def delegate(self, scene: str, *, requester: str, goal: str,
                        deliverable: str, context: str, account_browser: bool = False,
@@ -381,8 +381,8 @@ class WorkTasks:
                                 runtime: str, confirmed: bool) -> dict:
         async with self.file_changes:
             item = self.records.get(scene, id)
-            if requester == self.config.bot_qq:
-                raise PermissionError('放弃工作环境的操作者必须是实际人类QQ')
+            if requester == self.config.bot_id:
+                raise PermissionError('放弃工作环境的操作者必须是实际人类账号')
             self._can_manage(item, requester)
             if not confirmed:
                 raise ValueError('须明确确认放弃本任务工作环境及原生会话；交付副本和执行记录保留')
@@ -428,8 +428,8 @@ class WorkTasks:
         if not self.accepting:
             raise RuntimeError("任务执行器正在启动或停止，不能恢复等待中的任务")
         item = self.records.get(scene, id)
-        if requester == self.config.bot_qq:
-            raise PermissionError("回答者必须是实际人类 QQ，不用 Bot 冒充回答者")
+        if requester == self.config.bot_id:
+            raise PermissionError("回答者必须是实际人类 账号，不用 Bot 冒充回答者")
         if requester in self.config.scene_config(scene).permissions.blacklist:
             raise PermissionError('黑名单账号不能恢复等待回答的任务')
         if item.status != "waiting_input":
@@ -468,7 +468,7 @@ class WorkTasks:
             raise RuntimeError("宿主正在处理活动任务的启动或中断，请待处理结束后查看结果")
         self.records.add_event(scene, id, "cancel", {"requester": requester})
         if item.status == "queued":
-            self._finish(item, "cancelled", None, f"QQ {requester} 取消排队任务")
+            self._finish(item, "cancelled", None, f"账号 {requester} 取消排队任务")
         elif item.status in {"running", "waiting_input"}:
             current = self.running[id]
             current.interrupt(explicit=True)
@@ -613,7 +613,7 @@ class WorkTasks:
         body = {"status": status, "summary": summary, "error": error, "files": files,
                 "started": finished.started, "ended": finished.ended,
                 "cost": cost_summary(self.records.call_costs(item.scene, item.id))}
-        notice = f"[任务执行结束] #{item.id}；请求人 QQ {item.requester}；{item.goal}\n" + json.dumps(body, ensure_ascii=False)
+        notice = f"[任务执行结束] #{item.id}；请求人 账号 {item.requester}；{item.goal}\n" + json.dumps(body, ensure_ascii=False)
         if recent:
             notice += '\n最近已保存过程（预览，不证明操作成功；原文可按event读取）：\n' + json.dumps(recent, ensure_ascii=False)
         elif status == 'failed' and item.account_browser:

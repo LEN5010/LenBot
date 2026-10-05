@@ -74,15 +74,15 @@ class ScheduleSettings(BaseModel):
     @field_validator("owner")
     @classmethod
     def valid_owner(cls, value: str | None) -> str | None:
-        if value is not None and re.fullmatch(r"[1-9][0-9]*", value) is None:
-            raise ValueError("owner must be a positive QQ number as text")
+        if value is not None and re.fullmatch(r"[a-z][a-z0-9_-]*:[^:\s/\\]+", value) is None:
+            raise ValueError("owner must be a platform:account identity")
         return value
 
     @field_validator("admins", "whitelist")
     @classmethod
-    def valid_qqs(cls, values: list[str]) -> list[str]:
-        if any(re.fullmatch(r"[1-9][0-9]*", value) is None for value in values):
-            raise ValueError("must contain positive QQ numbers as text")
+    def valid_identities(cls, values: list[str]) -> list[str]:
+        if any(re.fullmatch(r"[a-z][a-z0-9_-]*:[^:\s/\\]+", value) is None for value in values):
+            raise ValueError("must contain platform:account identities")
         return values
 
     @field_validator("own", "others", "manage")
@@ -150,7 +150,7 @@ class Attention(BaseModel):
 
     only_direct: bool = False
     keywords: list[str] = Field(default_factory=list)
-    other_bot_qqs: list[str] = Field(default_factory=list)
+    other_bot_ids: list[str] = Field(default_factory=list)
     direct_idle_seconds: float = Field(default=1.5, ge=0, allow_inf_nan=False)
     direct_max_seconds: float = Field(default=4.0, gt=0, allow_inf_nan=False)
     named_idle_seconds: float = Field(default=3.0, ge=0, allow_inf_nan=False)
@@ -176,11 +176,11 @@ class Attention(BaseModel):
             raise ValueError("keywords must not repeat")
         return stripped
 
-    @field_validator("other_bot_qqs")
+    @field_validator("other_bot_ids")
     @classmethod
-    def valid_other_bot_qqs(cls, values: list[str]) -> list[str]:
-        if any(re.fullmatch(r"[1-9][0-9]*", value) is None for value in values):
-            raise ValueError("other_bot_qqs must contain positive QQ numbers as text")
+    def valid_other_bot_ids(cls, values: list[str]) -> list[str]:
+        if any(re.fullmatch(r"[a-z][a-z0-9_-]*:[^:\s/\\]+", value) is None for value in values):
+            raise ValueError("other_bot_ids must contain platform:account identities")
         return values
 
     @model_validator(mode="after")
@@ -214,8 +214,8 @@ class ScenePersona(BaseModel):
     @classmethod
     def valid_relationships(cls, values: dict[str, str]) -> dict[str, str]:
         for qq, description in values.items():
-            if re.fullmatch(r"[1-9][0-9]*", qq) is None:
-                raise ValueError(f"relationships key must be a positive QQ number as text: {qq!r}")
+            if re.fullmatch(r"[a-z][a-z0-9_-]*:[^:\s/\\]+", qq) is None:
+                raise ValueError(f"relationships key must be a platform:account identity: {qq!r}")
             if not description.strip():
                 raise ValueError(f"relationships[{qq!r}] must not be blank")
         return values

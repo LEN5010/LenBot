@@ -17,10 +17,10 @@ from len_bot.next.storage.store import Store
 def test_profile_form_rewrites_role_files_and_rejects_invalid_values(tmp_path):
     binding = {'provider': 'primary', 'model': 'fixture', 'context_window_tokens': 16000}
     initialize(tmp_path, FirstSetup.model_validate_json(json.dumps({
-        'bot_qq': '90001', 'owner_qq': '70001', 'timezone': 'UTC', 'delivery': 'simulated',
+        'bot_id': 'onebot:90001', 'owners': ['onebot:70001'], 'timezone': 'UTC', 'delivery': 'simulated',
         'onebot': {'mode': 'forward_ws', 'ws_url': 'ws://127.0.0.1:9'},
         'provider': {'api': 'openai-chat', 'base_url': 'http://127.0.0.1:9/v1', 'api_key': 'synthetic-unused'},
-        'compaction': {'input_tokens': 2000}, 'mind': binding,  'scene': 'group:80001', 'persona_id': 'fixture',
+        'compaction': {'input_tokens': 2000}, 'mind': binding,  'scene': 'onebot:group:80001', 'persona_id': 'fixture',
         'persona_name': '合成角色', 'brief': '合成资料', 'voice_text': '简短', 'boundaries': '',
         'panel_port': 8088, 'username': 'fixture', 'password': 'synthetic-password',
     })))
@@ -30,10 +30,10 @@ def test_profile_form_rewrites_role_files_and_rejects_invalid_values(tmp_path):
     async def run():
         with Store(config.database) as store:
             async with ChatModel(config.model_settings('mind')) as mind:
-                runtime = NetworkRuntime(config, [(config.scene_config('group:80001'), load_persona(config.scenes['group:80001'].persona))], store, mind)
+                runtime = NetworkRuntime(config, [(config.scene_config('onebot:group:80001'), load_persona(config.scenes['onebot:group:80001'].persona))], store, mind)
                 app = create_app(config, runtime, root=tmp_path)
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as client:
-                    endpoint = '/api/host/scenes/group:80001/persona-profile'
+                    endpoint = '/api/host/scenes/onebot:group:80001/persona-profile'
                     assert (await client.get(endpoint)).status_code == 401
                     assert (await client.post('/api/auth/login', json={'username': 'fixture', 'password': 'synthetic-password'})).status_code == 200
                     current = (await client.get(endpoint)).json()
@@ -49,7 +49,7 @@ def test_profile_form_rewrites_role_files_and_rejects_invalid_values(tmp_path):
                     assert metadata['name'] == '新名字' and metadata['id'] == 'fixture' and metadata['tools'] == tools
                     assert (role/'voice.md').read_text() == '说话慢一点。\n'
                     assert yaml.safe_load((role/'examples.yaml').read_text()) == [{'context': '有人问好', 'line': '你好呀'}]
-                    assert runtime.chats['group:80001'].persona.name == '合成角色'
+                    assert runtime.chats['onebot:group:80001'].persona.name == '合成角色'
                     draft = await client.post(endpoint + '/draft', json={'directory': current['directory'], 'profile': {**profile, 'name': '草稿名'}})
                     assert draft.status_code == 200 and yaml.safe_load(draft.json()['files']['persona.yaml'])['name'] == '草稿名'
                     assert yaml.safe_load((role/'persona.yaml').read_text())['name'] == '新名字'

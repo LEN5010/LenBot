@@ -230,7 +230,7 @@ async def test_loopback_replay_sends_native_tool_continuation_without_retry(tmp_
         from len_bot.next.storage.store import Store
         from len_bot.next.models.request import request_model
         config = LabConfig.model_validate_json(json.dumps({
-            "mode": "isolated", "scene": "group:80001", "bot_qq": "90001", "timezone": "UTC",
+            "mode": "isolated", "scene": "onebot:group:80001", "bot_id": 'onebot:90001', "timezone": "UTC",
             "database": str(tmp_path / "chat.sqlite3"), "persona": str(tmp_path / "persona"),
             "models": {"providers": {"fixture": {"api": settings.api, "base_url": settings.base_url,
                                                "api_key": settings.api_key}},

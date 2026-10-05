@@ -109,7 +109,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
     @app.get("/api/host/state")
     async def state(_: str = Depends(user)):
         return {
-            "bot_qq": config.bot_qq,
+            "bot_id": config.bot_id,
             "timezone": config.timezone,
             "delivery": config.delivery,
             "connection": {
@@ -193,7 +193,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
         return {
             "scene": scene,
             "timezone": config.scene_timezone(scene),
-            "bot_qq": config.bot_qq,
+            "bot_id": config.bot_id,
             "persona": {"id": chat.persona.id, "name": chat.persona.name},
             "delivery": config.delivery,
             "voice_mode": config.scenes[scene].voice_mode,

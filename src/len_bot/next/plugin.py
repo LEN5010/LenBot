@@ -78,7 +78,7 @@ def _mark(value: tuple):
 
 @dataclass(frozen=True)
 class Sent:
-    """Actual outcome of a plugin send; ``simulated`` never reached QQ."""
+    """Actual outcome of a plugin send; ``simulated`` never reached 账号."""
     status: Literal["sent", "failed", "unconfirmed", "simulated", "partial"]
     report: str
     message_ids: tuple[str, ...] = ()
@@ -97,7 +97,7 @@ class Image:
 
 @dataclass(frozen=True)
 class Mention:
-    qq: str
+    user: str
 
 
 Content = Text | Image | Mention
@@ -108,7 +108,7 @@ GenerationRole = Literal["mind", "learner"]
 
 class HostPort(Protocol):
     @property
-    def bot_qq(self) -> str: ...
+    def bot_id(self) -> str: ...
     def scene_timezone(self, scene: str) -> str: ...
     def now(self) -> float: ...
     async def send_text(self, plugin: str, scene: str, text: str, reply_to: str | None) -> Sent: ...
@@ -127,7 +127,7 @@ class HostPort(Protocol):
              handler: Callable[[Invocation], Awaitable[None]]) -> asyncio.Task: ...
     def start_task(self, plugin: str, name: str, coroutine: Coroutine) -> asyncio.Task: ...
     def report_error(self, plugin: str, where: str, error: Exception) -> str: ...
-    def require_owner(self, scene: str, requester_qq: str) -> None: ...
+    def require_owner(self, scene: str, requester_id: str) -> None: ...
     def redact(self, plugin: str, text: str) -> str: ...
 
 
@@ -141,8 +141,8 @@ class PluginContext:
     host: HostPort = field(repr=False)
 
     @property
-    def bot_qq(self) -> str:
-        return self.host.bot_qq
+    def bot_id(self) -> str:
+        return self.host.bot_id
 
     def start_task(self, name: str, coroutine: Coroutine) -> asyncio.Task:
         return self.host.start_task(self.name, name, coroutine)
@@ -160,8 +160,8 @@ class PluginContext:
     def report_error(self, where: str, error: Exception) -> str:
         return self.host.report_error(self.name, where, error)
 
-    def require_owner(self, scene: str, requester_qq: str) -> None:
-        self.host.require_owner(self._scene(scene), requester_qq)
+    def require_owner(self, scene: str, requester_id: str) -> None:
+        self.host.require_owner(self._scene(scene), requester_id)
 
     def redact(self, text: str) -> str:
         return self.host.redact(self.name, text)

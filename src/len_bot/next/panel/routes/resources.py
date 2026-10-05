@@ -21,7 +21,7 @@ from ...work.store import TaskStore
 class RegisterResource(BaseModel):
     model_config = STRICT
     reference: ResourceFileRef
-    requester: str = Field(pattern=r'^[1-9][0-9]*$')
+    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
     name: MaterialName
     note: str = ''
 
@@ -48,20 +48,20 @@ class ResourceEntry(BaseModel):
 class AdoptResource(BaseModel):
     model_config = STRICT
     reference: ResourceFileRef
-    requester: str = Field(pattern=r'^[1-9][0-9]*$')
+    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
     name: MaterialName
 
 
 class DeleteResource(BaseModel):
     model_config = STRICT
     reference: ResourceFileRef
-    requester: str = Field(pattern=r'^[1-9][0-9]*$')
+    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
 
 
 class UploadResource(BaseModel):
     model_config = STRICT
     name: MaterialName
-    requester: str = Field(pattern=r'^[1-9][0-9]*$')
+    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
     file: UploadFile
 
 

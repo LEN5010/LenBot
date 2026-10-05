@@ -26,7 +26,7 @@ const inputProblem = computed(() => {
   return ''
 })
 watch(dirty, value => emit('dirty', value), { immediate: true })
-const validQQ = computed(() => /^[1-9][0-9]*$/.test(props.operator))
+const validIdentity = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
 const create = useAction()
 async function submit() {
   const result = await create.run(() => tasksApi.delegate(props.scene, { requester: props.operator, goal: goal.value, deliverable: deliverable.value, context: context.value,
@@ -61,11 +61,11 @@ async function close() {
     </template>
     <p v-if="inputProblem" class="problem">{{ inputProblem }}</p>
     <v-checkbox v-model="accountBrowser" label="使用账号浏览器（需要主人本人发起）" />
-    <p v-if="!validQQ" class="problem">先在页面上方填写你的 QQ</p>
+    <p v-if="!validIdentity" class="problem">先在页面上方填写你的 平台账号</p>
     <ErrorNote v-if="create.error.value" title="没有创建成功" :error="create.error.value" />
     <p v-if="create.error.value && (materials.length || resources.length)" class="muted small">选了资料时，任务可能已经建好了，请先看看任务列表再决定要不要重新提交。</p>
     <template #actions>
-      <v-btn color="primary" :loading="create.busy.value" :disabled="!validQQ || !goal.trim() || !deliverable.trim() || Boolean(inputProblem)" @click="submit">开始</v-btn>
+      <v-btn color="primary" :loading="create.busy.value" :disabled="!validIdentity || !goal.trim() || !deliverable.trim() || Boolean(inputProblem)" @click="submit">开始</v-btn>
     </template>
   </FormDialog>
 </template>

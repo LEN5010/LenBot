@@ -34,7 +34,7 @@ async function submit(){
       <img class="login-mark" :src="markUrl" alt="" />
       <div>
         <h1>欢迎回来</h1>
-        <p class="muted">{{ isolated ? '登录后和 Bot 试聊，回复不会发到 QQ。' : '登录 LenBot 控制台，管理你的 Bot。' }}</p>
+        <p class="muted">{{ isolated ? '登录后和 Bot 试聊，回复不会发到 平台账号。' : '登录 LenBot 控制台，管理你的 Bot。' }}</p>
       </div>
       <v-alert v-if="error" type="error" role="alert">{{ error }}</v-alert>
       <v-text-field v-model="username" label="用户名" autocomplete="username" required :disabled="busy" density="comfortable" />

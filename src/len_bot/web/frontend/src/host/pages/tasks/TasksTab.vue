@@ -28,7 +28,7 @@ const list = useResource(async more => ({ more: more === true, ...(await tasksAp
   status: filter.value, offset: more === true ? list.data.value.next_offset : 0, limit: 20 })) }))
 watch(() => list.data.value, value => { if (value) rows.value = value.more ? [...rows.value, ...value.items] : value.items })
 watch(filter, () => list.reload())
-const selected = computed(() => /^[1-9][0-9]*$/.test(route.query.id ?? '') ? Number(route.query.id) : null)
+const selected = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(route.query.id ?? '') ? Number(route.query.id) : null)
 
 // Change notices re-read the list and the open task; drafts in the detail stay as typed.
 const version = ref(0)

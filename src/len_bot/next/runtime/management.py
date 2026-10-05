@@ -83,9 +83,9 @@ BOOL = TypeAdapter(bool, config=STRICT)
 
 def require_management(config: HostConfig, scene: str, requester: str) -> None:
     identities = config.scene_config(scene).permissions
-    if requester == config.bot_qq or requester in identities.blacklist:
+    if requester == config.bot_id or requester in identities.blacklist:
         raise PermissionError('该账号不能管理机器人配置或重启')
-    if requester != config.owner_qq and requester not in config.permissions.admins:
+    if requester not in config.owners and requester not in config.permissions.admins:
         raise PermissionError('只有机器人主人和全局配置管理员可以管理配置或重启')
 
 

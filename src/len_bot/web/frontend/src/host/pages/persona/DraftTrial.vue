@@ -1,5 +1,5 @@
 <script setup>
-// Try the form as it is now, saved or not, in a test chat that never reaches QQ.
+// Try the form as it is now, saved or not, in a test chat that never reaches 平台账号.
 import { ref } from 'vue'
 import { api } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'

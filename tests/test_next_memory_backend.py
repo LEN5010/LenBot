@@ -6,14 +6,14 @@ import pytest
 from len_bot.next.memory.local import LocalMemory, LocalMemorySettings
 from len_bot.next.memory.jobs import MemoryJobs
 from len_bot.next.memory.service import LocalMemoryConfig, MemoryService
-from len_bot.next.platform.messages import parse_message
+from len_bot.next.platform.onebot_messages import parse_message
 from len_bot.next.storage.store import Store
 
 
 def test_pending_files_do_not_take_automatic_search_slots(tmp_path):
     async def run():
         backend = LocalMemory(LocalMemorySettings(directory=tmp_path / 'memory'))
-        scene = 'group:80001'
+        scene = 'onebot:group:80001'
         for n in range(3):
             await backend.write(scene, f'legacy-import/{n}.md', '合成同一主题 abc', 'synthetic pending import')
         await backend.write(scene, 'topics/current.md', '合成同一主题 abc', 'synthetic adopted content')
@@ -28,7 +28,7 @@ def test_pending_files_do_not_take_automatic_search_slots(tmp_path):
 def test_pending_material_cannot_enter_directory_summaries(tmp_path):
     async def run():
         backend = LocalMemory(LocalMemorySettings(directory=tmp_path / 'memory'))
-        scene = 'group:80001'
+        scene = 'onebot:group:80001'
         await backend.write(scene, 'legacy-import/group.md', '合成待确认内容', 'synthetic')
         # An old generated summary remains readable on disk, but cannot propagate into the root.
         await backend.write_summary(scene, 'legacy-import', '旧版本合成摘要', '旧版本合成概览')
@@ -43,7 +43,7 @@ def test_changed_profile_is_not_current_and_empty_summary_can_be_removed(tmp_pat
     from len_bot.next.memory.local import scene_overview
     async def run():
         backend = LocalMemory(LocalMemorySettings(directory=tmp_path / 'memory'))
-        scene = 'group:80001'
+        scene = 'onebot:group:80001'
         await backend.write(scene, 'profile.md', '活动固定在周五。', '已确认安排')
         await backend.write_summary(scene, '', '活动时间', '活动固定在周五。')
         assert scene_overview(backend.root, scene) == '活动固定在周五。'
@@ -62,10 +62,10 @@ def test_changed_profile_is_not_current_and_empty_summary_can_be_removed(tmp_pat
 def test_stale_child_summary_is_not_an_input_fact(tmp_path):
     async def run():
         backend = LocalMemory(LocalMemorySettings(directory=tmp_path / 'memory'))
-        await backend.write('group:80001', 'events/a.md', '周五', '初始')
-        await backend.write_summary('group:80001', 'events', '周五', '周五')
-        await backend.write('group:80001', 'events/a.md', '改为周六', '更正')
-        inputs = await backend.summary_inputs('group:80001', '')
+        await backend.write('onebot:group:80001', 'events/a.md', '周五', '初始')
+        await backend.write_summary('onebot:group:80001', 'events', '周五', '周五')
+        await backend.write('onebot:group:80001', 'events/a.md', '改为周六', '更正')
+        inputs = await backend.summary_inputs('onebot:group:80001', '')
         assert inputs['directories'] == [{'name': 'events', 'abstract': None}]
     asyncio.run(run())
 
@@ -74,14 +74,14 @@ def test_stale_child_summary_is_not_an_input_fact(tmp_path):
 def test_offline_reindex_clears_derived_summaries_and_preserves_history(tmp_path, remove_source):
     async def run():
         backend = LocalMemory(LocalMemorySettings(directory=tmp_path / 'memory'))
-        scene = 'group:80001'
+        scene = 'onebot:group:80001'
         await backend.write(scene, 'events/meeting.md', '读书会在周五。', '已确认安排')
         await backend.owner_write_public('events/meeting.md', '公开活动在周五。', '已确认安排')
         history = await backend.history(scene, 'events/meeting.md')
         for scope in ('scene', 'public'):
             await backend.write_summary(scene, 'events', '周五活动', '活动在周五。', scope=scope)
             await backend.write_summary(scene, '', '周五活动', '活动在周五。', scope=scope)
-        source = backend.root / 'groups/80001/events/meeting.md'
+        source = backend.root / 'scenes/onebot:group:80001/events/meeting.md'
         if remove_source:
             source.unlink()
         else:
@@ -117,10 +117,10 @@ def test_text_only_automatic_recall_uses_chat_topics_without_message_metadata(tm
         with Store(tmp_path / 'chat.db') as store, MemoryJobs(tmp_path / 'memory.db') as jobs:
             backend = LocalMemory(settings.local)
             service = MemoryService(settings, backend, jobs=jobs, store=store, active_personas={})
-            scene = 'group:80001'
+            scene = 'onebot:group:80001'
             await service.write(scene, 'events/meeting.md', content, '记录已确认活动地点')
             await backend.write(scene, 'legacy-import/meeting.md', content, '待确认材料')
-            await backend.write('group:80002', 'events/other.md', content, '其他场景资料')
+            await backend.write('onebot:group:80002', 'events/other.md', content, '其他场景资料')
             await backend.write(scene, 'events/common.md', '大家好。', '日常问候')
             await backend.write(scene, 'events/metadata.md', '群友 90001 2026-10-03 20:40:00 UTC', '身份资料')
             messages = [parse_message({

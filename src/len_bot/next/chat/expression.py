@@ -46,7 +46,7 @@ class ChatExpression:
         self.outlet = asyncio.Lock()
 
     def check_send_available(self) -> None:
-        until = self.store.bot_muted_until(self.config.scene, self.config.bot_qq)
+        until = self.store.bot_muted_until(self.config.scene, self.config.bot_id)
         if until is not None:
             raise ValueError(f"平台 group_ban 通知：当前 Bot 禁言至 {until}，未发送")
 
@@ -67,7 +67,7 @@ class ChatExpression:
         if platform_reply is not None:
             segments.append(Segment("reply", {"id": platform_reply}))
         if arguments.mention is not None:
-            segments.append(Segment("at", {"qq": arguments.mention}))
+            segments.append(Segment("mention", {"user": arguments.mention}))
         segments.append(Segment("text", {"text": text}))
         return self.simulated_message(segments, reply_to=platform_reply)
 
@@ -119,7 +119,7 @@ class ChatExpression:
         entry_seq = self.store.prepare_expression(
             self.config.scene, call_id, report_parts(parts, [], self.context.render),
         )
-        prefix = "模拟表达（未发送到 QQ）：" if self.send_message is None else ""
+        prefix = "模拟表达（未发送到 账号）：" if self.send_message is None else ""
         return await self.send_prepared_expression(entry_seq, parts, prefix=prefix, turn_id=turn_id,
                                                    sticker=expression.sticker, channels=channels)
 
@@ -236,7 +236,7 @@ class ChatExpression:
                     PluginStore(self.store).add_plugin_event(self.config.scene, plugin, "reply", Template(
                         (PROMPTS / "next_plugin_reply.md").read_text()).substitute(
                         plugin=plugin, time=moment,
-                        report=("模拟表达（未发送到 QQ）：" if self.send_message is None else "") + report).strip())
+                        report=("模拟表达（未发送到 账号）：" if self.send_message is None else "") + report).strip())
                     self.notify()
         states = {part.send_status for part in parts[:len(errors)]}
         status = "partial" if len(states) > 1 else parts[len(errors) - 1].send_status
@@ -245,8 +245,8 @@ class ChatExpression:
 
     def simulated_message(self, segments: list[Segment], *, reply_to: str | None = None) -> ChatMessage:
         return ChatMessage(
-            id=str(uuid4()), platform="qq", scene=self.config.scene, platform_message_id=None,
-            sender=Sender(self.config.bot_qq, self.persona.name, None, None), time=self.now(),
+            id=str(uuid4()), platform=self.config.bot_id.split(":", 1)[0], bot_id=self.config.bot_id, scene=self.config.scene, platform_message_id=None,
+            sender=Sender(self.config.bot_id, self.persona.name, None, None), time=self.now(),
             segments=segments, reply_to=reply_to, mentions_bot=False,
             is_self=True, send_status="simulated",
         )

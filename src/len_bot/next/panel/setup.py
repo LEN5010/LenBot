@@ -22,14 +22,16 @@ from ..configuration.models import Binding, Provider
 from ..configuration.chat import Compaction
 from ..config import HostConfig
 from ..configuration.onebot import OneBotSettings
+from ..platform.onebot import OneBot
+from ..models.client import ChatModel, ModelSettings
 from ..persona.profile import Persona, load_persona
 from len_bot.web.auth import hash_password
 
 
 class FirstSetup(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid', hide_input_in_errors=True)
-    bot_qq: str
-    owner_qq: str | None
+    bot_id: str
+    owners: list[str]
     timezone: str
     delivery: Literal['simulated', 'onebot']
     onebot: OneBotSettings
@@ -49,6 +51,18 @@ class FirstSetup(BaseModel):
     password: str = Field(min_length=8, repr=False)
 
 
+class PlatformProbe(BaseModel):
+    model_config = ConfigDict(strict=True, extra='forbid')
+    onebot: OneBotSettings
+
+
+class ModelProbe(BaseModel):
+    model_config = ConfigDict(strict=True, extra='forbid', hide_input_in_errors=True)
+    provider: Provider
+    mind: Binding
+
+
+
 def initialize(root: Path, item: FirstSetup) -> dict:
     """Validate first, create only new files, publish the root config last."""
     config_path = root / 'lenbot.config.json'
@@ -61,7 +75,7 @@ def initialize(root: Path, item: FirstSetup) -> dict:
                       behavior=item.brief, self_reference=['我'], aliases=[], tools='all', skills=[],
                       styles=[], voice=item.voice_text, boundaries=item.boundaries, examples=[])
     source = {
-        'mode': 'isolated-multi', 'bot_qq': item.bot_qq, 'owner_qq': item.owner_qq,
+        'mode': 'isolated-multi', 'bot_id': item.bot_id, 'owners': item.owners,
         'timezone': item.timezone, 'delivery': item.delivery, 'database': 'state/lenbot.sqlite3',
         'onebot': item.onebot.model_dump(mode='json'),
         'compaction': item.compaction.model_dump(mode='json'),
@@ -97,7 +111,7 @@ def initialize(root: Path, item: FirstSetup) -> dict:
     return {'saved': True, 'config': str(config_path), 'persona': str(role_path),
             'panel_url': f'http://127.0.0.1:{item.panel_port}', 'delivery': item.delivery,
             'voice_mode': item.voice_mode,
-            'next': '配置已保存，尚未启动业务。使用 len-bot 或容器默认入口启动当前实例，再登录面板进行试聊。'}
+            'next': '配置已保存。首次配置向导将进入面板；离线初始化命令仍需显式启动。'}
 
 
 def create_setup_app(root: Path, token: str, completed: asyncio.Event) -> FastAPI:
@@ -118,6 +132,31 @@ def create_setup_app(root: Path, token: str, completed: asyncio.Event) -> FastAP
     @app.get('/', response_class=HTMLResponse)
     async def page():
         return (Path(__file__).with_name('setup.html')).read_text(encoding='utf-8')
+
+    @app.post('/api/setup/platform', dependencies=[Depends(authorize)])
+    async def probe_platform(item: PlatformProbe):
+        def failed(error: str) -> None:
+            raise ValueError(error)
+        try:
+            async with OneBot(item.onebot, bot_id=None, on_event=lambda event: None, on_error=failed) as platform:
+                return {'bot_id': await platform.identify()}
+        except Exception as error:
+            raise HTTPException(422, f'{type(error).__name__}: {error}') from error
+
+    @app.post('/api/setup/model', dependencies=[Depends(authorize)])
+    async def probe_model(item: ModelProbe):
+        provider, binding = item.provider, item.mind
+        try:
+            settings = ModelSettings(api=provider.api, base_url=provider.base_url, api_key=provider.api_key,
+                                     model=binding.model, temperature=binding.temperature,
+                                     max_output_tokens=binding.max_output_tokens,
+                                     timeout_seconds=binding.timeout_seconds,
+                                     reasoning_effort=binding.reasoning_effort)
+            async with ChatModel(settings) as model:
+                reply = await model.complete([{'role': 'user', 'content': '请回复连接成功。'}], [])
+            return {'model': binding.model, 'text': reply.text, 'usage': reply.usage}
+        except Exception as error:
+            raise HTTPException(422, f'{type(error).__name__}: {error}') from error
 
     @app.post('/api/setup', dependencies=[Depends(authorize)])
     async def save(item: FirstSetup):
@@ -149,7 +188,7 @@ async def run_setup(root: Path) -> None:
         app = create_setup_app(root, token, completed)
         server = uvicorn.Server(uvicorn.Config(app, log_level='warning', access_log=False))
         print(f'尚无根配置。请打开 http://127.0.0.1:{port}/#token={token}\n'
-              '这里只保存首次配置，不连接 QQ、不调用模型；保存后从此实例目录重新执行刚才的启动命令。', flush=True)
+              '这里只保存首次配置，不连接 账号、不调用模型；保存后从此实例目录重新执行刚才的启动命令。', flush=True)
         serving = asyncio.create_task(server.serve(sockets=[listener]))
         saving = asyncio.create_task(completed.wait())
         try:

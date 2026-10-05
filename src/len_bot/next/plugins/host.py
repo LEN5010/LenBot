@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError, create_m
 
 from ..config import HostConfig
 from ..tools.external_tools import ExternalTool
-from ..platform.messages import parse_notice, ChatMessage
+from ..platform.messages import ChatMessage
 from ..plugin import (INTERFACE, MARK, Content, GenerationRole, Image, Text,
                      Invocation, Notice, Plugin, PluginContext, Sent)
 from .kv import PluginKV
@@ -251,8 +251,8 @@ class PluginHost:
     # Host capabilities used through PluginContext.
 
     @property
-    def bot_qq(self) -> str:
-        return self.config.bot_qq
+    def bot_id(self) -> str:
+        return self.config.bot_id
 
     def start_task(self, plugin: str, name: str, coroutine: Coroutine) -> asyncio.Task:
         if self.closing or self.plugins[plugin].status not in {'loaded','running'}:
@@ -263,13 +263,13 @@ class PluginHost:
     def report_error(self, plugin: str, where: str, error: Exception) -> str:
         return self._record(self.plugins[plugin], where, error)
 
-    def require_owner(self, scene: str, requester_qq: str) -> None:
+    def require_owner(self, scene: str, requester_id: str) -> None:
         if scene not in self.config.scenes:
             raise PermissionError(f"未配置场景 {scene}")
-        if requester_qq in self.config.scene_config(scene).permissions.blacklist:
-            raise PermissionError(f'QQ {requester_qq} 在当前场景黑名单中')
-        if self.config.owner_qq is None or requester_qq != self.config.owner_qq:
-            raise PermissionError(f"QQ {requester_qq} 没有主人账号权限（按根配置 owner_qq 判断）")
+        if requester_id in self.config.scene_config(scene).permissions.blacklist:
+            raise PermissionError(f'账号 {requester_id} 在当前场景黑名单中')
+        if requester_id not in self.config.owners:
+            raise PermissionError(f"账号 {requester_id} 没有主人账号权限（按根配置 owners 判断）")
 
     def redact(self, plugin: str, text: str) -> str:
         record = self.plugins[plugin]
@@ -480,7 +480,7 @@ class PluginHost:
                 pieces.append(segment.data["text"])
                 started = started or bool(segment.data["text"].strip())
             elif not started and (segment.type == "reply" or
-                                  (segment.type == "at" and str(segment.data["qq"]) == self.bot_qq)):
+                                  (segment.type == "mention" and str(segment.data["user"]) == self.bot_id)):
                 continue
             else:
                 return None
@@ -503,7 +503,7 @@ class PluginHost:
         now = datetime.fromtimestamp(self.now(), ZoneInfo(self.scene_timezone(message.scene)))
         return Template((PROMPTS / "next_plugin_handled.md").read_text(encoding="utf-8")).substitute(
             plugin=matched.record.name, time=now.isoformat(timespec="seconds"),
-            message_id=message.platform_message_id, qq=message.sender.uid,
+            message_id=message.platform_message_id, sender_id=message.sender.uid,
             rule=self.redact(matched.record.name, matched.label),
             result=self.redact(matched.record.name, result)).strip()
 

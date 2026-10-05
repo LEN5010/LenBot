@@ -14,12 +14,12 @@ from ...chat.schedule_store import ScheduleStore
 
 
 class PanelScheduleArguments(ScheduleArguments):
-    requester: str = Field(pattern=r"^[1-9][0-9]*$")
+    requester: str = Field(pattern=r"^[a-z][a-z0-9_-]*:[^:\s/\\]+$")
 
 
 class CancelArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    requester: str = Field(pattern=r"^[1-9][0-9]*$")
+    requester: str = Field(pattern=r"^[a-z][a-z0-9_-]*:[^:\s/\\]+$")
 
 
 def register_host_schedules(app: FastAPI, *, runtime: NetworkRuntime,
@@ -48,7 +48,7 @@ def register_host_schedules(app: FastAPI, *, runtime: NetworkRuntime,
         settings = chat.config.proactive
         records = ProactiveStore(runtime.store)
         now = runtime.store.now()
-        exclude = tuple(chat.config.attention.other_bot_qqs)
+        exclude = tuple(chat.config.attention.other_bot_ids)
         pause = records.pause(scene)
         items = records.page(scene, limit=limit + 1, offset=offset)
         next_at, next_reason = (None, None) if settings is None else records.next_at(

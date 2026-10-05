@@ -20,7 +20,8 @@ from ..config import LabConfig, SharedConfig
 from ..configuration.onebot import OneBotForward
 from .operations import credentials, redact, redact_record
 from .lifecycle import HostLifecycle
-from ..platform.messages import parse_message, parse_notice
+from ..platform.messages import Notice
+from ..platform.onebot_messages import parse_event
 from ..models.client import ChatModel
 from ..models.slots import ModelSlots
 from ..models.limits import ModelBudget
@@ -106,7 +107,7 @@ class NetworkRuntime:
         self.accepting = config.onebot is None
         self.storage_error: sqlite3.Error | None = None
         self.platform = (None if config.onebot is None else OneBot(
-            config.onebot, bot_qq=config.bot_qq, on_event=self._receive,
+            config.onebot, bot_id=config.bot_id, on_event=self._receive,
             on_error=self._platform_error, on_connection_change=self._connection_changed))
         self.audio = AudioService(store, {cfg.scene: cfg for cfg, _ in scene_configs},
                                   self.platform.call if config.delivery == "onebot" else None, slots,
@@ -237,33 +238,25 @@ class NetworkRuntime:
             self._status("stopping")
 
     def _receive(self, raw: dict) -> None:
-        post_type = raw["post_type"]
-        if post_type == "meta_event":
+        message = parse_event(raw)
+        if message is None:
             return
-        if post_type != "message":
+        if isinstance(message, Notice):
             if not self.accepting:
                 self._emit({"type": "receipt", "status": "not_accepted", "reason": self.status})
-            elif post_type == "notice":
-                try:
-                    notice = parse_notice(raw)
-                    if notice is None or notice.scene not in self.runners:
-                        self._emit({"type": "platform_event", "status": "ignored", "post_type": post_type})
-                        return
-                    self.store.save_notice(notice)
-                    handled = 0 if self.plugins is None else self.plugins.handle_notice(notice)
-                except sqlite3.Error as error:
-                    self.storage_error = error
-                    self.stop()
-                    raise
-                except ValueError as error:
-                    self._platform_error(f"{type(error).__name__}: {error}")
-                    return
-                self._emit({"type": "platform_event", "post_type": post_type,
-                            "notice_type": raw["notice_type"], "plugin_handlers": handled})
-            else:
-                self._emit({"type": "platform_event", "status": "unsupported", "post_type": post_type})
+                return
+            if message.scene not in self.runners:
+                return
+            try:
+                self.store.save_notice(message)
+                handled = 0 if self.plugins is None else self.plugins.handle_notice(message)
+            except sqlite3.Error as error:
+                self.storage_error = error
+                self.stop()
+                raise
+            self._emit({"type": "platform_event", "notice_type": message.notice_type,
+                        "plugin_handlers": handled})
             return
-        message = parse_message(raw, own_message_ids=set())
         if not self.accepting:
             self._emit({"type": "receipt", "scene": message.scene,
                         "status": "not_accepted", "reason": self.status})
@@ -275,7 +268,7 @@ class NetworkRuntime:
             return
         blocked = message.sender.uid in runner.config.permissions.blacklist
         matched = (None if self.plugins is None or blocked else
-                   self.plugins.match_message(message, tuple(runner.settings.other_bot_qqs)))
+                   self.plugins.match_message(message, tuple(runner.settings.other_bot_ids)))
         claim = (None if matched is None else
                  (matched.record.name, self.plugins.message_report(message, matched, "已接管，处理尚未结束。")))
         try:
