@@ -4,7 +4,11 @@ import { ref, watch } from 'vue'
 import { api, queryString } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { formatTime } from '../../time.js'
-import ErrorNote from '../../components/ErrorNote.vue'
+import Panel from '../../ui/Panel.vue'
+import ErrorNote from '../../ui/ErrorNote.vue'
+import ObjectList from '../../ui/ObjectList.vue'
+import CodeBlock from '../../ui/CodeBlock.vue'
+import LoadMore from '../../ui/LoadMore.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
 const scope = ref('scene'), rows = ref([]), opened = ref({})
@@ -23,31 +27,26 @@ async function detail(id) {
 </script>
 
 <template>
-  <section class="surface calls">
-    <div class="head">
-      <h2>向量调用记录</h2>
-      <v-btn-toggle v-model="scope" mandatory density="compact"><v-btn value="scene">本群</v-btn><v-btn value="public">公共</v-btn></v-btn-toggle>
-      <v-btn size="small" variant="outlined" :loading="page.loading.value" @click="page.reload()">读取</v-btn>
-    </div>
+  <Panel title="向量调用记录">
+    <template #actions>
+      <v-btn-toggle v-model="scope" mandatory><v-btn value="scene">本群</v-btn><v-btn value="public">公共</v-btn></v-btn-toggle>
+      <v-btn size="small" variant="tonal" :loading="page.loading.value" @click="page.reload()">读取</v-btn>
+    </template>
     <ErrorNote v-if="page.error.value" title="读取向量调用失败" :error="page.error.value" />
     <ErrorNote v-if="reading.error.value" title="读取详情失败" :error="reading.error.value" />
     <p v-if="page.data.value && !rows.length" class="muted">没有记录</p>
-    <ul>
-      <li v-for="call in rows" :key="call.id">
-        <strong>#{{ call.id }} {{ purpose[call.purpose] || call.purpose }}</strong>
-        <span class="muted"> · {{ formatTime(call.started) }} · {{ call.cost ? `${call.cost.amount} ${call.cost.currency}` : '费用未知' }}{{ call.error ? ' · 出错' : '' }}</span>
-        <v-btn v-if="!opened[call.id]" size="small" variant="text" @click="detail(call.id)">详情</v-btn>
-        <pre>{{ JSON.stringify(opened[call.id] || { usage: call.usage, response: call.response, error: call.error }, null, 2) }}</pre>
+    <ObjectList divided>
+      <li v-for="call in rows" :key="call.id" class="call">
+        <div class="inline"><strong>#{{ call.id }} {{ purpose[call.purpose] || call.purpose }}</strong>
+          <span class="muted small">{{ formatTime(call.started) }} · {{ call.cost ? `${call.cost.amount} ${call.cost.currency}` : '费用未知' }}{{ call.error ? ' · 出错' : '' }}</span>
+          <v-btn v-if="!opened[call.id]" size="small" variant="text" @click="detail(call.id)">详情</v-btn></div>
+        <CodeBlock :text="JSON.stringify(opened[call.id] || { usage: call.usage, response: call.response, error: call.error }, null, 2)" />
       </li>
-    </ul>
-    <v-btn v-if="page.data.value?.next_offset != null" size="small" variant="text" :loading="page.loading.value" @click="page.reload(true)">显示更多</v-btn>
-  </section>
+    </ObjectList>
+    <LoadMore v-if="page.data.value?.next_offset != null" :loading="page.loading.value" @more="page.reload(true)" />
+  </Panel>
 </template>
 
 <style scoped>
-.calls{display:grid;gap:8px}
-.head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.head h2{margin-right:auto !important}
-ul{list-style:none;margin:0;padding:0;display:grid;gap:10px}
-pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;background:var(--code-bg);padding:8px;border-radius:8px;margin:4px 0 0}
+.call{padding:var(--sp-3) 0;display:grid;gap:var(--sp-2)}
 </style>

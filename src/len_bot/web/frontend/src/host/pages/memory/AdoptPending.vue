@@ -4,7 +4,9 @@ import { ref } from 'vue'
 import { api } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'
 import { notify } from '../../store.js'
-import ErrorNote from '../../components/ErrorNote.vue'
+import ErrorNote from '../../ui/ErrorNote.vue'
+import FormDialog from '../../ui/FormDialog.vue'
+import Fold from '../../ui/Fold.vue'
 
 const props = defineProps({
   scene: { type: String, required: true }, source: { type: String, required: true },
@@ -25,29 +27,20 @@ async function submit() {
 </script>
 
 <template>
-  <v-alert type="info" variant="tonal">
+  <v-alert type="info">
     这是从旧版导入的资料，Bot 还不会用到。整理成正式记忆后才会生效。
-    <template #append><v-btn size="small" variant="outlined" @click="open = true">整理成正式记忆</v-btn></template>
+    <template #append><v-btn size="small" variant="tonal" @click="open = true">整理成正式记忆</v-btn></template>
   </v-alert>
-  <v-dialog v-model="open" max-width="720" scrollable>
-    <v-card title="整理成正式记忆">
-      <v-card-text class="adopt">
-        <details><summary>查看原资料</summary><pre>{{ original }}</pre></details>
-        <v-text-field v-model="target" label="保存为" hint="新文件路径，例如 people/小明.md" persistent-hint />
-        <p v-if="personaIds.length" class="muted">关于 Bot 自己的资料放在 bot/{{ personaIds[0] }}/ 下。</p>
-        <v-textarea v-model="content" label="整理后的内容" rows="8" auto-grow hint="只写核对过、确实要记住的内容" persistent-hint />
-        <v-text-field v-model="reason" label="原因" />
-        <v-checkbox v-model="removeSource" label="保存后删除这份旧资料" hide-details />
-        <ErrorNote v-if="adopt.error.value" title="没有保存成功" :error="adopt.error.value" />
-      </v-card-text>
-      <v-card-actions><v-spacer /><v-btn @click="open = false">取消</v-btn>
-        <v-btn color="primary" :loading="adopt.busy.value" :disabled="!target.trim().endsWith('.md') || !content.trim() || !reason.trim()" @click="submit">保存</v-btn></v-card-actions>
-    </v-card>
-  </v-dialog>
+  <FormDialog v-model="open" title="整理成正式记忆" size="md" :busy="adopt.busy.value">
+    <Fold label="查看原资料" code>{{ original }}</Fold>
+    <v-text-field v-model="target" label="保存为" hint="新文件路径，例如 people/小明.md" persistent-hint />
+    <p v-if="personaIds.length" class="muted small">关于 Bot 自己的资料放在 bot/{{ personaIds[0] }}/ 下。</p>
+    <v-textarea v-model="content" label="整理后的内容" rows="8" auto-grow hint="只写核对过、确实要记住的内容" persistent-hint />
+    <v-text-field v-model="reason" label="原因" />
+    <v-checkbox v-model="removeSource" label="保存后删除这份旧资料" />
+    <ErrorNote v-if="adopt.error.value" title="没有保存成功" :error="adopt.error.value" />
+    <template #actions>
+      <v-btn color="primary" :loading="adopt.busy.value" :disabled="!target.trim().endsWith('.md') || !content.trim() || !reason.trim()" @click="submit">保存</v-btn>
+    </template>
+  </FormDialog>
 </template>
-
-<style scoped>
-.adopt{display:grid;gap:12px}
-.adopt pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
-.adopt summary{cursor:pointer}
-</style>

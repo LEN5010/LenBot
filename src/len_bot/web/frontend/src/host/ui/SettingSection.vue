@@ -2,6 +2,7 @@
 // One independently saved block of settings.
 import { nextTick } from 'vue'
 import { openRestart } from '../restart.js'
+import Panel from './Panel.vue'
 import ErrorNote from './ErrorNote.vue'
 const props = defineProps({
   onSave: { type: Function, required: true },
@@ -23,21 +24,19 @@ async function submit(restart = false) {
 }
 </script>
 <template>
-  <form class="surface setting-section" @submit.prevent="submit(false)">
-    <h2>{{ title }}</h2>
-    <p v-if="description" class="muted">{{ description }}</p>
-    <fieldset :disabled="saving"><slot /></fieldset>
-    <ErrorNote v-if="error" title="没有保存成功" :error="error" class="mt-4" />
-    <div class="setting-actions">
-      <v-btn type="submit" color="primary" :loading="saving" :disabled="!dirty || Boolean(problem)">{{ saveLabel }}</v-btn>
+  <Panel tag="form" :title="title" :description="description" @submit.prevent="submit(false)">
+    <template v-if="$slots.actions" #actions><slot name="actions" /></template>
+    <fieldset :disabled="saving" class="setting-fields"><slot /></fieldset>
+    <ErrorNote v-if="error" title="没有保存成功" :error="error" />
+    <template #footer>
+      <span v-if="dirty && problem" class="problem hint">{{ problem }}</span>
+      <span v-else class="muted hint">{{ dirty ? '有未保存的修改' : '' }}</span>
       <v-btn v-if="restart" type="button" variant="tonal" :disabled="!dirty || saving || Boolean(problem)" @click="submit(true)">保存并重启</v-btn>
-      <span v-if="dirty && problem" class="problem">{{ problem }}</span>
-      <span v-else-if="dirty" class="muted">有未保存的修改</span>
-    </div>
-  </form>
+      <v-btn type="submit" color="primary" :loading="saving" :disabled="!dirty || Boolean(problem)">{{ saveLabel }}</v-btn>
+    </template>
+  </Panel>
 </template>
 <style scoped>
-.setting-section fieldset{border:0;padding:8px 0 0;margin:0;min-width:0;display:grid;gap:16px}
-.setting-actions{display:flex;align-items:center;gap:12px;margin-top:20px;flex-wrap:wrap}
-.setting-actions .problem{color:var(--error-text)}
+.setting-fields{border:0;padding:0;margin:0;min-width:0;display:grid;gap:var(--sp-4)}
+.hint{margin-right:auto;font-size:var(--fs-sm)}
 </style>

@@ -10,6 +10,7 @@ const props = defineProps({
   error: { type: [Object, String], default: null },
   problem: { type: String, default: '' },
   label: { type: String, default: '保存' },
+  restart: { type: Boolean, default: true },
 })
 defineEmits(['discard'])
 async function saveRestart() {
@@ -22,17 +23,17 @@ async function saveRestart() {
   <div class="save-bar" :class="{ show: dirty || error }">
     <ErrorNote v-if="error" title="没有保存成功" :error="error" />
     <div class="save-row">
-      <span :class="{ problem }">{{ problem || (dirty ? '有未保存的修改' : '') }}</span>
+      <span class="hint" :class="{ problem }">{{ problem || (dirty ? '有未保存的修改' : '') }}</span>
       <v-btn variant="text" :disabled="!dirty || saving" @click="$emit('discard')">放弃修改</v-btn>
-      <v-btn type="button" variant="tonal" :disabled="!dirty || saving || Boolean(problem)" @click="saveRestart">保存并重启</v-btn>
+      <v-btn v-if="restart" type="button" variant="tonal" :disabled="!dirty || saving || Boolean(problem)" @click="saveRestart">保存并重启</v-btn>
       <v-btn type="submit" color="primary" :loading="saving" :disabled="!dirty || Boolean(problem)">{{ label }}</v-btn>
     </div>
   </div>
 </template>
 <style scoped>
-.save-bar{position:sticky;bottom:0;z-index:2;display:none;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 16px;box-shadow:0 -4px 16px rgba(23,43,70,.08)}
+.save-bar{position:sticky;bottom:var(--sp-3);z-index:3;display:none;gap:var(--sp-2);background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);padding:var(--sp-3) var(--sp-4);box-shadow:var(--shadow-float)}
 .save-bar.show{display:grid}
-.save-row{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
-.save-row span{margin-right:auto;color:var(--muted)}
-.save-row span.problem{color:var(--error-text)}
+.save-row{display:flex;align-items:center;justify-content:flex-end;gap:var(--sp-2);flex-wrap:wrap}
+.hint{margin-right:auto;color:var(--muted);font-size:var(--fs-sm)}
+.hint.problem{color:var(--error)}
 </style>

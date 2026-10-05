@@ -3,8 +3,8 @@ import { computed, ref, watch } from 'vue'
 import { api } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'
 import { clone, numberOrBlank, same } from '../../forms.js'
-import SettingSection from '../../components/SettingSection.vue'
-import AdvancedFields from '../../components/AdvancedFields.vue'
+import SettingSection from '../../ui/SettingSection.vue'
+import AdvancedFields from '../../ui/AdvancedFields.vue'
 
 const props = defineProps({ snapshot: { type: Object, required: true } })
 const emit = defineEmits(['saved', 'dirty'])

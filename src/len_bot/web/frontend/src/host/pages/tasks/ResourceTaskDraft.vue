@@ -2,6 +2,9 @@
 import { computed, ref, watch } from 'vue'
 import { resourceLabel } from '../../resourceLabels.js'
 import NewTask from './NewTask.vue'
+import Panel from '../../ui/Panel.vue'
+import ObjectList from '../../ui/ObjectList.vue'
+import ObjectRow from '../../ui/ObjectRow.vue'
 
 defineProps({ scene: { type: String, required: true }, operator: { type: String, required: true } })
 const emit = defineEmits(['dirty', 'created'])
@@ -23,21 +26,14 @@ function created(task) {
 
 <template>
   <slot :select="select" />
-  <section v-if="selections.length" class="surface selected-inputs">
-    <div class="heading"><h3>下一项任务的资料 · {{ selections.length }}</h3>
-      <v-btn color="primary" variant="tonal" @click="creating = true">带这些资料新建任务</v-btn></div>
-    <ul><li v-for="(item, index) in selections" :key="index">
-      <div><strong>{{ item.name }}</strong><small>{{ resourceLabel(item.reference) }}</small></div>
-      <v-btn size="small" variant="text" @click="selections.splice(index, 1)">移除</v-btn>
-    </li></ul>
-    <p class="muted">可以继续选择本场景的其他文件，在新任务表单中修改输入文件名。</p>
-  </section>
-  <v-dialog v-model="creating" max-width="720" scrollable persistent>
-    <NewTask v-if="creating" :scene="scene" :operator="operator" :initial-resources="selections"
-      @dirty="value => formDirty = value" @created="created" @close="creating = false; formDirty = false" />
-  </v-dialog>
+  <Panel v-if="selections.length" :title="`下一个任务的资料 · ${selections.length}`" description="可以继续选择本群的其他文件，在新任务里还能改文件名。">
+    <template #actions><v-btn color="primary" variant="tonal" @click="creating = true">带这些资料新建任务</v-btn></template>
+    <ObjectList divided>
+      <ObjectRow v-for="(item, index) in selections" :key="index" :title="item.name" :subtitle="resourceLabel(item.reference)">
+        <template #actions><v-btn size="small" variant="text" @click="selections.splice(index, 1)">移除</v-btn></template>
+      </ObjectRow>
+    </ObjectList>
+  </Panel>
+  <NewTask v-if="creating" :scene="scene" :operator="operator" :initial-resources="selections"
+    @dirty="value => formDirty = value" @created="created" @close="creating = false; formDirty = false" />
 </template>
-
-<style scoped>
-.selected-inputs{display:grid;gap:10px}.heading,li{display:flex;justify-content:space-between;align-items:center;gap:12px}.heading{flex-wrap:wrap}ul{list-style:none;margin:0;padding:0}li{padding:6px 0}li div{min-width:0;overflow-wrap:anywhere}small{display:block;color:var(--muted)}p{margin:0}
-</style>

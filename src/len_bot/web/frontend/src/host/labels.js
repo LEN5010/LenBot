@@ -1,17 +1,6 @@
-// Everyday wording for host states. Unknown values fall back to the raw value
-// so a new backend state shows up instead of disappearing.
-const messages = {
-  received: '收到', sent: '已发送', simulated: '模拟发送（未发到 QQ）',
-  failed: '发送失败', unconfirmed: '不确定是否发出',
-}
-const turns = {
-  queued: '排队中', running: '进行中', settling: '收尾中', settled: '已完成', error: '失败',
-  timeout: '超时', cancelled: '已取消', interrupted: '已中断', step_limit: '步数用完',
-}
-const runtime = {
-  created: '准备中', starting: '启动中', waiting_connection: '等待 QQ 连接',
-  running: '运行中', connection_failed: 'QQ 连接失败', failed: '业务运行失败', stopping: '正在停止', stopped: '已停止',
-}
+// Everyday wording for host values. Statuses live in status.js.
+import { statusText } from './status.js'
+
 export const roleOptions = [
   { title: '主人', value: 'owner' }, { title: '管理员', value: 'admin' },
   { title: '群管理', value: 'group_manager' }, { title: '白名单', value: 'whitelist' },
@@ -27,9 +16,9 @@ const sections = {
   account_browser: '账号浏览器', plugins: '插件', mcp: 'MCP',
 }
 
-export const messageLabel = value => messages[value] || value
-export const turnLabel = value => turns[value] || value
-export const runtimeLabel = value => runtime[value] || value
+export const messageLabel = value => statusText('message', value)
+export const turnLabel = value => statusText('turn', value)
+export const runtimeLabel = value => statusText('runtime', value)
 export const sectionLabel = value => sections[value] || '其他配置'
 export const turnFailed = value => ['error', 'timeout', 'interrupted', 'step_limit'].includes(value)
 

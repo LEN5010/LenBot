@@ -2,15 +2,14 @@
 import { computed, ref, watch } from 'vue'
 import { api, sceneName } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
-import { host } from '../../store.js'
 import { roleOptions } from '../../labels.js'
 import { clone, same } from '../../forms.js'
-import SettingSection from '../../components/SettingSection.vue'
-import AdvancedFields from '../../components/AdvancedFields.vue'
-import ErrorNote from '../../components/ErrorNote.vue'
+import SettingSection from '../../ui/SettingSection.vue'
+import AdvancedFields from '../../ui/AdvancedFields.vue'
+import ResourceState from '../../ui/ResourceState.vue'
 
-const props = defineProps({ scene: { type: String, default: '' } })
-const emit = defineEmits(['saved', 'dirty', 'scene'])
+const props = defineProps({ scene: { type: String, required: true } })
+const emit = defineEmits(['saved', 'dirty'])
 const lists = [['admins', '管理员'], ['whitelist', '白名单'], ['blacklist', '黑名单']]
 const listHints = { admins: '可以使用管理类功能，具体见下方', whitelist: '比普通群友多一些权限，具体见下方', blacklist: '这些人的消息会保存，但不会叫醒 Bot' }
 const abilities = [
@@ -18,23 +17,15 @@ const abilities = [
   ['own_reminder', '给自己定提醒'], ['other_reminder', '替别人定提醒'], ['reminder_manage', '管理别人的提醒'],
   ['chat_control', '在群里让 Bot 暂时安静'],
 ]
-const scenes = computed(() => (host.state?.scenes || []).map(item => ({ title: sceneName(item.scene), value: item.scene })))
-const current = computed(() => props.scene || scenes.value[0]?.value || '')
-const permissions = useResource(scene => api(`/api/host/permissions?${new URLSearchParams({ scene })}`), { immediate: false })
+const permissions = useResource(() => api(`/api/host/permissions?${new URLSearchParams({ scene: props.scene })}`))
 const draft = ref(null)
 const save = useAction()
-watch(current, scene => { if (scene) permissions.reload(scene) }, { immediate: true })
 watch(permissions.data, value => { if (value) draft.value = clone(value.saved) })
 const dirty = computed(() => Boolean(draft.value && permissions.data.value && !same(draft.value, permissions.data.value.saved)))
 watch(dirty, value => emit('dirty', value), { immediate: true })
 
-function changeScene(scene) {
-  if (dirty.value && !window.confirm('权限有未保存的修改，切换群会丢掉这些修改。继续？')) return
-  emit('scene', scene)
-}
 async function submit() {
-  const scene = current.value
-  const result = await save.run(() => api(`/api/host/permissions?${new URLSearchParams({ scene })}`, {
+  const result = await save.run(() => api(`/api/host/permissions?${new URLSearchParams({ scene: props.scene })}`, {
     method: 'PUT', body: JSON.stringify(draft.value),
   }))
   if (result) {
@@ -45,12 +36,9 @@ async function submit() {
 </script>
 
 <template>
-  <div class="page-stack">
-    <ErrorNote v-if="permissions.error.value" title="读取权限失败" :error="permissions.error.value" />
-    <SettingSection v-if="draft" title="权限" :dirty="dirty" :saving="save.busy.value || permissions.loading.value"
-      :error="save.error.value" @save="submit">
-      <v-select :model-value="current" :items="scenes" label="群聊" hint="本群名单和下方的权限只对这个群生效" persistent-hint
-        @update:model-value="changeScene" />
+  <ResourceState :resource="permissions" error-title="读取权限失败">
+    <SettingSection v-if="draft" :title="`权限 · ${sceneName(scene)}`" description="本群名单和谁可以做什么只对这个群生效，在顶栏切换群。"
+      :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
       <p>主人：<strong>{{ permissions.data.value.owner_qq || '未设置' }}</strong>，在连接设置里修改。主人拥有全部权限。</p>
       <h3>所有群通用的名单</h3>
       <v-combobox v-for="[field, label] in lists" :key="field" v-model="draft.global_identities[field]" :label="`${label} QQ`"
@@ -76,9 +64,10 @@ async function submit() {
         </template>
       </AdvancedFields>
     </SettingSection>
-  </div>
+  </ResourceState>
 </template>
 
 <style scoped>
-h3{font-size:15px;margin:8px 0 0}
+p{margin:0}
+h3{margin-top:var(--sp-2)}
 </style>

@@ -27,5 +27,5 @@ async function retry() {
   </v-app>
 </template>
 <style scoped>
-.initial-state{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;padding:24px;color:var(--muted)}
+.initial-state{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--sp-4);padding:var(--sp-5);color:var(--muted)}
 </style>

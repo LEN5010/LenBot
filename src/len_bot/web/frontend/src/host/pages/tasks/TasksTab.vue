@@ -5,11 +5,18 @@ import { tasksApi } from '../../api/tasks.js'
 import { useResource } from '../../../composables/useResource.js'
 import { useHostEvents } from '../../events.js'
 import { formatTime } from '../../time.js'
-import ErrorNote from '../../components/ErrorNote.vue'
-import LiveStatus from '../../components/LiveStatus.vue'
+import { confirm } from '../../../composables/useConfirm.js'
+import Panel from '../../ui/Panel.vue'
+import ResourceState from '../../ui/ResourceState.vue'
+import MasterDetail from '../../ui/MasterDetail.vue'
+import ObjectList from '../../ui/ObjectList.vue'
+import ObjectRow from '../../ui/ObjectRow.vue'
+import StatusBadge from '../../ui/StatusBadge.vue'
+import ErrorNote from '../../ui/ErrorNote.vue'
+import LiveStatus from '../../ui/LiveStatus.vue'
+import LoadMore from '../../ui/LoadMore.vue'
 import NewTask from './NewTask.vue'
 import TaskDetail from './TaskDetail.vue'
-import { taskStatus } from './taskLabels.js'
 
 const props = defineProps({ scene: { type: String, required: true }, operator: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
@@ -32,11 +39,11 @@ const events = useHostEvents(async () => {
 
 const creating = ref(false), detailDirty = ref(false), newDirty = ref(false)
 watch(() => detailDirty.value || newDirty.value, value => emit('dirty', value), { immediate: true })
-function open(id) {
+async function open(id) {
   if (id === selected.value) return
-  if (detailDirty.value && !window.confirm('放弃没提交的内容？')) return
+  if (detailDirty.value && !await confirm({ title: '放弃没提交的内容？', confirmLabel: '放弃', danger: true })) return
   detailDirty.value = false
-  router.push({ name: 'host-tasks', query: { ...route.query, id: String(id) } })
+  router.push({ name: 'host-tasks', query: { ...route.query, id: id === null ? undefined : String(id) } })
 }
 function created(task) {
   creating.value = false
@@ -50,49 +57,42 @@ const accepting = computed(() => state.data.value?.configured && state.data.valu
 </script>
 
 <template>
-  <ErrorNote v-if="state.error.value" title="读取任务状态失败" :error="state.error.value" />
-  <template v-if="state.data.value">
-    <p v-if="!state.data.value.configured" class="surface muted">还没有启用独立任务，可以在
-      <RouterLink :to="{ name: 'host-capabilities', query: { tab: 'tasks' } }">能力 › 独立任务</RouterLink> 里设置。</p>
-    <ErrorNote v-if="state.data.value.error" title="任务执行环境出错了" :error="state.data.value.error" />
-    <div class="layout">
-      <section class="surface list">
-        <div class="head">
-          <v-select v-model="filter" :items="filters" density="compact" hide-details class="filter" />
-          <v-btn color="primary" variant="tonal" size="small" :disabled="!accepting" @click="creating = true">新建任务</v-btn>
-        </div>
-        <p v-if="state.data.value.configured && settings && !settings.enabled" class="muted">本群没有开启任务，可以在
-          <RouterLink :to="{ name: 'host-scenes', query: { scene, tab: 'settings' } }">群聊设置</RouterLink> 里打开。</p>
-        <LiveStatus :status="events.status.value" @reconnect="events.reconnect" />
-        <ErrorNote v-if="list.error.value" title="读取任务列表失败" :error="list.error.value" />
-        <p v-if="list.data.value && !rows.length" class="muted">没有任务</p>
-        <v-list density="compact" nav class="rows">
-          <v-list-item v-for="item in rows" :key="item.id" :active="item.id === selected" @click="open(item.id)">
-            <v-list-item-title class="goal">{{ item.goal }}</v-list-item-title>
-            <v-list-item-subtitle>{{ taskStatus(item.status) }} · {{ formatTime(item.created, settings?.timezone) }}</v-list-item-subtitle>
-          </v-list-item>
-        </v-list>
-        <v-btn v-if="list.data.value?.next_offset != null" size="small" variant="text" :loading="list.loading.value" @click="list.reload(true)">显示更多</v-btn>
-      </section>
-      <div class="detail">
-        <TaskDetail v-if="selected" :key="selected" :id="selected" :scene="scene" :operator="operator" :version="version"
-          :service="state.data.value" :settings="settings" @dirty="value => detailDirty = value" @changed="list.reload()" @created="created" />
-        <p v-else class="surface muted">选择一个任务查看详情</p>
-      </div>
-    </div>
-  </template>
-  <v-dialog v-model="creating" max-width="640" scrollable>
-    <NewTask v-if="creating" :scene="scene" :operator="operator" @dirty="value => newDirty = value" @created="created" @close="creating = false" />
-  </v-dialog>
+  <ResourceState :resource="state" error-title="读取任务状态失败" v-slot="{ data }">
+    <v-alert v-if="!data.configured" type="info">还没有启用独立任务，可以在
+      <RouterLink :to="{ name: 'host-capabilities', query: { tab: 'tasks' } }">能力 › 独立任务</RouterLink> 里设置。</v-alert>
+    <ErrorNote v-if="data.error" title="任务执行环境出错了" :error="data.error" />
+    <MasterDetail :selected="selected !== null" list-width="340px" @back="open(null)">
+      <template #list>
+        <Panel title="任务" flush>
+          <template #actions>
+            <LiveStatus :status="events.status.value" @reconnect="events.reconnect" />
+            <v-btn color="primary" variant="tonal" size="small" :disabled="!accepting" @click="creating = true">新建</v-btn>
+          </template>
+          <div class="list">
+            <v-select v-model="filter" :items="filters" aria-label="筛选" />
+            <p v-if="data.configured && settings && !settings.enabled" class="muted small">本群没有开启任务，可以在
+              <RouterLink :to="{ name: 'host-scenes', query: { scene, tab: 'settings' } }">群聊设置</RouterLink> 里打开。</p>
+            <ResourceState :resource="list" error-title="读取任务列表失败" :empty="!rows.length" empty-text="没有任务" compact>
+              <ObjectList>
+                <ObjectRow v-for="item in rows" :key="item.id" :title="item.goal" :subtitle="formatTime(item.created, settings?.timezone)"
+                  clickable :active="item.id === selected" @click="open(item.id)">
+                  <template #meta><StatusBadge dot kind="task" :value="item.status" /></template>
+                </ObjectRow>
+              </ObjectList>
+              <LoadMore v-if="list.data.value?.next_offset != null" :loading="list.loading.value" @more="list.reload(true)" />
+            </ResourceState>
+          </div>
+        </Panel>
+      </template>
+      <template #placeholder>从左边选一个任务查看详情。</template>
+      <TaskDetail v-if="selected" :key="selected" :id="selected" :scene="scene" :operator="operator" :version="version"
+        :service="data" :settings="settings" @dirty="value => detailDirty = value" @changed="list.reload()" @created="created" />
+    </MasterDetail>
+  </ResourceState>
+  <NewTask v-if="creating" :scene="scene" :operator="operator" @dirty="value => newDirty = value" @created="created" @close="creating = false" />
 </template>
 
 <style scoped>
-.layout{display:grid;grid-template-columns:minmax(240px,340px) 1fr;gap:16px;align-items:start}
-.list{display:grid;gap:8px;padding:12px}
-.head{display:flex;justify-content:space-between;align-items:center;gap:8px}
-.filter{max-width:140px}
-.rows{padding:0;background:transparent}
-.goal{white-space:normal;overflow-wrap:anywhere}
-.detail{min-width:0}
-@media(max-width:860px){.layout{grid-template-columns:1fr}}
+.list{display:grid;gap:var(--sp-2);padding:0 var(--sp-2) var(--sp-2)}
+.list p{margin:0;padding:0 var(--sp-2)}
 </style>

@@ -2,9 +2,10 @@
 import { computed, ref, watch } from 'vue'
 import { api } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'
+import { confirm } from '../../../composables/useConfirm.js'
 import { clone, numberOrBlank, same } from '../../forms.js'
-import SettingSection from '../../components/SettingSection.vue'
-import AdvancedFields from '../../components/AdvancedFields.vue'
+import SettingSection from '../../ui/SettingSection.vue'
+import AdvancedFields from '../../ui/AdvancedFields.vue'
 
 const props = defineProps({ snapshot: { type: Object, required: true } })
 const emit = defineEmits(['saved', 'dirty'])
@@ -39,8 +40,8 @@ function changeMode(mode) {
     : { ...onebot, mode, listen_host: onebot.listen_host ?? '127.0.0.1', listen_port: onebot.listen_port ?? 8080 }
 }
 async function submit() {
-  if (draft.value.delivery === 'onebot' && saved.value.delivery !== 'onebot' &&
-      !window.confirm('改成真实发送后，重启时 Bot 会在 QQ 里真的发言。确定保存？')) return
+  if (draft.value.delivery === 'onebot' && saved.value.delivery !== 'onebot' && !await confirm({
+    title: '改成真实发送？', text: '重启后 Bot 会在 QQ 群里真的发言。', confirmLabel: '保存', danger: true })) return
   const result = await save.run(() => api('/api/host/settings/connection', {
     method: 'PUT', body: JSON.stringify({ ...body(draft.value), access_token: token.value || null }),
   }))
@@ -49,12 +50,9 @@ async function submit() {
 </script>
 
 <template>
-  <SettingSection v-if="draft" title="连接 QQ" description="LenBot 通过 OneBot（例如 NapCat、SnowLuma）收发 QQ 消息。"
+  <SettingSection v-if="draft" title="连接 QQ" description="LenBot 通过 OneBot（例如 NapCat、SnowLuma）收发 QQ 消息。改动重启后生效。"
     :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
-    <p>Bot 的 QQ：<strong>{{ saved.bot_qq }}</strong></p>
-    <v-alert type="info" variant="tonal">
-      这里保存的是下次启动配置。保存后请停止并重新启动 LenBot；首页的手动连接只使用本次启动已加载的配置，不会应用尚未重启的修改。
-    </v-alert>
+    <p class="bot">Bot 的 QQ：<strong>{{ saved.bot_qq }}</strong></p>
     <v-select :model-value="draft.onebot.mode" label="连接方式" :items="[
       { title: 'LenBot 去连 OneBot（正向 WebSocket）', value: 'forward_ws' },
       { title: '等 OneBot 来连 LenBot（反向 WebSocket）', value: 'reverse_ws' }]" @update:model-value="changeMode" />
@@ -106,3 +104,7 @@ async function submit() {
     </AdvancedFields>
   </SettingSection>
 </template>
+
+<style scoped>
+.bot{margin:0}
+</style>

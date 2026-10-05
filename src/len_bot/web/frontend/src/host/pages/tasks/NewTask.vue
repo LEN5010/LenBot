@@ -5,7 +5,10 @@ import { materialsApi } from '../../api/materials.js'
 import { resourceLabel } from '../../resourceLabels.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify } from '../../store.js'
-import ErrorNote from '../../components/ErrorNote.vue'
+import { confirm } from '../../../composables/useConfirm.js'
+import ErrorNote from '../../ui/ErrorNote.vue'
+import FormDialog from '../../ui/FormDialog.vue'
+import RowEditor from '../../ui/RowEditor.vue'
 
 const props = defineProps({ scene: { type: String, required: true }, operator: { type: String, required: true },
   initialResources: { type: Array, default: () => [] } })
@@ -32,44 +35,37 @@ async function submit() {
   notify('任务已排队')
   emit('created', result)
 }
-function close() {
-  if (dirty.value && !window.confirm('放弃没提交的任务？')) return
+async function close() {
+  if (dirty.value && !await confirm({ title: '放弃没提交的任务？', confirmLabel: '放弃', danger: true })) return
   emit('dirty', false)
   emit('close')
 }
 </script>
 
 <template>
-  <v-card title="新建任务">
-    <v-card-text class="form">
-      <v-textarea v-model="goal" label="要做什么" rows="3" auto-grow />
-      <v-textarea v-model="deliverable" label="做完交付什么" rows="2" auto-grow hint="例如一份 PDF 报告、一段整理好的文字" persistent-hint />
-      <v-textarea v-model="context" label="补充说明（可不填）" rows="2" auto-grow />
-      <v-select v-model="materials" :items="files" multiple chips closable-chips label="给任务的资料（可不选）"
-        hint="从本群的共享资料里选，任务里只能读不能改" persistent-hint :loading="shared.loading.value" />
-      <ErrorNote v-if="shared.error.value" title="读取共享资料失败" :error="shared.error.value" />
-      <section v-if="resources.length" class="resource-inputs">
-        <h3>从资源页选取的资料</h3>
-        <div v-for="(item, index) in resources" :key="index" class="resource-input">
-          <p class="muted">{{ resourceLabel(item.reference) }}</p>
-          <div class="input-name"><v-text-field v-model="item.name" label="任务中的输入文件名" density="compact" hide-details />
-            <v-btn size="small" variant="text" @click="resources.splice(index, 1)">移除</v-btn></div>
-        </div>
-        <p class="muted">创建时复制为本任务的只读快照，来源之后修改或删除不影响本任务。</p>
-      </section>
-      <p v-if="inputProblem" class="problem">{{ inputProblem }}</p>
-      <v-checkbox v-model="accountBrowser" label="使用账号浏览器（需要主人本人发起）" hide-details />
-      <p v-if="!validQQ" class="problem">先在上方填写你的 QQ</p>
-      <ErrorNote v-if="create.error.value" title="没有创建成功" :error="create.error.value" />
-      <p v-if="create.error.value && (materials.length || resources.length)" class="muted">选了资料时，任务可能已经建好了，请先看看任务列表再决定要不要重新提交。</p>
-    </v-card-text>
-    <v-card-actions><v-spacer /><v-btn :disabled="create.busy.value" @click="close">取消</v-btn>
-      <v-btn color="primary" :loading="create.busy.value" :disabled="!validQQ || !goal.trim() || !deliverable.trim() || Boolean(inputProblem)" @click="submit">开始</v-btn></v-card-actions>
-  </v-card>
+  <FormDialog :model-value="true" title="新建任务" size="md" :busy="create.busy.value" persistent @update:model-value="close">
+    <v-textarea v-model="goal" label="要做什么" rows="3" auto-grow />
+    <v-textarea v-model="deliverable" label="做完交付什么" rows="2" auto-grow hint="例如一份 PDF 报告、一段整理好的文字" persistent-hint />
+    <v-textarea v-model="context" label="补充说明（可不填）" rows="2" auto-grow />
+    <v-select v-model="materials" :items="files" multiple chips closable-chips label="给任务的资料（可不选）"
+      hint="从本群的共享资料里选，任务里只能读不能改" persistent-hint :loading="shared.loading.value" />
+    <ErrorNote v-if="shared.error.value" title="读取共享资料失败" :error="shared.error.value" />
+    <template v-if="resources.length">
+      <h3>从资源页选取的资料</h3>
+      <p class="muted small">创建时复制一份给任务，之后原文件修改或删除不影响任务。</p>
+      <RowEditor :items="resources" :make="() => null" add-label="">
+        <template #default="{ item }">
+          <v-text-field v-model="item.name" label="任务中的文件名" :hint="resourceLabel(item.reference)" persistent-hint />
+        </template>
+      </RowEditor>
+    </template>
+    <p v-if="inputProblem" class="problem">{{ inputProblem }}</p>
+    <v-checkbox v-model="accountBrowser" label="使用账号浏览器（需要主人本人发起）" />
+    <p v-if="!validQQ" class="problem">先在页面上方填写你的 QQ</p>
+    <ErrorNote v-if="create.error.value" title="没有创建成功" :error="create.error.value" />
+    <p v-if="create.error.value && (materials.length || resources.length)" class="muted small">选了资料时，任务可能已经建好了，请先看看任务列表再决定要不要重新提交。</p>
+    <template #actions>
+      <v-btn color="primary" :loading="create.busy.value" :disabled="!validQQ || !goal.trim() || !deliverable.trim() || Boolean(inputProblem)" @click="submit">开始</v-btn>
+    </template>
+  </FormDialog>
 </template>
-
-<style scoped>
-.form{display:grid;gap:14px}
-.problem{color:var(--error-text);margin:0}
-.resource-inputs{display:grid;gap:12px}.resource-input p{margin:0 0 6px;overflow-wrap:anywhere}.input-name{display:flex;align-items:center;gap:8px}
-</style>

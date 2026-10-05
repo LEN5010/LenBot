@@ -3,7 +3,11 @@ import { ref, watch } from 'vue'
 import { schedulesApi } from '../../api/schedules.js'
 import { useResource } from '../../../composables/useResource.js'
 import { formatTime } from '../../time.js'
-import ErrorNote from '../../components/ErrorNote.vue'
+import Panel from '../../ui/Panel.vue'
+import ResourceState from '../../ui/ResourceState.vue'
+import ObjectList from '../../ui/ObjectList.vue'
+import ObjectRow from '../../ui/ObjectRow.vue'
+import LoadMore from '../../ui/LoadMore.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
 const rows = ref([])
@@ -24,40 +28,28 @@ function outcome(item) {
 </script>
 
 <template>
-  <section class="surface proactive">
-    <div class="head">
-      <h2>主动开话题</h2>
-      <v-btn size="small" variant="text" :loading="page.loading.value" @click="page.reload()">刷新</v-btn>
-    </div>
-    <ErrorNote v-if="page.error.value" title="读取主动开话题记录失败" :error="page.error.value" />
-    <template v-if="page.data.value">
-      <p v-if="!page.data.value.settings" class="muted">本群没有开启主动开话题，可以在
+  <Panel title="主动开话题">
+    <template #actions><v-btn size="small" variant="text" :loading="page.loading.value" @click="page.reload()">刷新</v-btn></template>
+    <ResourceState :resource="page" error-title="读取主动开话题记录失败" v-slot="{ data }">
+      <p v-if="!data.settings" class="muted">本群没有开启主动开话题，可以在
         <RouterLink :to="{ name: 'host-scenes', query: { scene, tab: 'settings' } }">群聊设置</RouterLink> 里打开。</p>
       <template v-else>
-        <p>群里安静 {{ hours(page.data.value.settings.idle_seconds) }}后，Bot 会在
-          {{ page.data.value.settings.start.slice(0, 5) }}–{{ page.data.value.settings.end.slice(0, 5) }} 之间找个话题聊聊，每天最多一次。</p>
-        <p class="muted">下次最早 {{ page.data.value.next_at === null ? '—' : at(page.data.value.next_at) }}{{ page.data.value.next_reason ? `（${page.data.value.next_reason}）` : '' }}</p>
+        <p>群里安静 {{ hours(data.settings.idle_seconds) }}后，Bot 会在
+          {{ data.settings.start.slice(0, 5) }}–{{ data.settings.end.slice(0, 5) }} 之间找个话题聊聊，每天最多一次。</p>
+        <p class="muted small">下次最早 {{ data.next_at === null ? '—' : at(data.next_at) }}{{ data.next_reason ? `（${data.next_reason}）` : '' }}</p>
       </template>
-      <v-alert v-if="page.data.value.pause" type="info" variant="tonal" density="compact">
-        最近两次开话题都没人接，暂停到 {{ at(page.data.value.pause.until) }}。</v-alert>
-      <p v-if="!rows.length" class="muted">还没有主动开过话题</p>
-      <ul class="wakes">
-        <li v-for="item in rows" :key="item.id">
-          <span>{{ at(item.woke_at) }}</span>
-          <strong>{{ outcome(item) }}</strong>
-          <RouterLink :to="{ name: 'host-logs', query: { scene, turn: item.turn_id } }">查看这一轮</RouterLink>
-        </li>
-      </ul>
-      <v-btn v-if="page.data.value.next_offset !== null" size="small" variant="text" :loading="page.loading.value" @click="page.reload(true)">显示更多</v-btn>
-    </template>
-  </section>
+      <v-alert v-if="data.pause" type="info">最近两次开话题都没人接，暂停到 {{ at(data.pause.until) }}。</v-alert>
+      <p v-if="!rows.length" class="muted">还没有主动开过话题。</p>
+      <ObjectList divided>
+        <ObjectRow v-for="item in rows" :key="item.id" :title="outcome(item)" :subtitle="at(item.woke_at)">
+          <template #actions><v-btn size="small" variant="text" :to="{ name: 'host-logs', query: { scene, turn: item.turn_id } }">查看这一轮</v-btn></template>
+        </ObjectRow>
+      </ObjectList>
+      <LoadMore v-if="data.next_offset !== null" :loading="page.loading.value" @more="page.reload(true)" />
+    </ResourceState>
+  </Panel>
 </template>
 
 <style scoped>
-.proactive{display:grid;gap:8px}
-.proactive p{margin:0}
-.head{display:flex;justify-content:space-between;align-items:center}
-.wakes{list-style:none;margin:0;padding:0;display:grid}
-.wakes li{display:grid;grid-template-columns:120px 1fr auto;gap:12px;padding:8px 0;border-bottom:1px solid var(--line);align-items:center}
-.wakes li:last-child{border-bottom:0}
+p{margin:0}
 </style>

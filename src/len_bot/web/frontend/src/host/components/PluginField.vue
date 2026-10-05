@@ -12,7 +12,7 @@ const removeRow = index => { model.value = model.value.filter((_, i) => i !== in
 <template>
   <v-select v-if="field.options" v-model="model" :items="field.options" :label="field.key"
     :hint="field.description" persistent-hint />
-  <v-switch v-else-if="field.type === 'boolean'" v-model="model" color="primary" :label="field.description" hide-details />
+  <v-switch v-else-if="field.type === 'boolean'" v-model="model" :label="field.description" />
   <v-textarea v-else-if="field.type === 'string_list'" v-model="model" rows="2" auto-grow :label="field.key"
     :hint="`${field.description} 每行一项。`" persistent-hint />
   <fieldset v-else-if="field.type === 'object_list' && field.fields.length" class="object-list">
@@ -35,9 +35,8 @@ const removeRow = index => { model.value = model.value.filter((_, i) => i !== in
 </template>
 
 <style scoped>
-.object-list{border:1px solid var(--border);border-radius:8px;padding:12px;min-width:0}
-.object-list legend{padding:0 4px;font-size:14px}
-.object-row{display:grid;gap:16px;padding:12px 0;border-bottom:1px solid var(--border);margin-bottom:12px}
-.row-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
-.mono :deep(textarea){font-family:monospace}
+.object-list{border:1px solid var(--line);border-radius:var(--radius);padding:var(--sp-3);min-width:0}
+.object-list legend{padding:0 var(--sp-1);font-size:var(--fs-md)}
+.object-row{display:grid;gap:var(--sp-4);padding:var(--sp-3) 0;border-bottom:1px solid var(--line);margin-bottom:var(--sp-3)}
+.row-heading{display:flex;align-items:center;justify-content:space-between}
 </style>

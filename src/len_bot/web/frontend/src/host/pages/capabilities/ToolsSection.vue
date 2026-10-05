@@ -5,10 +5,10 @@ import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify, readPendingRestart } from '../../store.js'
 import { toolLabel } from '../../labels.js'
 import { clone, same } from '../../forms.js'
-import SettingSection from '../../components/SettingSection.vue'
-import ErrorNote from '../../components/ErrorNote.vue'
+import SettingSection from '../../ui/SettingSection.vue'
+import ResourceState from '../../ui/ResourceState.vue'
 import AllowList from '../../components/AllowList.vue'
-import DevOnly from '../../components/DevOnly.vue'
+import DevOnly from '../../ui/DevOnly.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
@@ -53,14 +53,15 @@ async function submit() {
 </script>
 
 <template>
-  <ErrorNote v-if="caps.error.value" title="读取工具失败" :error="caps.error.value" />
-  <SettingSection v-if="caps.data.value && draft !== null" title="工具"
+  <ResourceState :resource="caps" error-title="读取工具失败">
+  <SettingSection v-if="draft !== null" title="工具"
     :description="`已保存角色 ${caps.data.value.role_tools.persona.name} 在群里能用哪些工具。` + (shared.length ? `这个角色也用在 ${shared.map(sceneName).join('、')}，修改会一起生效。` : '')"
     :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
     <AllowList :model-value="draft" @update:model-value="update" :items="items" all-label="全部可用的工具">
       <template #item="{ item }">
-        <DevOnly label="详情"><pre>{{ JSON.stringify(item.tool, null, 2) }}</pre></DevOnly>
+        <DevOnly label="详情" :json="item.tool" />
       </template>
     </AllowList>
   </SettingSection>
+  </ResourceState>
 </template>

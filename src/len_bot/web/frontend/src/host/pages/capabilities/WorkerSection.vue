@@ -4,9 +4,9 @@ import { api } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify, readPendingRestart } from '../../store.js'
 import { clone, numberOrBlank, same } from '../../forms.js'
-import SettingSection from '../../components/SettingSection.vue'
-import ErrorNote from '../../components/ErrorNote.vue'
-import AdvancedFields from '../../components/AdvancedFields.vue'
+import SettingSection from '../../ui/SettingSection.vue'
+import ResourceState from '../../ui/ResourceState.vue'
+import AdvancedFields from '../../ui/AdvancedFields.vue'
 
 const emit = defineEmits(['dirty'])
 const settings = useResource(() => api('/api/host/settings'))
@@ -71,13 +71,13 @@ async function submit() {
 </script>
 
 <template>
-  <ErrorNote v-if="settings.error.value" title="读取任务环境失败" :error="settings.error.value" />
-  <SettingSection v-if="saved" title="独立任务" description="Bot 可以把耗时的活交给独立任务，在隔离的 Docker 容器里慢慢做完再交付。"
+  <ResourceState :resource="settings" error-title="读取任务环境失败">
+  <SettingSection title="独立任务" description="Bot 可以把耗时的活交给独立任务，在隔离的 Docker 容器里慢慢做完再交付。"
     :dirty="dirty" :problem="problem" :saving="save.busy.value" :error="save.error.value" @save="submit">
     <v-switch :model-value="draft !== null" color="primary" label="启用独立任务" hide-details @update:model-value="toggle" />
     <template v-if="draft">
-      <v-alert v-if="!workerModel" type="info" variant="tonal" density="compact">
-        还没有给任务分配模型，请到 <RouterLink :to="{ name: 'host-models' }">模型</RouterLink> 页设置任务用的模型。</v-alert>
+      <v-alert v-if="!workerModel" type="info">
+        还没有给任务分配模型，请到 <RouterLink :to="{ name: 'host-models', query: { tab: 'roles' } }">模型</RouterLink> 页设置任务用的模型。</v-alert>
       <div class="form-grid">
         <v-select v-model="draft.model_reasoning" label="任务模型支持推理吗" :items="[{ title: '支持', value: true }, { title: '不支持', value: false }]"
           hint="按模型服务商的说明选择" persistent-hint />
@@ -105,9 +105,8 @@ async function submit() {
       </div>
 
       <h3>任务存储池</h3>
-      <p v-if="draft.storage_pool">{{ draft.storage_pool.kind === 'apfs' ? 'APFS 卷配额' : 'ext4 文件系统' }} · {{ draft.storage_pool.mount }}</p>
-      <p v-else>当前未配置池硬上限。</p>
-      <p>初始化、扩容和文件移交在停机后完成，存储池绑定与目录一起更新。实际容量见 <RouterLink :to="{name:'host-resources'}">资源页</RouterLink>。</p>
+      <p class="pool">{{ draft.storage_pool ? `${draft.storage_pool.kind === 'apfs' ? 'APFS 卷配额' : 'ext4 文件系统'} · ${draft.storage_pool.mount}` : '没有设置容量上限' }}。
+        实际用量见 <RouterLink :to="{ name: 'host-resources' }">资源页</RouterLink>。</p>
 
       <AdvancedFields>
         <v-text-field v-for="[key, label, hint] in advanced" :key="key" :model-value="draft[key]" :label="label" :hint="hint" :persistent-hint="Boolean(hint)"
@@ -118,9 +117,10 @@ async function submit() {
       </AdvancedFields>
     </template>
   </SettingSection>
+  </ResourceState>
 </template>
 
 <style scoped>
-.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:16px}
-h3{font-size:15px;margin:8px 0 0}
+h3{margin-top:var(--sp-2)}
+.pool{margin:0}
 </style>

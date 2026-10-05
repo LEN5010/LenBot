@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { login, useAuth } from '../composables/useAuth.js'
 import { returnPath } from '../router/index.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
+import markUrl from '../assets/lenbot-mark.svg'
 const route=useRoute(),router=useRouter()
 const isolated=computed(()=>useAuth().panelContext?.mode==='isolated')
 const username=ref(''),password=ref(''),busy=ref(false),error=ref('')
@@ -28,50 +29,23 @@ async function submit(){
 </script>
 <template>
   <main class="login-page">
-    <v-card class="login-card">
-      <v-card-text>
-        <span class="login-mark">L</span>
+    <form class="login-card" @submit.prevent="submit">
+      <img class="login-mark" :src="markUrl" alt="" />
+      <div>
         <h1>登录 LenBot</h1>
-        <p class="muted">{{ isolated?'登录后和 Bot 试聊，回复不会发到 QQ。':'登录后管理你的 Bot。' }}</p>
-        <v-alert v-if="error" type="error" variant="tonal" role="alert">{{ error }}</v-alert>
-        <form @submit.prevent="submit">
-          <v-text-field
-            v-model="username"
-            label="用户名"
-            autocomplete="username"
-            required
-            :disabled="busy"
-          />
-          <v-text-field
-            v-model="password"
-            label="密码"
-            type="password"
-            autocomplete="current-password"
-            required
-            :disabled="busy"
-          />
-          <v-btn
-            type="submit"
-            color="primary"
-            block
-            :loading="busy"
-            :disabled="!username || !password"
-          >登录</v-btn>
-        </form>
-        <p class="login-note">{{ isolated?'使用当前测试实例账户。':'使用当前宿主账户登录。' }}</p>
-      </v-card-text>
-    </v-card>
+        <p class="muted">{{ isolated ? '登录后和 Bot 试聊，回复不会发到 QQ。' : '登录后管理你的 Bot。' }}</p>
+      </div>
+      <v-alert v-if="error" type="error" role="alert">{{ error }}</v-alert>
+      <v-text-field v-model="username" label="用户名" autocomplete="username" required :disabled="busy" />
+      <v-text-field v-model="password" label="密码" type="password" autocomplete="current-password" required :disabled="busy" />
+      <v-btn type="submit" color="primary" block size="large" :loading="busy" :disabled="!username || !password">登录</v-btn>
+    </form>
   </main>
 </template>
 <style scoped>
-.login-page{display:grid;place-items:center;min-height:100vh;padding:24px}
-.login-card{width:420px;max-width:100%;padding:20px}
-.login-mark{display:grid;place-items:center;width:44px;height:44px;border-radius:10px;background:var(--primary);color:var(--on-primary);font-size:26px;font-weight:700;margin-bottom:24px}
-.login-card h1{font-size:25px;margin-bottom:8px}
-.login-card form{display:grid;gap:20px;margin-top:28px}
-.login-note{margin:24px 0 0;font-size:12px;color:var(--muted)}
-@media(max-width:600px){
-  .login-card{padding:12px}
-  .login-page{padding:16px}
-}
+.login-page{display:grid;place-items:center;min-height:100vh;padding:var(--sp-5)}
+.login-card{width:400px;max-width:100%;display:grid;gap:var(--sp-4);padding:var(--sp-6);background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg)}
+.login-mark{width:40px;height:40px;border-radius:var(--radius)}
+.login-card p{margin:var(--sp-1) 0 0}
+@media(max-width:600px){.login-page{padding:var(--sp-4)}.login-card{padding:var(--sp-5)}}
 </style>

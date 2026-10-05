@@ -3,9 +3,12 @@
 import { computed, ref, watch } from 'vue'
 import { api, queryString, sceneName } from '../../api.js'
 import { useAction, useResource } from '../../composables/useResource.js'
+import { confirm } from '../../composables/useConfirm.js'
 import { notify } from '../store.js'
-import ErrorNote from './ErrorNote.vue'
-import DevOnly from './DevOnly.vue'
+import ErrorNote from '../ui/ErrorNote.vue'
+import CodeBlock from '../ui/CodeBlock.vue'
+import LoadMore from '../ui/LoadMore.vue'
+import DevOnly from '../ui/DevOnly.vue'
 
 const props = defineProps({
   scene: { type: String, required: true }, source: { type: String, required: true },
@@ -29,13 +32,14 @@ const labels = { builtin: '内置', plugin: '插件附带', shared: '共享', sc
 const canMove = computed(() => ['task', 'scene'].includes(props.source))
 const canDelete = computed(() => ['shared', 'scene'].includes(props.source))
 async function move(target) {
-  if (!window.confirm(`把技能 ${props.name} 移到${target === 'scene' ? '本群' : '共享'}？原来的位置会移走。`)) return
+  const place = target === 'scene' ? '本群' : '共享'
+  if (!await confirm({ title: `把技能 ${props.name} 移到${place}？`, text: '原来位置上的这份技能会被移走。', confirmLabel: '移动' })) return
   const result = await act.run(() => api('/api/host/skills/move?' + queryString({ scene: props.scene }), { method: 'POST',
     body: JSON.stringify({ source: props.source, name: props.name, task_id: props.source === 'task' ? props.taskId : null, target }) }))
   if (result) { notify('已移动'); emit('changed', result) }
 }
 async function remove() {
-  if (!window.confirm(`删除技能 ${props.name}？`)) return
+  if (!await confirm({ title: `删除技能 ${props.name}？`, text: '技能文件会被删掉，不能恢复。', confirmLabel: '删除', danger: true })) return
   const result = await act.run(() => api(`/api/host/skills/${encodeURIComponent(props.source)}/${encodeURIComponent(props.name)}?` + queryString({ scene: props.scene }), { method: 'DELETE' }))
   if (result) { notify('已删除'); emit('changed', result) }
 }
@@ -43,32 +47,32 @@ async function remove() {
 
 <template>
   <div class="inspector">
-    <ErrorNote v-if="listing.error.value" title="读取技能失败" :error="listing.error.value" />
+    <ErrorNote v-if="listing.error.value" title="读取技能失败" :error="listing.error.value" @retry="listing.reload()" />
+    <v-progress-linear v-if="listing.loading.value && !listing.data.value" indeterminate color="primary" />
     <template v-if="listing.data.value">
-      <p><strong>{{ listing.data.value.skill.name }}</strong> · {{ labels[source] }}<br><span class="muted">{{ listing.data.value.skill.description }}</span></p>
-      <p v-if="listing.data.value.used_by_running.length" class="muted">正在被 {{ listing.data.value.used_by_running.map(sceneName).join('、') }} 使用</p>
-      <div class="files">
-        <v-chip v-for="file in listing.data.value.files" :key="file.path" size="small" :variant="file.path === path ? 'flat' : 'outlined'"
-          :color="file.path === path ? 'primary' : undefined" @click="read(file.path)">{{ file.path }}</v-chip>
+      <div>
+        <p>{{ listing.data.value.skill.description }}</p>
+        <p class="muted small">{{ labels[source] }}<template v-if="listing.data.value.used_by_running.length"> · 正在被 {{ listing.data.value.used_by_running.map(sceneName).join('、') }} 使用</template></p>
       </div>
+      <v-chip-group :model-value="path" mandatory selected-class="file-on" @update:model-value="file => file && read(file)">
+        <v-chip v-for="file in listing.data.value.files" :key="file.path" :value="file.path" variant="outlined">{{ file.path }}</v-chip>
+      </v-chip-group>
       <ErrorNote v-if="reading.error.value" title="读取文件失败" :error="reading.error.value" />
-      <pre v-if="path" class="text">{{ text || '（空文件）' }}</pre>
-      <v-btn v-if="next !== null" size="small" variant="text" :loading="reading.busy.value" @click="read(path, true)">继续读</v-btn>
-      <div v-if="canMove || canDelete" class="actions">
-        <v-btn v-if="source === 'task'" variant="outlined" :loading="act.busy.value" @click="move('scene')">移到本群</v-btn>
-        <v-btn v-if="canMove" variant="outlined" :loading="act.busy.value" @click="move('shared')">{{ source === 'scene' ? '改为共享' : '移到共享' }}</v-btn>
+      <CodeBlock v-if="path" :text="text || '（空文件）'" />
+      <LoadMore v-if="next !== null" label="继续读" :loading="reading.busy.value" @more="read(path, true)" />
+      <div v-if="canMove || canDelete" class="inline">
+        <v-btn v-if="source === 'task'" variant="tonal" :loading="act.busy.value" @click="move('scene')">移到本群</v-btn>
+        <v-btn v-if="canMove" variant="tonal" :loading="act.busy.value" @click="move('shared')">{{ source === 'scene' ? '改为共享' : '移到共享' }}</v-btn>
         <v-btn v-if="canDelete" variant="text" color="error" :disabled="act.busy.value" @click="remove">删除</v-btn>
       </div>
       <ErrorNote v-if="act.error.value" title="操作没有成功" :error="act.error.value" />
-      <DevOnly label="技能详情"><pre>{{ JSON.stringify(listing.data.value, null, 2) }}</pre></DevOnly>
+      <DevOnly label="技能详情" :json="listing.data.value" />
     </template>
   </div>
 </template>
 
 <style scoped>
-.inspector{display:grid;gap:10px;min-width:0}
+.inspector{display:grid;gap:var(--sp-3);min-width:0}
 .inspector p{margin:0}
-.files{display:flex;gap:6px;flex-wrap:wrap}
-.text{white-space:pre-wrap;overflow-wrap:anywhere;max-height:28rem;overflow:auto;font-size:13px;background:var(--code-bg);padding:12px;border-radius:8px;margin:0}
-.actions{display:flex;gap:8px;flex-wrap:wrap}
+.file-on{background:var(--selected);border-color:var(--ink)}
 </style>

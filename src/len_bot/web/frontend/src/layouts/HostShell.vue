@@ -3,13 +3,17 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import { mdiViewDashboardOutline, mdiChatProcessingOutline, mdiForumOutline, mdiAccountOutline, mdiBookOpenPageVariantOutline,
-  mdiBriefcaseOutline, mdiFolderOutline, mdiToolboxOutline, mdiChip, mdiTimelineTextOutline, mdiCogOutline, mdiMenu, mdiLogout } from '@mdi/js'
+  mdiBriefcaseOutline, mdiFolderOutline, mdiToolboxOutline, mdiChip, mdiTimelineTextOutline, mdiCogOutline, mdiMenu, mdiLogout, mdiRestart } from '@mdi/js'
 import { logout, useAuth } from '../composables/useAuth.js'
+import { confirm } from '../composables/useConfirm.js'
+import { sceneTarget, showsScene, useCurrentScene } from '../composables/useCurrentScene.js'
 import { host, readHostState, readPendingRestart } from '../host/store.js'
-import { runtimeLabel, sectionLabel } from '../host/labels.js'
+import { sectionLabel } from '../host/labels.js'
 import { sceneName } from '../api.js'
-import { hostAreas, hostTarget } from '../router/hostNavigation.js'
-import ErrorNote from '../host/components/ErrorNote.vue'
+import { hostAreas, hostGroups, hostTarget } from '../router/hostNavigation.js'
+import ErrorNote from '../host/ui/ErrorNote.vue'
+import StatusBadge from '../host/ui/StatusBadge.vue'
+import ConfirmHost from '../host/ui/ConfirmHost.vue'
 import RestartDialog from '../host/components/RestartDialog.vue'
 import { restartFlow, openRestart } from '../host/restart.js'
 import markUrl from '../assets/lenbot-mark.svg'
@@ -20,11 +24,14 @@ const icons = { home: mdiViewDashboardOutline, trial: mdiChatProcessingOutline, 
   memory: mdiBookOpenPageVariantOutline, tasks: mdiBriefcaseOutline, resources: mdiFolderOutline, capabilities: mdiToolboxOutline, models: mdiChip,
   logs: mdiTimelineTextOutline, settings: mdiCogOutline }
 const area = computed(() => hostAreas.find(item => item.pages.includes(route.name)))
+const { scene } = useCurrentScene()
+const scenePicker = computed(() => showsScene(route) && (host.state?.scenes.length || 0) > 0)
+const sceneOptions = computed(() => (host.state?.scenes || []).map(item => ({ title: sceneName(item.scene), subtitle: item.persona.name, value: item.scene })))
 const status = computed(() => {
   const state = host.state
-  if (!state) return { text: host.stateError ? '状态读取失败' : '读取中', ok: false }
-  if (state.connection.connected && state.connection.accepting) return { text: '在线', ok: true }
-  return { text: state.connection.status === 'running' ? 'QQ 未连接' : runtimeLabel(state.connection.status), ok: false }
+  if (!state) return { text: host.stateError ? '状态读取失败' : '读取中', tone: host.stateError ? 'error' : 'neutral' }
+  if (state.connection.connected && state.connection.accepting) return { text: '在线', tone: 'success' }
+  return state.connection.status === 'running' ? { text: 'QQ 未连接', tone: 'warning' } : { kind: 'runtime', value: state.connection.status }
 })
 const restartItems = computed(() => {
   const value = host.restart
@@ -44,7 +51,7 @@ watch(mobile, value => { drawer.value = !value })
 watch(() => route.fullPath, () => { if (mobile.value) drawer.value = false })
 
 async function exit() {
-  if (leaving.value || !window.confirm('退出登录？未保存的修改会丢失。')) return
+  if (leaving.value || !await confirm({ title: '退出登录？', text: '未保存的修改会丢失。', confirmLabel: '退出' })) return
   leaving.value = true
   logoutError.value = null
   try {
@@ -59,52 +66,48 @@ async function exit() {
 </script>
 
 <template>
-  <v-navigation-drawer v-model="drawer" :permanent="!mobile" :temporary="mobile" :width="208" aria-label="主导航" class="host-nav">
-    <div class="host-brand"><img :src="markUrl" alt="" /><strong>LenBot</strong></div>
-    <v-list nav density="compact" class="host-nav-list">
-      <v-list-item v-for="item in hostAreas" :key="item.id" :to="hostTarget(item.name, route)" :active="area?.id === item.id"
-        color="primary" :prepend-icon="icons[item.id]" :title="item.title" />
-    </v-list>
+  <v-navigation-drawer v-model="drawer" :permanent="!mobile" :temporary="mobile" :width="216" aria-label="主导航" class="shell-nav">
+    <div class="shell-brand"><img :src="markUrl" alt="" /><strong>LenBot</strong></div>
+    <nav class="shell-nav-groups">
+      <div v-for="group in hostGroups" :key="group.title" class="shell-nav-group">
+        <div class="shell-nav-heading">{{ group.title }}</div>
+        <RouterLink v-for="item in group.areas" :key="item.id" :to="hostTarget(item.name, scene)" class="shell-nav-item"
+          :class="{ active: area?.id === item.id }" :aria-current="area?.id === item.id ? 'page' : undefined">
+          <v-icon :icon="icons[item.id]" size="18" />{{ item.title }}</RouterLink>
+      </div>
+    </nav>
     <template #append>
-      <div class="host-nav-footer"><v-btn :prepend-icon="mdiLogout" block variant="text" :loading="leaving" @click="exit">退出登录</v-btn></div>
+      <div class="shell-nav-footer"><v-btn :prepend-icon="mdiLogout" block variant="text" :loading="leaving" @click="exit">退出登录</v-btn></div>
     </template>
   </v-navigation-drawer>
-  <v-app-bar flat :height="56" class="host-bar">
+  <v-app-bar flat :height="56" class="shell-bar">
     <v-btn v-if="mobile" :icon="mdiMenu" variant="text" aria-label="打开导航" @click="drawer = true" />
-    <v-app-bar-title><span class="host-bar-title">{{ area?.title || route.meta.title }}</span></v-app-bar-title>
-    <v-chip v-if="host.state?.delivery === 'simulated'" size="small" variant="tonal" color="secondary" class="mr-2">模拟发送</v-chip>
-    <v-btn variant="text" size="small" :disabled="restartFlow.waiting" @click="openRestart">重启</v-btn>
-    <span class="host-status" :class="{ ok: status.ok }"><span class="dot" />{{ status.text }}</span>
+    <span class="shell-bar-title">{{ area?.title || route.meta.title }}</span>
+    <v-select v-if="scenePicker" :model-value="scene" :items="sceneOptions" label="群聊" class="host-scene" aria-label="当前群聊"
+      @update:model-value="value => router.push(sceneTarget(route, value))">
+      <template #item="{ props: itemProps, item }"><v-list-item v-bind="itemProps" :subtitle="item.raw.subtitle" /></template>
+    </v-select>
+    <v-spacer />
+    <v-chip v-if="host.state?.delivery === 'simulated'" class="mr-2">模拟发送</v-chip>
+    <StatusBadge dot :kind="status.kind" :value="status.value" :text="status.text" :tone="status.tone" class="mr-2" />
+    <v-btn variant="text" size="small" :prepend-icon="mdiRestart" class="mr-2" :disabled="restartFlow.waiting" @click="openRestart">重启</v-btn>
   </v-app-bar>
   <v-main tag="div">
-    <main class="app-page" id="main-content">
-      <ErrorNote v-if="logoutError" title="退出登录失败" :error="logoutError" class="mb-4" />
-      <v-alert v-if="restartItems.length" type="info" variant="tonal" class="mb-4" role="status">
-        这些修改已保存，重启 LenBot 后生效：{{ restartItems.join('、') }}
-        <v-btn size="small" variant="text" :disabled="restartFlow.waiting" @click="openRestart">重启应用</v-btn>
+    <main class="shell-main" id="main-content">
+      <ErrorNote v-if="logoutError" title="退出登录失败" :error="logoutError" />
+      <v-alert v-if="restartItems.length" type="info" role="status">
+        已保存，重启后生效：{{ restartItems.join('、') }}
+        <template #append><v-btn size="small" variant="text" :disabled="restartFlow.waiting" @click="openRestart">重启</v-btn></template>
       </v-alert>
-      <ErrorNote v-if="host.restart?.error" title="无法确认哪些修改需要重启" :error="host.restart.error" class="mb-4" />
+      <ErrorNote v-if="host.restart?.error" title="无法确认哪些修改需要重启" :error="host.restart.error" @retry="readPendingRestart" />
       <slot v-if="!restartFlow.waiting" />
     </main>
   </v-main>
   <RestartDialog />
+  <ConfirmHost />
   <v-snackbar v-model="toast" :timeout="3000" location="bottom">{{ host.toast }}</v-snackbar>
 </template>
 
 <style scoped>
-.host-nav{border-right:1px solid var(--line)}
-.host-brand{display:flex;align-items:center;gap:10px;padding:20px 20px 12px}
-.host-brand img{width:32px;height:32px;border-radius:8px}
-.host-brand strong{font-size:19px;letter-spacing:-.02em}
-.host-nav-list{padding:4px 10px}
-.host-nav-list :deep(.v-list-item){min-height:40px;border-radius:8px;margin-bottom:2px}
-.host-nav-list :deep(.v-list-item__prepend > .v-icon){margin-inline-end:12px;opacity:.85}
-.host-nav-list :deep(.v-list-item__spacer){width:12px}
-.host-nav-list :deep(.v-list-item-title){font-size:14px}
-.host-nav-footer{padding:12px;border-top:1px solid var(--line)}
-.host-bar{border-bottom:1px solid var(--line)}
-.host-bar-title{font-size:15px;font-weight:600}
-.host-status{display:inline-flex;align-items:center;gap:6px;margin-right:20px;font-size:13px;color:var(--muted)}
-.host-status .dot{width:8px;height:8px;border-radius:50%;background:var(--status-warning)}
-.host-status.ok .dot{background:var(--success)}
+.host-scene{flex:0 1 260px;min-width:160px}
 </style>
