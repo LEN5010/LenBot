@@ -33,7 +33,10 @@ def source_instance(root: Path) -> dict:
     path.chmod(0o600)
     (root / 'state.db').write_bytes(b'fixture database bytes')
     (root / 'state.db').chmod(0o640)
-    (root / 'message-link').symlink_to('state.db')
+    (root / 'state.db-wal').write_bytes(b'fixture wal bytes')
+    (root / 'plugin-data').mkdir()
+    (root / 'plugin-data' / 'message-link').symlink_to('../state.db')
+    (root / 'checkout.py').write_text('source code next to the instance')
     return source
 
 
@@ -57,7 +60,9 @@ def test_copy_preserves_files_permissions_and_other_configuration(tmp_path):
     assert stat.S_IMODE((target / 'lenbot.config.json').stat().st_mode) == 0o600
     assert stat.S_IMODE((target / 'state.db').stat().st_mode) == 0o640
     assert (target / 'state.db').read_bytes() == (source / 'state.db').read_bytes()
-    assert (target / 'message-link').readlink() == Path('state.db')
+    assert (target / 'state.db-wal').read_bytes() == b'fixture wal bytes'
+    assert (target / 'plugin-data' / 'message-link').readlink() == Path('../state.db')
+    assert not (target / 'checkout.py').exists()
     assert load_host_config(target).plugins is not None
 
 
