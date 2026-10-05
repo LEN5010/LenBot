@@ -33,7 +33,7 @@ class SceneControlArguments(BaseModel):
         if self.action != 'quiet' and (self.seconds is not None or self.direct is not None):
             raise ValueError('seconds/direct are only accepted for quiet')
         if self.action != 'status' and self.requester is None:
-            raise ValueError('quiet/resume require the actual requester 账号')
+            raise ValueError('quiet/resume require the actual requester account')
         return self
 
 

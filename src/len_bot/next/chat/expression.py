@@ -119,7 +119,7 @@ class ChatExpression:
         entry_seq = self.store.prepare_expression(
             self.config.scene, call_id, report_parts(parts, [], self.context.render),
         )
-        prefix = "模拟表达（未发送到 账号）：" if self.send_message is None else ""
+        prefix = "模拟表达（未发送到平台）：" if self.send_message is None else ""
         return await self.send_prepared_expression(entry_seq, parts, prefix=prefix, turn_id=turn_id,
                                                    sticker=expression.sticker, channels=channels)
 
@@ -236,7 +236,7 @@ class ChatExpression:
                     PluginStore(self.store).add_plugin_event(self.config.scene, plugin, "reply", Template(
                         (PROMPTS / "next_plugin_reply.md").read_text()).substitute(
                         plugin=plugin, time=moment,
-                        report=("模拟表达（未发送到 账号）：" if self.send_message is None else "") + report).strip())
+                        report=("模拟表达（未发送到平台）：" if self.send_message is None else "") + report).strip())
                     self.notify()
         states = {part.send_status for part in parts[:len(errors)]}
         status = "partial" if len(states) > 1 else parts[len(errors) - 1].send_status

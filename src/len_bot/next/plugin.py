@@ -78,7 +78,7 @@ def _mark(value: tuple):
 
 @dataclass(frozen=True)
 class Sent:
-    """Actual outcome of a plugin send; ``simulated`` never reached 账号."""
+    """Actual outcome of a plugin send; ``simulated`` never reached the platform."""
     status: Literal["sent", "failed", "unconfirmed", "simulated", "partial"]
     report: str
     message_ids: tuple[str, ...] = ()

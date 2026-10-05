@@ -15,7 +15,7 @@ ModelRole = Literal['mind', 'vision', 'memory', 'learner', 'worker', 'asr']
 class HostManageArguments(BaseModel):
     model_config = STRICT
     action: Literal['status', 'describe', 'update', 'restart']
-    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$', description='实际发出管理请求的 账号')
+    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$', description='实际发出管理请求的人的账号')
     section: Section | None = None
     scene: str | None = Field(default=None, pattern=r'^[a-z][a-z0-9_-]*:(group|private):[^:\s/\\]+$',
                               description='场景设置默认当前会话；status 可按群查看。restart 始终重启整个宿主')
@@ -50,6 +50,6 @@ class HostManageArguments(BaseModel):
 HOST_MANAGE_TOOL = {'type': 'function', 'function': {
     'name': 'host_manage',
     'description': '管理员管理配置与重启；status 查看可管理设置块，describe 按块读取字段说明与当前值，'
-        'update 保存指定修改，restart 按明确请求在当前轮收尾后重启。请求人使用原话中的真实 账号。',
+        'update 保存指定修改，restart 按明确请求在当前轮收尾后重启。请求人使用原话中的真实账号。',
     'parameters': HostManageArguments.model_json_schema(),
 }}

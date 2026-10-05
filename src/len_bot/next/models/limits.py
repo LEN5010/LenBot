@@ -26,7 +26,7 @@ class ResourceLimits(BaseModel):
     def scenes(cls, values):
         import re
         if any(re.fullmatch(r'[a-z][a-z0-9_-]*:(group|private):[^:\s/\\]+', scene) is None for scene in values):
-            raise ValueError('limits scene keys must be actual group/private 账号 scenes')
+            raise ValueError('limits scene keys must be actual platform group/private scenes')
         return values
 
     @field_validator('scene_messages_per_hour')

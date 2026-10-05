@@ -367,7 +367,7 @@ class TaskExecution:
         self._pause_input(body)
         self.records.add_event(item.scene, item.id, "question", body,
             notice=f"[任务{'操作确认' if body['method'] == 'confirm' else '提问'}] #{item.id}；"
-                   f"请求人 账号 {item.requester}\n{json.dumps(body, ensure_ascii=False)}")
+                   f"请求人 {item.requester}\n{json.dumps(body, ensure_ascii=False)}")
         self._notify(item.scene)
         try:
             response = await asyncio.wait_for(self._answer, timeout=self.settings.input_timeout_seconds)

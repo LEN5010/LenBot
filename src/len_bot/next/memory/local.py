@@ -523,7 +523,7 @@ class LocalMemory:
 
     async def profiles(self, scene: str, users: list[str]) -> list[MemoryDocument]:
         if len(users) > 4:
-            raise ValueError("profiles accepts at most four actual 账号 senders")
+            raise ValueError("profiles accepts at most four actual account senders")
         source = _scene_scope(scene)
         async with self._lock(source):
             return await asyncio.to_thread(self._profiles_sync, source, users)

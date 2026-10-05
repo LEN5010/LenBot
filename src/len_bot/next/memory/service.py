@@ -263,7 +263,7 @@ class MemoryService:
     async def recall(self, scene: str, messages: list[ChatMessage]) -> dict:
         """Recall from actual chat only; returned text never becomes a native history entry."""
         relevant = [message for message in messages if not message.is_self]
-        # Semantic retrieval keeps speakers; literal retrieval must not match timestamps/账号s.
+        # Semantic retrieval keeps speakers; literal retrieval must not match timestamps/accounts.
         text_only = self.backend.embedding is None
         # Short replies still need the preceding topic, including our question.
         queries = [plain_text(message) if text_only else render_message(message, timezone="UTC") for message in messages

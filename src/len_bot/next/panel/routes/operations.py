@@ -192,5 +192,5 @@ def register_host_operations(app, *, runtime, user):
         paths = {p.name: p for p in log_files()}
         if name not in paths:
             raise HTTPException(404, '没有这一份日志')
-        # Diagnostic exports, unlike local files, also mask 账号-shaped numbers.
+        # Diagnostic exports, unlike local files, also mask account-shaped numbers.
         return archive({'log': paths[name].read_text(encoding='utf-8')})

@@ -89,7 +89,7 @@ SCHEDULE_TOOLS = [
         "或 cron:<分钟> <小时> <日> <月> <星期>，按场景时区；每字段支持 *、数字、a-b、逗号列表、*/n 与 a-b/n，"
         "星期 0-6（0 为周日），日与星期不能同时限制，不支持英文名、L、W、#。"
         "缺失/重复时刻明确报错或阻止后续，不自动顺延、选偏移。"
-        "for=self 是未来自己要做的事，for=账号 是提醒对象；requester 是实际请求人 账号，Bot 自主安排用 null。"
+        "for=self 是未来自己要做的事，for=账号 是提醒对象；requester 是实际请求人的账号，Bot 自主安排用 null。"
         "相对时间请结合原话和当前时刻理解；返回已保存不等于提醒已发。",
         "parameters": ScheduleArguments.model_json_schema(),
     }},
@@ -99,7 +99,7 @@ SCHEDULE_TOOLS = [
         "parameters": ScheduleListArguments.model_json_schema(),
     }},
     {"type": "function", "function": {
-        "name": "schedule_cancel", "description": "取消当前场景未完成的一次性或周期安排；requester 为实际操作者 账号，"
+        "name": "schedule_cancel", "description": "取消当前场景未完成的一次性或周期安排；requester 为实际操作者的账号，"
         "本人可取消自己创建的，管理者可取消他人的；Bot 自主取消用 null，只能取消自主安排。"
         "取消周期安排停止后续唤醒，不撤回已交给会话的过去次数。",
         "parameters": ScheduleCancelArguments.model_json_schema(),
@@ -125,7 +125,7 @@ def check_creation(settings: ScheduleSettings, *, requester: str | None, target:
         raise PermissionError("当前场景已关闭安排创建与到期执行")
     if requester is None:
         if target != "self":
-            raise PermissionError("涉及人的提醒必须填写实际请求人 账号")
+            raise PermissionError("涉及人的提醒必须填写实际请求人的账号")
         if not settings.autonomous:
             raise PermissionError("当前场景未开放 Bot 自主安排")
         return

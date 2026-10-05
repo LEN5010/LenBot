@@ -265,12 +265,12 @@ class SceneRunner:
         reaches the mind with the next batch.
         """
         if message.bot_id != self.config.bot_id:
-            raise ValueError("输入场景或 Bot 账号 与隔离实例配置不同")
+            raise ValueError("输入场景或 Bot 账号与隔离实例配置不同")
         if message.scene != self.config.scene:
             if ignore_other_scenes:
                 return {"status": "ignored", "scene": message.scene,
                         "platform_message_id": message.platform_message_id}
-            raise ValueError("输入场景或 Bot 账号 与隔离实例配置不同")
+            raise ValueError("输入场景或 Bot 账号与隔离实例配置不同")
         if message.reply_to is not None:
             if message.reply_to in self.own_ids:
                 message.mentions_bot = True
@@ -626,7 +626,7 @@ class SceneRunner:
         state = self.consumed_state()
         parts, note = None, None
         expressions = []
-        prefix = ("[宿主安静时段固定表达；模拟，未发送到 账号]\n" if self.chat.expression.send_message is None
+        prefix = ("[宿主安静时段固定表达；模拟，未发送到平台]\n" if self.chat.expression.send_message is None
                   else "[宿主安静时段固定表达]\n")
         if state.quiet_notice_until != until:
             expression = self.chat.expression.simulated_message([

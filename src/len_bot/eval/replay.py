@@ -89,7 +89,7 @@ def check_initial_database(path: Path, config: LabConfig) -> None:
             (config.bot_id, config.bot_id),
         ).fetchone()
         if mismatch is not None:
-            raise ValueError(f"Initial database message {mismatch[0]} has a different Bot 账号 from {config.bot_id}: {path}")
+            raise ValueError(f"Initial database message {mismatch[0]} has a different Bot account from {config.bot_id}: {path}")
         previous = db.execute(
             "SELECT request FROM model_calls JOIN turns ON turns.id=model_calls.turn_id "
             "WHERE turns.scene=? AND role='mind' ORDER BY model_calls.id DESC LIMIT 1", (config.scene,),

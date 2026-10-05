@@ -34,7 +34,7 @@ class CapabilityMatrix(BaseModel):
 class ScopedIdentities(BaseModel):
     """Extra owner/admin/whitelist lists that only apply to tasks or reminders.
 
-    账号 formats are checked when the candidate root config is loaded.
+    Account formats are checked when the candidate root config is loaded.
     """
     model_config = ConfigDict(strict=True, extra='forbid')
     owner: str | None

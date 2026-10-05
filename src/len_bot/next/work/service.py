@@ -90,7 +90,7 @@ class WorkTasks:
 
     def _roles(self, scene: str, requester: str) -> set[str]:
         if requester == self.config.bot_id:
-            raise PermissionError("委托与管理任务须使用实际人类 账号，不能用 Bot 账号")
+            raise PermissionError("委托与管理任务须使用实际人类账号，不能用 Bot 账号")
         settings = self.config.scenes[scene].tasks
         identities = self.config.scene_config(scene).permissions
         return roles_for(requester, owners=self.config.owners, scoped_owner=settings.owner,
@@ -133,7 +133,7 @@ class WorkTasks:
                 "workspace_discard_requested": self.records.workspace_discarded(scene, id),
                 "model_calls": len(costs), "cost": cost_summary(costs), "active_timeout_seconds": self.active_timeout(item),
                 "network": self.egress.status(scene, id),
-                "notice": "done 只表示执行正常结束；文件登记不表示已上传 账号。出网配置不等于目标连通。"}
+                "notice": "done 只表示执行正常结束；文件登记不表示已上传到平台。出网配置不等于目标连通。"}
 
     def live_snapshot(self, scene: str, id: int) -> dict:
         item = self.records.get(scene, id)
@@ -429,7 +429,7 @@ class WorkTasks:
             raise RuntimeError("任务执行器正在启动或停止，不能恢复等待中的任务")
         item = self.records.get(scene, id)
         if requester == self.config.bot_id:
-            raise PermissionError("回答者必须是实际人类 账号，不用 Bot 冒充回答者")
+            raise PermissionError("回答者必须是实际人类账号，不用 Bot 冒充回答者")
         if requester in self.config.scene_config(scene).permissions.blacklist:
             raise PermissionError('黑名单账号不能恢复等待回答的任务')
         if item.status != "waiting_input":
@@ -613,7 +613,7 @@ class WorkTasks:
         body = {"status": status, "summary": summary, "error": error, "files": files,
                 "started": finished.started, "ended": finished.ended,
                 "cost": cost_summary(self.records.call_costs(item.scene, item.id))}
-        notice = f"[任务执行结束] #{item.id}；请求人 账号 {item.requester}；{item.goal}\n" + json.dumps(body, ensure_ascii=False)
+        notice = f"[任务执行结束] #{item.id}；请求人 {item.requester}；{item.goal}\n" + json.dumps(body, ensure_ascii=False)
         if recent:
             notice += '\n最近已保存过程（预览，不证明操作成功；原文可按event读取）：\n' + json.dumps(recent, ensure_ascii=False)
         elif status == 'failed' and item.account_browser:
