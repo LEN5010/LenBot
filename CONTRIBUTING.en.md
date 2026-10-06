@@ -45,7 +45,7 @@ The runtime core is in `src/len_bot/next/`. The entry point is `len_bot.next.hos
 | `memory/` | Local memory text, index, recall and background curation |
 | `work/`, `browser/` | Background tasks (Pi containers) and browser cooperation |
 | `storage/` | Database schema and codecs |
-| `plugins/`, `builtin_plugins/` | Plugin runtime, installation and built-in plugins |
+| `plugins/` | Plugin runtime, installation and updates; business plugins live in separate repositories |
 | `plugin.py`, `plugin_testing.py`, `text_cards.py`, `image_assets.py` | Public interfaces for plugins |
 | `tools/`, `media/` | Web, skills, MCP and other tools; image and voice handling |
 | `panel/` | Panel backend and the first-run wizard |

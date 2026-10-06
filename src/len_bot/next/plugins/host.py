@@ -31,7 +31,7 @@ from ..models.client import ChatModel, ModelReply
 from ..models.request import request_model
 from ..chat.schedule_time import Cron, next_cron, parse_cron
 from ..tools.skills import Skill, load_plugin_skills
-from .manifest import BUILTIN, Manifest, discover, read_manifest, redact_values
+from .manifest import Manifest, discover, read_manifest, redact_values
 from ..storage.store import encode
 from .store import PluginStore
 
@@ -168,7 +168,7 @@ class PluginHost:
     def _load(self, record: Loaded, directories: list[Path], values: dict, data_dir: Path,
               core_tools: set[str]) -> None:
         if len(directories) != 1:
-            raise ValueError("未在内置目录和 plugins.paths 中找到" if not directories else
+            raise ValueError("未在 plugins.paths 中找到" if not directories else
                              "多个目录提供同名插件：" + "、".join(map(str, directories)))
         record.directory = directory = directories[0]
         record.manifest = manifest = read_manifest(directory)
@@ -295,6 +295,15 @@ class PluginHost:
         if self.closing or record.status not in {"loaded", "running"}:
             raise RuntimeError(f"插件 {plugin} 未处于可运行状态：{record.status}")
         return record
+
+    async def fetch_public(self, plugin: str, url: str, timeout_seconds: float, max_bytes: int) -> bytes:
+        self._active(plugin)
+        from ..tools.http_read import fetch_public
+
+        async with asyncio.timeout(timeout_seconds):
+            _, _, data = await fetch_public(url, timeout_seconds, lambda _type, _prefix: max_bytes,
+                                           fake_ip_networks=self.config.network.networks())
+        return data
 
     async def get_kv(self, plugin: str, key: str, default: JsonValue) -> JsonValue:
         return PluginKV(self._active(plugin).context.data_dir).get(key, default)
@@ -679,9 +688,8 @@ class PluginHost:
         try:
             directories = found.get(name, [])
             for directory in directories:
-                if directory.parent != BUILTIN:
-                    for cache in directory.rglob("__pycache__"):
-                        shutil.rmtree(cache)
+                for cache in directory.rglob("__pycache__"):
+                    shutil.rmtree(cache)
             self._load(record, directories, record.values, settings.data_directory / name, reserved)
             if self.started or (self.runtime is not None and self.runtime.accepting):
                 await self.start_plugin(record)

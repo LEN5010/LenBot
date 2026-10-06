@@ -37,7 +37,6 @@ const drafts = ref({}), paths = ref(null)
 const zipImport = ref(false), zipFile = ref(null), switchSource = ref(false)
 const installing = ref(false), repository = ref(''), repositoryRef = ref('')
 const catalogDirty = ref(false), updating = ref(null), updateRef = ref('')
-const recommended = ['rss_broadcast', 'group_digest']
 const snapshot = computed(() => plugins.data.value)
 
 // `?view=` picks installed or discover; `?item=` is the open plugin.
@@ -239,7 +238,6 @@ const facts = name => {
         <Panel :title="selected" :description="manifest(selected)?.description || ''" :icon="mdiPuzzleOutline">
           <template #actions>
             <StatusBadge v-bind="status(selected)" />
-            <v-chip v-if="recommended.includes(selected)">内置推荐</v-chip>
             <v-menu>
               <template #activator="{ props: menu }"><v-btn v-bind="menu" :icon="mdiDotsVertical" variant="text" size="small" aria-label="更多操作" /></template>
               <v-list density="compact">

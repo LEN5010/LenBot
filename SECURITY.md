@@ -22,7 +22,7 @@
 
 ## 范围
 
-LenBot 宿主、面板、内置插件、部署脚本和镜像配方都在范围内。第三方插件、OneBot 实现、模型服务和其他独立服务的问题，请报告给它们各自的维护者。
+LenBot 宿主、面板、插件公共接口、部署脚本和镜像配方都在范围内。第三方插件、OneBot 实现、模型服务和其他独立服务的问题，请报告给它们各自的维护者。
 
 插件和宿主运行在同一个进程里，拥有和宿主一样的权限。只安装你信任的插件，这一点不算漏洞。
 
@@ -39,4 +39,4 @@ LenBot is maintained by one person, so there is no fixed response time yet; repo
 
 Include the affected version or commit, how you run it (package, Docker or source), what happened through which entry point (panel, chat, plugin, task), what you expected, and steps to reproduce. Do not send keys, tokens, cookies, full configuration files, databases, chat logs or media. Once you have confirmed an issue, stop rather than accessing other people's data to gather more evidence.
 
-In scope: the LenBot host, panel, built-in plugins, deployment scripts and image recipes. Report problems in third-party plugins, OneBot implementations, model services or other separate services to their maintainers. Plugins run in the host process with the host's permissions; only install plugins you trust, and this by itself is not a vulnerability.
+In scope: the LenBot host, panel, public plugin interface, deployment scripts and image recipes. Report problems in third-party plugins, OneBot implementations, model services or other separate services to their maintainers. Plugins run in the host process with the host's permissions; only install plugins you trust, and this by itself is not a vulnerability.

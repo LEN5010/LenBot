@@ -50,7 +50,7 @@ function update(entry) { selected.value = null; emit('update', entry) }
     <div class="filters">
       <v-text-field v-model="search" label="搜索名称、用途、作者或能力" />
       <v-select v-model="category" :items="categories" label="分类" />
-      <v-select v-model="kind" :items="[{ title: '全部来源', value: '' }, { title: '内置', value: 'builtin' }, { title: '外部 Git', value: 'git' }]" label="来源" />
+      <v-select v-model="kind" :items="[{ title: '全部来源', value: '' }, { title: '外部 Git', value: 'git' }]" label="来源" />
     </div>
     <Fold label="目录来源">
       <v-text-field v-model="source" label="远程目录地址" hint="留空使用本版本内置目录" persistent-hint :disabled="sourceAction.busy.value || refresh.busy.value" />
@@ -79,7 +79,7 @@ function update(entry) { selected.value = null; emit('update', entry) }
       <ol class="usage"><li v-for="item in selected.usage" :key="item">{{ item }}</li></ol>
       <p>{{ selected.capabilities.join(' · ') }}</p>
       <p class="muted small">{{ selected.name }} · v{{ selected.version }} · 接口 {{ selected.interface }} · {{ selected.license }}<template v-if="selected.ref"> · 版本 {{ selected.ref }}</template></p>
-      <p>{{ selected.install === 'builtin' ? '已随 LenBot 提供，配置后选择在哪些群使用。' : '安装后填写参数，再选择在哪些群使用。' }}</p>
+      <p>安装后填写参数，再选择在哪些群使用。</p>
       <div class="inline"><a v-if="selected.repository" :href="selected.repository" target="_blank" rel="noopener noreferrer">源码仓库</a><a v-if="selected.homepage" :href="selected.homepage" target="_blank" rel="noopener noreferrer">项目说明</a></div>
     </template>
     <template v-if="selected" #actions>

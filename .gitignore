@@ -74,6 +74,7 @@ node_modules/
 
 # Local business state, personal role packages and evaluation runs
 /state/
+# Installed plugins, candidates and plugin data belong to their own repositories.
 /plugins/
 /personas/
 /data/eval/runs/

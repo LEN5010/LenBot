@@ -67,6 +67,7 @@ Scene IDs are qualified, for example `onebot:group:80001`; accounts use `onebot:
 | One model request | `await ctx.generate(prompt, role="mind", system=None)` |
 | Work | `await ctx.delegate(goal, deliverable, context="", materials=())` |
 | Time | `ctx.now()`, `ctx.timezone()` |
+| Public HTTP bytes | `await ctx.fetch_public(url, timeout_seconds=10, max_bytes=10000000)` returns raw bytes using the host public-address checks and `network.fake_ip_networks`; each redirect hop is checked, total time and decoded size are bounded |
 | Owner permission | `ctx.plugin.require_owner(ctx.scene, ctx.message.sender.uid)` |
 
 `generate` uses an explicitly configured mind or learner binding, without tools, history injection, automatic sending or changing providers on error. `delegate` requires an actual non-self triggering message; the host uses its sender's task permissions. A returned task record confirms submission, not delivery.
