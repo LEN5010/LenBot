@@ -144,7 +144,10 @@ class Native:
         if self.child is not None and self.child.poll() is None:
             return
         self.stop_orphan()
-        self.child = subprocess.Popen([self.python(), '-X', 'utf8', '-m', 'len_bot.next.launcher'], cwd=self.instance, stderr=self.log,
+        # UTF-8 mode through the environment so the host the launcher starts gets it too; on Windows a
+        # redirected stream would otherwise use the ANSI code page and fail on the first Chinese line.
+        self.child = subprocess.Popen([self.python(), '-m', 'len_bot.next.launcher'], cwd=self.instance, stderr=self.log,
+            env={**os.environ, 'PYTHONUTF8': '1'},
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0,
             start_new_session=sys.platform != 'win32')
         self.pid_file.parent.mkdir(exist_ok=True)
