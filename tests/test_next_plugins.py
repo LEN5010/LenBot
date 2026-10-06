@@ -189,6 +189,33 @@ def _copy_clock(target: Path, name: str, *, interface: int = 1) -> Path:
     return directory
 
 
+@pytest.mark.asyncio
+async def test_dependency_restore_ignores_unapplied_first_install_candidate(tmp_path, capsys):
+    from io import BytesIO
+    import zipfile
+
+    from len_bot.next.maintenance.plugin_dependencies import install
+    from len_bot.next.plugins.install import PluginInstaller
+
+    root = _root(tmp_path, {'paths': ['plugins'], 'clock': {}, 'counter': {}, 'disabled': ['counter']})
+    package = Path(__file__).parents[1] / 'developer/examples/counter'
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as archive:
+        for name in ('plugin.toml', '__init__.py'):
+            archive.writestr(name, (package / name).read_bytes())
+    installer = PluginInstaller(root)
+    await installer.prepare_zip(buffer.getvalue(), 'counter.zip', [])
+    record_before = installer.read('counter')
+    config_before = (root / 'lenbot.config.json').read_bytes()
+
+    await install(root)
+
+    assert '已配置插件：clock' in capsys.readouterr().out
+    assert installer.read('counter') == record_before
+    assert (root / 'lenbot.config.json').read_bytes() == config_before
+    assert not (installer.directory / 'counter').exists()
+
+
 def test_builtin_clock_manifest_loads_with_checked_values(tmp_path):
     manifest = read_manifest(BUILTIN / "clock")
     assert manifest.config["show_seconds"].type == "boolean"

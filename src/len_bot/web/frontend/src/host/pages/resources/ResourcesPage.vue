@@ -29,7 +29,7 @@ import StoragePoolCard from '../../components/StoragePoolCard.vue'
 const route = useRoute(), router = useRouter()
 const { scene } = useCurrentScene()
 // `?task=` is a task id, or `shared` for this scene's shared materials (the default view).
-const taskId = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(route.query.task || '') ? Number(route.query.task) : null)
+const taskId = computed(() => /^[1-9][0-9]*$/.test(route.query.task || '') ? Number(route.query.task) : null)
 const operator = computed(() => host.operator)
 const status = ref('all'), rows = ref([])
 const environment = ref('all'), since = ref(''), before = ref(''), measure = ref(false), checked = ref([])

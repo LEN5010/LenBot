@@ -68,6 +68,43 @@ def _login(client: TestClient):
     })
 
 
+@pytest.mark.asyncio
+async def test_rotating_usernames_share_one_ip_login_limit(panel_config):
+    import asyncio
+    from collections import Counter
+
+    from fastapi import FastAPI
+    import httpx
+
+    from len_bot.next.panel.auth import install_panel_auth
+    from len_bot.web.auth import clear_login_failures, LOGIN_ATTEMPT_LIMIT
+
+    app = FastAPI()
+    install_panel_auth(app, panel_config.panel, on_logout=lambda: None)
+    ip = '198.51.100.211'
+    key = f'isolated:{ip}'
+    clear_login_failures(key)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app, client=(ip, 123)),
+                                     base_url='http://test') as client:
+            responses = await asyncio.gather(*(client.post('/api/auth/login', json={
+                'username': f'unknown-user-{index}', 'password': 'wrong-password',
+            }) for index in range(40)))
+            assert Counter(response.status_code for response in responses) == {
+                401: LOGIN_ATTEMPT_LIMIT, 429: 40 - LOGIN_ATTEMPT_LIMIT,
+            }
+            assert (await client.post('/api/auth/login', json={
+                'username': panel_config.panel.username, 'password': 'synthetic-panel-password',
+            })).status_code == 429
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app, client=('198.51.100.212', 123)),
+                                     base_url='http://test') as client:
+            assert (await client.post('/api/auth/login', json={
+                'username': panel_config.panel.username, 'password': 'synthetic-panel-password',
+            })).status_code == 200
+    finally:
+        clear_login_failures(key)
+
+
 def test_unauthed_http_and_websocket_are_rejected(panel_config, panel_root):
     with TestClient(create_app(panel_config, root=panel_root)) as client:
         assert client.get("/api/panel-context").json() == {

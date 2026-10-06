@@ -24,7 +24,16 @@ def _tokens_instead_of_prices(db: sqlite3.Connection) -> None:
     upgrade_task_events(db)
 
 
-UPGRADES: dict[int, Callable[[sqlite3.Connection], None]] = {1: _tokens_instead_of_prices}
+def _qualified_schedule_targets(db: sqlite3.Connection) -> None:
+    """Format 2 to 3: remind an account in the schedule's actual platform."""
+    db.execute("UPDATE schedules SET target=substr(scene,1,instr(scene,':'))||target "
+               "WHERE target!='self' AND instr(target,':')=0")
+
+
+UPGRADES: dict[int, Callable[[sqlite3.Connection], None]] = {
+    1: _tokens_instead_of_prices,
+    2: _qualified_schedule_targets,
+}
 
 
 def migrate(path: Path) -> None:

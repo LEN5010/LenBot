@@ -9,7 +9,7 @@ from fastapi import HTTPException, status
 _ACTIVE_SESSIONS: dict[str, dict] = {}
 SESSION_TTL = 7 * 86400.0  # 7 days
 
-# Failed-login throttle: "client:username" -> recent failure timestamps.  The
+# Failed-login throttle: client identity -> recent failure timestamps.  The
 # dashboard port may be reachable beyond localhost, and PBKDF2 alone does not
 # stop an online guessing loop.
 _FAILED_LOGINS: dict[str, list[float]] = {}

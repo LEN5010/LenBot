@@ -24,7 +24,7 @@ from .schema import create_database
 from ..chat.schedule_store import ScheduleStore
 
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 
 def turn_record(row: sqlite3.Row) -> dict:
