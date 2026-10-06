@@ -19,7 +19,7 @@ const router = createRouter({
     {path:'/',redirect:{name:'host-overview'}},
     { path:'/host/chat-test', name:'host-trials', component:()=>import('../host/pages/trial/TrialPage.vue'), meta:{title:'对话测试'} },
     { path:'/host/logs', name:'host-logs', component:()=>import('../host/pages/logs/LogsPage.vue'), meta:{title:'日志',scene:route=>route.query.tab!=='system'} },
-    { path:'/host/scenes', name:'host-scenes', component:()=>import('../host/pages/scenes/ScenesPage.vue'), meta:{title:'群聊',scene:true} },
+    { path:'/host/scenes', name:'host-scenes', component:()=>import('../host/pages/scenes/ScenesPage.vue'), meta:{title:'群聊',scene:true,sceneSwitch:false} },
     {
       path:'/host/tasks',
       name:'host-tasks',
@@ -43,7 +43,7 @@ const router = createRouter({
       path:'/host/capabilities',
       name:'host-capabilities',
       component:()=>import('../host/pages/capabilities/CapabilitiesPage.vue'),
-      meta:{title:'能力',scene:route=>['tools',undefined].includes(route.query.tab)}
+      meta:{title:'能力',scene:route=>['tools',undefined].includes(route.query.tab),sceneMode:'role'}
     },
     {
       path:'/host/plugins',
@@ -61,13 +61,13 @@ const router = createRouter({
       path:'/host/system',
       name:'host-system',
       component:()=>import('../host/pages/settings/SettingsPage.vue'),
-      meta:{title:'设置',scene:route=>route.query.tab==='permissions'}
+      meta:{title:'设置'}
     },
     {
       path:'/host/persona',
       name:'host-persona',
       component:()=>import('../host/pages/persona/PersonaPage.vue'),
-      meta:{title:'角色',scene:true}
+      meta:{title:'角色',scene:true,sceneMode:'role'}
     },
     {
       path:'/login',

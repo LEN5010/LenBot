@@ -1,7 +1,17 @@
 <script setup>
 // Page frame: title, one-line description, page actions. Workbench pages
-// (list beside detail) use `wide`.
+// (list beside detail) use `wide`. Pages that show one group (or role) at a time
+// get the in-page switch under the title, from the route's `scene` rule.
+import { computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { sceneTarget, showsScene, useCurrentScene } from '../../composables/useCurrentScene.js'
+import { host } from '../store.js'
+import SceneSwitch from './SceneSwitch.vue'
 defineProps({ title: { type: String, required: true }, description: { type: String, default: '' }, wide: Boolean })
+const route = useRoute(), router = useRouter()
+const { scene } = useCurrentScene()
+const switching = computed(() => showsScene(route) && route.meta.sceneSwitch !== false && Boolean(scene.value)
+  && (host.state?.scenes.length || 0) > 1)
 </script>
 <template>
   <div class="host-page" :class="{ wide }">
@@ -9,6 +19,8 @@ defineProps({ title: { type: String, required: true }, description: { type: Stri
       <div class="host-page-title"><h1>{{ title }}</h1><p v-if="description" class="muted">{{ description }}</p></div>
       <div v-if="$slots.actions" class="host-page-actions"><slot name="actions" /></div>
     </header>
+    <SceneSwitch v-if="switching" :model-value="scene" :mode="route.meta.sceneMode || 'scene'"
+      @update:model-value="value => router.push(sceneTarget(route, value))" />
     <slot />
   </div>
 </template>
