@@ -102,7 +102,7 @@ function details(entry) {
 <template>
   <Panel title="文件" flush class="resource-browser">
     <template #actions>
-      <v-btn v-if="scope === 'shared'" size="small" variant="tonal" color="primary" :disabled="!validOperator" @click="chooseUpload">上传资料</v-btn>
+      <v-btn v-if="scope === 'shared'" size="small" variant="outlined" :disabled="!validOperator" @click="chooseUpload">上传资料</v-btn>
       <v-btn size="small" variant="text" :loading="listing.loading.value" @click="listing.reload()">刷新</v-btn>
     </template>
     <div class="browser-body">

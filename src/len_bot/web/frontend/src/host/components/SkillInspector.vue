@@ -61,8 +61,8 @@ async function remove() {
       <CodeBlock v-if="path" :text="text || '（空文件）'" />
       <LoadMore v-if="next !== null" label="继续读" :loading="reading.busy.value" @more="read(path, true)" />
       <div v-if="canMove || canDelete" class="inline">
-        <v-btn v-if="source === 'task'" variant="tonal" :loading="act.busy.value" @click="move('scene')">移到本群</v-btn>
-        <v-btn v-if="canMove" variant="tonal" :loading="act.busy.value" @click="move('shared')">{{ source === 'scene' ? '改为共享' : '移到共享' }}</v-btn>
+        <v-btn v-if="source === 'task'" variant="outlined" :loading="act.busy.value" @click="move('scene')">移到本群</v-btn>
+        <v-btn v-if="canMove" variant="outlined" :loading="act.busy.value" @click="move('shared')">{{ source === 'scene' ? '改为共享' : '移到共享' }}</v-btn>
         <v-btn v-if="canDelete" variant="text" color="error" :disabled="act.busy.value" @click="remove">删除</v-btn>
       </div>
       <ErrorNote v-if="act.error.value" title="操作没有成功" :error="act.error.value" />

@@ -155,7 +155,7 @@ async function learnNow() {
     <template #actions>
       <v-btn-toggle :model-value="filter" mandatory @update:model-value="changeFilter">
         <v-btn value="pending">待审核</v-btn><v-btn value="adopted">已采用</v-btn><v-btn value="rejected">不要的</v-btn></v-btn-toggle>
-      <v-btn v-if="learner.data.value?.enabled" variant="tonal" :loading="run.busy.value" @click="learnNow">现在学一次</v-btn>
+      <v-btn v-if="learner.data.value?.enabled" variant="outlined" :loading="run.busy.value" @click="learnNow">现在学一次</v-btn>
     </template>
     <ErrorNote v-if="review.error.value" title="没有保存成功" :error="review.error.value" />
     <ErrorNote v-if="run.error.value" title="没有开始学习" :error="run.error.value" />
@@ -187,8 +187,8 @@ async function learnNow() {
             </div>
           </div>
           <div class="inline">
-            <v-btn v-if="selectedFilter(kind) !== 'adopted'" color="primary" variant="tonal" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'adopted')">{{ kind === 'jargon' ? '保存并固定词义' : '采用' }}</v-btn>
-            <v-btn v-if="selectedFilter(kind) === 'adopted'" variant="tonal" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'adopted')">保存修改</v-btn>
+            <v-btn v-if="selectedFilter(kind) !== 'adopted'" variant="outlined" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'adopted')">{{ kind === 'jargon' ? '保存并固定词义' : '采用' }}</v-btn>
+            <v-btn v-if="selectedFilter(kind) === 'adopted'" variant="outlined" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'adopted')">保存修改</v-btn>
             <v-btn v-if="selectedFilter(kind) !== 'rejected'" variant="text" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'rejected')">{{ kind === 'jargon' ? '禁用' : '不要' }}</v-btn>
             <v-btn v-if="selectedFilter(kind) !== 'pending'" variant="text" size="small" :loading="review.busy.value" @click="decide(kind, entry, 'pending')">{{ kind === 'jargon' ? '恢复自动词义' : '放回待审核' }}</v-btn>
             <v-btn v-if="kind === 'expressions' && filter === 'adopted'" variant="text" size="small" @click="openExample(entry)">加到角色样例</v-btn>

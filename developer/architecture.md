@@ -148,6 +148,7 @@ MCP 服务的工具和插件工具走同一套发现和许可。技能是 `SKILL
 - 圆角三档：控件 6px、小块 8px、卡片 12px。
 - 按钮分四级：主要按钮 `color="primary"`，每个区域最多一个；次要按钮 `variant="outlined"`（旧页面的 `tonal` 也按次要按钮显示）；文字按钮 `variant="text"`；危险按钮 `color="error"`，只用于确认删除这类破坏性操作。
 - 输入框统一 outlined、comfortable，由 `plugins/vuetify.js` 的默认值设置，页面里不单独改。
+- 选中态统一用浅色底加粉色竖条，文字保持正文色；分段选择（`v-btn-toggle`）和页面标签一样是灰色底槽加白色选中块。标签、状态小块用中性色，不用 primary。
 - 插件参数表单由 `host/components/SchemaForm.vue` 按清单生成，不为单个插件写专用表单。
 - 首页的待处理事项在 `host/attention.js` 里汇总，顶栏的提醒数字和首页列表共用这一份。
 

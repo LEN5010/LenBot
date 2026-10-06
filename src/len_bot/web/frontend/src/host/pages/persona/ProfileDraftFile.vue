@@ -42,7 +42,7 @@ async function download() {
       <p class="muted small">草稿只包含这一页的设定和样例。载入会替换当前表单，保存后才生效；整个角色搬家请用导入导出里的 ZIP。</p>
       <v-file-input v-model="file" label="角色草稿 JSON" accept="application/json,.json" prepend-icon="" :disabled="disabled || action.busy.value" />
       <div class="inline">
-        <v-btn variant="tonal" :disabled="!file || disabled || action.busy.value" @click="load">载入到表单</v-btn>
+        <v-btn variant="outlined" :disabled="!file || disabled || action.busy.value" @click="load">载入到表单</v-btn>
         <v-btn variant="text" :disabled="disabled || action.busy.value" @click="download">生成当前草稿文件</v-btn>
         <a v-if="downloadUrl" :href="downloadUrl" download="persona-profile-draft.json">下载草稿 JSON</a>
       </div>

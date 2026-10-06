@@ -31,7 +31,7 @@ async function submit(restart = false) {
     <template #footer>
       <span v-if="dirty && problem" class="problem hint">{{ problem }}</span>
       <span v-else class="muted hint">{{ dirty ? '有未保存的修改' : '' }}</span>
-      <v-btn v-if="restart" type="button" variant="tonal" :disabled="!dirty || saving || Boolean(problem)" @click="submit(true)">保存并重启</v-btn>
+      <v-btn v-if="restart" type="button" variant="outlined" :disabled="!dirty || saving || Boolean(problem)" @click="submit(true)">保存并重启</v-btn>
       <v-btn type="submit" color="primary" :loading="saving" :disabled="!dirty || Boolean(problem)">{{ saveLabel }}</v-btn>
     </template>
   </Panel>

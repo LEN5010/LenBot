@@ -27,7 +27,7 @@ function created(task) {
 <template>
   <slot :select="select" />
   <Panel v-if="selections.length" :title="`下一个任务的资料 · ${selections.length}`" description="可以继续选择本群的其他文件，在新任务里还能改文件名。">
-    <template #actions><v-btn color="primary" variant="tonal" @click="creating = true">带这些资料新建任务</v-btn></template>
+    <template #actions><v-btn variant="outlined" @click="creating = true">带这些资料新建任务</v-btn></template>
     <ObjectList divided>
       <ObjectRow v-for="(item, index) in selections" :key="index" :title="item.name" :subtitle="resourceLabel(item.reference)">
         <template #actions><v-btn size="small" variant="text" @click="selections.splice(index, 1)">移除</v-btn></template>

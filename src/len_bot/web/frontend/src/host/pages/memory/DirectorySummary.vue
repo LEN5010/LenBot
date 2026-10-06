@@ -33,7 +33,7 @@ async function regenerate() {
 <template>
   <Panel v-if="!(data && !data.enabled && data.summary.abstract === null)" :title="path === '' && scope === 'scene' ? '本群画像' : '这个目录的摘要'"
     :description="data?.enabled ? '重新生成会调用记忆整理模型，会消耗 token。' : ''">
-    <template v-if="data?.enabled" #actions><v-btn size="small" variant="tonal" :loading="generate.busy.value" @click="regenerate">重新生成</v-btn></template>
+    <template v-if="data?.enabled" #actions><v-btn size="small" variant="outlined" :loading="generate.busy.value" @click="regenerate">重新生成</v-btn></template>
     <ErrorNote v-if="generate.error.value" title="没有生成成功" :error="generate.error.value" />
     <ResourceState :resource="summary" error-title="读取摘要失败">
       <p v-if="data.summary.abstract === null" class="muted">还没有摘要。</p>

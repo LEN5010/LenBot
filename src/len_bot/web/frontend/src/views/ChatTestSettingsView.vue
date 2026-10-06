@@ -21,7 +21,7 @@ const tags = list => list.length ? list.join('、') : '无'
 
 <template>
   <HostPage title="场景与角色" description="这个测试实例正在用的场景和角色。场景补充可以在这里改，保存后重启生效。">
-    <template #actions><v-btn variant="tonal" :loading="snapshot.loading.value" @click="snapshot.reload()">重新读取</v-btn></template>
+    <template #actions><v-btn variant="outlined" :loading="snapshot.loading.value" @click="snapshot.reload()">重新读取</v-btn></template>
     <ScenePersonaEditor />
     <ResourceState :resource="snapshot" error-title="读取场景与角色失败" v-slot="{ data }">
       <Panel title="当前场景">

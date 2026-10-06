@@ -23,7 +23,7 @@ async function stopTrial() {
     <Panel :title="`试聊：${trial.persona}`" description="用的是开始试聊那一刻的设定，之后再改不会影响这次试聊。">
       <template #actions>
         <v-btn variant="text" :to="{ name: 'host-trials', query: { trial: trial.id } }">在对话测试页打开</v-btn>
-        <v-btn variant="tonal" :loading="stop.busy.value" @click="stopTrial">结束试聊</v-btn>
+        <v-btn variant="outlined" :loading="stop.busy.value" @click="stopTrial">结束试聊</v-btn>
       </template>
       <ErrorNote v-if="stop.error.value" title="没有结束成功" :error="stop.error.value" />
     </Panel>

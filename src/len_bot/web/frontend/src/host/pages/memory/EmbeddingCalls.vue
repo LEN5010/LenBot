@@ -30,7 +30,7 @@ async function detail(id) {
   <Panel title="向量调用记录">
     <template #actions>
       <v-btn-toggle v-model="scope" mandatory><v-btn value="scene">本群</v-btn><v-btn value="public">公共</v-btn></v-btn-toggle>
-      <v-btn size="small" variant="tonal" :loading="page.loading.value" @click="page.reload()">读取</v-btn>
+      <v-btn size="small" variant="outlined" :loading="page.loading.value" @click="page.reload()">读取</v-btn>
     </template>
     <ErrorNote v-if="page.error.value" title="读取向量调用失败" :error="page.error.value" />
     <ErrorNote v-if="reading.error.value" title="读取详情失败" :error="reading.error.value" />
