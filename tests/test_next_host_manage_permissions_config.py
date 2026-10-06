@@ -89,7 +89,7 @@ async def test_updates_preserve_unrelated_configuration_and_pending_panel_change
     async with running(tmp_path) as runtime:
         manager = runtime.management
         selected = await manager.execute('onebot:group:80001', arguments('status', scene='onebot:group:80001'))
-        assert selected['scenes'] == ['onebot:group:80001']
+        assert selected['scenes'] == [{'scene': 'onebot:group:80001', 'title': None, 'chat': 'on'}]
         app = create_app(runtime.config, runtime, root=tmp_path)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as client:
             login = await client.post('/api/auth/login', json={'username': 'operator', 'password': 'fixture-password'})
@@ -180,3 +180,26 @@ def test_removed_configuration_requires_explicit_offline_cleanup(tmp_path, remov
     (tmp_path / 'lenbot.config.json').write_text(json.dumps(source))
     with pytest.raises(ValueError, match=removed):
         load_host_config(tmp_path)
+
+
+def test_chat_switch_arguments_name_one_target_state():
+    assert arguments('chat', scene='onebot:group:80002', enabled=False).enabled is False
+    with pytest.raises(ValueError):
+        arguments('chat', scene='onebot:group:80002')
+    with pytest.raises(ValueError):
+        arguments('status', enabled=True)
+    with pytest.raises(ValueError):
+        arguments('chat', section='scene', enabled=True)
+
+
+@pytest.mark.asyncio
+async def test_status_reports_each_scene_chat_switch(tmp_path):
+    instance(tmp_path)
+    async with running(tmp_path) as runtime:
+        runtime.runners['onebot:group:80002'].set_paused(True)
+        status = await runtime.management.execute('onebot:group:80001', arguments('status'))
+        assert {row['scene']: row['chat'] for row in status['scenes']} == {
+            'onebot:group:80001': 'on', 'onebot:group:80002': 'off'}
+        with pytest.raises(PermissionError):
+            await runtime.management.execute('onebot:group:80001', HostManageArguments.model_validate(
+                {'action': 'chat', 'requester': 'onebot:70004', 'scene': 'onebot:group:80002', 'enabled': True}))

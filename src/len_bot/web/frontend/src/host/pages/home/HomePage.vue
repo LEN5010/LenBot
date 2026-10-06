@@ -42,7 +42,7 @@ async function disconnectQQ() {
   await readHostState()
 }
 
-// One switch per group: off means messages are still saved but the Bot does not reply.
+// One switch per group: off means messages are still saved but neither the Bot nor its plugins speak there.
 const switching = reactive({})
 const switchError = useAction()
 async function setChat(scene, enabled) {
@@ -178,7 +178,7 @@ const connectionNotes = {
             <RouterLink :to="{ name: 'host-scenes', query: { scene: item.scene } }" class="scene-link">
               <SceneAvatar :scene="item.scene" :size="40" />
               <span class="scene-text"><strong>{{ sceneName(item.scene) }}</strong>
-                <span>{{ item.chat_enabled ? `${sceneNumber(item.scene)} · ${item.persona.name}` : '聊天已关闭，只记录消息' }}</span></span>
+                <span>{{ item.chat_enabled ? `${sceneNumber(item.scene)} · ${item.persona.name}` : '聊天已关闭，Bot 和插件都不发言，只记录消息' }}</span></span>
             </RouterLink>
             <v-switch :model-value="item.chat_enabled" color="primary" density="compact" hide-details inset
               :aria-label="`${sceneName(item.scene)} 聊天`" :loading="switching[item.scene]"

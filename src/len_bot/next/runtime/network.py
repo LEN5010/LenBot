@@ -11,6 +11,7 @@ from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .scene_titles import SceneTitles
 from ..chat.attention import SceneRunner
 from ..media.audio import AudioService
 from ..chat.session import Chat
@@ -105,6 +106,7 @@ class NetworkRuntime:
         self.retention = Retention(self)
         self.config_write_lock = asyncio.Lock()
         self.management: HostManagement | None = None
+        self.scene_titles = SceneTitles(self)
         self.accepting = config.onebot is None
         self.storage_error: sqlite3.Error | None = None
         self.platform = (None if config.onebot is None else OneBot(
@@ -268,7 +270,7 @@ class NetworkRuntime:
                         "platform_message_id": message.platform_message_id})
             return
         blocked = message.sender.uid in runner.config.permissions.blacklist
-        matched = (None if self.plugins is None or blocked else
+        matched = (None if self.plugins is None or blocked or runner.state.paused else
                    self.plugins.match_message(message, tuple(runner.settings.other_bot_ids)))
         claim = (None if matched is None else
                  (matched.record.name, self.plugins.message_report(message, matched, "已接管，处理尚未结束。")))

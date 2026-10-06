@@ -28,6 +28,7 @@ from ...persona.profile import Persona
 from ...models.asr import AudioSettings
 from ...runtime.operations import LoggingSettings
 from ...models.limits import ResourceLimits
+from ...work.egress_policy import NetworkSettings
 from ...runtime.retention import RetentionSettings
 from ...models.pricing import ModelPrice
 from ...tools.web_search import WebSearchSettings
@@ -91,6 +92,12 @@ class WebReadChange(BaseModel):
     model_config = STRICT
 
     web_read: WebReadSettings | None
+
+
+class NetworkChange(BaseModel):
+    model_config = STRICT
+
+    network: NetworkSettings
 
 
 class WebSearchChange(BaseModel):
@@ -262,6 +269,7 @@ def _project(config: HostConfig) -> dict:
         },
         "web_read": None if config.web_read is None else config.web_read.model_dump(mode="json"),
         "web_search": None if config.web_search is None else config.web_search.model_dump(mode="json"),
+        "network": config.network.model_dump(mode="json"),
         "memory": _memory_settings(config),
         "worker": None if config.worker is None else config.worker.model_dump(mode="json"),
     }
@@ -289,6 +297,7 @@ def _snapshot(running: HostConfig, saved: HostConfig) -> dict:
             },
             "web_read": running.web_read != saved.web_read,
             "web_search": running.web_search != saved.web_search,
+            "network": running.network != saved.network,
             "memory": running.memory != saved.memory,
             "worker": running.worker != saved.worker,
         },
@@ -443,6 +452,11 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
         return await save(lambda source, _: source.update(web_read=(
             None if change.web_read is None else change.web_read.model_dump(mode="json")
         )))
+
+    @app.put("/api/host/settings/network")
+    async def put_network(request: Request, _: str = Depends(user)):
+        change: NetworkChange = await _body(request, NetworkChange)
+        return await save(lambda source, _: source.update(network=change.network.model_dump(mode="json")))
 
     @app.put("/api/host/settings/worker")
     async def put_worker(request: Request, _: str = Depends(user)):

@@ -106,7 +106,7 @@ default = "live"
 | 主动交给大脑 | `await ctx.emit_event(text)`，与直接发送相反，它会唤醒大脑 |
 | 时间 | `ctx.now()` 和 `ctx.timezone()`，明确场景时区 |
 
-`PluginContext` 用于 `self.ctx`、start／stop 和后台入口；发送、读消息、记忆、事件方法要显式传启用场景，例如 `await self.ctx.send(scene, text)`。`self.ctx.scenes` 列出启用场景，`data_dir` 是该插件独立数据目录。KV 只按插件隔离，需要分群时把 `scene` 放进 key。
+`PluginContext` 用于 `self.ctx`、start／stop 和后台入口；发送、读消息、记忆、事件方法要显式传启用场景，例如 `await self.ctx.send(scene, text)`。`self.ctx.scenes` 列出启用本插件且聊天开着的场景；管理员在面板关闭某个群的聊天后，该群不再出现在这里，插件指令和通知也不再分发到该群，向它发送或发事件会报错。`data_dir` 是该插件独立数据目录。KV 只按插件隔离，需要分群时把 `scene` 放进 key。
 
 发送返回 `Sent`：区分 sent、failed、unconfirmed、simulated、partial；只有 sent 是平台确认，客户端体验仍需实际观察。
 

@@ -12,7 +12,7 @@ const sections = {
   max_steps: '连接', turn_timeout_seconds: '连接', text_delivery: '连接', max_model_requests: '连接',
   panel: '面板账号', permissions: '权限', models: '模型', limits: '花费上限', retention: '数据保留',
   compaction: '上下文与媒体', images: '上下文与媒体', audio: '上下文与媒体', logging: '上下文与媒体',
-  web_read: '网页读取', web_search: '网页搜索', memory: '记忆', worker: '任务执行环境',
+  web_read: '网页读取', web_search: '网页搜索', network: '代理假 IP 网段', memory: '记忆', worker: '任务执行环境',
   account_browser: '账号浏览器', plugins: '插件', mcp: 'MCP',
 }
 

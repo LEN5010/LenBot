@@ -159,6 +159,7 @@ class TaskExecution:
                     compaction_reserve_tokens=self.settings.compaction_reserve_tokens,
                     compaction_keep_recent_tokens=self.settings.compaction_keep_recent_tokens,
                     egress_settings=self.settings.egress,
+                    fake_ip_networks=self.config.network.networks(),
                     egress_bytes_per_second=(
                         self.settings.egress.bytes_per_second
                         if self.config.scenes[item.scene].tasks.egress_bytes_per_second is None

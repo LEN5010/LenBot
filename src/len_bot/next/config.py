@@ -12,6 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from .work.egress_policy import NetworkSettings
 from .browser.client import AccountBrowserSettings
 from .models.asr import AudioSettings
 from .runtime.identity import IdentitySettings, combine_identities
@@ -70,6 +71,7 @@ class SharedConfig(BaseModel):
     turn_timeout_seconds: float = Field(default=90.0, gt=0, allow_inf_nan=False)
     compaction: Compaction = Field(default_factory=Compaction)
     text_delivery: TextDelivery = Field(default_factory=TextDelivery)
+    network: NetworkSettings = Field(default_factory=NetworkSettings)
     web_read: WebReadSettings | None = None
     web_search: WebSearchSettings | None = None
     memory: MemorySettings | None = None

@@ -10,7 +10,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
-from ..work.egress_policy import blocked_address_reason
+from ..work.egress_policy import blocked_address_reason, blocked_resolved_reason
 
 
 MAX_REDIRECTS = 5
@@ -44,7 +44,7 @@ def _target(url: str) -> tuple[str, str, int, str, str]:
     return clean_url, ascii_host, port, host_header, parts.scheme
 
 
-async def _numeric_address(host: str, port: int) -> str:
+async def _numeric_address(host: str, port: int, fake_ip_networks: tuple) -> str:
     try:
         address = str(ipaddress.ip_address(host))
     except ValueError:
@@ -54,7 +54,9 @@ async def _numeric_address(host: str, port: int) -> str:
         if not answers:
             raise OSError(f"HTTP read DNS returned no address for {host}")
         address = answers[0][4][0]
-    reason = blocked_address_reason(address)
+        reason = blocked_resolved_reason(address, fake_ip_networks)
+    else:
+        reason = blocked_address_reason(address)
     if reason is not None:
         raise ValueError(f"HTTP read destination {address} blocked: {reason}")
     return address
@@ -70,12 +72,13 @@ async def _error_fragment(response: httpx.Response) -> str:
 
 
 async def fetch_public(url: str, timeout_seconds: float,
-                       byte_limit: Callable[[str, bytes], int]) -> tuple[str, str, bytes]:
+                       byte_limit: Callable[[str, bytes], int], *,
+                       fake_ip_networks: tuple) -> tuple[str, str, bytes]:
     """GET once per hop with checked first address, preserving original Host and TLS name."""
     current = url
     for redirect in range(MAX_REDIRECTS + 1):
         current, host, port, host_header, scheme = _target(current)
-        address = await _numeric_address(host, port)
+        address = await _numeric_address(host, port, fake_ip_networks)
         numeric_host = f"[{address}]" if ":" in address else address
         authority = numeric_host if port == (443 if scheme == "https" else 80) else f"{numeric_host}:{port}"
         parts = urlsplit(current)

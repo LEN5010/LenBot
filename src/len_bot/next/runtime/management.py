@@ -194,11 +194,18 @@ class HostManagement:
                 if args.action == 'restart':
                     self.lifecycle.require_restart()
                     return {'accepted': True, 'scope': 'host', 'restart_after': 'current_turn', 'pending': pending}
-                return {'sections': SECTIONS, 'scenes': scenes,
+                titles, title_errors = await self.runtime.scene_titles.read()
+                scene_rows = [{'scene': name, 'title': titles.get(name),
+                               'chat': 'off' if self.runtime.runners[name].state.paused else 'on',
+                               **({'title_error': title_errors[name]} if name in title_errors else {})}
+                              for name in scenes]
+                return {'sections': SECTIONS, 'scenes': scene_rows,
                         'plugins': [] if self.running.plugins is None else list(self.running.plugins.configured),
                         'model_roles': [role for role in ('mind', 'vision', 'memory', 'learner', 'worker', 'asr')
                                         if getattr(self.running.models.roles, role) is not None],
                         'pending': pending, 'restartable': self.lifecycle.restartable and self.lifecycle.shutdown is not None}
+        if args.action == 'chat':
+            return await self._chat(scene, args)
         if args.section == 'plugin':
             if args.scene is not None:
                 raise ValueError('插件全局参数不接受 scene；选群请使用 scene_plugins')
@@ -306,6 +313,27 @@ class HostManagement:
                 await self.plugins.apply(name, saved)
             except Exception as error:
                 raise RuntimeError(f'配置已保存；插件 {name} 应用失败：{type(error).__name__}: {error}') from error
+
+    async def _chat(self, scene: str, args: HostManageArguments) -> dict:
+        target = scene if args.scene is None else args.scene
+        if target not in self.runtime.runners:
+            raise ValueError(f'运行中没有场景 {target}')
+        if not self.runtime.accepting:
+            raise RuntimeError('宿主没有在运行，聊天开关未改变')
+        runner = self.runtime.runners[target]
+        titles, _ = await self.runtime.scene_titles.read()
+        result = {'scene': target, 'title': titles.get(target)}
+        if target == scene:
+            # This turn holds the scene's execution and saves its attention state at the end,
+            # so the switch for the current scene is written right after the turn.
+            if args.enabled:
+                return {**result, 'chat': 'on', 'changed': False}
+            return {**result, 'chat': 'off', 'changed': True, 'applies': 'after_current_turn'}
+        # Waits for a running turn there so its saved attention state cannot overwrite the switch.
+        async with runner.execution:
+            before = runner.state.paused
+            state = runner.set_paused(not args.enabled)
+        return {**result, 'chat': 'off' if state['paused'] else 'on', 'changed': before != state['paused']}
 
     async def finish_turn(self) -> None:
         await self.lifecycle.restart()

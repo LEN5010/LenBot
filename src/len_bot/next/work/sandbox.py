@@ -322,6 +322,7 @@ class DockerSandbox:
 
     async def spawn_egress_bridge(
         self, sandbox: SandboxHandle, *, settings: EgressSettings,
+        fake_ip_networks: tuple,
         bytes_per_second: int,
         before_bytes: Callable[[int, str, int], None],
         on_connection: Callable[[dict], None],
@@ -341,6 +342,7 @@ class DockerSandbox:
             command, cwd=sandbox.workspace, env=_docker_environment(),
             stderr_path=stderr_path, max_connections=settings.max_connections,
             connect_timeout_seconds=settings.connect_timeout_seconds,
+            fake_ip_networks=fake_ip_networks,
             bytes_per_second=bytes_per_second, before_bytes=before_bytes,
             on_connection=on_connection, on_bytes=on_bytes,
         )

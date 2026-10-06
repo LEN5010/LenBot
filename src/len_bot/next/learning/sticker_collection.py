@@ -188,6 +188,7 @@ class StickerCollector:
                             _, _, data = await fetch_public(
                                 url, self.config.images.timeout_seconds,
                                 lambda _type, _prefix: MAX_IMAGE_BYTES,
+                                fake_ip_networks=self.config.network.networks(),
                             )
                             pixels_source = 'public_url'
                         mime_type, width, height, animated = await asyncio.to_thread(inspect_image, data)
