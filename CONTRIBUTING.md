@@ -2,7 +2,7 @@
 
 [English](CONTRIBUTING.en.md)
 
-写代码、测试、文档和提交的约束统一写在 [AGENTS.md](AGENTS.md)，人和工具都按它来。只写插件的话不用读这里，从[插件开发](developer/README.md)或[插件模板](https://github.com/lendevs/lenbot-plugin-template)开始就行。
+只写插件的话不用读这里，从[插件开发](developer/README.md)或[插件模板](https://github.com/lendevs/lenbot-plugin-template)开始就行。
 
 ## 本机开发
 
@@ -66,6 +66,14 @@ cd /tmp/lenbot-test && uv run --project /path/to/LenBot --no-sync len-bot
 
 维护命令统一用 `python -m len_bot.next.maintenance.<模块>` 调用。包内直接从具体模块导入，`__init__.py` 不集中重导出。
 
+## 写代码
+
+- 只解决要解决的问题。不吞异常返回默认值，不猜字段，不为类型已经排除的情况加检查；模型或服务调用失败时，不自动换模型、换服务或改参数重试。
+- 外部数据（平台消息、模型和服务的响应、配置文件）在入口解析一次，解析失败直接报错，错误里带上原始片段。
+- 异常只在一轮对话、一次工具或插件调用、一个任务的边界捕获，记录原文后结束这一轮；工具的错误原文交还给模型。
+- 请求归属、指代、谁在回应谁这类语境判断交给模型，宿主只保存真实身份和执行需要的状态。新增数据表、状态或层级时，在 PR 里写清它解决什么问题。
+- 运行参数只来自根目录的 `lenbot.config.json`，运行中由面板保存；不加环境变量、dotenv、命令行参数或数据库里的覆盖项。
+
 ## 测试
 
 ```sh
@@ -73,9 +81,9 @@ uv run --no-sync pytest -q
 uv run --no-sync python -m compileall -q src/len_bot
 ```
 
-测试只覆盖外部协议边界、数据迁移、权限和配置校验，具体范围见 [AGENTS.md](AGENTS.md#测试与报告)。
+测试只覆盖外部协议边界（OneBot、Pi RPC、模型与记忆服务的响应解析）、数据迁移、权限和配置校验，样本用脱敏后的真实数据。不 mock 调用过程，不测私有函数，不给提示词做快照。
 
-修改提示词或角色表达时，用[表达回放](examples/replay/)对照改动前后的回复。发现坏回复，先把情境写成回放用例，再改提示词。
+修改提示词或角色表达时，用[表达回放](examples/replay/)对照改动前后的回复。发现坏回复，先把情境写成回放用例，再改提示词，不靠在提示词里堆禁令解决。通用情境写进 `examples/replay/`，来自真实群聊的用例只留在本机，不提交。
 
 ## 数据格式
 
@@ -96,6 +104,8 @@ uv run --no-sync python scripts/build_release.py /tmp/lenbot-release
 - 问题和改动分别用[缺陷模板](.github/ISSUE_TEMPLATE/bug.md)和 [PR 模板](.github/PULL_REQUEST_TEMPLATE.md)。
 - 提交前跑 `git diff --check`。真实配置、数据库、凭据、个人角色和构建产物都不要提交。
 - 提交说明写清行为变化、核对了什么、还有什么没确认。
+- 行为或接口有变化时，同步更新 README、`developer/` 或 `deploy/` 里对应的说明。
+- 作者只写人。提交信息和 PR 里不加工具或模型的署名，例如指向机器身份的 `Co-Authored-By:`、`Generated with …`。
 
 ## 许可证
 
