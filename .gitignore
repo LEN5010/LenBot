@@ -90,3 +90,8 @@ node_modules/
 /examples/replay/lenbot.config.json
 /examples/replay/chat.sqlite3*
 /examples/replay/runs/
+
+# Site dependencies and build output
+website/node_modules/
+website/.vitepress/dist/
+website/.vitepress/cache/

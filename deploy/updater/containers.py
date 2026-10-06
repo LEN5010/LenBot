@@ -86,7 +86,8 @@ class Containers:
             for name, settings in original['NetworkSettings']['Networks'].items()}}
         host_config = copy.deepcopy(original['HostConfig'])
         volume = self.deployment['project'] + '-python-' + manifest['version']
-        for mount in host_config['Mounts']:
+        # Engines report compose volumes under Mounts or only under Binds; both lists may be absent.
+        for mount in host_config.get('Mounts') or []:
             if mount['Target'] == '/opt/lenbot/.venv':
                 mount['Source'] = volume
         for index, bind in enumerate(host_config['Binds'] or []):

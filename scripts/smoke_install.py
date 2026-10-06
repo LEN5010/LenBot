@@ -126,7 +126,7 @@ def smoke_package(artifacts: Path, work: Path) -> dict:
     panel_port = free_port()
     launch = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(root / 'run.ps1')] if sys.platform == 'win32' else [str(root / 'run')]
     process = subprocess.Popen(launch, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               text=True, start_new_session=sys.platform != 'win32',
+                               text=True, encoding='utf-8', errors='replace', start_new_session=sys.platform != 'win32',
                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0)
     output = Output(process.stdout)
     result = {'package': bundle.name, 'root': str(root)}
