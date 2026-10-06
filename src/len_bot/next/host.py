@@ -5,6 +5,7 @@ from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from pathlib import Path
 import signal
+from .runtime.signals import install_stop
 import traceback
 
 import uvicorn
@@ -73,9 +74,7 @@ async def run_with_panel(runtime: NetworkRuntime, server: HostPanelServer, lifec
             runtime._status("failed")
             runtime._emit({"type": "runtime", "status": "failed", "error": runtime.last_runtime_error})
 
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, lifecycle.stop)
+    remove_signals = install_stop(lifecycle.stop)
     tasks = [asyncio.create_task(run_runtime()), asyncio.create_task(serve())]
     errors: list[BaseException] = []
     try:
@@ -91,15 +90,14 @@ async def run_with_panel(runtime: NetworkRuntime, server: HostPanelServer, lifec
             raise BaseExceptionGroup("Multi-scene host stopped with errors", errors)
     finally:
         lifecycle.shutdown = None
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.remove_signal_handler(sig)
+        remove_signals()
 
 
-async def run(lifecycle: HostLifecycle) -> None:
+async def run(lifecycle: HostLifecycle, *, container: bool = False) -> None:
     root = Path.cwd()
     if not (root / 'lenbot.config.json').exists():
         from .panel.setup import run_setup
-        await run_setup(root)
+        await run_setup(root, container=container)
     config = load_host_config(root)
     personas = {path: load_persona(path)
                 for path in dict.fromkeys(settings.persona for settings in config.scenes.values())}
@@ -200,15 +198,12 @@ async def run(lifecycle: HostLifecycle) -> None:
                                          reply_effects=reply_effects, plugins=plugins, mcp=mcp, lifecycle=lifecycle)
                 if config.panel is None:
                     lifecycle.shutdown = runtime.stop
-                    loop = asyncio.get_running_loop()
-                    for sig in (signal.SIGINT, signal.SIGTERM):
-                        loop.add_signal_handler(sig, lifecycle.stop)
+                    remove_signals = install_stop(lifecycle.stop)
                     try:
                         await runtime.run(manage_signals=False)
                     finally:
                         lifecycle.shutdown = None
-                        for sig in (signal.SIGINT, signal.SIGTERM):
-                            loop.remove_signal_handler(sig)
+                        remove_signals()
                 else:
                     app = create_app(config, runtime, root=Path.cwd(), lifecycle=lifecycle)
                     server = HostPanelServer(uvicorn.Config(
@@ -220,10 +215,10 @@ async def run(lifecycle: HostLifecycle) -> None:
 
 
 
-def main(*, restartable: bool = False) -> None:
+def main(*, restartable: bool = False, container: bool = False) -> None:
     lifecycle = HostLifecycle(restartable=restartable)
     with instance_lock(Path.cwd()):
-        asyncio.run(run(lifecycle))
+        asyncio.run(run(lifecycle, container=container))
     if lifecycle.intent == 'restart':
         raise SystemExit(RESTART_EXIT)
 

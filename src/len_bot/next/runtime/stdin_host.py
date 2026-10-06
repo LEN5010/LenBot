@@ -8,6 +8,7 @@ import sqlite3
 from typing import TYPE_CHECKING
 
 from ..platform.stdin_input import input_lines, parse_input
+from .signals import install_stop
 
 if TYPE_CHECKING:
     from .network import NetworkRuntime
@@ -19,13 +20,11 @@ async def run_stdin(runtime: NetworkRuntime, *, manage_signals: bool) -> None:
         return
     runtime._status('starting')
     loop = asyncio.get_running_loop()
-    installed: list[signal.Signals] = []
+    remove_signals = lambda: None
     original: BaseException | None = None
     try:
         if manage_signals:
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, runtime.stop)
-                installed.append(sig)
+            remove_signals = install_stop(runtime.stop)
         if runtime.tasks is not None:
             await runtime.tasks.recover()
             await runtime.tasks.start()
@@ -97,8 +96,7 @@ async def run_stdin(runtime: NetworkRuntime, *, manage_signals: bool) -> None:
             except BaseException as error:
                 error.add_note(f'stdin host cleanup: {name}')
                 failures.append(error)
-        for sig in installed:
-            loop.remove_signal_handler(sig)
+        remove_signals()
         runtime._status('stopped')
         try:
             runtime._emit({'type': 'runtime', 'status': 'stopped'})

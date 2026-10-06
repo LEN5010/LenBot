@@ -49,7 +49,7 @@ const router = createRouter({
       path:'/host/plugins',
       name:'host-plugins',
       component:()=>import('../host/pages/capabilities/PluginsPage.vue'),
-      meta:{title:'插件',scene:true}
+      meta:{title:'插件'}
     },
     {
       path:'/host/models',

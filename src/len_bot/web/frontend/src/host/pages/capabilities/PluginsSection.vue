@@ -27,7 +27,6 @@ import AdvancedFields from '../../ui/AdvancedFields.vue'
 import DevOnly from '../../ui/DevOnly.vue'
 import PluginCatalog from './PluginCatalog.vue'
 
-const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
 const route = useRoute(), router = useRouter()
 const plugins = useResource(() => pluginsApi.read())
@@ -50,7 +49,10 @@ const running = computed(() => Object.fromEntries((snapshot.value?.running.plugi
 const names = computed(() => snapshot.value ? [...new Set([...Object.keys(snapshot.value.available),
   ...Object.keys(snapshot.value.saved.plugins), ...Object.keys(running.value)])].sort() : [])
 const loaded = computed(() => Object.keys(snapshot.value?.saved.plugins || {}).sort())
-const sceneSaved = computed(() => snapshot.value?.scenes[props.scene]?.saved || [])
+// Running scenes; a scene missing from the saved config cannot be changed here.
+const sceneList = computed(() => Object.keys(snapshot.value?.scenes || {}))
+const sceneSaved = scene => snapshot.value?.scenes[scene]?.saved || []
+const usedIn = name => sceneList.value.filter(scene => sceneSaved(scene).includes(name))
 
 function manifest(name) {
   const entries = snapshot.value.available[name] || []
@@ -115,9 +117,15 @@ async function send(part, path, body) {
 }
 const savePlugin = name => send(name, `/api/host/plugins/${encodeURIComponent(name)}`,
   () => drafts.value[name].enabled ? { enabled: true, config: configBody(name) } : { enabled: false })
-// Turning a plugin on or off for this scene applies at once (the plugin is reloaded, chat keeps running).
-const toggleScene = (name, on) => send('scene', `/api/host/scenes/${encodeURIComponent(props.scene)}/plugins`,
-  { plugins: on ? [...sceneSaved.value, name] : sceneSaved.value.filter(item => item !== name) })
+// Turning a plugin on or off for one scene applies at once (the plugin is reloaded, chat keeps running).
+const switching = ref('')
+async function toggleScene(scene, name, on) {
+  switching.value = scene
+  try {
+    await send('scene', `/api/host/scenes/${encodeURIComponent(scene)}/plugins`,
+      { plugins: on ? [...sceneSaved(scene), name] : sceneSaved(scene).filter(item => item !== name) })
+  } finally { switching.value = '' }
+}
 const savePaths = () => send('paths', '/api/host/plugin-paths', {
   paths: paths.value.paths.split('\n').map(item => item.trim()).filter(Boolean), data_directory: paths.value.data_directory.trim(),
 })
@@ -208,7 +216,7 @@ const facts = name => {
                 :subtitle="manifest(name)?.description || ''">
                 <template #prepend><span class="plugin-icon" :class="status(name).tone || status(name).value"><v-icon :icon="mdiPuzzleOutline" size="18" /></span></template>
                 <template #meta>
-                  <v-icon v-if="sceneSaved.includes(name)" :icon="mdiCheck" size="16" color="primary" :aria-label="`在 ${sceneName(scene)} 使用`" />
+                  <span v-if="usedIn(name).length" class="small muted">{{ usedIn(name).length }} 个群</span>
                   <StatusBadge dot v-bind="status(name)" />
                 </template>
               </ObjectRow>
@@ -261,14 +269,24 @@ const facts = name => {
             <a v-if="manifest(selected)?.homepage" :href="manifest(selected).homepage" target="_blank" rel="noopener noreferrer">使用说明</a>
           </div>
           <ErrorNote v-if="errorOf(selected)" title="操作没有完成" :error="errorOf(selected)" />
-          <ErrorNote v-if="errorOf('scene')" title="本群设置没有保存" :error="errorOf('scene')" />
+          <ErrorNote v-if="errorOf('scene')" title="群的启用设置没有保存" :error="errorOf('scene')" />
           <ErrorNote v-if="running[selected]?.error" title="插件没有启动成功" :error="running[selected].error" @retry="manage(selected, 'reload')" />
           <ErrorNote v-for="entry in (snapshot.available[selected] || []).filter(item => item.error)" :key="entry.directory"
             title="插件说明文件读不了" :error="entry.error" />
           <v-alert v-if="(snapshot.available[selected] || []).length > 1" type="warning">有多个目录提供了同名插件，需要删掉多余的一份才能加载。</v-alert>
-          <v-switch v-if="loaded.includes(selected)" :model-value="sceneSaved.includes(selected)" :loading="save.busy.value && active === 'scene'"
-            :disabled="save.busy.value" :label="`在 ${sceneName(scene)} 使用`" :hint="manifest(selected)?.source?.candidate ? '候选应用时生效' : '立即生效，只重载这个插件'" persistent-hint
-            @update:model-value="value => toggleScene(selected, value)" />
+          <div v-if="loaded.includes(selected)" class="scene-picks">
+            <h3>在哪些群使用</h3>
+            <div class="inline">
+              <v-chip v-for="item in sceneList" :key="item" :disabled="save.busy.value || snapshot.scenes[item].saved === null"
+                :color="sceneSaved(item).includes(selected) ? 'primary' : undefined" :variant="sceneSaved(item).includes(selected) ? 'tonal' : 'outlined'"
+                :prepend-icon="sceneSaved(item).includes(selected) ? mdiCheck : undefined" :aria-pressed="sceneSaved(item).includes(selected)"
+                @click="toggleScene(item, selected, !sceneSaved(item).includes(selected))">
+                <v-progress-circular v-if="switching === item" indeterminate size="14" width="2" class="mr-1" />{{ sceneName(item) }}
+              </v-chip>
+              <span v-if="!sceneList.length" class="muted small">还没有配置群。</span>
+            </div>
+            <p class="muted small">{{ manifest(selected)?.source?.candidate ? '候选应用时生效。' : '点一下立即生效，只重载这个插件，聊天不中断。' }}</p>
+          </div>
         </Panel>
 
         <SettingSection v-if="manifest(selected) && drafts[selected]" title="参数" :restart="false" save-label="保存并应用"
@@ -351,5 +369,7 @@ const facts = name => {
 .justify-self-start{justify-self:start}
 .commands li{margin:var(--sp-1) 0;overflow-wrap:anywhere}
 .entry{display:grid;gap:var(--sp-1)}
+.scene-picks{display:grid;gap:var(--sp-2)}
+.scene-picks h3{margin:0;font-size:var(--fs-md)}
 p{margin:0}
 </style>

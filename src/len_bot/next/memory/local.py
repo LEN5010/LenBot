@@ -12,6 +12,8 @@ import asyncio
 import os
 import re
 import sqlite3
+import sys
+from urllib.parse import quote, unquote
 import tempfile
 import time
 from collections.abc import Callable
@@ -119,6 +121,10 @@ def _scene_scope(scene: str) -> str:
     return scene
 
 
+def scope_directory(scene: str) -> str:
+    return quote(scene, safe='') if sys.platform == 'win32' else scene
+
+
 def _parts(path: str, *, file: bool) -> tuple[str, ...]:
     if not path:
         if file:
@@ -175,7 +181,7 @@ def _summary_times(db: sqlite3.Connection, scope: str, path: str) -> tuple[float
 def scene_overview(root: Path, scene: str) -> str | None:
     """Read a scene root overview only when the recorded source changes have not invalidated it."""
     _scene_scope(scene)
-    base = root.expanduser().resolve() / "scenes" / scene
+    base = root.expanduser().resolve() / "scenes" / scope_directory(scene)
     files = [base / name for name in SUMMARY_FILES]
     for path in (base, *files):
         if path.is_symlink():
@@ -304,7 +310,7 @@ class LocalMemory:
         match = _SCENE.fullmatch(scope)
         if match is None:
             raise ValueError(f"invalid memory source scope: {scope!r}")
-        return self.root / "scenes" / scope
+        return self.root / "scenes" / scope_directory(scope)
 
     @staticmethod
     def _source(scene: str, scope: Literal["scene", "public"]) -> str:
@@ -347,9 +353,10 @@ class LocalMemory:
                     scope, relative = "public", path.relative_to(directory).as_posix()
                 else:
                     position = path.relative_to(directory).parts
-                    if len(position) < 2 or _SCENE.fullmatch(position[0]) is None:
+                    disk_scope = unquote(position[0]) if sys.platform == 'win32' else position[0]
+                    if len(position) < 2 or _SCENE.fullmatch(disk_scope) is None:
                         raise ValueError(f"unexpected memory source path: {path}")
-                    scope = position[0]
+                    scope = disk_scope
                     relative = Path(*position[1:]).as_posix()
                 actual = self._target(scope, relative, file=True)
                 files[(scope, relative)] = _source_text(actual)

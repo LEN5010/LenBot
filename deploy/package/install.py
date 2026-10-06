@@ -23,10 +23,17 @@ def executable(path: Path, text: str) -> None:
 
 def entrypoints(root: Path, platform: str, uv: str) -> None:
     instance = root / 'instance'
-    executable(root / 'run', '#!/bin/sh\nset -eu\ncd ' + shlex.quote(str(instance))
-               + '\nexec ' + shlex.quote(str(root / 'current/.venv/bin/len-bot')) + '\n')
+    executable(root / 'run', '#!/bin/sh\nset -eu\nexec '
+               + shlex.quote(str(root / 'control/.venv/bin/python')) + ' '
+               + shlex.quote(str(root / 'control/code/controller.py')) + ' ' + shlex.quote(str(root)) + '\n')
     # The deployment path selects a process, not an application configuration override.
     path = str(Path(uv).parent) + ':/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+    if platform == 'windows':
+        quote_ps = lambda value: "'" + str(value).replace("'", "''") + "'"
+        command = '& ' + quote_ps(root / 'control/.venv/Scripts/python.exe') + ' -X utf8 ' + quote_ps(root / 'control/code/controller.py') + ' ' + quote_ps(root)
+        (root / 'run.ps1').write_text(command + '\n', encoding='utf-8')
+        (root / 'run.cmd').write_text('@powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1"\n')
+        return
     if platform == 'linux':
         def systemd(value: str) -> str:
             return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
@@ -76,62 +83,71 @@ esac
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('install', 'upgrade'))
-    parser.add_argument('root', type=Path, help='Deployment directory; instance lives in its instance/ child')
+    parser.add_argument('action', choices=('install', 'prepare', 'upgrade'))
+    parser.add_argument('root', type=Path)
     args = parser.parse_args()
-    metadata = json.loads((BUNDLE / 'release.json').read_text())
-    expected = {'linux': 'linux', 'macos': 'darwin'}[metadata['platform']]
+    metadata = json.loads((BUNDLE / 'release.json').read_text(encoding='utf-8'))
+    expected = {'linux': 'linux', 'macos': 'darwin', 'windows': 'win32'}[metadata['platform']]
     if sys.platform != expected:
-        raise ValueError(f'This is the {metadata["platform"]} deployment package; actual platform={sys.platform}')
+        raise ValueError(f'This is the {metadata["platform"]} package; actual platform={sys.platform}')
     root = args.root.expanduser().resolve()
-    instance = root / 'instance'
-    current = root / 'current'
     uv = shutil.which('uv')
     if uv is None:
         raise FileNotFoundError('uv is not installed in PATH')
     if args.action == 'install':
         root.mkdir(parents=True, exist_ok=False, mode=0o700)
-        instance.mkdir(mode=0o700)
+        (root / 'instance').mkdir(mode=0o700)
         (root / 'releases').mkdir()
         (root / 'logs').mkdir(mode=0o700)
-    else:
-        # Fail before installation if this deployment still owns a running instance.
-        run(str(current / '.venv/bin/python'), '-c',
-            'from pathlib import Path; from len_bot.next.instance_lock import instance_lock; '
-            'lock=instance_lock(Path.cwd()); lock.__enter__(); lock.__exit__(None,None,None)', cwd=instance)
+        (root / 'control').mkdir()
+        shutil.copytree(BUNDLE / 'deploy/updater', root / 'control/code')
+        run(uv, 'venv', '--python', metadata['python'], str(root / 'control/.venv'))
+        (root / 'deployment.json').write_text(json.dumps({
+            'mode': 'native', 'platform': metadata['platform'], 'uv': uv,
+            'release_api': 'https://api.github.com/repos/lendevs/LenBot/releases?per_page=100',
+        }, indent=2) + '\n', encoding='utf-8')
     release = root / 'releases' / metadata['version']
+    if args.action == 'prepare' and release.exists():
+        current = json.loads((root / 'current.json').read_text(encoding='utf-8'))
+        if current['version'] == metadata['version']:
+            raise ValueError('Cannot rebuild the environment of the active release')
+        shutil.rmtree(release)
     release.mkdir()
-    wheel = BUNDLE / metadata['wheel']
-    shutil.copy2(wheel, release / wheel.name)
-    shutil.copy2(BUNDLE / 'release.json', release / 'release.json')
-    shutil.copy2(BUNDLE / 'requirements.txt', release / 'requirements.txt')
-    for name in ('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md'):
+    for name in (metadata['wheel'], 'release.json', 'requirements.txt', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md'):
         shutil.copy2(BUNDLE / name, release / name)
-    run(uv, 'venv', '--python', '3.13', str(release / '.venv'))
-    python = str(release / '.venv/bin/python')
-    run(uv, 'pip', 'install', '--python', python, '--requirement',
-        str(release / 'requirements.txt'), str(release / wheel.name))
+    run(uv, 'venv', '--python', metadata['python'], str(release / '.venv'))
+    python = str(release / '.venv' / ('Scripts/python.exe' if sys.platform == 'win32' else 'bin/python'))
+    run(uv, 'pip', 'install', '--python', python, '--requirement', str(release / 'requirements.txt'), str(release / metadata['wheel']))
+    sys.path.insert(0, str(root / 'control/code'))
+    from common import write_json
     if args.action == 'upgrade':
-        if (instance / 'lenbot.config.json').exists():
-            for module in ('migrate_config', 'migrate', 'migrate_memory_jobs', 'migrate_local_memory', 'plugin_dependencies'):
-                run(python, '-m', 'len_bot.next.maintenance.' + module, cwd=instance)
-        else:
-            print('实例尚无根配置，仅升级程序；首次配置留到明确运行时创建。')
-    # Do not switch a currently running instance, including one started during installation.
-    run(python, '-c', '''from pathlib import Path
-import os
-from len_bot.next.instance_lock import instance_lock
-root = Path.cwd().parent
-with instance_lock(Path.cwd()):
-    pending = root / 'current.new'
-    pending.symlink_to(Path('releases') / VERSION)
-    os.replace(pending, root / 'current')
-'''.replace('VERSION', repr(metadata['version'])), cwd=instance)
-    entrypoints(root, metadata['platform'], uv)
-    print(f'已安装并选择 {metadata["version"]}，未启动宿主。实例：{instance}')
-    print(f'前台首次配置／运行：{shlex.quote(str(root / "run"))}')
-    print(f'注册服务但不启动：{shlex.quote(str(root / "service"))} install')
-    print('已有服务继续使用固定 run 入口；确认配置与服务就绪后再明确 start。')
+        from native import Native
+        import time
+        import secrets
+        with (root / 'logs/offline-upgrade.log').open('a', encoding='utf-8') as log:
+            backend = Native(root, log)
+            if (root / 'instance/lenbot.config.json').exists():
+                check = backend.inspect(metadata)
+                if check['blocked_plugins']:
+                    raise ValueError('\n'.join(check['blocked_plugins']))
+                snapshot = root / 'backups' / (time.strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(4))
+                old = backend.metadata()
+                backend.backup(snapshot)
+                write_json(root / 'updates/state.json', {'status': 'applying', 'stage': 'migrate', 'old': old,
+                    'target': metadata, 'snapshot': str(snapshot), 'snapshot_complete': True, 'stopped': True})
+                try:
+                    backend.migrate(metadata)
+                except Exception as error:
+                    write_json(root / 'updates/state.json', {'status': 'failed', 'stage': 'migrate', 'old': old,
+                        'target': metadata, 'snapshot': str(snapshot), 'snapshot_complete': True,
+                        'stopped': True, 'error': str(error)})
+                    raise
+            write_json(root / 'updates/state.json', {'status': 'idle', 'stage': 'installed'})
+    if args.action != 'prepare':
+        write_json(root / 'current.json', metadata)
+        entrypoints(root, metadata['platform'], uv)
+    print(f'已准备 {metadata["version"]}，未启动宿主。实例：{root / "instance"}')
+    print(f'启动：{root / ("run.cmd" if sys.platform == "win32" else "run")}')
 
 
 if __name__ == '__main__':

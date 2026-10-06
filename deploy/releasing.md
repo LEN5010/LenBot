@@ -45,6 +45,19 @@ docker build --build-arg PACKAGE_SOURCE=wheel \
 
 `release` 是明确传入的 [Docker 命名构建上下文](https://docs.docker.com/build/concepts/context/#named-contexts)，只读取其中的 wheel 和 `requirements.txt`。默认未传该构建参数时仍从源码构建，用于本地开发；两种路径明确选择，不因失败自动切换。
 
+### 安装检查
+
+`scripts/smoke_install.py` 按用户的做法安装这次的产物，走完首次配置，登录面板读到群列表，再发停止信号并要求退出码为 0。全程模拟发送，不需要 OneBot 服务和模型，只用标准库：
+
+```sh
+# 本平台的部署包：install.sh 安装到新目录，run 启动，经首次配置向导保存配置
+python3 scripts/smoke_install.py package /tmp/lenbot-release/artifacts /tmp/lenbot-smoke
+# 宿主镜像：包内 Compose 配方和 first-setup.example.json，在新建的临时卷上离线初始化，结束后删除卷
+python3 scripts/smoke_install.py docker /tmp/lenbot-release/artifacts /tmp/lenbot-smoke-docker --image lenbot-current:candidate
+```
+
+第二个参数每次用新目录。CI 和发行工作流在构建后调用 `install-smoke.yml`：Linux amd64／arm64 与 macOS arm64 的部署包，以及 Linux amd64 宿主镜像。发行工作流边构建边推送各架构镜像，所以这一步排在镜像构建之前，失败就不推送也不发布。它只说明安装链能走通，不覆盖 OneBot 收发、模型调用、原生服务注册、升级迁移和任务镜像。
+
 独立准备浏览器组件源码：
 
 ```sh
@@ -56,7 +69,9 @@ uv run --no-sync python scripts/prepare_component.py browserskill /tmp/browsersk
 
 ## 预发布与正式版
 
-完成本版集中使用后，明确选择版本、更新 `pyproject.toml` 与 uv 锁文件、整理 `deploy/release-notes.md`，提交后再创建对应标签。推送 `v*` 标签会执行完整构建并发布**预发布版本**；这就是实际发布动作，不是候选检查。
+完成本版集中使用后，明确选择版本、更新 `pyproject.toml` 与 uv 锁文件、整理 `deploy/release-notes.md`，提交后再创建对应标签。`uv run --no-sync python scripts/prepare_release.py <版本>` 在干净工作区里改版本号、重新锁定依赖并检查版本说明，不提交、不打标签、不推送。
+
+`deploy/release-notes.md` 原样成为 Release 正文。发布时第一行必须是 `# LenBot <版本>`，且不留「（发布时填写」占位；不满足时发行工作流在构建前停止。推送 `v*` 标签会执行完整构建并发布**预发布版本**；这就是实际发布动作，不是候选检查。
 
 当前版本暂为 `0.1.0`，运行修复分支不创建标签或触发构建。CI 与发行工作流共用 `build_release.py` 构建面板、源码包、wheel 与 Linux／macOS 部署包，产物保存在 `release-packages`；CI 仍保留测试步骤。升级顺序包括新的本地记忆索引迁移，见[升级与备份](current/operations.md#升级与备份)。
 

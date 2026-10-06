@@ -15,7 +15,7 @@ def build_deployments(wheel: Path, project: Path, output: Path, requirements: Pa
         metadata = BytesParser().parsebytes(archive.read(metadata_path))
         version = metadata['Version']
     results = []
-    for platform in ('linux', 'macos'):
+    for platform in ('linux', 'macos', 'windows'):
         name = f'lenbot-{version}-{platform}'
         with tempfile.TemporaryDirectory() as temporary:
             bundle = Path(temporary) / name
@@ -45,8 +45,18 @@ def build_deployments(wheel: Path, project: Path, output: Path, requirements: Pa
                 'version': version, 'platform': platform, 'wheel': wheel.name,
                 'python': '3.13', 'dependencies': 'requirements.txt exported from the release uv.lock; uv downloads Python and selected dependencies',
             }, ensure_ascii=False, indent=2) + '\n')
-            destination = output / (name + '.tar.gz')
-            with tarfile.open(destination, 'x:gz') as archive:
-                archive.add(bundle, arcname=name)
+            recipe = bundle / 'deploy/current/host.compose.yaml'
+            recipe.write_text(recipe.read_text().replace('lenbot-current:local', f'ghcr.io/lendevs/lenbot:{version}')
+                              .replace('lenbot-python-r1', f'lenbot-python-{version}'))
+            if platform == 'windows':
+                destination = output / (name + '.zip')
+                with zipfile.ZipFile(destination, 'x', compression=zipfile.ZIP_DEFLATED, strict_timestamps=False) as archive:
+                    for file in sorted(bundle.rglob('*')):
+                        if file.is_file():
+                            archive.write(file, file.relative_to(bundle.parent).as_posix())
+            else:
+                destination = output / (name + '.tar.gz')
+                with tarfile.open(destination, 'x:gz') as archive:
+                    archive.add(bundle, arcname=name)
             results.append(destination)
     return results

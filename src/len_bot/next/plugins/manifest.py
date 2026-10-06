@@ -187,8 +187,9 @@ class Manifest(BaseModel):
             raise ValueError('Version range must be explicit')
         return str(SpecifierSet(value))
 
-    def require_compatible(self) -> None:
-        host, python = version('len-bot'), '.'.join(map(str, sys.version_info[:3]))
+    def require_compatible(self, host: str | None = None, python: str | None = None) -> None:
+        host = version('len-bot') if host is None else host
+        python = '.'.join(map(str, sys.version_info[:3])) if python is None else python
         if Version(host) not in SpecifierSet(self.requires_lenbot):
             raise ValueError(f'{self.name} requires host {self.requires_lenbot}; actual={host}')
         if Version(python) not in SpecifierSet(self.requires_python):
@@ -284,5 +285,4 @@ def scene_skill_catalog(config: HostConfig, scene: str) -> tuple[Skill, ...]:
             read_manifest(directories[0])
             skills.extend(load_plugin_skills(directories[0] / "skills", name))
     return tuple(skills)
-
 

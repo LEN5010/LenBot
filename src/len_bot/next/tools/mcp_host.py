@@ -6,6 +6,7 @@ from collections import deque
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from importlib.metadata import version
 import logging
 import re
 import time
@@ -167,7 +168,7 @@ class MCPHost:
                          else SingleHTTP(connection.settings, settings, lambda error: self.failed(connection, error)).connect())
             # One handshake, no probe/fallback, no cached results and no automatic input-required rounds.
             async with Client(transport, mode="legacy", cache=None,
-                              client_info=types.Implementation(name="LenBot", version="0.1.0"),
+                              client_info=types.Implementation(name="LenBot", version=version("len-bot")),
                               read_timeout_seconds=connection.settings.timeout_seconds) as client:
                 tools = await self.catalog(connection, client)
                 if connection.stop.is_set():

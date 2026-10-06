@@ -16,9 +16,10 @@ import AccountSection from './AccountSection.vue'
 import PermissionsSection from './PermissionsSection.vue'
 import RetentionSection from './RetentionSection.vue'
 import ProcessingSection from './ProcessingSection.vue'
+import UpdatesSection from './UpdatesSection.vue'
 
 const route = useRoute()
-const tabs = [['connection', '连接'], ['account', '面板账号'], ['permissions', '权限'], ['retention', '数据保留'], ['advanced', '高级']]
+const tabs = [['connection', '连接'], ['account', '面板账号'], ['permissions', '权限'], ['retention', '数据保留'], ['updates', '版本与更新'], ['advanced', '高级']]
 const tab = computed(() => tabs.some(([key]) => key === route.query.tab) ? route.query.tab : 'connection')
 const { scene } = useCurrentScene()
 const settings = useResource(() => api('/api/host/settings'))
@@ -40,6 +41,7 @@ function saved(value) {
       <AccountSection v-else-if="tab === 'account'" :snapshot="data" @saved="saved" @dirty="value => dirty.account = value" />
       <PermissionsSection v-else-if="tab === 'permissions' && scene" :key="scene" :scene="scene" @saved="saved" @dirty="value => dirty.permissions = value" />
       <RetentionSection v-else-if="tab === 'retention'" :snapshot="data" @saved="saved" @dirty="value => dirty.retention = value" />
+      <UpdatesSection v-else-if="tab === 'updates'" />
       <template v-else-if="tab === 'advanced'">
         <Panel title="开发者模式">
           <v-switch v-model="developerMode" label="显示内部编号、原始请求与响应、完整数据"

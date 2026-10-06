@@ -60,4 +60,4 @@ COPY --from=distribution /build/licenses /usr/share/lenbot/licenses
 WORKDIR /srv/lenbot
 USER 10000:10000
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/opt/lenbot/.venv/bin/len-bot"]
+ENTRYPOINT ["/opt/lenbot/.venv/bin/lenbot-container"]

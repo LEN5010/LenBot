@@ -81,8 +81,9 @@ def _read(data, page_number):
 
 if __name__ == '__main__':
     try:
-        import resource
-        resource.setrlimit(resource.RLIMIT_CPU, (8, 8))
+        if sys.platform != 'win32':
+            import resource
+            resource.setrlimit(resource.RLIMIT_CPU, (8, 8))
         result = _read(sys.stdin.buffer.read(MAX_PDF_BYTES + 1), None if sys.argv[1] == 'text' else int(sys.argv[1]))
         print(json.dumps(result, ensure_ascii=False))
     except Exception as error:

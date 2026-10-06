@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LenBot 更新与恢复</title>
+<style>body{font:16px/1.65 system-ui;margin:48px auto;padding:0 24px;max-width:840px;background:#f6f7f8;color:#242b34}h1{font-size:28px}button,select{font:inherit;padding:9px 16px;margin:8px 8px 8px 0}pre{white-space:pre-wrap;background:white;padding:20px;border:1px solid #dce0e5}label{display:block}#error{color:#b42318}</style>
+<h1>LenBot 更新与恢复</h1><p>更新期间此页面保持可用。升级失败后不会自动恢复或重试。</p>
+<p id="current"></p><p id="error" role="alert"></p>
+<button id="check">检查发行版本</button><label><input id="prerelease" type="checkbox">显示预发布版本</label>
+<select id="versions" aria-label="目标版本"></select><button id="prepare">准备更新</button>
+<pre id="notes">先检查版本，准备完成后再确认停机升级。</pre>
+<button id="apply" hidden>确认停机、备份并升级</button><button id="restore" hidden>恢复升级前程序和数据快照</button><button id="start" hidden>启动已恢复的程序</button>
+<pre id="status"></pre><p>恢复会覆盖升级后对实例数据的修改，以页面显示的快照时间为准。</p>
+<details><summary>原始更新日志</summary><button id="read-log">读取日志</button><pre id="log"></pre></details>
+<script>
+const token = new URLSearchParams(location.hash.slice(1)).get('session');
+history.replaceState(null, '', location.pathname);
+if(token) sessionStorage.setItem('lenbot-update-session',token);
+const headers={'Authorization':'Bearer '+sessionStorage.getItem('lenbot-update-session'),'Content-Type':'application/json'};
+let releases=[];
+const $=id=>document.getElementById(id);
+async function request(path,body){const r=await fetch('/api/'+path,{method:body===undefined?'GET':'POST',headers,body:body===undefined?undefined:JSON.stringify(body)});const v=await r.json();if(!r.ok)throw Error(v.detail);return v}
+async function action(path,body={}){try{$('error').textContent='';await request(path,body);await refresh()}catch(e){$('error').textContent=e.message}}
+function options(){const previous=$('versions').value;$('versions').replaceChildren(...releases.filter(r=>r.installable&&($('prerelease').checked||!r.prerelease)).map(r=>new Option(r.tag,r.tag)));if([...$('versions').options].some(o=>o.value===previous))$('versions').value=previous;notes()}
+function notes(){$('notes').textContent=releases.find(r=>r.tag===$('versions').value)?.notes||'没有可安装的发行版本。'}
+async function refresh(){try{const s=await request('status');$('current').textContent=`当前版本 ${s.current_version} · ${s.mode}`;$('status').textContent=JSON.stringify(s,null,2);$('apply').hidden=s.status!=='prepared';$('restore').hidden=!s.snapshot_complete||!['failed','complete'].includes(s.status);$('start').hidden=s.status!=='restored';if(s.error)$('error').textContent=s.error}catch(e){$('error').textContent=e.message}}
+$('check').onclick=async()=>{try{releases=await request('releases');options()}catch(e){$('error').textContent=e.message}};
+$('prerelease').onchange=options;$('versions').onchange=notes;
+$('prepare').onclick=()=>action('prepare',{tag:$('versions').value});
+$('apply').onclick=()=>{if(confirm('将停止聊天和任务，备份实例并迁移到所选版本。继续？'))action('apply')};
+$('restore').onclick=()=>{if(confirm('将恢复升级前程序和数据快照，覆盖快照之后的修改。继续？'))action('restore')};
+$('start').onclick=()=>action('start');refresh();setInterval(refresh,2000);
+$('read-log').onclick=async()=>{try{$('log').textContent=(await request('log')).text}catch(e){$('error').textContent=e.message}};
+</script></html>
