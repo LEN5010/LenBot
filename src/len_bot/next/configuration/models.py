@@ -1,4 +1,4 @@
-"""Model providers, role bindings and prices in the root configuration."""
+"""Model providers and role bindings in the root configuration."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..models.asr import ASRBinding
 from .types import STRICT
-from ..models.pricing import ModelPrice
 
 
 class Provider(BaseModel):
@@ -86,7 +85,6 @@ class Models(BaseModel):
 
     providers: dict[str, Provider]
     roles: Roles
-    prices: dict[str, dict[str, ModelPrice]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def known_providers(self) -> Models:
@@ -101,11 +99,4 @@ class Models(BaseModel):
                 raise ValueError(f"models.roles.{role} requires an openai-chat provider")
             if role == "asr" and self.providers[provider_name].api == "openai-embeddings":
                 raise ValueError("models.roles.asr cannot use an embeddings-only provider")
-        for provider_name, model_prices in self.prices.items():
-            if not provider_name.strip():
-                raise ValueError("models.prices provider name must not be blank")
-            if provider_name not in self.providers:
-                raise ValueError(f"models.prices references unknown provider {provider_name!r}")
-            if any(not model_name.strip() for model_name in model_prices):
-                raise ValueError(f"models.prices.{provider_name} model name must not be blank")
         return self

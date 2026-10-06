@@ -18,7 +18,7 @@ from .store import LearningStore
 from ..platform.messages import ChatMessage, plain_text
 from ..models.client import ChatModel, ModelProtocolError, ModelReply
 from ..models.slots import ModelSlots
-from ..models.pricing import estimate_cost
+from ..models.tokens import token_record
 from ..storage.store import Store, encode
 
 
@@ -219,7 +219,6 @@ class ExpressionLearner:
                    rows: list[tuple[int, ChatMessage, float]]) -> None:
         settings = self.config.scenes[scene].learning
         binding = self.config.models.roles.learner
-        price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
         timezone = ZoneInfo(self.config.scene_timezone(scene))
         source = [{"record": seq, "qq": message.sender.uid,
                    "display_name": message.sender.card or message.sender.nickname,
@@ -233,8 +232,7 @@ class ExpressionLearner:
         request = {"provider": binding.provider,
                    "settings": self.model.settings.model_dump(exclude={"api_key"}),
                    "messages": messages, "tools": [], "estimated_total_tokens": estimate,
-                   "context_window_tokens": binding.context_window_tokens,
-                   "price": None if price is None else price.model_dump(mode="json")}
+                   "context_window_tokens": binding.context_window_tokens}
         batch_id = self.records.begin(scene, after, through, request)
         try:
             if self.on_update is not None:
@@ -249,11 +247,11 @@ class ExpressionLearner:
                     reply = await self.model.complete(messages, [])
                 except ModelProtocolError as error:
                     self.records.response(batch_id, error.response, error.usage,
-                                          estimate_cost(price, error.token_usage))
+                                          token_record(error.token_usage))
                     raise
             self.records.response(batch_id,
                                   {"message": reply.message, "finish_reason": reply.finish_reason},
-                                  reply.usage, estimate_cost(price, reply.token_usage))
+                                  reply.usage, token_record(reply.token_usage))
             candidates = _candidates(reply, {seq for seq, _, _ in rows})
             if self.expression_service is None:
                 self.records.complete(batch_id, candidates, auto_adopt=settings.auto_adopt)

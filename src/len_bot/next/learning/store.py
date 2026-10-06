@@ -18,7 +18,7 @@ EXPRESSION_COLUMNS = "id,scene,situation,style,sources,status,updated,vector IS 
 
 
 BATCH_SUMMARY_COLUMNS = (
-    "id,scene,after_seq,through_seq,started,ended,status,model_started,usage,cost,error"
+    "id,scene,after_seq,through_seq,started,ended,status,model_started,usage,tokens,error"
 )
 
 
@@ -31,7 +31,7 @@ CREATE TABLE learning_batches (
     after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL,
     started REAL NOT NULL, ended REAL, model_started REAL,
     status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
-    request TEXT NOT NULL, response TEXT, usage TEXT, cost TEXT, error TEXT
+    request TEXT NOT NULL, response TEXT, usage TEXT, tokens TEXT, error TEXT
 );
 CREATE INDEX learning_batches_scene ON learning_batches(scene,id);
 CREATE TABLE expressions (
@@ -46,7 +46,7 @@ CREATE TABLE expression_embedding_calls (
     id INTEGER PRIMARY KEY, scene TEXT NOT NULL, turn_id TEXT,
     purpose TEXT NOT NULL CHECK(purpose IN ('query','index','reindex')),
     started REAL NOT NULL, ended REAL, request TEXT NOT NULL,
-    response TEXT, usage TEXT, cost TEXT, error TEXT
+    response TEXT, usage TEXT, tokens TEXT, error TEXT
 );
 CREATE INDEX expression_embedding_scene ON expression_embedding_calls(scene,id);
 CREATE INDEX learning_batches_usage ON learning_batches(model_started,scene);
@@ -133,11 +133,11 @@ class LearningStore:
             self.db.execute("UPDATE learning_batches SET model_started=? WHERE id=?",
                             (self.store.now(), batch_id))
 
-    def response(self, batch_id: int, response: object, usage: dict | None, cost: dict | None) -> None:
+    def response(self, batch_id: int, response: object, usage: dict | None, tokens: dict | None) -> None:
         with self.db:
-            self.db.execute("UPDATE learning_batches SET response=?,usage=?,cost=? WHERE id=?",
+            self.db.execute("UPDATE learning_batches SET response=?,usage=?,tokens=? WHERE id=?",
                             (encode(response), None if usage is None else encode(usage),
-                             None if cost is None else encode(cost), batch_id))
+                             None if tokens is None else encode(tokens), batch_id))
 
     def complete(self, batch_id: int, candidates: list[tuple[str, str, list[int]]], *, auto_adopt: bool,
                  vectors: dict[tuple[str, str], StoredVector] | None = None) -> None:
@@ -177,7 +177,7 @@ class LearningStore:
         if row is None:
             return None
         result = dict(row)
-        for field in ("request", "response", "usage", "cost"):
+        for field in ("request", "response", "usage", "tokens"):
             if field in result and result[field] is not None:
                 result[field] = json.loads(result[field])
         return result
@@ -293,17 +293,17 @@ class LearningStore:
         return cursor.lastrowid
 
     def end_embedding_call(self, id: int, response: dict | None, usage: dict | None,
-                           cost: dict | None, error: str | None = None) -> None:
+                           tokens: dict | None, error: str | None = None) -> None:
         with self.db:
             self.db.execute(
-                "UPDATE expression_embedding_calls SET ended=?,response=?,usage=?,cost=?,error=? WHERE id=?",
+                "UPDATE expression_embedding_calls SET ended=?,response=?,usage=?,tokens=?,error=? WHERE id=?",
                 (self.store.now(), None if response is None else encode(response),
-                 None if usage is None else encode(usage), None if cost is None else encode(cost), error, id),
+                 None if usage is None else encode(usage), None if tokens is None else encode(tokens), error, id),
             )
 
     def embedding_calls(self, scene: str, *, limit: int, offset: int) -> dict:
         rows = self.db.execute(
-            "SELECT id,scene,turn_id,purpose,started,ended,response,usage,cost,error "
+            "SELECT id,scene,turn_id,purpose,started,ended,response,usage,tokens,error "
             "FROM expression_embedding_calls WHERE scene=? ORDER BY id DESC LIMIT ? OFFSET ?", (scene, limit, offset),
         )
         total = self.db.execute("SELECT COUNT(*) FROM expression_embedding_calls WHERE scene=?", (scene,)).fetchone()[0]

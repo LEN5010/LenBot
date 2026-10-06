@@ -1,7 +1,6 @@
-"""Resource admission and root validation from actual saved cost/message facts."""
+"""Resource admission and root validation from actual saved token/message facts."""
 import asyncio
 from datetime import datetime, timezone
-from decimal import Decimal
 from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
@@ -17,18 +16,18 @@ def settings(path, **values):
                            scene_timezone=lambda _: 'America/Los_Angeles')
 
 
-def cost(store, scene, amount, currency='USD', *, end=True):
+def spend(store, scene, tokens, *, end=True):
     turn=store.start_turn(scene)
     call=store.start_call(turn,'mind',{'provider':'fixture'})
     if end:
-        store.end_call(call,{},None,cost=None if amount is None else {'currency':currency,'amount':amount,'basis':'configured_estimate'})
+        store.end_call(call,{},None,tokens=None if tokens is None else {'input':tokens-10,'output':10,'cached':None})
         store.end_turn(turn,'settled')
     return call
 
 
 @pytest.mark.parametrize('value',[{'messages_per_hour':0},{'scene_messages_per_hour':{'onebot:group:1':False}},
-                                 {'scene_daily_model_cost':{'nickname':'1'}},{'daily_model_cost':'NaN'},
-                                 {'daily_model_cost':'-1'},{'currency':'usd'}])
+                                 {'scene_daily_tokens':{'nickname':1}},{'daily_tokens':0},{'daily_tokens':1.5},
+                                 {'scene_daily_tokens':{'onebot:group:1':0}},{'daily_model_cost':'1'},{'currency':'USD'}])
 def test_invalid_resource_configuration(value):
     with pytest.raises(ValidationError): ResourceLimits.model_validate(value)
 
@@ -37,37 +36,37 @@ def test_global_budget_includes_removed_scenes_and_stopped_trials(tmp_path):
     now=datetime(2026,9,28,18,tzinfo=timezone.utc).timestamp()
     path=tmp_path/'state.db'
     with Store(path,now=lambda:now) as store:
-        cfg=settings(path,daily_model_cost='0.3')
+        cfg=settings(path,daily_tokens=300)
         budget=ModelBudget(cfg,store,None);budget.trials_root=tmp_path/'trials'
-        cost(store,'onebot:group:89999','0.1')
+        spend(store,'onebot:group:89999',100)
         trial=budget.trials_root/'stopped'/'state.db'
-        with Store(trial,now=lambda:now) as other: cost(other,'onebot:group:80001','0.2')
+        with Store(trial,now=lambda:now) as other: spend(other,'onebot:group:80001',200)
         with pytest.raises(LimitReached,match='全局'):budget.check('onebot:group:80002')
-        assert budget.totals(None,now-1,now+1)['known_amounts']=={'USD':Decimal('0.3')}
+        assert budget.totals(None,now-1,now+1)['tokens']==300
 
 
 def test_inflight_is_not_settled_unknown_but_completed_unknown_denies(tmp_path):
     at=[1790618400.]
     with Store(tmp_path/'state.db',now=lambda:at[0]) as store:
-        budget=ModelBudget(settings(tmp_path/'state.db',daily_model_cost='1'),store,None)
+        budget=ModelBudget(settings(tmp_path/'state.db',daily_tokens=1000),store,None)
         at[0]+=1
-        call=cost(store,'onebot:group:80001',None,end=False)
+        call=spend(store,'onebot:group:80001',None,end=False)
         budget.check('onebot:group:80001')
         store.end_call(call,None,None,'provider did not report usage')
-        with pytest.raises(LimitReached,match='费用未知'):budget.check('onebot:group:80001')
+        with pytest.raises(LimitReached,match='没有报告 token'):budget.check('onebot:group:80001')
 
 
 def test_budget_rechecks_after_waiting_for_slot_and_releases_on_rejection(tmp_path):
     async def run():
         with Store(tmp_path/'state.db',now=lambda:1790618400.) as store:
             slots=ModelSlots(1)
-            slots.admit=ModelBudget(settings(tmp_path/'state.db',daily_model_cost='1'),store,None).check
+            slots.admit=ModelBudget(settings(tmp_path/'state.db',daily_tokens=100),store,None).check
             async def waiting():
                 async with slots.slot(scene='onebot:group:80001'):
                     pytest.fail('settled budget was not applied at actual admission')
             async with slots.slot(scene='onebot:group:80001'):
                 queued=asyncio.create_task(waiting());await asyncio.sleep(0)
-                cost(store,'onebot:group:80001','1')
+                spend(store,'onebot:group:80001',100)
             with pytest.raises(LimitReached):await queued
             # Rejecting one allowance does not leak the shared slot.
             slots.admit=None
@@ -88,15 +87,26 @@ def test_hourly_send_gate_is_scene_local_and_counts_unconfirmed(tmp_path):
         cfg.scene='onebot:group:80001';at[0]+=3600;check_speech(store,cfg)
 
 
-def test_memory_costs_remain_counted_when_backend_disabled(tmp_path):
+def test_memory_tokens_remain_counted_when_backend_disabled(tmp_path):
     path=tmp_path/'state.db'
     with Store(path,now=lambda:1790618400.) as store:
         with MemoryJobs(path.with_name(path.name+'.memory.sqlite3')) as jobs:
             with jobs.db:
-                jobs.db.execute('INSERT INTO memory_embedding_calls(scene,purpose,started,ended,request,cost) VALUES(?,?,?,?,?,?)',
-                    ('public','index',1790618400.,1790618400.,'{}','{"currency":"USD","amount":"1"}'))
-        budget=ModelBudget(settings(path,daily_model_cost='1'),store,None)
+                jobs.db.execute('INSERT INTO memory_summary_runs(scene,scope,path,started,ended,status,request,model_started,tokens) '
+                    'VALUES(?,?,?,?,?,?,?,?,?)', ('public','public','index.md',1790618400.,1790618400.,'complete','{}',
+                                                 1790618400.,'{"input":90,"output":10,"cached":null}'))
+        budget=ModelBudget(settings(path,daily_tokens=100),store,None)
         with pytest.raises(LimitReached):budget.check('onebot:group:80001')
+
+
+def test_embedding_and_transcription_tokens_do_not_count_toward_the_limit(tmp_path):
+    path=tmp_path/'state.db'
+    with Store(path,now=lambda:1790618400.) as store:
+        with MemoryJobs(path.with_name(path.name+'.memory.sqlite3')) as jobs:
+            with jobs.db:
+                jobs.db.execute('INSERT INTO memory_embedding_calls(scene,purpose,started,ended,request,tokens) VALUES(?,?,?,?,?,?)',
+                    ('public','index',1790618400.,1790618400.,'{}',None))
+        ModelBudget(settings(path,daily_tokens=100),store,None).check('onebot:group:80001')
 
 
 def test_trial_budget_uses_explicit_root_and_requires_migrated_sidecar(tmp_path):
@@ -104,9 +114,9 @@ def test_trial_budget_uses_explicit_root_and_requires_migrated_sidecar(tmp_path)
     path=root/'nested'/'state.db'
     trial=root/'.runtime'/'chat-tests'/'closed'/'state.db'
     with Store(trial,now=lambda:1790618400.) as other:
-        cost(other,'onebot:group:80001','1')
+        spend(other,'onebot:group:80001',100)
     with Store(path,now=lambda:1790618400.) as store:
-        cfg=settings(path,daily_model_cost='1')
+        cfg=settings(path,daily_tokens=100)
         with pytest.raises(LimitReached):
             ModelBudget(cfg,store,None,root=root).check('onebot:group:80001')
         with MemoryJobs(trial.with_name(trial.name+'.memory.sqlite3')) as jobs:
@@ -129,8 +139,8 @@ def test_budget_rejects_unmigrated_trial_business_source(tmp_path):
     path=root/'state.db'
     trial=root/'.runtime'/'chat-tests'/'closed'/'state.db'
     with Store(trial) as old:
-        old.db.execute('ALTER TABLE audio_calls DROP COLUMN cost')
+        old.db.execute('ALTER TABLE audio_calls DROP COLUMN tokens')
         old.db.execute('PRAGMA user_version=31')
     with Store(path) as store:
         with pytest.raises(ValueError,match='试聊计量源.*离线迁移'):
-            ModelBudget(settings(path,daily_model_cost='1'),store,None,root=root)
+            ModelBudget(settings(path,daily_tokens=100),store,None,root=root)

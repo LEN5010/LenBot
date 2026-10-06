@@ -47,13 +47,14 @@ uv run --no-sync len-bot
 # 先停掉 Bot（Ctrl-C）
 git pull
 ./scripts/install.sh
+uv run --no-sync python -m len_bot.next.maintenance.migrate_config
 uv run --no-sync python -m len_bot.next.maintenance.migrate
 uv run --no-sync python -m len_bot.next.maintenance.migrate_memory_jobs
 uv run --no-sync python -m len_bot.next.maintenance.plugin_dependencies
 uv run --no-sync len-bot
 ```
 
-三条维护命令分别是：升级业务数据库，升级记忆处理库，恢复已安装插件的依赖。已经是最新格式时什么也不做。升级前先备份实例。
+四条维护命令依次是：升级根配置，升级业务数据库，升级记忆处理库，恢复已安装插件的依赖。已经是最新格式时什么也不做。升级前先备份实例。
 
 在 macOS 上可以双击 [`current/start.command`](current/start.command) 启动。要做成系统服务，见[可选服务](current/README.md#作为系统服务运行)。
 

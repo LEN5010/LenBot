@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 THRESHOLDS = (4, 8, 25, 100)
 SUMMARY_COLUMNS = (
     "id,scene,purpose,after_seq,through_seq,term_id,inference_count,started,ended,"
-    "status,model_started,usage,cost,error"
+    "status,model_started,usage,tokens,error"
 )
 
 
@@ -42,7 +42,7 @@ CREATE TABLE jargon_calls (
     started REAL NOT NULL, ended REAL,
     status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
     model_started REAL, request TEXT NOT NULL,
-    response TEXT, usage TEXT, cost TEXT, error TEXT
+    response TEXT, usage TEXT, tokens TEXT, error TEXT
 );
 CREATE INDEX jargon_calls_scene ON jargon_calls(scene,id);
 CREATE INDEX jargon_calls_usage ON jargon_calls(model_started,scene);
@@ -79,7 +79,7 @@ class JargonStore:
         if row is None:
             return None
         result = dict(row)
-        for field in ("request", "response", "usage", "cost"):
+        for field in ("request", "response", "usage", "tokens"):
             if field in result and result[field] is not None:
                 result[field] = json.loads(result[field])
         return result
@@ -129,13 +129,13 @@ class JargonStore:
                             (self.store.now(), id))
 
     def response(self, id: int, response: object | None,
-                 usage: dict | None, cost: dict | None) -> None:
+                 usage: dict | None, tokens: dict | None) -> None:
         with self.db:
             self.db.execute(
-                "UPDATE jargon_calls SET response=?,usage=?,cost=? WHERE id=?",
+                "UPDATE jargon_calls SET response=?,usage=?,tokens=? WHERE id=?",
                 (None if response is None else encode(response),
                  None if usage is None else encode(usage),
-                 None if cost is None else encode(cost), id),
+                 None if tokens is None else encode(tokens), id),
             )
 
     def fail(self, id: int, status: Literal["failed", "interrupted"], error: str) -> None:

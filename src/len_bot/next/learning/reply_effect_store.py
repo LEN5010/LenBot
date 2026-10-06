@@ -20,7 +20,7 @@ REACTIONS = ("agree", "continue", "correct", "negative", "unrelated", "uncertain
 STATES = ("observing", "no_messages", "waiting", "failed")
 CHANNELS = ("direct", "named", "focus", "ambient", "schedule", "task", "resume", "in_turn", "quiet_notice",
             "proactive", "plugin", "audio")
-CALL_SUMMARY_COLUMNS = "id,scene,effect_ids,started,ended,status,model_started,usage,cost,error"
+CALL_SUMMARY_COLUMNS = "id,scene,effect_ids,started,ended,status,model_started,usage,tokens,error"
 STATE_SQL = (
     "CASE WHEN e.reaction IS NOT NULL THEN e.reaction "
     "WHEN e.closed_at IS NULL THEN 'observing' "
@@ -48,7 +48,7 @@ CREATE TABLE reply_effect_calls (
     effect_ids TEXT NOT NULL, started REAL NOT NULL, ended REAL,
     status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
     model_started REAL, request TEXT NOT NULL,
-    response TEXT, usage TEXT, cost TEXT, error TEXT
+    response TEXT, usage TEXT, tokens TEXT, error TEXT
 );
 CREATE INDEX reply_effect_calls_scene ON reply_effect_calls(scene,id);
 CREATE INDEX reply_effect_calls_usage ON reply_effect_calls(model_started,scene);
@@ -142,11 +142,11 @@ class ReplyEffectStore:
         with self.db:
             self.db.execute("UPDATE reply_effect_calls SET model_started=? WHERE id=?", (self.store.now(), call_id))
 
-    def response(self, call_id: int, response: object, usage: dict | None, cost: dict | None) -> None:
+    def response(self, call_id: int, response: object, usage: dict | None, tokens: dict | None) -> None:
         with self.db:
-            self.db.execute("UPDATE reply_effect_calls SET response=?,usage=?,cost=? WHERE id=?",
+            self.db.execute("UPDATE reply_effect_calls SET response=?,usage=?,tokens=? WHERE id=?",
                             (encode(response), None if usage is None else encode(usage),
-                             None if cost is None else encode(cost), call_id))
+                             None if tokens is None else encode(tokens), call_id))
 
     def complete(self, call_id: int, results: dict[int, tuple[str, str]]) -> None:
         """Store every entry's result together with the call's completion."""
@@ -265,20 +265,20 @@ class ReplyEffectStore:
             (scene, limit, offset),
         )
         total = self.db.execute("SELECT COUNT(*) FROM reply_effect_calls WHERE scene=?", (scene,)).fetchone()[0]
-        return {"items": [self._json(row, ("effect_ids", "usage", "cost")) for row in rows],
+        return {"items": [self._json(row, ("effect_ids", "usage", "tokens")) for row in rows],
                 "total": total, "limit": limit, "offset": offset}
 
     def call(self, scene: str, id: int, *, summary: bool = False) -> dict | None:
         columns = CALL_SUMMARY_COLUMNS if summary else "*"
         row = self.db.execute(f"SELECT {columns} FROM reply_effect_calls WHERE scene=? AND id=?",
                               (scene, id)).fetchone()
-        return None if row is None else self._json(row, ("effect_ids", "request", "response", "usage", "cost"))
+        return None if row is None else self._json(row, ("effect_ids", "request", "response", "usage", "tokens"))
 
     def latest_call(self, scene: str) -> dict | None:
         row = self.db.execute(
             f"SELECT {CALL_SUMMARY_COLUMNS} FROM reply_effect_calls WHERE scene=? ORDER BY id DESC LIMIT 1", (scene,),
         ).fetchone()
-        return None if row is None else self._json(row, ("effect_ids", "usage", "cost"))
+        return None if row is None else self._json(row, ("effect_ids", "usage", "tokens"))
 
     def for_turn(self, scene: str, turn_id: str) -> list[dict]:
         return [self._effect(row) for row in self.db.execute(

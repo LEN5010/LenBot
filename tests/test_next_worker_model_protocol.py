@@ -35,7 +35,7 @@ async def test_pi_output_budget_is_validated_forwarded_and_recorded_without_retr
         port = server.sockets[0].getsockname()[1]
         settings = ModelSettings(api='openai-chat', base_url=f'http://127.0.0.1:{port}/v1',
                                  api_key='synthetic-key', model='fixture', max_output_tokens=1024)
-        async with WorkerModelProxy(settings, 'fixture', 4096, None, 'synthetic-task',
+        async with WorkerModelProxy(settings, 'fixture', 4096, 'synthetic-task',
                                     Limits(10, 100000, 100000), start_call=record,
                                     finish_call=lambda ident, result: finished.append((ident, result))) as proxy:
             request = {'model': 'fixture', 'stream': True,

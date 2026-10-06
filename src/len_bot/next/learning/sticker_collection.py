@@ -21,7 +21,7 @@ from ..platform.messages import plain_text
 from ..models.client import ChatModel, ModelProtocolError, ModelReply
 from ..models.slots import ModelSlots
 from ..trials.replay_images import RecordedImages
-from ..models.pricing import estimate_cost
+from ..models.tokens import token_record
 from ..image_assets import MAX_IMAGE_BYTES, inspect_image
 from .sticker_store import StickerStore
 from ..storage.store import Store, encode
@@ -218,14 +218,12 @@ class StickerCollector:
                             {"type": "text", "text": encode(source)}, image_block(jpeg),
                         ]}]
             binding = self.config.models.roles.vision
-            price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
             estimated = estimate_text_request(messages, [], binding.max_output_tokens)
             request = {"provider": binding.provider,
                        "settings": self.vision.settings.model_dump(exclude={"api_key"}),
                        "messages": messages, "tools": [],
                        "estimated_text_tokens": estimated, "estimated_total_tokens": None,
-                       "context_window_tokens": binding.context_window_tokens,
-                       "price": None if price is None else price.model_dump(mode="json")}
+                       "context_window_tokens": binding.context_window_tokens}
             self.records.set_request(call_id, request)
             if estimated > binding.context_window_tokens:
                 raise ContextBudgetError(
@@ -237,11 +235,11 @@ class StickerCollector:
                     reply = await self.vision.complete(messages, [])
                 except ModelProtocolError as error:
                     self.records.response(call_id, error.response, error.usage,
-                                          estimate_cost(price, error.token_usage))
+                                          token_record(error.token_usage))
                     raise
             self.records.response(call_id,
                                   {"message": reply.message, "finish_reason": reply.finish_reason},
-                                  reply.usage, estimate_cost(price, reply.token_usage))
+                                  reply.usage, token_record(reply.token_usage))
             description, text_value, emotions, tags, is_sticker = _annotation(reply)
             self.records.complete(call_id, description=description, text=text_value,
                                   emotions=emotions, tags=tags, is_sticker=is_sticker)

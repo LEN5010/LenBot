@@ -30,7 +30,6 @@ from ...runtime.operations import LoggingSettings
 from ...models.limits import ResourceLimits
 from ...work.egress_policy import NetworkSettings
 from ...runtime.retention import RetentionSettings
-from ...models.pricing import ModelPrice
 from ...tools.web_search import WebSearchSettings
 from ...memory.service import RecallSettings
 from ...memory.embeddings import EmbeddingBinding
@@ -63,7 +62,6 @@ class ModelsChange(BaseModel):
 
     providers: dict[str, ProviderChange]
     roles: Roles
-    prices: dict[str, dict[str, ModelPrice]]
 
 
 class SceneBindingChange(BaseModel):
@@ -243,10 +241,6 @@ def _project(config: HostConfig) -> dict:
                 for alias, provider in models.providers.items()
             },
             "roles": models.roles.model_dump(mode="json"),
-            "prices": {
-                provider: {name: price.model_dump(mode="json") for name, price in entries.items()}
-                for provider, entries in models.prices.items()
-            },
         },
         "scenes": {
             scene: {
@@ -396,10 +390,6 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
             source["models"] = {
                 "providers": providers,
                 "roles": change.roles.model_dump(mode="json"),
-                "prices": {
-                    alias: {name: price.model_dump(mode="json") for name, price in entries.items()}
-                    for alias, entries in change.prices.items()
-                },
             }
 
         return await save(edit)

@@ -67,7 +67,7 @@ class NetworkRuntime:
         self.logs: deque[dict] = deque(maxlen=500)
         self.memory = memory
         self.budget = ModelBudget(config, store, memory, root=config._instance_root) if budget is None else budget
-        if slots is None and (config.limits.daily_model_cost is not None or config.limits.scene_daily_model_cost):
+        if slots is None and (config.limits.daily_tokens is not None or config.limits.scene_daily_tokens):
             raise ValueError("配置模型金额预算时必须装配共享ModelSlots")
         if slots is not None:
             slots.admit = self.budget.check

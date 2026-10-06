@@ -58,9 +58,9 @@ class PluginStore:
 
     def plugin_calls(self, plugin: str, limit: int = 20) -> list[dict]:
         return [{**dict(row), "usage": None if row["usage"] is None else json.loads(row["usage"]),
-                 "cost": None if row["cost"] is None else json.loads(row["cost"])}
+                 "tokens": None if row["tokens"] is None else json.loads(row["tokens"])}
                 for row in self.db.execute(
-                    "SELECT id,scene,role,started,ended,usage,cost,error FROM model_calls "
+                    "SELECT id,scene,role,started,ended,usage,tokens,error FROM model_calls "
                     "WHERE plugin=? ORDER BY id DESC LIMIT ?", (plugin, limit))]
 
     def recover_plugin_calls(self) -> None:

@@ -6,7 +6,6 @@ import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import datetime
-from decimal import Decimal
 import json
 from pathlib import Path
 from string import Template
@@ -22,7 +21,7 @@ from ..runtime.identity import roles_for
 from .egress_usage import EgressUsage
 from ..models.slots import ModelSlots
 from ..memory.service import MemoryService
-from ..models.pricing import cost_summary
+from ..models.tokens import token_summary
 from .sandbox import DockerSandbox, DockerSettings
 from ..tools.skills import Skill
 from ..storage.store import Store
@@ -128,10 +127,10 @@ class WorkTasks:
 
     def status(self, scene: str, id: int) -> dict:
         item = self.records.get(scene, id)
-        costs = self.records.call_costs(scene, id)
+        token_records = self.records.call_tokens(scene, id)
         return {**asdict(item), "files": [file_info(file, self.records) for file in self.records.list_files(scene, id)],
                 "workspace_discard_requested": self.records.workspace_discarded(scene, id),
-                "model_calls": len(costs), "cost": cost_summary(costs), "active_timeout_seconds": self.active_timeout(item),
+                "model_calls": len(token_records), "tokens": token_summary(token_records), "active_timeout_seconds": self.active_timeout(item),
                 "network": self.egress.status(scene, id),
                 "notice": "done 只表示执行正常结束；文件登记不表示已上传到平台。出网配置不等于目标连通。"}
 
@@ -476,17 +475,15 @@ class WorkTasks:
         return self.status(scene, id)
 
     def _limits(self, item: Task) -> Limits:
-        costs = self.records.call_costs(item.scene, item.id)
-        budget = self.settings.max_cost
+        budget = self.settings.max_tokens
         if budget is not None:
-            binding = self.config.models.roles.worker
-            price = self.config.models.prices[binding.provider][binding.model]
-            if any(cost is None or cost["currency"] != price.currency for cost in costs):
-                raise ValueError("任务存在未知或不同币种费用，不能继续金额受限的请求")
-            budget -= sum((Decimal(cost["amount"]) for cost in costs), Decimal(0))
+            token_records = self.records.call_tokens(item.scene, item.id)
+            if any(tokens is None for tokens in token_records):
+                raise ValueError("任务有模型调用没有报告 token，不能继续 token 受限的请求")
+            budget -= sum(tokens["input"] + tokens["output"] for tokens in token_records)
             if budget <= 0:
-                raise ValueError("任务累计模型费用已达上限")
-        # One proxy belongs to one explicitly started execution; monetary cost stays cumulative.
+                raise ValueError("任务累计 token 已达上限")
+        # One proxy belongs to one explicitly started execution; tokens stay cumulative across executions.
         return Limits(self.settings.max_calls, self.settings.max_request_bytes, self.settings.max_response_bytes, budget)
 
     async def recover(self) -> None:
@@ -612,7 +609,7 @@ class WorkTasks:
         files = [file_info(file, self.records) for file in self.records.list_files(item.scene, item.id)]
         body = {"status": status, "summary": summary, "error": error, "files": files,
                 "started": finished.started, "ended": finished.ended,
-                "cost": cost_summary(self.records.call_costs(item.scene, item.id))}
+                "tokens": token_summary(self.records.call_tokens(item.scene, item.id))}
         notice = f"[任务执行结束] #{item.id}；请求人 {item.requester}；{item.goal}\n" + json.dumps(body, ensure_ascii=False)
         if recent:
             notice += '\n最近已保存过程（预览，不证明操作成功；原文可按event读取）：\n' + json.dumps(recent, ensure_ascii=False)

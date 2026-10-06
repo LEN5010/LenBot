@@ -113,7 +113,7 @@ def main() -> None:
         str(release / 'requirements.txt'), str(release / wheel.name))
     if args.action == 'upgrade':
         if (instance / 'lenbot.config.json').exists():
-            for module in ('migrate', 'migrate_memory_jobs', 'plugin_dependencies'):
+            for module in ('migrate_config', 'migrate', 'migrate_memory_jobs', 'plugin_dependencies'):
                 run(python, '-m', 'len_bot.next.maintenance.' + module, cwd=instance)
         else:
             print('实例尚无根配置，仅升级程序；首次配置留到明确运行时创建。')

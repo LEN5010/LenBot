@@ -19,7 +19,7 @@ from .store import LearningStore
 from ..platform.messages import ChatMessage, plain_text
 from ..models.client import ChatModel, ModelProtocolError, ModelReply
 from ..models.slots import ModelSlots
-from ..models.pricing import estimate_cost
+from ..models.tokens import token_record
 from ..storage.store import Store, encode
 
 
@@ -263,17 +263,14 @@ class JargonLearner:
 
     def _request(self, messages: list[dict]) -> tuple[dict, int]:
         binding = self.config.models.roles.learner
-        price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
         estimated = estimate_request(messages, [], binding.max_output_tokens)
         return ({"provider": binding.provider,
                  "settings": self.model.settings.model_dump(exclude={"api_key"}),
                  "messages": messages, "tools": [], "estimated_total_tokens": estimated,
-                 "context_window_tokens": binding.context_window_tokens,
-                 "price": None if price is None else price.model_dump(mode="json")}, estimated)
+                 "context_window_tokens": binding.context_window_tokens}, estimated)
 
     async def _model_call(self, scene: str, call_id: int, messages: list[dict], estimated: int) -> ModelReply:
         binding = self.config.models.roles.learner
-        price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
         if estimated > binding.context_window_tokens:
             raise ContextBudgetError(
                 f"jargon request estimated {estimated} tokens, exceeding configured window "
@@ -284,10 +281,10 @@ class JargonLearner:
                 reply = await self.model.complete(messages, [])
             except ModelProtocolError as error:
                 self.records.response(call_id, error.response, error.usage,
-                                      estimate_cost(price, error.token_usage))
+                                      token_record(error.token_usage))
                 raise
         self.records.response(call_id, {"message": reply.message, "finish_reason": reply.finish_reason},
-                              reply.usage, estimate_cost(price, reply.token_usage))
+                              reply.usage, token_record(reply.token_usage))
         return reply
 
     async def _run_discovery(self, scene: str, after: int, through: int,

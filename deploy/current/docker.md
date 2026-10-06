@@ -126,6 +126,8 @@ Docker Desktop 会处理宿主共享目录与 Linux 虚拟机的映射；应用�
 ```sh
 docker volume create lenbot-python-r2
 docker compose -f host.compose.yaml run --rm --no-deps \
+  --entrypoint /opt/lenbot/.venv/bin/python lenbot -m len_bot.next.maintenance.migrate_config
+docker compose -f host.compose.yaml run --rm --no-deps \
   --entrypoint /opt/lenbot/.venv/bin/python lenbot -m len_bot.next.maintenance.migrate
 docker compose -f host.compose.yaml run --rm --no-deps \
   --entrypoint /opt/lenbot/.venv/bin/python lenbot -m len_bot.next.maintenance.migrate_memory_jobs

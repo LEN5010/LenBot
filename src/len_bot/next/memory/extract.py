@@ -16,7 +16,7 @@ from .role_paths import require_bot_path
 from ..platform.messages import ChatMessage, render_message
 from ..models.client import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from ..models.slots import ModelSlots
-from ..models.pricing import ModelPrice, estimate_cost
+from ..models.tokens import token_record
 from ..storage.store import encode
 
 
@@ -151,7 +151,6 @@ async def extract_local(
     finish_call: Callable[[int, object | None, dict | None, str | None, dict | None], None],
     record_tool: Callable[[str, str, dict, str, str | None], None],
     record_write: Callable[[LocalMemoryChange], None],
-    price: ModelPrice | None = None,
     slots: ModelSlots | None = None,
 ) -> ExtractResult:
     """Run under the host-held scene write lock with its freshly selected input."""
@@ -178,7 +177,6 @@ async def extract_local(
                 "messages": conversation, "tools": TOOLS,
                 "estimated_total_tokens": estimated,
                 "context_window_tokens": context_window_tokens,
-                "price": None if price is None else price.model_dump(mode="json"),
             })
             try:
                 reply = await model.complete(conversation, TOOLS)
@@ -189,10 +187,10 @@ async def extract_local(
                 if isinstance(error, ModelProtocolError):
                     response, usage, token_usage = error.response, error.usage, error.token_usage
                 finish_call(call_id, response, usage, f"{type(error).__name__}: {error}",
-                            estimate_cost(price, token_usage))
+                            token_record(token_usage))
                 raise
             finish_call(call_id, {"message": reply.message, "finish_reason": reply.finish_reason},
-                        reply.usage, None, estimate_cost(price, reply.token_usage))
+                        reply.usage, None, token_record(reply.token_usage))
         conversation.append(reply.message)
         if not reply.tool_calls:
             return ExtractResult(summary=reply.text, write_count=written,

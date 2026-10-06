@@ -40,7 +40,7 @@ const seconds = value => `${Math.round(value * 10) / 10} 秒`
     <ol class="steps">
       <li v-for="step in steps" :key="step.id">
         <div class="step-head"><strong>{{ callRoleLabel(step.role) }}</strong>
-          <span class="muted small">{{ step.ended === null ? '进行中' : '' }}<template v-if="step.cost"> {{ step.cost.amount }} {{ step.cost.currency }}</template></span></div>
+          <span class="muted small">{{ step.ended === null ? '进行中' : '' }}<template v-if="step.tokens"> 输入 {{ step.tokens.input }} · 输出 {{ step.tokens.output }} token</template></span></div>
         <ErrorNote v-if="step.error" title="这一步出错了" :error="step.error" />
         <p v-if="step.thought" class="thought">{{ step.thought }}</p>
         <div v-for="tool in step.tools" :key="tool.id" class="tool">
