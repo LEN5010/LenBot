@@ -34,7 +34,7 @@ description = "Room UID, room number, name and scenes"
 default = [{uid = 100001, room_id = 123, name = "示例", scenes = ["onebot:group:80001"]}]
 ''', encoding="utf-8")
     manifest = read_manifest(directory)
-    model = manifest.values_model()
+    model = manifest.values_model(())
     values = model.model_validate({}).model_dump()
     assert values["rooms"] == [{"uid": 100001, "room_id": 123, "name": "示例", "scenes": ["onebot:group:80001"]}]
     assert model.model_validate({"rooms": []}).model_dump() == {"rooms": []}
@@ -45,6 +45,92 @@ default = [{uid = 100001, room_id = 123, name = "示例", scenes = ["onebot:grou
     (directory / "plugin.toml").write_text(source.replace('type = "object_list"', 'type = "string_list"'), encoding="utf-8")
     with pytest.raises(ValueError):
         read_manifest(directory)
+
+
+MANIFEST_HEAD = '''name = "roomwatch"
+version = "1.0.0"
+interface = 1
+requires_lenbot = ">=0.1,<1"
+requires_python = ">=3.13"
+platforms = ["linux", "darwin", "win32"]
+reload = "plugin"
+authors = ["LEN5010"]
+license = "AGPL-3.0-or-later"
+description = "Room subscriptions"
+'''
+
+
+def test_form_fields_declare_labels_choices_scenes_paths_and_urls(tmp_path):
+    directory = tmp_path / "roomwatch"
+    directory.mkdir()
+    (directory / "plugin.toml").write_text(MANIFEST_HEAD + '''
+[config.card_mode]
+type = "string"
+label = "卡片样式"
+group = "显示"
+description = "Card layout"
+default = "auto"
+options = [{value = "auto", label = "自动"}, {value = "image", label = "图片"}]
+
+[config.font]
+type = "path"
+label = "字体文件"
+description = "Font file"
+placeholder = "/usr/share/fonts/example.ttf"
+
+[config.feed]
+type = "url"
+description = "Feed address"
+
+[config.backup_font]
+type = "path"
+description = "Optional font"
+default = ""
+
+[config.note]
+type = "string"
+description = "Free text"
+multiline = true
+default = ""
+
+[config.rooms]
+type = "object_list"
+label = "直播间"
+description = "Rooms"
+default = []
+[config.rooms.fields.room_id]
+type = "integer"
+label = "房间号"
+description = "Room number"
+[config.rooms.fields.scenes]
+type = "scene_list"
+label = "推送到的群"
+description = "Scenes"
+default = []
+''', encoding="utf-8")
+    manifest = read_manifest(directory)
+    assert [choice.label for choice in manifest.config["card_mode"].choices()] == ["自动", "图片"]
+    model = manifest.values_model(["onebot:group:80001"])
+    values = {"font": "/srv/fonts/a.ttf", "feed": "https://example.com/rss",
+              "rooms": [{"room_id": 123, "scenes": ["onebot:group:80001"]}]}
+    assert model.model_validate(values).model_dump()["card_mode"] == "auto"
+    assert model.model_validate({**values, "backup_font": ""}).model_dump()["backup_font"] == ""
+    for change in ({"card_mode": "自动"}, {"font": "fonts/a.ttf"}, {"font": ""}, {"feed": ""}, {"backup_font": "a.ttf"}, {"feed": "ftp://example.com/a"},
+                   {"feed": "https://"}, {"rooms": [{"room_id": 123, "scenes": ["onebot:group:80002"]}]},
+                   {"rooms": [{"room_id": 123, "scenes": ["group 80001"]}]}):
+        with pytest.raises(ValidationError):
+            model.model_validate({**values, **change})
+
+    source = (directory / "plugin.toml").read_text(encoding="utf-8")
+    for broken in (source.replace('multiline = true', 'multiline = true\nminimum = 1'),
+                   source.replace('[config.feed]\ntype = "url"', '[config.feed]\ntype = "url"\nmultiline = true'),
+                   source.replace('label = "推送到的群"', 'label = "推送到的群"\ndefault = ["onebot:group:80001"]').replace(
+                       'description = "Scenes"\ndefault = []', 'description = "Scenes"'),
+                   source.replace('{value = "image", label = "图片"}', '{value = "auto", label = "图片"}'),
+                   source.replace('label = "房间号"', 'label = "房间号"\ngroup = "显示"')):
+        (directory / "plugin.toml").write_text(broken, encoding="utf-8")
+        with pytest.raises(ValueError):
+            read_manifest(directory)
 
 
 def test_plugin_owner_permission_uses_root_identity_and_enabled_scene(tmp_path):

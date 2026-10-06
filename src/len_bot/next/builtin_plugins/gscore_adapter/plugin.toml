@@ -11,24 +11,33 @@ description = "/gs桥接独立GSUID Core；图文经宿主发送，/gs连接显�
 
 [config.ws_url]
 type = "string"
+label = "Core 地址"
+placeholder = "ws://127.0.0.1:8765/ws/lenbot"
 description = "完整Core WebSocket端点（含服务要求的路径），不含凭据/query/fragment。"
 
 [config.access_token]
 type = "secret"
+label = "Core 令牌"
 default = ""
 description = "Core令牌；只在根配置保存，同时用于Bearer和所选query参数。"
 
 [config.token_query_parameter]
 type = "string"
+label = "令牌参数名"
+group = "高级"
 default = "token"
 description = "Core要求的令牌query参数名；空字符串只发Bearer头。"
 
 [config.timeout_seconds]
 type = "number"
+label = "超时（秒）"
+group = "高级"
 default = 10
 description = "连接、关闭和单次图片读取的超时秒数。"
 
 [config.max_frame_bytes]
 type = "integer"
+label = "单帧最大字节数"
+group = "高级"
 default = 20000000
 description = "单个Core WebSocket帧的最大字节数。"

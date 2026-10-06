@@ -35,7 +35,7 @@ def test_core_invalid_frames_fail_with_raw_fragment(changes):
 
 def test_core_manifest_requires_an_explicit_endpoint():
     manifest=read_manifest(BUILTIN/'gscore_adapter')
-    model=manifest.values_model()
+    model=manifest.values_model(())
     with pytest.raises(ValueError):model.model_validate({})
     config=model.model_validate({'ws_url':'ws://127.0.0.1:9/ws/fixture'})
     assert config.access_token=='' and config.max_frame_bytes==20000000

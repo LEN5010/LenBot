@@ -173,7 +173,7 @@ class HostManagement:
         if saved.plugins is None or name not in saved.plugins.configured:
             raise ValueError(f'插件 {name} 尚未配置；安装和首次配置请使用面板')
         manifest = plugin_manifest(saved, name)
-        values = config_model('ManagedPluginValues', _public_fields(manifest))
+        values = config_model('ManagedPluginValues', _public_fields(manifest), saved.scenes)
         schema = create_model('ManagedPlugin', __config__=STRICT,
                               enabled=(bool, ...), config=(values, ...)).model_json_schema()
         current, recorded = self._plugin_state(self.running, name, manifest), self._plugin_state(saved, name, manifest)
@@ -295,7 +295,7 @@ class HostManagement:
                 plugins['disabled'] = disabled
             if 'config' in changes or changes.get('enabled') is True:
                 try:
-                    manifest.values_model().model_validate(plugins[name])
+                    manifest.values_model(saved.scenes).model_validate(plugins[name])
                 except ValueError as error:
                     raise ValueError(redact_values(str(error), manifest, plugins[name])) from None
 
