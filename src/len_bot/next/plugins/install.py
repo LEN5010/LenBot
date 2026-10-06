@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from importlib.metadata import distributions
 import json
 import hashlib
@@ -240,12 +240,12 @@ class PluginInstaller:
         selected = (source.ref if source.ref is not None else source.branch) if ref is None else revision_ref(ref)
         return await self.prepare_git(source.location, paths, ref=selected)
 
-    async def check_apply(self, name: str, values: dict) -> Manifest:
+    async def check_apply(self, name: str, values: dict, scenes: Collection[str]) -> Manifest:
         record = self.read(name)
         if record.candidate is None:
             raise ValueError(f'{name} has no prepared candidate')
         manifest = read_manifest(self.candidates / name)
-        manifest.values_model().model_validate(values)
+        manifest.values_model(scenes).model_validate(values)
         if record.installed is not None:
             self.managed_path(name)
         elif (self.directory / name).exists():

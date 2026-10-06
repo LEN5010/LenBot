@@ -59,35 +59,68 @@ from len_bot.next.plugin import Plugin, Invocation, command, fullmatch, regex, t
 
 ## 配置表单
 
-`[config.<字段名>]` 的 `description` 必填；写了 `default` 表示可省略，否则必填。类型为 `string`、`integer`、`number`、`boolean`、`string_list`、`object_list`、`secret`。宿主解析一次，`ctx.config` 是已经校验的普通值。
+面板按 `[config.<字段名>]` 的声明生成表单，运营者不用手写 JSON。每个字段的 `type` 和 `description` 必填；写了 `default` 表示可省略，否则必填。宿主解析一次，`ctx.config` 是已经校验的普通值。
 
-- `options`：string／integer／number 的候选值，面板使用下拉框。
-- `minimum`、`maximum`：integer／number 范围，后端同样校验。
-- `object_list.fields`：一层对象子字段，支持普通类型、枚举和范围；不嵌套对象列表或 secret。没有声明子字段的自由对象列表仍用 JSON 编辑。
+| 类型 | 值 | 面板控件 |
+| --- | --- | --- |
+| `string` | 文字 | 输入框；`multiline = true` 时为多行文本框 |
+| `secret` | 文字，面板不回显 | 密码框，已保存时留空表示不修改 |
+| `integer`、`number` | 整数、数字 | 数字输入框 |
+| `boolean` | 开关 | 开关 |
+| `string_list` | 文字列表 | 多行文本框，每行一项 |
+| `scene` | 一个群，例如 `onebot:group:123` | 从宿主已配置的群里选，显示群名 |
+| `scene_list` | 多个群 | 多选，显示群名 |
+| `path` | 绝对路径 | 输入框 |
+| `url` | http 或 https 地址 | 输入框 |
+| `object_list` | 对象列表 | 每项一张卡片，卡片标题显示前几个已填的值 |
+
+通用的可选属性：
+
+- `label`：表单里显示的名字，缺省时显示字段名。建议写成运营者看得懂的中文。
+- `group`：分组标题，只用于顶层字段。同组字段放在一起，没分组的排在最前。
+- `placeholder`：输入框里的示例文字，用于 string、secret、integer、number、path、url。
+- `options`：string／integer／number 的候选值，面板用下拉框。可以直接写值，也可以写 `{ value = "auto", label = "自动" }`，保存 value、显示 label。
+- `minimum`、`maximum`：integer／number 的范围，后端同样校验。
+- `object_list.fields`：一层对象子字段，可用除 secret 和 object_list 以外的类型；子字段不能设 `group`。没有声明子字段的对象列表只能按 JSON 编辑，面板会提示补充声明。
+
+`path` 和 `url` 写了 `default = ""` 时允许留空，表示不填；没写默认值的必须填有效值。
+
+`scene` 和 `scene_list` 保存和加载时都会核对群是否在宿主配置里；插件作者不知道运营者有哪些群，所以 `scene` 不能写 `default`，`scene_list` 的 `default` 只能是 `[]`。后来从配置里删掉的群仍留在插件参数里时，插件加载失败并报出这个群，需要在面板里改掉。
 
 例如订阅条目：
 
 ```toml
+[config.card_mode]
+type = "string"
+label = "卡片样式"
+group = "显示"
+description = "推送消息用哪种样式"
+options = [{ value = "auto", label = "自动" }, { value = "image", label = "图片" }]
+default = "auto"
+
 [config.subscriptions]
 type = "object_list"
-description = "订阅房间"
+label = "订阅的直播间"
+description = "每个直播间单独选推送到哪些群"
 default = []
 
 [config.subscriptions.fields.room_id]
 type = "integer"
-description = "房间号"
+label = "房间号"
+description = "直播间页面地址里的数字"
 minimum = 1
 
-[config.subscriptions.fields.label]
+[config.subscriptions.fields.name]
 type = "string"
-description = "显示名称"
+label = "显示名称"
+description = "推送消息里用的名字"
 default = "直播间"
 
-[config.subscriptions.fields.mode]
-type = "string"
-description = "订阅类型"
-options = ["live", "posts"]
-default = "live"
+[config.subscriptions.fields.scenes]
+type = "scene_list"
+label = "推送到的群"
+description = "开播时在这些群里提醒"
+default = []
 ```
 
 运行参数仍只存在根 `lenbot.config.json`。不要把 KV 当作第二份配置，也不要从环境变量覆盖面板值。
@@ -172,7 +205,7 @@ async def check():
         assert '2' in result
 ```
 
-`scenes` 和 `owners` 可在构造器指定；`message(text, scene=..., sender=...)` 模拟实际身份，返回是否被接管。`deliveries` 包含插件、场景、组合内容、reply_to 和 simulated 状态；`events()` 查看实际记录的插件事件。处理器或启动失败会使本次测试报错，退出上下文会停止插件并删除临时实例。它不提供模型、记忆或工作服务，这些调用明确报错；插件自行调用外部网络仍会执行，同进程测试不是沙箱。
+`scenes` 和 `owners` 可在构造器指定，`scene`／`scene_list` 参数按 `scenes` 校验；`message(text, scene=..., sender=...)` 模拟实际身份，返回是否被接管。`deliveries` 包含插件、场景、组合内容、reply_to 和 simulated 状态；`events()` 查看实际记录的插件事件。处理器或启动失败会使本次测试报错，退出上下文会停止插件并删除临时实例。它不提供模型、记忆或工作服务，这些调用明确报错；插件自行调用外部网络仍会执行，同进程测试不是沙箱。
 
 在 GitHub 上打开[插件模板仓库](https://github.com/lendevs/lenbot-plugin-template)，点 Use this template 生成自己的仓库。模板 CI 安装指定版本的宿主再跑插件测试；打 `v*` 标签时，发布工作流把清单、入口、README 和 LICENSE 打成可导入的 ZIP 挂到 Release。发布前填写自己的 name／authors，更新版本及兼容范围。
 

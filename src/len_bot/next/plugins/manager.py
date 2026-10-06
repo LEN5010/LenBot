@@ -147,7 +147,7 @@ class PluginManager:
         saved = await asyncio.to_thread(_read_saved, self.root)
         record = self.installer.read(name)
         try:
-            await self.installer.check_apply(name, saved.plugins.configured[name])
+            await self.installer.check_apply(name, saved.plugins.configured[name], saved.scenes)
             if record.application == 'host':
                 record.requested, record.error = True, None
                 self.installer.write(record)

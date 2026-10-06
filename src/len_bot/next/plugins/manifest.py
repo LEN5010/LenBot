@@ -1,14 +1,14 @@
 """Plugin manifests, typed configuration and filesystem discovery; no code execution."""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from importlib.metadata import version
 import sys
 import re
 import tomllib
 from typing import Annotated, Literal
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote, quote_plus, urlsplit
 
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
@@ -18,34 +18,85 @@ from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, Jso
 from ..configuration.plugin import PLUGIN_NAME, PLUGIN_RESERVED
 from ..config import HostConfig
 from ..plugin import INTERFACE
+from ..platform.identity import validate_scene
 from ..tools.skills import Skill, load_catalog, load_plugin_skills
 from ..storage.store import encode
 
 BUILTIN = Path(__file__).resolve().parents[1] / "builtin_plugins"
 STRICT = ConfigDict(extra="forbid", strict=True)
 FIELD_TYPES = {"string": str, "secret": str, "integer": int, "number": float, "boolean": bool,
-               "string_list": list[str], "object_list": list[dict[str, JsonValue]]}
+               "string_list": list[str], "object_list": list[dict[str, JsonValue]],
+               "scene": str, "scene_list": list[str], "path": str, "url": str}
+TEXT_TYPES = {"string", "secret", "integer", "number", "path", "url"}
+
+
+def _absolute_path(value: str) -> str:
+    if not Path(value).is_absolute():
+        raise ValueError(f"必须是绝对路径；raw={value!r}")
+    return value
+
+
+def _web_url(value: str) -> str:
+    parts = urlsplit(value)
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise ValueError(f"必须是 http 或 https 地址；raw={value!r}")
+    return value
+
+
+def _configured_scene(scenes: Collection[str]):
+    def check(value: str) -> str:
+        validate_scene(value)
+        if value not in scenes:
+            raise ValueError(f"群 {value} 不在宿主配置的场景里")
+        return value
+    return check
+
+
+class Option(BaseModel):
+    """A choice shown as ``label`` and saved as ``value``."""
+    model_config = STRICT
+    value: str | int | float
+    label: str = Field(min_length=1)
 
 
 class ConfigItem(BaseModel):
     """One form value, also used for an object-list row's named children."""
     model_config = STRICT
-    type: Literal["string", "integer", "number", "boolean", "string_list"]
+    type: Literal["string", "integer", "number", "boolean", "string_list", "scene", "scene_list", "path", "url"]
     description: str = Field(min_length=1)
+    label: str | None = Field(default=None, min_length=1)
+    placeholder: str | None = Field(default=None, min_length=1)
+    multiline: bool = False
     default: str | int | float | bool | list[str] | list[dict[str, JsonValue]] | None = None
-    options: list[str | int | float] | None = Field(default=None, min_length=1)
+    options: list[str | int | float | Option] | None = Field(default=None, min_length=1)
     minimum: float | None = Field(default=None, allow_inf_nan=False)
     maximum: float | None = Field(default=None, allow_inf_nan=False)
 
-    def annotation(self):
+    def choices(self) -> list[Option] | None:
+        if self.options is None:
+            return None
+        return [option if isinstance(option, Option) else Option(value=option, label=str(option))
+                for option in self.options]
+
+    def annotation(self, scenes: Collection[str]):
         constraints = Field(ge=self.minimum, le=self.maximum) if self.type in {"integer", "number"} else Field()
         value_type = Annotated[FIELD_TYPES[self.type], constraints]
+        if self.type in {"path", "url"}:
+            check = _absolute_path if self.type == "path" else _web_url
+            # ``default = ""`` declares the field may stay empty.
+            optional = "default" in self.model_fields_set and self.default == ""
+            value_type = Annotated[value_type, AfterValidator(lambda value: value if optional and value == "" else check(value))]
+        elif self.type == "scene":
+            value_type = Annotated[value_type, AfterValidator(_configured_scene(scenes))]
+        elif self.type == "scene_list":
+            value_type = list[Annotated[str, AfterValidator(_configured_scene(scenes))]]
         if self.options is not None:
+            values = [option.value for option in self.choices()]
             def choice(value):
-                if value not in self.options:
-                    raise ValueError(f"必须是 {self.options!r} 中的一项")
+                if value not in values:
+                    raise ValueError(f"必须是 {values!r} 中的一项")
                 return value
-            value_type = Annotated[value_type, AfterValidator(choice), Field(json_schema_extra={"enum": self.options})]
+            value_type = Annotated[value_type, AfterValidator(choice), Field(json_schema_extra={"enum": values})]
         return value_type
 
     @model_validator(mode="after")
@@ -54,25 +105,36 @@ class ConfigItem(BaseModel):
             raise ValueError("minimum/maximum 只用于 integer 或 number")
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             raise ValueError("minimum 不能大于 maximum")
+        if self.multiline and self.type != "string":
+            raise ValueError("multiline 只用于 string")
+        if self.placeholder is not None and self.type not in TEXT_TYPES:
+            raise ValueError(f"placeholder 只用于 {sorted(TEXT_TYPES)}")
         if self.options is not None:
             if self.type not in {"string", "integer", "number"}:
                 raise ValueError("options 只用于 string、integer 或 number")
             adapter = TypeAdapter(FIELD_TYPES[self.type], config=STRICT)
-            for option in self.options:
-                adapter.validate_python(option)
+            values = [option.value for option in self.choices()]
+            for value in values:
+                adapter.validate_python(value)
+            if len(set(values)) != len(values):
+                raise ValueError("options 的 value 不能重复")
         if "default" in self.model_fields_set:
-            TypeAdapter(self.annotation(), config=STRICT).validate_python(self.default)
+            if self.type == "scene" or (self.type == "scene_list" and self.default != []):
+                raise ValueError("scene/scene_list 不能预设群；scene_list 的默认值只能是 []")
+            TypeAdapter(self.annotation(()), config=STRICT).validate_python(self.default)
         return self
 
 
 class ConfigField(ConfigItem):
-    type: Literal["string", "secret", "integer", "number", "boolean", "string_list", "object_list"]
+    type: Literal["string", "secret", "integer", "number", "boolean", "string_list", "object_list",
+                  "scene", "scene_list", "path", "url"]
+    group: str | None = Field(default=None, min_length=1)
     fields: dict[str, ConfigItem] = Field(default_factory=dict)
 
-    def annotation(self):
+    def annotation(self, scenes: Collection[str]):
         if self.type == "object_list" and self.fields:
-            return list[config_model("PluginConfigRow", self.fields)]
-        return super().annotation()
+            return list[config_model("PluginConfigRow", self.fields, scenes)]
+        return super().annotation(scenes)
 
     @model_validator(mode="after")
     def object_fields(self):
@@ -88,9 +150,9 @@ def check_field_names(fields: Mapping[str, ConfigItem]) -> None:
             raise ValueError(f"配置字段 {key!r} 只能使用小写字母、数字和下划线")
 
 
-def config_model(name: str, fields: Mapping[str, ConfigItem]) -> type[BaseModel]:
+def config_model(name: str, fields: Mapping[str, ConfigItem], scenes: Collection[str]) -> type[BaseModel]:
     return create_model(name, __config__=STRICT, **{
-        key: (item.annotation(), Field(item.default if "default" in item.model_fields_set else ...,
+        key: (item.annotation(scenes), Field(item.default if "default" in item.model_fields_set else ...,
                                        description=item.description, validate_default=True))
         for key, item in fields.items()
     })
@@ -147,8 +209,9 @@ class Manifest(BaseModel):
         check_field_names(value)
         return value
 
-    def values_model(self) -> type[BaseModel]:
-        return config_model(f"PluginConfig_{self.name}", self.config)
+    def values_model(self, scenes: Collection[str]) -> type[BaseModel]:
+        """Values model; ``scene`` and ``scene_list`` values must be among ``scenes`` (the host's configured scenes)."""
+        return config_model(f"PluginConfig_{self.name}", self.config, scenes)
 
 
 def redact_values(text: str, manifest: Manifest | None, values: Mapping[str, object]) -> str:
