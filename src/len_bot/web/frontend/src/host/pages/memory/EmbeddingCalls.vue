@@ -38,7 +38,7 @@ async function detail(id) {
     <ObjectList divided>
       <li v-for="call in rows" :key="call.id" class="call">
         <div class="inline"><strong>#{{ call.id }} {{ purpose[call.purpose] || call.purpose }}</strong>
-          <span class="muted small">{{ formatTime(call.started) }} · {{ call.cost ? `${call.cost.amount} ${call.cost.currency}` : '费用未知' }}{{ call.error ? ' · 出错' : '' }}</span>
+          <span class="muted small">{{ formatTime(call.started) }} · {{ call.tokens ? `${call.tokens.input} token` : '没有报告 token' }}{{ call.error ? ' · 出错' : '' }}</span>
           <v-btn v-if="!opened[call.id]" size="small" variant="text" @click="detail(call.id)">详情</v-btn></div>
         <CodeBlock :text="JSON.stringify(opened[call.id] || { usage: call.usage, response: call.response, error: call.error }, null, 2)" />
       </li>

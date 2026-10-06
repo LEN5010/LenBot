@@ -42,7 +42,7 @@ CREATE TABLE turns (
 CREATE TABLE model_calls (
     id INTEGER PRIMARY KEY, turn_id TEXT, role TEXT NOT NULL,
     started REAL NOT NULL, ended REAL, request TEXT NOT NULL,
-    response TEXT, usage TEXT, error TEXT, mind_entry_seq INTEGER, cost TEXT,
+    response TEXT, usage TEXT, error TEXT, mind_entry_seq INTEGER, tokens TEXT,
     scene TEXT NOT NULL, plugin TEXT
 );
 CREATE INDEX turn_calls ON model_calls(turn_id, id);

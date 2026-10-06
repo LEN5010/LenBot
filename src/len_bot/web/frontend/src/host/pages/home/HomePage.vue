@@ -1,6 +1,6 @@
 <script setup>
 import { computed, reactive } from 'vue'
-import { mdiMessageTextOutline, mdiSendOutline, mdiChatProcessingOutline, mdiAlarm, mdiCurrencyCny, mdiRefresh, mdiLanConnect,
+import { mdiMessageTextOutline, mdiSendOutline, mdiChatProcessingOutline, mdiAlarm, mdiCounter, mdiRefresh, mdiLanConnect,
   mdiLanDisconnect, mdiCheckCircleOutline, mdiArrowRight, mdiAlertCircleOutline, mdiAccountGroupOutline } from '@mdi/js'
 import { api, sceneName, sceneNumber } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
@@ -59,7 +59,7 @@ async function setChat(scene, enabled) {
 const effectLabels = { agree: '认同', continue: '接着聊', correct: '纠正', negative: '反感', unrelated: '没接话' }
 const count = values => Object.values(values || {}).reduce((sum, value) => sum + value, 0)
 const spoke = computed(() => (day.value?.messages.sent || 0) + (day.value?.messages.simulated || 0))
-const costs = computed(() => Object.entries(day.value?.estimated_costs || {}).map(([currency, amount]) => `${amount} ${currency}`))
+const tokens = computed(() => day.value ? day.value.tokens.input + day.value.tokens.output : 0)
 const effects = computed(() => Object.entries(effectLabels)
   .filter(([key]) => day.value?.reply_effects[key]).map(([key, label]) => `${label} ${day.value.reply_effects[key]}`))
 
@@ -111,8 +111,10 @@ const stats = computed(() => [
   { label: 'Bot 发言', value: spoke.value, icon: mdiSendOutline },
   { label: '回复轮次', value: count(day.value.turns), icon: mdiChatProcessingOutline, to: { name: 'host-logs' } },
   { label: '待执行提醒', value: day.value.pending_schedules, icon: mdiAlarm, to: { name: 'host-tasks', query: { tab: 'schedules' } } },
-  { label: '今日花费', value: costs.value.length ? costs.value.join(' · ') : '暂无', icon: mdiCurrencyCny,
-    hint: day.value.unknown_cost_calls ? `另有 ${day.value.unknown_cost_calls} 次调用费用未知` : '', to: { name: 'host-models', query: { tab: 'usage' } } },
+  { label: '今日 token', value: tokens.value.toLocaleString('zh-CN'), icon: mdiCounter,
+    hint: [`输入 ${day.value.tokens.input.toLocaleString('zh-CN')} · 输出 ${day.value.tokens.output.toLocaleString('zh-CN')}`,
+      day.value.unknown_token_calls ? `另有 ${day.value.unknown_token_calls} 次调用没有报告 token` : ''].filter(Boolean).join('；'),
+    to: { name: 'host-models', query: { tab: 'usage' } } },
 ])
 const connectionNote = computed(() => state.value.connection.status === 'stopped' && state.value.connection.disconnect_requested
   ? connectionNotes.disconnected : connectionNotes[state.value.connection.status])

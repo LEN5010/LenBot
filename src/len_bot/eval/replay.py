@@ -30,7 +30,7 @@ from ..next.memory.service import LocalMemoryConfig
 from ..next.trials.replay_web import RecordedWeb
 from ..next.trials.replay_images import RecordedImages
 from ..next.persona.profile import Persona, load_persona
-from ..next.models.pricing import cost_summary
+from ..next.models.tokens import token_summary
 from ..next.storage.store import FORMAT_VERSION, encode, turn_record
 
 
@@ -247,17 +247,17 @@ def observed_database(path: Path, *, scene: str, after_turn: int = 0, after_call
     if not path.exists():
         return {"database": None, "turns": None, "model_calls": None,
                 "chat_model_calls": None, "embedding_model_calls": None,
-                "memory_model_calls": None, "memory_errors": None, "usage": None, "cost": None}
+                "memory_model_calls": None, "memory_errors": None, "usage": None, "tokens": None}
     with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
         db.row_factory = sqlite3.Row
         turns = [turn_record(row) for row in db.execute(
             "SELECT * FROM turns WHERE rowid>? ORDER BY started,id", (after_turn,),
         )]
         chat_calls = [dict(row) for row in db.execute(
-            "SELECT id,turn_id,role,started,ended,usage,cost,error FROM model_calls WHERE id>? ORDER BY id", (after_call,),
+            "SELECT id,turn_id,role,started,ended,usage,tokens,error FROM model_calls WHERE id>? ORDER BY id", (after_call,),
         )]
         embedding_calls = [dict(row) for row in db.execute(
-            "SELECT id,scene,turn_id,purpose,started,ended,usage,cost,error "
+            "SELECT id,scene,turn_id,purpose,started,ended,usage,tokens,error "
             "FROM expression_embedding_calls WHERE scene=? AND id>? ORDER BY id",
             (scene, after_embedding_call),
         )]
@@ -267,7 +267,7 @@ def observed_database(path: Path, *, scene: str, after_turn: int = 0, after_call
             call["source"] = "expression_embedding"
         for call in [*chat_calls, *embedding_calls]:
             call["usage"] = None if call["usage"] is None else json.loads(call["usage"])
-            call["cost"] = None if call["cost"] is None else json.loads(call["cost"])
+            call["tokens"] = None if call["tokens"] is None else json.loads(call["tokens"])
         memory_calls, memory_errors = [], []
         memory_count = 0
         if memory_baseline is not None:
@@ -282,7 +282,7 @@ def observed_database(path: Path, *, scene: str, after_turn: int = 0, after_call
         return {"database": path.name, "turns": turns, "model_calls": len(calls),
                 "chat_model_calls": len(chat_calls), "embedding_model_calls": len(embedding_calls),
                 "memory_model_calls": memory_count, "memory_errors": memory_errors,
-                "usage": calls, "cost": cost_summary([call["cost"] for call in calls]),
+                "usage": calls, "tokens": token_summary([call["tokens"] for call in calls]),
                 "note": "仅统计本次新增聊天、表达embedding和本地记忆调用；用量按source保留各提供方原对象，"
                         "缺失不计为零。初始历史及完整原文在数据库中。"}
 
@@ -554,19 +554,19 @@ def read_report(directory: Path) -> dict:
         results.append({"case_id": case, "repeat": repeat, "result": result,
                         "annotation": annotation.model_dump()})
     scored = counts["pass"] + counts["fail"]
-    costs = []
+    token_records = []
     unobserved_cases = 0
     for item in results:
         result = item["result"]
         if result is None or result["usage"] is None:
             unobserved_cases += 1
-        elif result["cost"] is None:
-            costs.extend([None] * len(result["usage"]))
+        elif result["tokens"] is None:
+            token_records.extend([None] * len(result["usage"]))
         else:
-            costs.extend(call["cost"] for call in result["usage"])
+            token_records.extend(call["tokens"] for call in result["usage"])
     summary = {"run": metadata, "quality": counts, "scored": scored,
                "pass_rate": None if scored == 0 else counts["pass"] / scored,
-               "cost": {**cost_summary(costs), "unobserved_cases": unobserved_cases}, "results": results,
+               "tokens": {**token_summary(token_records), "unobserved_cases": unobserved_cases}, "results": results,
                "notice": "1 倍速开发回放；每例时间轴见结果，未标注不计通过，费用未知不计零，完整输出见各实例数据库。"}
     return summary
 
@@ -603,7 +603,7 @@ def comparison_side(item: dict) -> dict:
         "memory_model_calls": None if result is None else result.get("memory_model_calls"),
         "turns": None if result is None else result["turns"],
         "script_seconds": None if result is None else result["ended"] - result["started"],
-        "cost": None if result is None else result["cost"],
+        "tokens": None if result is None else result["tokens"],
     }
 
 
@@ -746,8 +746,8 @@ def compare(root: Path, baseline_id: str, candidate_id: str) -> dict:
                       "configuration_changes": config_changes, "persona_changed_files": persona_changes,
                       "archives": {"baseline": str(instances[0]), "candidate": str(instances[1])}})
     result = {
-        "baseline": {key: baseline[key] for key in ("run", "quality", "scored", "pass_rate", "cost")},
-        "candidate": {key: candidate[key] for key in ("run", "quality", "scored", "pass_rate", "cost")},
+        "baseline": {key: baseline[key] for key in ("run", "quality", "scored", "pass_rate", "tokens")},
+        "candidate": {key: candidate[key] for key in ("run", "quality", "scored", "pass_rate", "tokens")},
         "paired_scored": paired_scored, "annotation_transitions": transitions, "unpaired": unpaired,
         "paired_pass_rate_delta": (None if paired_scored == 0 else
                                    (transitions["fail_to_pass"] - transitions["pass_to_fail"]) / paired_scored),

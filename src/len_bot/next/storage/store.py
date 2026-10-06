@@ -17,14 +17,14 @@ from ..platform.messages import Notice, ChatMessage, plain_text
 from ..persona.stickers import PersonaSticker
 from ..learning.sticker_assets import CollectedSticker
 from ..image_assets import OriginalImage
-from ..models.pricing import cost_summary
+from ..models.tokens import token_summary
 from ..chat.schedule_time import CronTimeError, next_cron, parse_cron
 from .codec import decode_message, encode
 from .schema import create_database
 from ..chat.schedule_store import ScheduleStore
 
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 
 def turn_record(row: sqlite3.Row) -> dict:
@@ -303,37 +303,37 @@ class Store:
             "AND started>=? AND started<? GROUP BY status", (*scenes, since, until),
         ))
         calls = self.db.execute(
-            "SELECT model_calls.ended,model_calls.cost FROM model_calls "
+            "SELECT model_calls.ended,model_calls.tokens FROM model_calls "
             f"WHERE model_calls.scene IN ({placeholders}) AND model_calls.started>=? AND model_calls.started<?",
             (*scenes, since, until),
         ).fetchall()
         calls.extend(self.db.execute(
-            "SELECT ended,cost FROM audio_calls "
+            "SELECT ended,tokens FROM audio_calls "
             f"WHERE scene IN ({placeholders}) AND started>=? AND started<?",
             (*scenes, since, until),
         ).fetchall())
         calls.extend(self.db.execute(
-            "SELECT ended,cost FROM learning_batches "
+            "SELECT ended,tokens FROM learning_batches "
             f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
             (*scenes, since, until),
         ).fetchall())
         calls.extend(self.db.execute(
-            "SELECT ended,cost FROM expression_embedding_calls "
+            "SELECT ended,tokens FROM expression_embedding_calls "
             f"WHERE scene IN ({placeholders}) AND started>=? AND started<?",
             (*scenes, since, until),
         ).fetchall())
         calls.extend(self.db.execute(
-            "SELECT ended,cost FROM jargon_calls "
+            "SELECT ended,tokens FROM jargon_calls "
             f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
             (*scenes, since, until),
         ).fetchall())
         calls.extend(self.db.execute(
-            "SELECT ended,cost FROM sticker_calls "
+            "SELECT ended,tokens FROM sticker_calls "
             f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
             (*scenes, since, until),
         ).fetchall())
         calls.extend(self.db.execute(
-            "SELECT ended,cost FROM reply_effect_calls "
+            "SELECT ended,tokens FROM reply_effect_calls "
             f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
             (*scenes, since, until),
         ).fetchall())
@@ -342,7 +342,7 @@ class Store:
             f"COUNT(*) FROM reply_effects WHERE scene IN ({placeholders}) AND closed_at IS NOT NULL "
             "AND first_sent_at>=? AND first_sent_at<? GROUP BY 1", (*scenes, since, until),
         ))
-        costs = cost_summary([None if raw is None else json.loads(raw) for _, raw in calls])
+        token_records = token_summary([None if raw is None else json.loads(raw) for _, raw in calls])
         unfinished = sum(ended is None for ended, _ in calls)
         pending = self.db.execute(
             f"SELECT COUNT(*) FROM schedules WHERE scene IN ({placeholders}) AND status='pending'", scenes,
@@ -369,8 +369,9 @@ class Store:
             ):
                 reviews.setdefault(scene, {})[kind] = count
         return {"messages": messages, "turns": turns, "model_calls": len(calls),
-                "unfinished_calls": unfinished, "unknown_cost_calls": costs["unknown_calls"],
-                "estimated_costs": costs["known_amounts"],
+                "unfinished_calls": unfinished,
+                "tokens": {key: token_records[key] for key in ("input", "output", "cached")},
+                "unknown_token_calls": token_records["unknown_calls"],
                 "pending_schedules": pending, "recent_errors": errors,
                 "reply_effects": reactions, "undelivered": undelivered, "pending_reviews": reviews}
 
@@ -728,7 +729,7 @@ class Store:
         calls = []
         for row in self.db.execute("SELECT * FROM model_calls WHERE turn_id=? ORDER BY id", (turn_id,)):
             call = dict(row)
-            for key in ("request", "response", "usage", "cost"):
+            for key in ("request", "response", "usage", "tokens"):
                 call[key] = None if call[key] is None else json.loads(call[key])
             entry_seq = call.pop("mind_entry_seq")
             call["tool_results"] = None if entry_seq is None else []
@@ -1125,16 +1126,16 @@ class Store:
 
 
     def end_call(self, call_id: int, response: dict | None, usage: dict | None,
-                 error: str | None = None, *, cost: dict | None = None, append_to_scene: str | None = None,
+                 error: str | None = None, *, tokens: dict | None = None, append_to_scene: str | None = None,
                  recap_for: tuple[str, int] | None = None) -> None:
         with self.db:
             entry_seq = (None if append_to_scene is None else
                          self._append(append_to_scene, response["message"]))
             self.db.execute(
-                "UPDATE model_calls SET ended=?,response=?,usage=?,error=?,mind_entry_seq=?,cost=? WHERE id=?",
+                "UPDATE model_calls SET ended=?,response=?,usage=?,error=?,mind_entry_seq=?,tokens=? WHERE id=?",
                 (self.now(), None if response is None else encode(response),
                  None if usage is None else encode(usage), error, entry_seq,
-                 None if cost is None else encode(cost), call_id),
+                 None if tokens is None else encode(tokens), call_id),
             )
             if append_to_scene is not None:
                 if error is None and not response["message"].get("tool_calls"):

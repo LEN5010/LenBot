@@ -87,24 +87,6 @@ class SharedConfig(BaseModel):
 
 
     @model_validator(mode="after")
-    def budget_prices(self):
-        if self.limits.daily_model_cost is None and not self.limits.scene_daily_model_cost:
-            return self
-        asr = self.models.roles.asr
-        if asr is not None and (asr.price is None or asr.price.currency != self.limits.currency):
-            raise ValueError("日金额预算要求 ASR 显式配置同币种 price")
-        bindings = [getattr(self.models.roles, role) for role in ("mind","vision","memory","worker","learner")]
-        if self.memory is not None and self.memory.local.embedding is not None:
-            bindings.append(self.memory.local.embedding)
-        for binding in bindings:
-            if binding is None:
-                continue
-            price = self.models.prices.get(binding.provider, {}).get(binding.model)
-            if price is None or price.currency != self.limits.currency:
-                raise ValueError(f"日金额预算要求 {binding.provider}/{binding.model} 的 {self.limits.currency} 显式价格")
-        return self
-
-    @model_validator(mode="after")
     def memory_provider_exists(self) -> SharedConfig:
         if self.memory is not None and self.memory.local.embedding is not None:
             provider = self.memory.local.embedding.provider
@@ -120,11 +102,6 @@ class SharedConfig(BaseModel):
             binding = self.models.roles.worker
             if binding is None:
                 raise ValueError("worker requires explicit models.roles.worker")
-            if (self.worker.max_cost is not None
-                    and self.models.prices.get(binding.provider, {}).get(binding.model) is None):
-                raise ValueError(
-                    "worker.max_cost requires models.prices for the exact worker provider and model"
-                )
             if (self.worker.compaction_reserve_tokens + self.worker.compaction_keep_recent_tokens
                     >= binding.context_window_tokens):
                 raise ValueError(
@@ -382,12 +359,6 @@ class HostConfig(SharedConfig):
                     raise ValueError(f"scenes.{scene}.learning requires explicit models.roles.learner")
                 if settings.learning.collect_stickers and self.models.roles.vision is None:
                     raise ValueError(f"scenes.{scene}.learning.collect_stickers requires explicit models.roles.vision")
-                if settings.learning.embedding is not None and (
-                        self.limits.daily_model_cost is not None or self.limits.scene_daily_model_cost):
-                    binding = settings.learning.embedding
-                    price = self.models.prices.get(binding.provider, {}).get(binding.model)
-                    if price is None or price.currency != self.limits.currency:
-                        raise ValueError(f"场景表达向量日预算要求 {binding.provider}/{binding.model} 的同币种价格")
                 if (settings.learning.embedding is not None
                         and settings.learning.embedding.provider not in self.models.providers):
                     raise ValueError(f"scenes.{scene}.learning.embedding.provider references unknown provider "

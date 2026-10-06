@@ -3,33 +3,10 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from decimal import Decimal, localcontext
 from typing import Annotated, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
-
-
-from .pricing import Rate
-
-
-class DurationPrice(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
-    type: Literal["duration"]
-    currency: str = Field(pattern=r"^[A-Z]{3}$")
-    per_second: Rate
-
-
-class AudioTokenPrice(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
-    type: Literal["tokens"]
-    currency: str = Field(pattern=r"^[A-Z]{3}$")
-    input_audio: Rate
-    input_text: Rate
-    output: Rate
-
-
-AudioPrice = Annotated[DurationPrice | AudioTokenPrice, Field(discriminator="type")]
 
 
 class ASRBinding(BaseModel):
@@ -39,7 +16,6 @@ class ASRBinding(BaseModel):
     model: str
     timeout_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
     language: str | None = Field(default=None, pattern=r"^[a-z]{2}$")
-    price: AudioPrice | None = None
 
     @field_validator("provider", "model")
     @classmethod
@@ -134,22 +110,8 @@ async def transcribe_audio(binding: ASRBinding, *, base_url: str, api_key: str, 
         return parse_transcription(body)
 
 
-def estimate_transcription(price: AudioPrice | None, usage: TokenUsage | DurationUsage | None) -> dict | None:
-    """Use reported metering only; never infer a billed duration from the WAV."""
-    if price is None or usage is None or price.type != usage.type:
+def transcription_tokens(usage: TokenUsage | DurationUsage | None) -> dict[str, int | None] | None:
+    """The stored token count of one transcription; a duration-metered service reports no tokens."""
+    if not isinstance(usage, TokenUsage):
         return None
-    with localcontext() as context:
-        context.prec = 40
-        if isinstance(price, DurationPrice):
-            amount = price.per_second * Decimal(str(usage.seconds))
-        else:
-            if price.input_audio == price.input_text:
-                inputs = usage.input_tokens * price.input_audio
-            else:
-                details = usage.input_token_details
-                if (details is None or details.audio_tokens is None or details.text_tokens is None
-                        or details.audio_tokens + details.text_tokens != usage.input_tokens):
-                    return None
-                inputs = details.audio_tokens * price.input_audio + details.text_tokens * price.input_text
-            amount = (inputs + usage.output_tokens * price.output) / Decimal(1_000_000)
-    return {"basis": "configured_estimate", "currency": price.currency, "amount": format(amount, "f")}
+    return {"input": usage.input_tokens, "output": usage.output_tokens, "cached": None}

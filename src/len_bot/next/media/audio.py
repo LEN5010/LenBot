@@ -11,7 +11,7 @@ from weakref import WeakValueDictionary
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..models.asr import ASRProtocolError, AudioSettings, transcribe_audio, estimate_transcription
+from ..models.asr import ASRProtocolError, AudioSettings, transcribe_audio, transcription_tokens
 from .audio_store import AudioStore
 from ..models.slots import ModelSlots
 from ..platform.platform_tools import PlatformCall
@@ -97,16 +97,15 @@ async def process_audio(store, config, arguments, *, turn_id, platform, slots, d
                 "file": {"scene": scene, "platform_message_id": arguments.message, "audio": arguments.audio,
                          "content_type": "audio/wav", "bytes": len(row["wav"]), "duration": row["duration"],
                          "source": "audio_cache"}, "response_format": "json",
-                "price": None if binding.price is None else binding.price.model_dump(mode="json"),
             }
             calls = AudioStore(store)
             call_id = (store.start_call(turn_id, "asr", request) if turn_id is not None
                        else calls.start_call(*position, request))
-            def end_call(response, usage, error=None, *, cost=None):
+            def end_call(response, usage, error=None, *, tokens=None):
                 if turn_id is None:
-                    calls.end_call(call_id, response, usage, error, cost=cost)
+                    calls.end_call(call_id, response, usage, error, tokens=tokens)
                 else:
-                    store.end_call(call_id, response, usage, error, cost=cost)
+                    store.end_call(call_id, response, usage, error, tokens=tokens)
             notify()
             try:
                 reply = await transcribe_audio(binding, base_url=provider.base_url, api_key=provider.api_key, wav=row["wav"])
@@ -114,12 +113,12 @@ async def process_audio(store, config, arguments, *, turn_id, platform, slots, d
                 error_text = f"{type(error).__name__}: {error}"
                 if isinstance(error, ASRProtocolError):
                     end_call(error.response, error.usage, error_text,
-                             cost=estimate_transcription(binding.price, error.metering))
+                             tokens=transcription_tokens(error.metering))
                 else:
                     end_call(None, None, error_text)
                 notify()
                 raise
-            end_call(reply.response, reply.usage, cost=estimate_transcription(binding.price, reply.metering))
+            end_call(reply.response, reply.usage, tokens=transcription_tokens(reply.metering))
             with store.db:
                 store.db.execute("UPDATE audio_cache SET transcript=?,provider=?,model=?,transcribed_at=?,"
                     "status='complete',updated=?,error=NULL,announced_at=? "

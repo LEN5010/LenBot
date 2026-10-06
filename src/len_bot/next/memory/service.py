@@ -18,7 +18,7 @@ from ..platform.messages import ChatMessage, plain_text, render_message
 from ..models.client import ChatModel
 from ..models.slots import ModelSlots
 from ..storage.store import Store, encode
-from ..models.pricing import estimate_cost
+from ..models.tokens import token_record
 
 if TYPE_CHECKING:
     from ..config import SharedConfig
@@ -333,15 +333,13 @@ async def open_memory(config: SharedConfig, store: Store, *, active_personas: di
                                     active_personas={} if active_personas is None else active_personas)
             if backend.embedding is not None:
                 binding = config.memory.local.embedding
-                price = config.models.prices.get(binding.provider, {}).get(binding.model)
                 async def embed(source, texts, purpose):
                     async with (slots.slot(scene=source) if slots is not None else nullcontext()):
                         with jobs.db:
                             call_id = jobs.db.execute(
                                 "INSERT INTO memory_embedding_calls(scene,purpose,started,request) VALUES(?,?,?,?)",
                                 (source, purpose, store.now(), encode({"texts": texts,
-                                 "settings": backend.embedding.settings.model_dump(mode="json", exclude={"api_key"}),
-                                 "price": None if price is None else price.model_dump(mode="json")})),
+                                 "settings": backend.embedding.settings.model_dump(mode="json", exclude={"api_key"})})),
                             ).lastrowid
                         try:
                             batch = await backend.embedding.embed(texts)
@@ -351,11 +349,11 @@ async def open_memory(config: SharedConfig, store: Store, *, active_personas: di
                                                 (store.now(), f"{type(error).__name__}: {error}", call_id))
                             raise
                         with jobs.db:
-                            cost = estimate_cost(price, batch.token_usage)
-                            jobs.db.execute("UPDATE memory_embedding_calls SET ended=?,response=?,usage=?,cost=? WHERE id=?",
+                            tokens = token_record(batch.token_usage)
+                            jobs.db.execute("UPDATE memory_embedding_calls SET ended=?,response=?,usage=?,tokens=? WHERE id=?",
                                             (store.now(), encode({"vector_count":len(batch.vectors),"dimensions":batch.dimensions}),
                                              None if batch.usage is None else encode(batch.usage),
-                                             None if cost is None else encode(cost), call_id))
+                                             None if tokens is None else encode(tokens), call_id))
                         return batch
                 backend.track_embedding = embed
 

@@ -182,7 +182,6 @@ class MemoryIngestor:
 
     async def _run_local(self, scene: str, job: dict) -> None:
         binding = self.config.models.roles.memory
-        price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
         self.jobs.status(job, "running")
 
         def start_call(request: dict) -> int:
@@ -194,10 +193,10 @@ class MemoryIngestor:
             return len(calls) - 1
 
         def finish_call(index: int, response: object | None, usage: dict | None,
-                        error: str | None, cost: dict | None) -> None:
+                        error: str | None, tokens: dict | None) -> None:
             job["details"]["calls"][index].update(
                 ended=time.time(), response=copy.deepcopy(response),
-                usage=copy.deepcopy(usage), error=error, cost=copy.deepcopy(cost))
+                usage=copy.deepcopy(usage), error=error, tokens=copy.deepcopy(tokens))
             self.jobs.details(job)
 
         def record_tool(call_id: str, name: str, arguments: dict,
@@ -231,7 +230,7 @@ class MemoryIngestor:
                         context_window_tokens=binding.context_window_tokens,
                         max_steps=self.settings.max_steps, start_call=start_call,
                         finish_call=finish_call, record_tool=record_tool,
-                        record_write=record_write, price=price, slots=self.slots,
+                        record_write=record_write, slots=self.slots,
                     )
         except asyncio.CancelledError as error:
             detail = "Process stopped during local extraction"

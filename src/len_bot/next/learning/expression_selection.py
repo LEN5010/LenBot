@@ -14,7 +14,7 @@ from ..config import HostConfig, LabConfig
 from .store import LearningStore, StoredVector
 from ..memory.embeddings import EmbeddingBatch, EmbeddingClient, EmbeddingSettings
 from ..models.slots import ModelSlots
-from ..models.pricing import ModelPrice, estimate_cost
+from ..models.tokens import token_record
 from ..storage.store import Store, encode
 
 
@@ -26,12 +26,11 @@ class ExpressionService:
     """One selected embedding backend per scene, without implicit index repair."""
 
     def __init__(self, store: Store, clients: dict[str, EmbeddingClient],
-                 prices: dict[str, ModelPrice | None], *, slots: ModelSlots | None = None,
+                 *, slots: ModelSlots | None = None,
                  on_update: Callable[[], None] | None = None):
         self.store = store
         self.records = LearningStore(store)
         self.clients = clients
-        self.prices = prices
         self.slots = slots
         self.on_update = on_update
         self.scenes = tuple(clients)
@@ -81,12 +80,10 @@ class ExpressionService:
     async def _embed(self, scene: str, texts: list[str], *, purpose: Literal["query", "index", "reindex"],
                      turn_id: str | None = None, direct: bool = False) -> EmbeddingBatch:
         client = self._client(scene)
-        price = self.prices[scene]
         async with (self.slots.slot(direct=direct, scene=scene) if self.slots is not None else nullcontext()):
             call_id = self.records.start_embedding_call(
                 scene, purpose,
-                {"settings": client.settings.model_dump(exclude={"api_key"}), "texts": list(texts),
-                 "price": None if price is None else price.model_dump(mode="json")},
+                {"settings": client.settings.model_dump(exclude={"api_key"}), "texts": list(texts)},
                 turn_id=turn_id,
             )
             if self.on_update is not None:
@@ -100,7 +97,7 @@ class ExpressionService:
                 raise
             self.records.end_embedding_call(
                 call_id, {"vector_count": len(batch.vectors), "dimensions": batch.dimensions},
-                batch.usage, estimate_cost(price, batch.token_usage),
+                batch.usage, token_record(batch.token_usage),
             )
             if self.on_update is not None:
                 self.on_update()
@@ -215,7 +212,6 @@ async def open_expression_service(config: HostConfig | LabConfig, store: Store, 
         yield None
         return
     clients: dict[str, EmbeddingClient] = {}
-    prices: dict[str, ModelPrice | None] = {}
     shared: dict[tuple[str, str, int | None], EmbeddingClient] = {}
     async with AsyncExitStack() as stack:
         for scene, binding in selected.items():
@@ -226,5 +222,4 @@ async def open_expression_service(config: HostConfig | LabConfig, store: Store, 
                                              api_key=provider.api_key)
                 shared[key] = await stack.enter_async_context(EmbeddingClient(resolved))
             clients[scene] = shared[key]
-            prices[scene] = config.models.prices.get(binding.provider, {}).get(binding.model)
-        yield ExpressionService(store, clients, prices, slots=slots)
+        yield ExpressionService(store, clients, slots=slots)

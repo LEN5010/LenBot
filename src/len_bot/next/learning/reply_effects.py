@@ -16,7 +16,7 @@ from ..chat.recap import ContextBudgetError, estimate_request
 from ..platform.messages import ChatMessage, render_message
 from ..models.client import ChatModel, ModelProtocolError, ModelReply
 from ..models.slots import ModelSlots
-from ..models.pricing import estimate_cost
+from ..models.tokens import token_record
 from .reply_effect_store import REACTIONS, ReplyEffectStore
 from ..storage.store import Store, encode
 
@@ -239,7 +239,6 @@ class ReplyEffectTracker:
 
     async def _run(self, scene: str, ids: list[int], *, retry_of: int | None = None) -> None:
         binding = self.config.models.roles.learner
-        price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
         effects = self.records.effects(scene, ids)
         messages = [{"role": "system", "content": self._prompt},
                     {"role": "user", "content": encode({"scene": scene, "bot_id": self.config.bot_id,
@@ -249,7 +248,6 @@ class ReplyEffectTracker:
                    "settings": self.model.settings.model_dump(exclude={"api_key"}),
                    "messages": messages, "tools": [], "estimated_total_tokens": estimate,
                    "context_window_tokens": binding.context_window_tokens,
-                   "price": None if price is None else price.model_dump(mode="json"),
                    **({} if retry_of is None else {"retry_of": retry_of})}
         call_id = self.records.begin_call(scene, ids, request, retry_of=retry_of)
         try:
@@ -265,10 +263,10 @@ class ReplyEffectTracker:
                     reply = await self.model.complete(messages, [])
                 except ModelProtocolError as error:
                     self.records.response(call_id, error.response, error.usage,
-                                          estimate_cost(price, error.token_usage))
+                                          token_record(error.token_usage))
                     raise
             self.records.response(call_id, {"message": reply.message, "finish_reason": reply.finish_reason},
-                                  reply.usage, estimate_cost(price, reply.token_usage))
+                                  reply.usage, token_record(reply.token_usage))
             self.records.complete(call_id, parse_results(reply, {item["entry_seq"] for item in effects}))
         except asyncio.CancelledError as error:
             self.records.fail(call_id, "interrupted", _error_text(error))

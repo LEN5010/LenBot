@@ -136,7 +136,7 @@ def observed_memory(path: Path, baseline: MemoryBaseline) -> tuple[list[dict], l
                 calls.append({'source': 'memory_extract', 'job_id': row['id'], 'call_index': index,
                               'scene': row['scene'], 'started': call['started'],
                               'ended': call.get('ended'), 'usage': call.get('usage'),
-                              'cost': call.get('cost'), 'error': call.get('error')})
+                              'tokens': call.get('tokens'), 'error': call.get('error')})
             if row['error'] is not None and (
                     row['id'] not in baseline.extraction_calls or len(exchanges) > prior
                     or row['error'] != baseline.extraction_errors[row['id']]):
@@ -153,7 +153,7 @@ def observed_memory(path: Path, baseline: MemoryBaseline) -> tuple[list[dict], l
                 calls.append({'source': source, 'id': row['id'], 'scene': row['scene'],
                               'started': row[start], 'ended': row['ended'],
                               'usage': None if row['usage'] is None else json.loads(row['usage']),
-                              'cost': None if row['cost'] is None else json.loads(row['cost']),
+                              'tokens': None if row['tokens'] is None else json.loads(row['tokens']),
                               'error': row['error']})
     return calls, errors
 

@@ -18,7 +18,7 @@ from ..storage.store import encode
 from .embeddings import _reject_constant
 
 
-FORMAT_VERSION = 5
+FORMAT_VERSION = 6
 
 
 class MemoryJobs:
@@ -43,7 +43,7 @@ class MemoryJobs:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id=1279413578;
-                    PRAGMA user_version=5;
+                    PRAGMA user_version=6;
                     CREATE TABLE memory_cursors (
                         scene TEXT PRIMARY KEY, after_seq INTEGER NOT NULL,
                         enabled_at REAL NOT NULL
@@ -67,13 +67,13 @@ class MemoryJobs:
                         id INTEGER PRIMARY KEY, scene TEXT NOT NULL, scope TEXT NOT NULL, path TEXT NOT NULL,
                         started REAL NOT NULL, ended REAL,
                         status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
-                        request TEXT NOT NULL, response TEXT, usage TEXT, cost TEXT, error TEXT, model_started REAL
+                        request TEXT NOT NULL, response TEXT, usage TEXT, tokens TEXT, error TEXT, model_started REAL
                     );
                     CREATE INDEX memory_summary_runs_path ON memory_summary_runs(scope,path,id);
                     CREATE TABLE memory_embedding_calls (
                         id INTEGER PRIMARY KEY, scene TEXT NOT NULL, purpose TEXT NOT NULL,
                         started REAL NOT NULL, ended REAL, request TEXT NOT NULL,
-                        response TEXT, usage TEXT, cost TEXT, error TEXT
+                        response TEXT, usage TEXT, tokens TEXT, error TEXT
                     );
                     CREATE INDEX memory_embedding_usage ON memory_embedding_calls(started,scene);
                     COMMIT;
@@ -86,7 +86,7 @@ class MemoryJobs:
         self.db.close()
 
     def recover_embeddings(self, now: float) -> None:
-        error = 'Interrupted: previous memory embedding call has no confirmed result; not replayed; service usage and cost remain unknown'
+        error = 'Interrupted: previous memory embedding call has no confirmed result; not replayed; service usage and tokens remain unknown'
         with self.db:
             self.db.execute("UPDATE memory_embedding_calls SET ended=?,error=CASE WHEN error IS NULL THEN ? "
                             "ELSE error || char(10) || ? END WHERE ended IS NULL", (now, error, error))
@@ -94,7 +94,7 @@ class MemoryJobs:
     @staticmethod
     def _embedding_record(row: sqlite3.Row, *, request: bool) -> dict:
         result = dict(row)
-        fields = ('request', 'response', 'usage', 'cost') if request else ('response', 'usage', 'cost')
+        fields = ('request', 'response', 'usage', 'tokens') if request else ('response', 'usage', 'tokens')
         for field in fields:
             raw = result[field]
             if raw is None:
@@ -111,7 +111,7 @@ class MemoryJobs:
         boundary = maximum if snapshot is None else snapshot
         if boundary > maximum:
             raise ValueError(f'Embedding call snapshot is beyond this source: source={source!r}, snapshot={boundary}, maximum={maximum}')
-        rows = self.db.execute('SELECT id,scene,purpose,started,ended,response,usage,cost,error '
+        rows = self.db.execute('SELECT id,scene,purpose,started,ended,response,usage,tokens,error '
             'FROM memory_embedding_calls WHERE scene=? AND id<=? ORDER BY id DESC LIMIT ? OFFSET ?',
             (source, boundary, limit + 1, offset)).fetchall()
         return {'source': source, 'snapshot': boundary, 'offset': offset,
@@ -222,11 +222,11 @@ class MemoryJobs:
                 (scene, scope, path, time.time(), encode(request), time.time()),
             ).lastrowid
 
-    def summary_response(self, id: int, response: object, usage: object, cost: object) -> None:
+    def summary_response(self, id: int, response: object, usage: object, tokens: object) -> None:
         with self.db:
-            self.db.execute("UPDATE memory_summary_runs SET response=?,usage=?,cost=? WHERE id=?",
+            self.db.execute("UPDATE memory_summary_runs SET response=?,usage=?,tokens=? WHERE id=?",
                             (encode(response), None if usage is None else encode(usage),
-                             None if cost is None else encode(cost), id))
+                             None if tokens is None else encode(tokens), id))
 
     def finish_summary(self, id: int, status: str, error: str | None = None) -> None:
         with self.db:
@@ -239,18 +239,18 @@ class MemoryJobs:
 
     def summary_runs(self, scope: str, path: str, *, limit: int = 5) -> list[dict]:
         rows = self.db.execute(
-            "SELECT id,scene,scope,path,started,ended,status,usage,cost,error FROM memory_summary_runs "
+            "SELECT id,scene,scope,path,started,ended,status,usage,tokens,error FROM memory_summary_runs "
             "WHERE scope=? AND path=? ORDER BY id DESC LIMIT ?", (scope, path, limit),
         ).fetchall()
         return [{**dict(row), "usage": None if row["usage"] is None else json.loads(row["usage"]),
-                 "cost": None if row["cost"] is None else json.loads(row["cost"])} for row in rows]
+                 "tokens": None if row["tokens"] is None else json.loads(row["tokens"])} for row in rows]
 
     def summary_run(self, id: int) -> dict | None:
         row = self.db.execute("SELECT * FROM memory_summary_runs WHERE id=?", (id,)).fetchone()
         if row is None:
             return None
         return {**dict(row), **{key: None if row[key] is None else json.loads(row[key])
-                                for key in ("request", "response", "usage", "cost")}}
+                                for key in ("request", "response", "usage", "tokens")}}
 
 
 @contextmanager

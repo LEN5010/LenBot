@@ -361,10 +361,10 @@ class TaskStore:
             body["ended"] = self.now()
             self.db.execute("UPDATE task_events SET body=? WHERE id=?", (encode(body), eventid))
 
-    def call_costs(self, scene: str, id: int) -> list[dict | None]:
+    def call_tokens(self, scene: str, id: int) -> list[dict | None]:
         self.get(scene, id)
         rows = self.db.execute(
-            "SELECT json_extract(body,'$.response.cost') FROM task_events WHERE scene=? AND task_id=? "
+            "SELECT json_extract(body,'$.response.tokens') FROM task_events WHERE scene=? AND task_id=? "
             "AND kind='model_call' ORDER BY id", (scene, id),
         ).fetchall()
         return [None if row[0] is None else json.loads(row[0]) for row in rows]

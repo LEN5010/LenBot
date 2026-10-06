@@ -16,7 +16,6 @@ from typing import Any, Literal
 from ..models.client import ModelSettings
 from ..models.slots import ModelSlots
 from .pi_rpc import PiRpc
-from ..models.pricing import ModelPrice
 from .sandbox import DockerSandbox, SandboxHandle
 from ..tools.skills import Skill
 from ..configuration.tasks import EgressSettings
@@ -152,7 +151,6 @@ async def worker_session(
     settings: ModelSettings,
     provider: str,
     context_window_tokens: int,
-    price: ModelPrice | None,
     limits: Limits,
     skills: tuple[Skill, ...],
     data_tools: list[dict],
@@ -184,7 +182,7 @@ async def worker_session(
     """
     token = secrets.token_urlsafe(32)
     proxy = WorkerModelProxy(
-        settings, provider, context_window_tokens, price, token, limits,
+        settings, provider, context_window_tokens, token, limits,
         slots=slots, scene=scene, start_call=start_call, finish_call=finish_call,
     )
     handle: SandboxHandle | None = None

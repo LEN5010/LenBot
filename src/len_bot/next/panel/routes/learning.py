@@ -78,7 +78,7 @@ def register_host_learning(app: FastAPI, *, runtime: NetworkRuntime,
                 "cursor": learning.state(scene),
                 "latest": None if latest is None else {
                     key: latest[key] for key in ("id", "after_seq", "through_seq", "started", "ended",
-                                                  "status", "model_started", "usage", "cost", "error")},
+                                                  "status", "model_started", "usage", "tokens", "error")},
                 "expression_counts": learning.counts(scene),
                 "service_state": service_state(scene)}
 

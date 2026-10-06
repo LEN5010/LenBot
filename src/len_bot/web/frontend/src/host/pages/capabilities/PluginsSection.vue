@@ -309,7 +309,7 @@ const facts = name => {
             <div v-for="call in running[selected].model_calls" :key="call.id" class="entry">
               <span class="small">{{ formatTime(call.started) }} · {{ sceneName(call.scene) }} · {{ call.role }} · {{ call.ended === null ? '进行中' : call.error ? '失败' : '已返回' }}</span>
               <ErrorNote v-if="call.error" title="生成失败" :error="call.error" />
-              <DevOnly label="用量与估算费用" :json="{ usage: call.usage, cost: call.cost }" />
+              <DevOnly label="用量与 token" :json="{ usage: call.usage, tokens: call.tokens }" />
             </div>
           </Fold>
         </Panel>

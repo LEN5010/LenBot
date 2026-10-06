@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..models.pricing import TokenUsage
+from ..models.tokens import TokenUsage
 
 
 class EmbeddingBinding(BaseModel):
