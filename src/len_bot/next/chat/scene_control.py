@@ -50,7 +50,7 @@ def require_control(store: Store, config: LabConfig, requester: str) -> None:
 
 SCENE_CONTROL_TOOL = {'type': 'function', 'function': {
     'name': 'scene_control',
-    'description': '查看当前场景参与设置(status)，或按实际请求人账号临时安静(quiet)/恢复(resume)。'
+    'description': '查看当前场景参与设置(status)，或按实际请求人账号临时安静(quiet)/恢复(resume)；打开或关闭整个群的聊天、操作其他群用 host_manage。'
         'quiet须给seconds（最多7天），direct默认allow仍回应本场景直接消息（群内@/回复，私聊本会话全部消息）；defer连直接消息也延后，须面板提前恢复。'
         '当前轮可收尾确认；暂停其他大脑参与及系统唤醒，不取消任务或阻止插件固定命令回复。'
         'resume只结束临时安静，不撤销根配置安静时段。持久设置通过已开放的 host_manage 或面板保存。',

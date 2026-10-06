@@ -69,7 +69,8 @@ async def test_saved_web_document_is_readable_only_in_its_scene(tmp_path):
 
         settings = WebReadSettings()
         result = await execute_web_read(
-            store, "onebot:group:80001", settings, WebReadArguments(document=local_id, offset=0)
+            store, "onebot:group:80001", settings, WebReadArguments(document=local_id, offset=0),
+            fake_ip_networks=(),
         )
         assert local_content in result
 
@@ -77,7 +78,7 @@ async def test_saved_web_document_is_readable_only_in_its_scene(tmp_path):
             with pytest.raises(ValueError) as failure:
                 await execute_web_read(
                     store, "onebot:group:80001", settings,
-                    WebReadArguments(document=document, offset=0),
+                    WebReadArguments(document=document, offset=0), fake_ip_networks=(),
                 )
             assert group_secret not in str(failure.value)
             assert private_secret not in str(failure.value)

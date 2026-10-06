@@ -114,6 +114,7 @@ class HostPort(Protocol):
     async def send_text(self, plugin: str, scene: str, text: str, reply_to: str | None) -> Sent: ...
     async def send_parts(self, plugin: str, scene: str, parts: Sequence[Content], reply_to: str | None) -> Sent: ...
     def emit_event(self, plugin: str, scene: str, text: str) -> None: ...
+    def scene_paused(self, scene: str) -> bool: ...
     def recent_messages(self, plugin: str, scene: str, limit: int) -> list[ChatMessage]: ...
     async def get_kv(self, plugin: str, key: str, default: JsonValue) -> JsonValue: ...
     async def set_kv(self, plugin: str, key: str, value: JsonValue) -> None: ...
@@ -137,8 +138,13 @@ class PluginContext:
     name: str
     config: Mapping[str, object]
     data_dir: Path
-    scenes: tuple[str, ...]
+    enabled_scenes: tuple[str, ...]
     host: HostPort = field(repr=False)
+
+    @property
+    def scenes(self) -> tuple[str, ...]:
+        """Scenes that enable this plugin and whose chat is on; a scene switched off in the panel is left out."""
+        return tuple(scene for scene in self.enabled_scenes if not self.host.scene_paused(scene))
 
     @property
     def bot_id(self) -> str:
@@ -167,7 +173,7 @@ class PluginContext:
         return self.host.redact(self.name, text)
 
     def _scene(self, scene: str) -> str:
-        if scene not in self.scenes:
+        if scene not in self.enabled_scenes:
             raise PermissionError(f"插件 {self.name} 未在场景 {scene} 启用")
         return scene
 

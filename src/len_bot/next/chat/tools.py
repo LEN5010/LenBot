@@ -214,6 +214,7 @@ class SceneTools:
         self.host_management: HostManagement | None = None
         # Only an accepted restart in this live turn waits for its final store write.
         self.restart_after_turn = False
+        self.pause_after_turn = False
         self.replay_web = None if config.replay_web is None else RecordedWeb(config.replay_web)
         self.replay_images = (None if config.replay_images is None else
                               RecordedImages(config.replay_images, max_bytes=config.images.max_bytes))
@@ -305,6 +306,8 @@ class SceneTools:
             result = await self.host_management.execute(self.config.scene, arguments)
             if arguments.action == 'restart':
                 self.restart_after_turn = True
+            if arguments.action == 'chat' and result.get('applies') == 'after_current_turn':
+                self.pause_after_turn = True
             return tool_result(result), None, None
         if call.name == "recall_chat":
             return recall_chat(self.store, self.config.scene, self.config.timezone,
@@ -315,7 +318,8 @@ class SceneTools:
                                      arguments), None, None
         if call.name == "web_read":
             return await execute_web_read(self.store, self.config.scene, self.config.web_read,
-                                          WebReadArguments.model_validate(call.arguments), recording=self.replay_web), None, None
+                                          WebReadArguments.model_validate(call.arguments), recording=self.replay_web,
+                                          fake_ip_networks=self.config.network.networks()), None, None
         if call.name == "web_search":
             return await execute_web_search(self.config.web_search,
                                             WebSearchArguments.model_validate(call.arguments), recording=self.replay_web), None, None
@@ -342,7 +346,7 @@ class SceneTools:
             return await execute_look(
                 self.store, self.config.scene, LookArguments.model_validate(call.arguments), self.config.images,
                 model_name=self.vision.settings.model, describe=lambda asset: self.describe_image(turn_id, asset),
-                recording=self.replay_images,
+                recording=self.replay_images, fake_ip_networks=self.config.network.networks(),
             ), None, None
         if call.name == "transcribe":
             return await self.audio.transcribe(

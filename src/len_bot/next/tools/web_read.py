@@ -138,7 +138,8 @@ def _reject_json_constant(value: str) -> None:
 
 
 async def execute_web_read(store: Store, scene: str, settings: WebReadSettings,
-                           arguments: WebReadArguments, *, recording: RecordedWeb | None = None) -> str:
+                           arguments: WebReadArguments, *, recording: RecordedWeb | None = None,
+                           fake_ip_networks: tuple) -> str:
     if arguments.document is not None:
         page = store.web_page(scene, arguments.document)
         if page is None:
@@ -148,7 +149,8 @@ async def execute_web_read(store: Store, scene: str, settings: WebReadSettings,
     try:
         async with deadline:
             if recording is None:
-                final_url, content_type, body = await fetch_public(arguments.url, settings.timeout_seconds, _web_limit)
+                final_url, content_type, body = await fetch_public(arguments.url, settings.timeout_seconds, _web_limit,
+                                                                           fake_ip_networks=fake_ip_networks)
                 fetched_at = time.time()
             else:
                 item, body = recording.document(arguments.url)
