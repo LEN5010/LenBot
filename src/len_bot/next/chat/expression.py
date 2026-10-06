@@ -67,6 +67,8 @@ class ChatExpression:
         if platform_reply is not None:
             segments.append(Segment("reply", {"id": platform_reply}))
         if arguments.mention is not None:
+            if arguments.mention.partition(':')[0] != self.config.scene.partition(':')[0]:
+                raise ValueError(f"提及账号与当前场景平台不同：{arguments.mention!r}")
             segments.append(Segment("mention", {"user": arguments.mention}))
         segments.append(Segment("text", {"text": text}))
         return self.simulated_message(segments, reply_to=platform_reply)

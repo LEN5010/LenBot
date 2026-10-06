@@ -3,7 +3,7 @@
 import pytest
 
 from len_bot.next.configuration.chat import ScheduleSettings
-from len_bot.next.chat.schedule import check_cancellation, check_creation, identity_roles
+from len_bot.next.chat.schedule import ScheduleArguments, check_cancellation, check_creation, identity_roles
 
 
 BOT = 'onebot:90001'
@@ -13,6 +13,24 @@ WHITELISTED = 'onebot:80003'
 GROUP_MANAGER = 'onebot:80004'
 MEMBER = 'onebot:80005'
 OTHER = 'onebot:80006'
+
+
+@pytest.mark.parametrize('target', ['self', MEMBER])
+def test_schedule_arguments_preserve_own_reminder_identity(target):
+    args = ScheduleArguments.model_validate({
+        'when': 'every 1h', 'note': '提醒本人', 'for': target, 'requester': MEMBER,
+    })
+    check_creation(ScheduleSettings(), requester=args.requester, target=args.target,
+                   bot_id=BOT, group_role='member')
+
+
+def test_schedule_arguments_require_qualified_reminder_account():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match='for'):
+        ScheduleArguments.model_validate({
+            'when': 'every 1h', 'note': '提醒本人', 'for': '80005', 'requester': MEMBER,
+        })
 
 
 def _settings(**changes) -> ScheduleSettings:

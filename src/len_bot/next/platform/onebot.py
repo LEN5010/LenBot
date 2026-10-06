@@ -317,6 +317,10 @@ class OneBot:
                        if segment.type not in {"text", "mention", "reply", "image"}]
         if unsupported:
             return SendResult("failed", None, f"Unsupported OneBot message segments: {unsupported!r}")
+        for segment in message.segments:
+            if (segment.type == 'mention' and segment.data['user'] != 'all'
+                    and re.fullmatch(r'onebot:[1-9][0-9]*', segment.data['user']) is None):
+                return SendResult('failed', None, f"Invalid OneBot mention: {segment.data['user']!r}")
         image_count = sum(segment.type == "image" for segment in message.segments)
         if image_count > 1:
             return SendResult("failed", None, "OneBot message supports only one image segment")

@@ -32,7 +32,7 @@ class ScheduleArguments(BaseModel):
 
     when: datetime | int | Cron
     note: str = Field(min_length=1)
-    target: str = Field(alias="for", pattern=r"^(self|[1-9][0-9]*)$")
+    target: str = Field(alias="for", pattern=r"^(self|[a-z][a-z0-9_-]*:[^:\s/\\]+)$")
     requester: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]*:[^:\s/\\]+$")
 
     @field_validator("when", mode="before", json_schema_input_type=str)

@@ -54,7 +54,7 @@ def install_panel_auth(app: FastAPI, settings: PanelSettings, *,
     @app.post("/api/auth/login")
     async def login(item: Login, request: Request, response: Response):
         nonlocal last_login_at
-        key = f"isolated:{request.client.host}:{item.username}"
+        key = f"isolated:{request.client.host}"
         if login_blocked(key):
             raise HTTPException(429, "登录尝试过于频繁，请稍后再试")
         record_login_failure(key)
