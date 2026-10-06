@@ -187,7 +187,9 @@ class HostTrials:
                     memory = source.memory.model_copy(update={
                         'local': source.memory.local.model_copy(update={'directory': root / 'memory'}),
                         'ingest': None, 'summaries': False})
-                candidate = source.model_copy(update={'mode':'isolated', 'onebot':None, 'delivery':'simulated',
+                # A trial runs inside the host and logs through it; its own file must not name the host's
+                # log directory, which lies outside the trial root that offline migrations reload it from.
+                candidate = source.model_copy(update={'mode':'isolated', 'onebot':None, 'delivery':'simulated', 'logging':None,
                     'database':root / 'state.db', 'persona':root / 'persona-snapshot', 'owners':[],
                     'permissions': IdentitySettings(), 'panel':None, 'plugins':[], 'worker':None, 'tasks':source.tasks.model_copy(update={'enabled':False}),
                     'learning':None, 'proactive':None, 'transcribe_audio':False, 'memory':memory,
