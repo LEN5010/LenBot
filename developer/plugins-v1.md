@@ -28,7 +28,7 @@ description = "每群独立计数"
 - 在面板手填完整 HTTP(S) 或 `ssh://` Git URL，可选标签、分支或提交；仓库根包含清单和包入口。私有仓库用本机 Git 凭据，URL 不放密码。未指定 ref 时记录默认分支，更新沿用该分支；显式 ref 的更新重新获取同一 ref，不自动切最新版本。
 - ZIP 导入支持清单在根目录，或全部内容在唯一顶层目录且直接含清单。必须有 `__init__.py`；路径越界、重复文件、符号链接和超过 200 MiB 的解压内容会报错。ZIP 源码可离线准备，依赖安装可能仍需要网络。
 - 两种入口都只**准备候选**：下载、解析、检查身份与兼容，保存来源。当前运行版本继续运行，不导入候选、不修改 Python 环境。面板随后填写候选配置并保存，点击应用；新插件初始停用，应用成功后可启用并选群。
-- 插件统一放在实例根的 `plugins/`：`plugins/<name>` 是已安装源码，`plugins/.candidates/<name>` 是候选，`plugins/.installations/<name>.json` 保存 Git commit／ZIP SHA-256、已安装和候选版本、生效方式、是否已选择重启应用及最近错误。参数和群选择只在根 `lenbot.config.json`，业务数据只在 `plugins.data_directory/<name>`，默认 `plugins/.data/<name>`。`plugins.paths` 默认是 `["plugins"]`，手工复制进 `plugins/` 的插件同样会被发现；手工目录不被安装器接管，手工同名目录不能直接覆盖。
+- 插件统一放在实例根的 `plugins/`：`plugins/<name>` 是已安装源码，`plugins/.candidates/<name>` 是候选，`plugins/.installations/<name>.json` 保存 Git commit／ZIP SHA-256、已安装和候选版本、生效方式、是否已选择重启应用及最近错误。参数和群选择只在根 `lenbot.config.json`，业务数据只在 `plugins.data_directory/<name>`，默认 `plugins/.data/<name>`。`plugins.paths` 默认是 `["plugins"]`，手工复制进 `plugins/` 的插件同样会被发现；手工目录不被安装器接管，内置同名包不能覆盖。
 - Git 受管源码有本地修改（包括未跟踪文件，宿主生成的 `__pycache__` 除外）就停止应用。ZIP 换版重新导入；同名包更换 Git 仓库或 Git／ZIP 来源需选“替换安装来源”，沿用原插件数据身份。
 - 无依赖变化且 `reload=plugin`：停止目标插件，切换源码，实际重新导入／start。保存普通参数或选群也只重载目标插件。重载会中断它的在途处理，其他插件和聊天继续运行。
 - 依赖声明变化或 `reload=host`：应用动作选定候选，面板列为待重启。明确重启时，启动器等待旧宿主退出，再由 `maintenance.apply_plugins` 持实例锁，核对候选配置、一次安装合并依赖、切源码，最后启动新宿主。普通启动不消费候选。失败结束本次启动器，候选和原错保留；修正后显式再操作，不自动回滚环境。
@@ -36,7 +36,7 @@ description = "每群独立计数"
 - “取消候选”保留已安装源码；首次安装尚未应用时取消会移除其配置入口。停用保留参数、群选择和数据；卸载删除源码、候选和启用配置，保留插件业务数据和共享依赖包。删除数据仍是插件停止后的单独动作。
 - 插件自有文件／KV 格式由作者维护。增加必填配置或删除字段须在应用前明确填写；数据转换用作者提供的停机命令。选择旧源码不代表数据能回退，宿主不自动删除未知配置或回滚 KV。
 
-[四个独立业务插件](official-plugins.md)覆盖命令接管、无模型订阅、生成与委派、外部服务。发现页使用[静态目录](plugin-catalog.md)，主程序不附带业务插件源码。
+[四个内置插件](builtin-plugins.md)覆盖命令接管、无模型订阅、生成与委派、外部服务。发现页仍使用[静态目录](plugin-catalog.md)，首版没有市场后端。
 
 ## 入口
 
@@ -138,7 +138,6 @@ default = []
 | 记忆 | `await ctx.memory(arguments)`，当前场景记忆服务，不直连后端数据库 |
 | 主动交给大脑 | `await ctx.emit_event(text)`，与直接发送相反，它会唤醒大脑 |
 | 时间 | `ctx.now()` 和 `ctx.timezone()`，明确场景时区 |
-| 公网读取 | `await ctx.fetch_public(url, timeout_seconds=10, max_bytes=10000000)` 返回原始字节；沿用宿主公网地址检查和 `network.fake_ip_networks`，逐跳检查重定向，受总超时和解码后字节上限约束，网络错误原样抛出 |
 
 `PluginContext` 用于 `self.ctx`、start／stop 和后台入口；发送、读消息、记忆、事件方法要显式传启用场景，例如 `await self.ctx.send(scene, text)`。`self.ctx.scenes` 列出启用本插件且聊天开着的场景；管理员在面板关闭某个群的聊天后，该群不再出现在这里，插件指令和通知也不再分发到该群，向它发送或发事件会报错。`data_dir` 是该插件独立数据目录。KV 只按插件隔离，需要分群时把 `scene` 放进 key。
 
@@ -180,7 +179,7 @@ async def publish(self, ctx):
 
 插件可带 `skills/<技能名>/SKILL.md` 和相关资源。宿主只为启用该插件的场景提供目录，并继续应用角色 `skills` 许可；任务以只读方式挂载。名称遵循现有技能命名规则，与其他来源冲突就报错。插件技能可在面板查看，不能通过普通技能的移动／删除操作改写插件源码。
 
-独立的 [RSS 播报与群总结插件](official-plugins.md) 分别覆盖无模型、单次模型、独立工作三种路径。
+内置的 [RSS 播报与群总结示例](builtin-plugins.md) 分别覆盖无模型、单次模型、独立工作三种路径。
 
 ## 生命周期和错误
 

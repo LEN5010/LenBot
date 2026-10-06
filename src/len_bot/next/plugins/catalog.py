@@ -25,7 +25,7 @@ class CatalogEntry(BaseModel):
     category: str = Field(min_length=1)
     capabilities: list[str] = Field(default_factory=list)
     usage: list[str] = Field(default_factory=list)
-    install: Literal['git']
+    install: Literal['builtin', 'git']
     repository: str | None = None
     homepage: str | None = None
     ref: str | None = None
@@ -56,6 +56,8 @@ class CatalogEntry(BaseModel):
     def installation(self):
         if self.install == 'git' and self.repository is None:
             raise ValueError('Git 目录条目需要 repository')
+        if self.install == 'builtin' and self.ref is not None:
+            raise ValueError('内置插件跟随宿主版本，不选择安装 ref')
         return self
 
 

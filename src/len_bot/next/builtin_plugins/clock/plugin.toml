@@ -1,0 +1,16 @@
+name = "clock"
+version = "1.0.0"
+interface = 1
+requires_lenbot = ">=0.1,<1"
+requires_python = ">=3.13"
+platforms = ["linux", "darwin", "win32"]
+reload = "plugin"
+authors = ["LEN5010"]
+license = "AGPL-3.0-or-later"
+description = "精确命令 /时间：按本场景时区回复当前日期、星期和时间，不叫醒大脑。"
+
+[config.show_seconds]
+type = "boolean"
+label = "显示秒"
+default = true
+description = "回复里是否带秒。"

@@ -1,4 +1,99 @@
 {
   "version": 1,
-  "entries": []
+  "entries": [
+    {
+      "name": "clock",
+      "description": "精确命令 /时间：按本场景时区回复当前日期、星期和时间，不叫醒大脑。",
+      "authors": [
+        "LEN5010"
+      ],
+      "license": "AGPL-3.0-or-later",
+      "version": "1.0.0",
+      "interface": 1,
+      "title": "时间查询",
+      "category": "群聊命令",
+      "capabilities": [
+        "无模型调用",
+        "场景时区"
+      ],
+      "usage": [
+        "在目标群启用后发送 /时间。",
+        "show_seconds 控制是否显示秒。"
+      ],
+      "install": "builtin",
+      "repository": "https://github.com/lendevs/LenBot.git"
+    },
+    {
+      "name": "rss_broadcast",
+      "description": "在明确时区的 cron 时刻直接播报 RSS 2.0 订阅，不调用模型；/订阅播报 可手动查看新条目。",
+      "authors": [
+        "LEN5010"
+      ],
+      "license": "AGPL-3.0-only",
+      "version": "1.0.0",
+      "interface": 1,
+      "title": "订阅播报",
+      "category": "自动播报",
+      "capabilities": [
+        "无模型调用",
+        "RSS 2.0",
+        "cron 与 KV"
+      ],
+      "usage": [
+        "填写订阅名称、RSS 地址、发送场景、cron 与时区，再为目标群启用。",
+        "发送 /订阅播报 或 /订阅播报 名称，直接发送未播出的条目。",
+        "首次到点发送最新条目；重启不补发离线期间的时刻。"
+      ],
+      "install": "builtin",
+      "repository": "https://github.com/lendevs/LenBot.git"
+    },
+    {
+      "name": "group_digest",
+      "description": "/群总结 显式单次生成；/群工作 按真实发送者委派文件或长工作。不是每条聊天自动调用。",
+      "authors": [
+        "LEN5010"
+      ],
+      "license": "AGPL-3.0-only",
+      "version": "1.0.0",
+      "interface": 1,
+      "title": "群总结与群工作",
+      "category": "工作工具",
+      "capabilities": [
+        "单次模型生成",
+        "工作任务",
+        "只读技能"
+      ],
+      "usage": [
+        "发送 /群总结 只列已确定的安排，按已绑定用途生成一次总结。",
+        "发送 /群工作 把刚才安排做成 CSV，按真实发送者权限创建任务。",
+        "群工作需要 worker 和场景任务能力；附带技能还需角色允许。"
+      ],
+      "install": "builtin",
+      "repository": "https://github.com/lendevs/LenBot.git"
+    },
+    {
+      "name": "gscore_adapter",
+      "description": "/gs桥接独立GSUID Core；图文经宿主发送，/gs连接显式重连，gscore_status读取状态。",
+      "authors": [
+        "LEN5010"
+      ],
+      "license": "AGPL-3.0-or-later",
+      "version": "1.0.0",
+      "interface": 1,
+      "title": "GSUID Core 桥接",
+      "category": "外部服务",
+      "capabilities": [
+        "独立 Core 服务",
+        "WebSocket",
+        "状态工具"
+      ],
+      "usage": [
+        "填写独立 Core 的 ws_url 与所需令牌，再为目标群启用。",
+        "发送 /gs 命令；断线后发送 /gs连接 明确连接。",
+        "gscore_status 提供实际连接状态，是否给模型使用由角色工具许可决定。"
+      ],
+      "install": "builtin",
+      "repository": "https://github.com/lendevs/LenBot.git"
+    }
+  ]
 }

@@ -1,7 +1,7 @@
 import { api } from '../../api.js'
 
 /**
- * @typedef {{name:string,title:string,description:string,authors:string[],license:string,version:string,interface:number,category:string,capabilities:string[],usage:string[],install:'git',repository:string|null,homepage:string|null,ref:string|null}} CatalogEntry
+ * @typedef {{name:string,title:string,description:string,authors:string[],license:string,version:string,interface:number,category:string,capabilities:string[],usage:string[],install:'builtin'|'git',repository:string|null,homepage:string|null,ref:string|null}} CatalogEntry
  * @typedef {{source:'builtin'|'remote',url:string|null,loaded_at:number|null,entries:CatalogEntry[]}} CatalogView
  */
 export const pluginsApi = {

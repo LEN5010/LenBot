@@ -45,7 +45,7 @@ cd /tmp/lenbot-test && uv run --project /path/to/LenBot --no-sync len-bot
 | `memory/` | 本地记忆的正文、索引、召回和后台整理 |
 | `work/`、`browser/` | 后台任务（Pi 容器）和浏览器协作 |
 | `storage/` | 数据库结构和编解码 |
-| `plugins/` | 插件运行、安装和更新；业务插件源码在独立仓库 |
+| `plugins/`、`builtin_plugins/` | 插件运行、安装和内置插件 |
 | `plugin.py`、`plugin_testing.py`、`text_cards.py`、`image_assets.py` | 给插件用的公开接口 |
 | `tools/`、`media/` | 网页、技能、MCP 等工具，图片和语音处理 |
 | `panel/` | 面板后端和首次配置向导 |

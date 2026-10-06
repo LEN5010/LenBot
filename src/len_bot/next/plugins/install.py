@@ -157,7 +157,7 @@ class PluginInstaller:
                   Installation(name=name, installed=None, candidate=None, application='plugin', requested=False, error=None))
         destination = self.directory / name
         if record.installed is None and (name in found or destination.exists()):
-            raise ValueError(f'{name} already belongs to a manual directory; source was not replaced')
+            raise ValueError(f'{name} already belongs to a builtin or manual directory; source was not replaced')
         if record.installed is not None:
             previous = record.installed
             if not switch_source and (previous.kind != source.kind or
