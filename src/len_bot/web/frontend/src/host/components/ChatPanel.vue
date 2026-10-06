@@ -22,15 +22,16 @@ const messages = computed(() => [...(view.value?.messages || [])].sort((a, b) =>
 const turns = computed(() => [...(view.value?.turns || [])].sort((a, b) => b.started - a.started))
 const thinking = computed(() => turns.value.some(turn => turn.ended == null))
 
-const uid = ref('10001'), nickname = ref('测试群友'), text = ref(''), mention = ref(true), replyTo = ref(null)
+const uid = ref('onebot:10001'), nickname = ref('测试群友'), text = ref(''), mention = ref(true), replyTo = ref(null)
+const senderUid = computed(() => isPrivate.value ? view.value.scene.replace('onebot:private:', 'onebot:') : uid.value)
 const replies = computed(() => messages.value.filter(message => message.platform_message_id != null).map(message => ({
   title: message.text.replace(/\s+/g, ' ').slice(0, 60), value: message.platform_message_id })))
 const send = useAction(), receipt = ref(null)
-const ready = computed(() => view.value?.running && /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(isPrivate.value ? view.value.scene.slice(8) : uid.value)
+const ready = computed(() => view.value?.running && /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(senderUid.value)
   && nickname.value.trim() && text.value.trim())
 async function submit() {
   const result = await send.run(() => api(`${props.apiBase}/messages`, { method: 'POST', body: JSON.stringify({
-    uid: isPrivate.value ? view.value.scene.slice('onebot:private:'.length) : uid.value, nickname: nickname.value, text: text.value,
+    uid: senderUid.value, nickname: nickname.value, text: text.value,
     mention_bot: isPrivate.value ? false : mention.value, reply_to: replyTo.value || null }) }))
   if (!result) return
   receipt.value = result

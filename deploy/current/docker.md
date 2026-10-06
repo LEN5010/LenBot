@@ -132,6 +132,8 @@ docker compose -f host.compose.yaml run --rm --no-deps \
 docker compose -f host.compose.yaml run --rm --no-deps \
   --entrypoint /opt/lenbot/.venv/bin/python lenbot -m len_bot.next.maintenance.migrate_memory_jobs
 docker compose -f host.compose.yaml run --rm --no-deps \
+  --entrypoint /opt/lenbot/.venv/bin/python lenbot -m len_bot.next.maintenance.migrate_local_memory
+docker compose -f host.compose.yaml run --rm --no-deps \
   --entrypoint /opt/lenbot/.venv/bin/python lenbot -m len_bot.next.maintenance.plugin_dependencies
 ```
 

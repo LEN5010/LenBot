@@ -153,7 +153,8 @@ def _copy_out(workspace: Path, source: str, dest: Path, max_bytes: int) -> None:
             child_fd = os.open(part, flags, dir_fd=directory_fd)
             os.close(directory_fd)
             directory_fd = child_fd
-        source_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        # A FIFO must not block open before fstat can reject the non-regular source.
+        source_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
         metadata = os.fstat(source_fd)
         if not stat.S_ISREG(metadata.st_mode):
             raise SandboxError("deliver_file source is not a regular file")

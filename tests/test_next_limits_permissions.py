@@ -45,14 +45,18 @@ def test_global_budget_includes_removed_scenes_and_stopped_trials(tmp_path):
         assert budget.totals(None,now-1,now+1)['tokens']==300
 
 
-def test_inflight_is_not_settled_unknown_but_completed_unknown_denies(tmp_path):
+def test_inflight_and_failed_unknown_allow_but_successful_unknown_denies(tmp_path):
     at=[1790618400.]
     with Store(tmp_path/'state.db',now=lambda:at[0]) as store:
         budget=ModelBudget(settings(tmp_path/'state.db',daily_tokens=1000),store,None)
         at[0]+=1
         call=spend(store,'onebot:group:80001',None,end=False)
         budget.check('onebot:group:80001')
-        store.end_call(call,None,None,'provider did not report usage')
+        store.end_call(call,None,None,'provider request failed')
+        budget.check('onebot:group:80001')
+        assert budget.totals(None,at[0]-1,at[0]+1)['settled_unknown_calls']==1
+        call=spend(store,'onebot:group:80001',None,end=False)
+        store.end_call(call,None,None)
         with pytest.raises(LimitReached,match='没有报告 token'):budget.check('onebot:group:80001')
 
 

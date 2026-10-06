@@ -34,6 +34,15 @@ ABSTRACT_CHARS = 256
 OVERVIEW_CHARS = 4000
 PENDING_PREFIX = "legacy-import/"
 _APPLICATION_ID = 0x4C424D31
+FORMAT_VERSION = 3
+SUMMARY_SCHEMA = """
+CREATE TABLE memory_summaries (
+    scope TEXT NOT NULL,
+    path TEXT NOT NULL,
+    generated_at REAL NOT NULL,
+    PRIMARY KEY(scope, path)
+);
+"""
 _Result = TypeVar("_Result")
 
 
@@ -153,6 +162,16 @@ def _atomic_replace(path: Path, content: str, *, create_only: bool = False) -> N
             os.unlink(temporary)
 
 
+def _summary_times(db: sqlite3.Connection, scope: str, path: str) -> tuple[float | None, float | None]:
+    row = db.execute("SELECT generated_at FROM memory_summaries WHERE scope=? AND path=?", (scope, path)).fetchone()
+    generated_at = None if row is None else row[0]
+    prefix = f"{path}/" if path else ""
+    latest = db.execute("SELECT MAX(changed_at) FROM memory_changes WHERE scope=? AND substr(path,1,?)=?",
+                        (scope, len(prefix), prefix)).fetchone()[0]
+    changed_after = latest if latest is not None and (generated_at is None or latest > generated_at) else None
+    return generated_at, changed_after
+
+
 def scene_overview(root: Path, scene: str) -> str | None:
     """Read a scene root overview only when the recorded source changes have not invalidated it."""
     _scene_scope(scene)
@@ -167,11 +186,16 @@ def scene_overview(root: Path, scene: str) -> str | None:
     if not all(present):
         raise ValueError(f"incomplete memory summary files in {base}: {dict(zip(SUMMARY_FILES, present))}")
     index = root.expanduser().resolve() / _INDEX_NAME
-    if index.exists():
-        with closing(sqlite3.connect(index.as_uri() + "?mode=ro", uri=True)) as db:
-            latest = db.execute("SELECT MAX(changed_at) FROM memory_changes WHERE scope=?", (scene,)).fetchone()[0]
-        if latest is not None and latest > min(file.stat().st_mtime for file in files):
-            return None
+    with closing(sqlite3.connect(index.as_uri() + "?mode=ro", uri=True)) as db:
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        if version != FORMAT_VERSION:
+            raise ValueError(f"local memory index format {version} requires offline migration: {index}; "
+                             "run python -m len_bot.next.maintenance.migrate_local_memory")
+        generated_at, changed_after = _summary_times(db, scene, "")
+    if generated_at is None:
+        raise ValueError(f"memory summary has no generation time: {base}")
+    if changed_after is not None:
+        return None
     return _source_text(files[1])
 
 
@@ -231,7 +255,10 @@ class LocalMemory:
         with self._db() as db:
             application_id = db.execute("PRAGMA application_id").fetchone()[0]
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if application_id not in {0, _APPLICATION_ID} or version not in {0, 2}:
+            if application_id == _APPLICATION_ID and version == 2:
+                raise ValueError(f"local memory index format 2 requires offline migration: {self.index}; "
+                                 "run python -m len_bot.next.maintenance.migrate_local_memory")
+            if application_id not in {0, _APPLICATION_ID} or version not in {0, FORMAT_VERSION}:
                 raise ValueError(f"unsupported local memory index format at {self.index}: "
                                  f"application_id={application_id}, user_version={version}")
             if version == 0:
@@ -268,7 +295,8 @@ class LocalMemory:
                     );
                 """)
                 db.execute(f"PRAGMA application_id={_APPLICATION_ID}")
-                db.execute("PRAGMA user_version=2")
+                db.executescript(SUMMARY_SCHEMA)
+                db.execute(f"PRAGMA user_version={FORMAT_VERSION}")
 
     def _base(self, scope: str) -> Path:
         if scope == "public":
@@ -338,6 +366,7 @@ class LocalMemory:
             db.execute("BEGIN EXCLUSIVE")
             for summary in summaries:
                 summary.unlink()
+            db.execute("DELETE FROM memory_summaries")
             if self._vector_table_exists(db):
                 db.execute("DROP TABLE memory_vec")
             db.execute("DELETE FROM memory_vector_binding")
@@ -454,6 +483,7 @@ class LocalMemory:
             db.execute("BEGIN EXCLUSIVE")
             for summary in summaries:
                 summary.unlink()
+            db.execute("DELETE FROM memory_summaries")
             if self._vector_table_exists(db):
                 db.execute("DROP TABLE memory_vec")
             db.execute("DELETE FROM memory_vector_binding")
@@ -808,16 +838,14 @@ class LocalMemory:
         present = [file.exists() for file in files]
         if all(present):
             abstract, overview = (_source_text(file) for file in files)
-            generated_at = min(file.stat().st_mtime for file in files)
         elif not any(present):
-            abstract = overview = generated_at = None
+            abstract = overview = None
         else:
             raise ValueError(f"incomplete memory summary files in {directory}: {dict(zip(SUMMARY_FILES, present))}")
-        prefix = f"{path}/" if path else ""
         with self._db() as db:
-            latest = db.execute("SELECT MAX(changed_at) FROM memory_changes WHERE scope=? AND substr(path,1,?)=?",
-                                (scope, len(prefix), prefix)).fetchone()[0]
-        changed_after = latest if latest is not None and (generated_at is None or latest > generated_at) else None
+            generated_at, changed_after = _summary_times(db, scope, path)
+        if all(present) and generated_at is None:
+            raise ValueError(f"memory summary has no generation time: {directory}")
         return LocalMemorySummary(path, abstract, overview, generated_at, changed_after)
 
     async def summary(self, scene: str, path: str = "", *,
@@ -858,6 +886,10 @@ class LocalMemory:
         directory = self._summary_directory(scope, path)
         _atomic_replace(directory / ".abstract.md", abstract)
         _atomic_replace(directory / ".overview.md", overview)
+        with self._db() as db:
+            db.execute("INSERT INTO memory_summaries(scope,path,generated_at) VALUES(?,?,?) "
+                       "ON CONFLICT(scope,path) DO UPDATE SET generated_at=excluded.generated_at",
+                       (scope, path, time.time()))
         return self._summary_sync(scope, path)
 
     async def write_summary(self, scene: str, path: str, abstract: str, overview: str, *,
@@ -879,18 +911,22 @@ class LocalMemory:
             directory = self._summary_directory(source, path)
             for name in SUMMARY_FILES:
                 (directory / name).unlink(missing_ok=True)
+            with self._db() as db:
+                db.execute("DELETE FROM memory_summaries WHERE scope=? AND path=?", (source, path))
         async with self._lock(source):
             await _finish_write_thread(remove)
 
     def _drop_summaries(self, scope: str, path: str) -> tuple[str, ...]:
         parts = _parts(path, file=True)[:-1]
         removed = []
-        for depth in range(len(parts), -1, -1):
-            relative = "/".join(parts[:depth])
-            directory = self._target(scope, relative, file=False)
-            files = [directory / name for name in SUMMARY_FILES if (directory / name).exists()]
-            for file in files:
-                file.unlink()
-            if files:
-                removed.append(relative)
+        with self._db() as db:
+            for depth in range(len(parts), -1, -1):
+                relative = "/".join(parts[:depth])
+                directory = self._target(scope, relative, file=False)
+                files = [directory / name for name in SUMMARY_FILES if (directory / name).exists()]
+                for file in files:
+                    file.unlink()
+                db.execute("DELETE FROM memory_summaries WHERE scope=? AND path=?", (scope, relative))
+                if files:
+                    removed.append(relative)
         return tuple(removed)

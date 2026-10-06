@@ -329,10 +329,14 @@ class HostManagement:
             if args.enabled:
                 return {**result, 'chat': 'on', 'changed': False}
             return {**result, 'chat': 'off', 'changed': True, 'applies': 'after_current_turn'}
-        # Waits for a running turn there so its saved attention state cannot overwrite the switch.
-        async with runner.execution:
-            before = runner.state.paused
-            state = runner.set_paused(not args.enabled)
+        # Bound the wait: another scene's turn may be waiting for this scene's execution.
+        try:
+            async with asyncio.timeout(1):
+                async with runner.execution:
+                    before = runner.state.paused
+                    state = runner.set_paused(not args.enabled)
+        except TimeoutError as error:
+            raise RuntimeError(f'目标群 {target} 正在执行，1 秒内未取得场景锁，聊天开关未改变') from error
         return {**result, 'chat': 'off' if state['paused'] else 'on', 'changed': before != state['paused']}
 
     async def finish_turn(self) -> None:
