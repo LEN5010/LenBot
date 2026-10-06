@@ -186,17 +186,17 @@ def smoke_docker(artifacts: Path, work: Path, image: str) -> dict:
     work.mkdir(parents=True, exist_ok=False)
     bundle = unpack(artifacts, work, 'linux')
     project = f'lenbot-smoke-{time.time_ns()}'
-    metadata = json.loads((bundle / 'release.json').read_text())
+    metadata = json.loads((bundle / 'release.json').read_text(encoding='utf-8'))
     volumes = {'lenbot-data': project + '-data', 'lenbot-python-' + metadata['version']: project + '-python'}
     port = free_port()
-    recipe = (bundle / 'deploy/current/host.compose.yaml').read_text()
+    recipe = (bundle / 'deploy/current/host.compose.yaml').read_text(encoding='utf-8')
     recipe = replace_once(recipe, f'image: ghcr.io/lendevs/lenbot:{metadata["version"]}', f'image: {image}')
     recipe = replace_once(recipe, '127.0.0.1:11307:11307', f'127.0.0.1:{port}:11307')
     for old, new in volumes.items():
         recipe = replace_once(recipe, f'name: {old}', f'name: {new}')
     compose_file = work / 'host.compose.yaml'
-    compose_file.write_text(recipe)
-    setup = json.loads((bundle / 'deploy/current/first-setup.example.json').read_text())
+    compose_file.write_text(recipe, encoding='utf-8')
+    setup = json.loads((bundle / 'deploy/current/first-setup.example.json').read_text(encoding='utf-8'))
     setup['password'] = 'smoke-password'
     setup['provider']['api_key'] = 'smoke'
     compose = ['docker', 'compose', '-f', str(compose_file), '-p', project]

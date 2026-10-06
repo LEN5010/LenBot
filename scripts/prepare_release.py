@@ -22,7 +22,7 @@ def notes_problems(version: str) -> list[str]:
     path = NOTES / f'v{version}.md'
     if not path.exists():
         return [f'缺少 {path.relative_to(path.parents[1])}']
-    notes = path.read_text()
+    notes = path.read_text(encoding='utf-8')
     problems = []
     if not notes.startswith(f'# LenBot {version}\n'):
         problems.append(f'第一行应为 "# LenBot {version}"，实际是 {notes.splitlines()[0]!r}')
@@ -33,13 +33,13 @@ def notes_problems(version: str) -> list[str]:
 
 def set_version(version: str) -> str:
     path = ROOT / 'pyproject.toml'
-    text = path.read_text()
+    text = path.read_text(encoding='utf-8')
     previous = tomllib.loads(text)['project']['version']
     # The first top-level version line is [project].version; tomllib above confirms where it is.
     updated, count = re.subn(r'(?m)^version = "[^"]*"$', f'version = "{version}"', text, count=1)
     if count != 1 or tomllib.loads(updated)['project']['version'] != version:
         raise ValueError('pyproject.toml has no plain [project] version line to update')
-    path.write_text(updated)
+    path.write_text(updated, encoding='utf-8')
     return previous
 
 

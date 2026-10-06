@@ -188,7 +188,7 @@ def build(project: Path, output: Path, *, offline: bool, npm_cache: Path | None)
         record.update(finished=time.time(), returncode=process.returncode)
         if process.returncode:
             raise RuntimeError(f'{name} failed with exit {process.returncode}; raw output at {log}:\n'
-                               + log.read_text()[-4000:])
+                               + log.read_text(encoding='utf-8')[-4000:])
 
     try:
         raw = output / 'initial-source'
@@ -227,7 +227,7 @@ def build(project: Path, output: Path, *, offline: bool, npm_cache: Path | None)
         report['error'] = f'{type(error).__name__}: {error}'
         raise
     finally:
-        (output / 'result.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
+        (output / 'result.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     return report
 
 

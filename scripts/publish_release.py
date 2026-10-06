@@ -12,7 +12,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('artifacts', type=Path)
     args = parser.parse_args()
-    manifest = json.loads((args.artifacts / 'release-manifest.json').read_text())
+    manifest = json.loads((args.artifacts / 'release-manifest.json').read_text(encoding='utf-8'))
     tag = manifest['tag']
     repository = os.environ['GITHUB_REPOSITORY']
     pages = subprocess.run(['gh', 'api', '--paginate', '--slurp', f'repos/{repository}/releases'],

@@ -21,7 +21,7 @@ def release_version(value: str) -> str:
 
 
 def constant(project: Path, module: str, name: str) -> int:
-    tree = ast.parse((project / 'src/len_bot/next' / module).read_text())
+    tree = ast.parse((project / 'src/len_bot/next' / module).read_text(encoding='utf-8'))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
             return ast.literal_eval(node.value)
@@ -37,7 +37,7 @@ def source_revision(project: Path) -> str:
 
 
 def write_manifest(project: Path, artifacts: Path, *, revision: str, images: dict | None = None) -> Path:
-    version = release_version(tomllib.loads((project / 'pyproject.toml').read_text())['project']['version'])
+    version = release_version(tomllib.loads((project / 'pyproject.toml').read_text(encoding='utf-8'))['project']['version'])
     files = {}
     for path in sorted(artifacts.iterdir()):
         if path.is_file() and path.name != 'release-manifest.json':
@@ -56,7 +56,7 @@ def write_manifest(project: Path, artifacts: Path, *, revision: str, images: dic
         'files': files, 'images': {} if images is None else images,
     }
     target = artifacts / 'release-manifest.json'
-    target.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
+    target.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     return target
 
 
@@ -69,7 +69,7 @@ def main() -> None:
     revision = source_revision(project)
     if args.images is not None and revision.endswith('-dirty'):
         raise SystemExit('Published manifests must come from a clean checkout of the tagged commit')
-    images = None if args.images is None else json.loads(args.images.read_text())
+    images = None if args.images is None else json.loads(args.images.read_text(encoding='utf-8'))
     print(write_manifest(project, args.artifacts, revision=revision, images=images))
 
 

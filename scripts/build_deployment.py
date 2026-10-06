@@ -20,9 +20,9 @@ def build_deployments(wheel: Path, project: Path, output: Path, requirements: Pa
         with tempfile.TemporaryDirectory() as temporary:
             bundle = Path(temporary) / name
             shutil.copytree(project / 'deploy/package', bundle, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-            guide = (bundle / 'README.md').read_text()
+            guide = (bundle / 'README.md').read_text(encoding='utf-8')
             (bundle / 'README.md').write_text(guide.replace('](../current/', '](deploy/current/').replace(
-                '](../current)', '](deploy/current)'))
+                '](../current)', '](deploy/current)'), encoding='utf-8')
             shutil.copy2(wheel, bundle / wheel.name)
             shutil.copy2(requirements, bundle / 'requirements.txt')
             shutil.copytree(project / 'deploy', bundle / 'deploy', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
@@ -44,9 +44,9 @@ def build_deployments(wheel: Path, project: Path, output: Path, requirements: Pa
             (bundle / 'release.json').write_text(json.dumps({
                 'version': version, 'platform': platform, 'wheel': wheel.name,
                 'python': '3.13', 'dependencies': 'requirements.txt exported from the release uv.lock; uv downloads Python and selected dependencies',
-            }, ensure_ascii=False, indent=2) + '\n')
+            }, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
             recipe = bundle / 'deploy/current/host.compose.yaml'
-            recipe.write_text(recipe.read_text().replace('lenbot-current:local', f'ghcr.io/lendevs/lenbot:{version}')
+            recipe.write_text(recipe.read_text(encoding='utf-8').replace('lenbot-current:local', f'ghcr.io/lendevs/lenbot:{version}')
                               .replace('lenbot-python-r1', f'lenbot-python-{version}'))
             if platform == 'windows':
                 destination = output / (name + '.zip')
