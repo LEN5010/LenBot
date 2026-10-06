@@ -1,3 +1,5 @@
+<img src="src/len_bot/web/frontend/src/assets/lenbot-mark-tile.svg" width="64" height="64" alt="LenBot">
+
 # LenBot
 
 [中文](README.md)

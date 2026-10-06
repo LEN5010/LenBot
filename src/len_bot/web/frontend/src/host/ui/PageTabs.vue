@@ -37,6 +37,6 @@ function target(value) {
   color:var(--muted);font:inherit;font-size:var(--fs-md);cursor:pointer;white-space:nowrap;transition:background-color var(--dur-2) var(--ease-out),color var(--dur-1),box-shadow var(--dur-2) var(--ease-out)}
 .page-tab:hover{color:var(--ink);text-decoration:none;background:rgb(255 255 255 / 55%)}
 .page-tab.active{background:var(--surface);color:var(--primary);font-weight:650;box-shadow:var(--shadow-card)}
-.count{min-width:18px;padding:0 5px;border-radius:9px;background:var(--brand);color:var(--on-primary);font-size:var(--fs-xs);line-height:18px;text-align:center}
+.count{min-width:18px;padding:0 5px;border-radius:9px;background:var(--track);color:var(--ink);font-size:var(--fs-xs);line-height:18px;text-align:center}
 @media(max-width:600px){.page-tab{height:40px}}
 </style>

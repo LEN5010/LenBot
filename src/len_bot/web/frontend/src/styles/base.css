@@ -2,13 +2,13 @@
 html { font-size:14px;scroll-behavior:auto }
 body { margin:0;min-width:320px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;color:var(--ink);background:var(--page);line-height:1.6;-webkit-font-smoothing:antialiased }
 h1,h2,h3,h4,h5,p { margin-top:0 }
-h1 { font-size:var(--fs-2xl);font-weight:700;margin:0;letter-spacing:-.02em }
+h1 { font-size:var(--fs-2xl);font-weight:650;margin:0;letter-spacing:-.01em }
 h2 { font-size:var(--fs-lg);font-weight:650;margin:0 }
 h3 { font-size:var(--fs-md);font-weight:650;margin:0 }
 h4,h5 { font-size:var(--fs-sm);font-weight:600;margin:0 }
 a { color:var(--primary);text-decoration:none;transition:color var(--dur-1) }
 a:hover { text-decoration:underline;text-underline-offset:3px }
-:focus-visible { outline:2px solid var(--brand);outline-offset:3px }
+:focus-visible { outline:2px solid var(--primary);outline-offset:2px }
 ::selection { background:var(--selected) }
 code { font-family:var(--mono);font-size:.92em }
 .muted { color:var(--muted) }
@@ -22,25 +22,35 @@ code { font-family:var(--mono);font-size:.92em }
 .plain-list { list-style:none;margin:0;padding:0 }
 .v-application { font-family:inherit;background:var(--page) }
 
-/* Buttons: no capitals, a soft press, and the pink gradient for main actions. */
-.v-btn { letter-spacing:0;text-transform:none;font-weight:600;transition:transform var(--dur-1) var(--ease-spring),box-shadow var(--dur-2) var(--ease-out),background-color var(--dur-1),color var(--dur-1) }
-.v-btn:not(.v-btn--disabled):active { transform:scale(.96) }
-.v-btn--variant-flat.bg-primary { background:linear-gradient(135deg,var(--brand),var(--primary));box-shadow:var(--shadow-brand) }
-.v-btn--variant-flat.bg-primary:not(.v-btn--disabled):hover { box-shadow:0 10px 24px -8px rgb(214 110 145 / 85%) }
-.v-btn--variant-flat.bg-primary.v-btn--disabled { box-shadow:none }
+/* Buttons come in four tiers (see the panel section of developer/architecture.md):
+   main      color="primary"                 solid, at most one per block
+   secondary variant="outlined" or "tonal"   white with a gray border
+   text      variant="text"                  links and low-weight actions
+   danger    color="error"                   only to confirm destructive actions
+   Tonal buttons are drawn as secondary ones so older pages fall into the same tiers. */
+.v-btn { letter-spacing:0;text-transform:none;font-weight:600;transition:background-color var(--dur-1),border-color var(--dur-1),color var(--dur-1) }
+.v-btn--variant-outlined, .v-btn--variant-tonal { background:var(--surface);border:1px solid var(--line-strong) }
+.v-btn--variant-outlined:not(.text-error), .v-btn--variant-tonal:not(.text-error) { color:var(--ink) }
+.v-btn--variant-tonal > .v-btn__underlay { opacity:0 }
+.v-btn--variant-outlined:not(.v-btn--disabled):hover, .v-btn--variant-tonal:not(.v-btn--disabled):hover { border-color:var(--muted) }
+.v-card { border-radius:var(--radius-lg) }
+.v-card--variant-outlined, .v-card.v-card--border { border-color:var(--line) }
 .v-field--variant-outlined { background:var(--surface) }
+.v-field--variant-outlined .v-field__outline { --v-field-border-opacity:1;color:var(--line-strong) }
+.v-field--focused .v-field__outline { color:var(--primary) }
+/* The floating label sits inside the outline; keep it readable rather than border-gray. */
+.v-field--variant-outlined .v-field__outline .v-label { color:var(--muted);opacity:1 }
+.v-field--focused .v-field__outline .v-label { color:var(--primary) }
 .v-alert-title { font-size:var(--fs-md);font-weight:650;line-height:1.5 }
 .v-overlay__content > .v-list, .v-menu > .v-overlay__content > .v-card { border-radius:var(--radius);box-shadow:var(--shadow-float) }
 
-/* Motion. Pages fade up when the route changes; `.rise` staggers with --i. */
-@keyframes rise { from { opacity:0;transform:translateY(10px) } to { opacity:1;transform:none } }
-@keyframes pulse { 0% { box-shadow:0 0 0 0 currentColor } 70% { box-shadow:0 0 0 6px transparent } 100% { box-shadow:0 0 0 0 transparent } }
-@keyframes float { 0%,100% { transform:translate(0,0) scale(1) } 50% { transform:translate(24px,-18px) scale(1.06) } }
-.rise { animation:rise var(--dur-3) var(--ease-out) both;animation-delay:calc(var(--i,0) * 50ms) }
-.page-enter-active { transition:opacity var(--dur-2) var(--ease-out),transform var(--dur-2) var(--ease-out) }
+/* Motion is a short fade only. `.rise` is kept as a class name for older pages. */
+@keyframes rise { from { opacity:0 } to { opacity:1 } }
+@keyframes pulse { 0% { box-shadow:0 0 0 0 currentColor } 70% { box-shadow:0 0 0 5px transparent } 100% { box-shadow:0 0 0 0 transparent } }
+.rise { animation:rise var(--dur-2) var(--ease-out) both }
+.page-enter-active { transition:opacity var(--dur-2) var(--ease-out) }
 .page-leave-active { transition:opacity var(--dur-1) ease-in }
-.page-enter-from { opacity:0;transform:translateY(8px) }
-.page-leave-to { opacity:0 }
+.page-enter-from, .page-leave-to { opacity:0 }
 
 * { scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent }
 @media(max-width:600px){
