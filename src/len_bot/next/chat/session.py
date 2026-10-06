@@ -152,29 +152,31 @@ class Chat:
 
     async def compact_now(self) -> dict:
         """One explicit operator-requested compaction; caller owns the scene lock."""
-        recap, entries = self.store.active_history(self.config.scene)
-        binding = self.config.models.roles.mind
-        state = turn_state(self.config, self.store, now=self.now())
-        projection = await self.context.project(recap, entries, state)
-        estimated, method = request_estimate(
-            self.config, self.store, self.mind, scene=self.config.scene, role="mind",
-            messages=projection, tools=self.toolset.tools, output_tokens=0)
-        scale = (estimated / estimate_text_request(projection, self.toolset.tools, 0)
-                 if method == "usage_assisted" else 1.0)
-        plan = plan_compaction(
-            self.context.project_entries(entries), system=projection[0], state=projection[-1],
-            tools=self.toolset.core_tools, output_tokens=binding.max_output_tokens,
-            trigger_tokens=self.config.compaction.input_tokens,
-            keep_recent_tokens=self.config.compaction.keep_recent_tokens,
-            summary_output_tokens=self.config.compaction.max_output_tokens, recap=recap,
-            summary_template=(PROMPTS / "next_recap.md").read_text(), window_tokens=binding.context_window_tokens, source_entries=entries, token_scale=scale,
-        )
         turn_id = self.store.start_turn(self.config.scene)
         try:
             async with asyncio.timeout(self.config.turn_timeout_seconds):
+                recap, entries = self.store.active_history(self.config.scene)
+                binding = self.config.models.roles.mind
+                state = turn_state(self.config, self.store, now=self.now())
+                projection = await self.context.project(recap, entries, state)
+                estimated, method = request_estimate(
+                    self.config, self.store, self.mind, scene=self.config.scene, role="mind",
+                    messages=projection, tools=self.toolset.tools, output_tokens=0)
+                scale = (estimated / estimate_text_request(projection, self.toolset.tools, 0)
+                         if method == "usage_assisted" else 1.0)
+                plan = plan_compaction(
+                    self.context.project_entries(entries), system=projection[0], state=projection[-1],
+                    tools=self.toolset.core_tools, output_tokens=binding.max_output_tokens,
+                    trigger_tokens=self.config.compaction.input_tokens,
+                    keep_recent_tokens=self.config.compaction.keep_recent_tokens,
+                    summary_output_tokens=self.config.compaction.max_output_tokens, recap=recap,
+                    summary_template=(PROMPTS / "next_recap.md").read_text(),
+                    window_tokens=binding.context_window_tokens, source_entries=entries, token_scale=scale,
+                )
                 reply = await self.request(turn_id, "recap", plan.request_messages, [], recap_target=plan)
         except BaseException as error:
             self.store.end_turn(turn_id, "error", f"{type(error).__name__}: {error}")
+            self.notify()
             raise
         self.store.end_turn(turn_id, "manual_compaction")
         if self.on_compaction is not None:

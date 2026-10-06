@@ -138,6 +138,7 @@ python -m len_bot.next.maintenance.memory_reindex
    python -m len_bot.next.maintenance.migrate_config
    python -m len_bot.next.maintenance.migrate
    python -m len_bot.next.maintenance.migrate_memory_jobs
+   python -m len_bot.next.maintenance.migrate_local_memory
    python -m len_bot.next.maintenance.plugin_dependencies
    ```
 
@@ -147,11 +148,15 @@ python -m len_bot.next.maintenance.memory_reindex
 
 部署包的 `install.sh upgrade` 和 Docker 的升级步骤会替你执行第 4 步，见[部署包](../package/README.md#升级)和 [Docker](docker.md#停机升级)。
 
-业务数据库从公开版本的格式 v1 开始，之后每次格式变化都有对应的升级步骤，目前是格式 2。记忆处理库目前是格式 6。
+业务数据库从公开版本的格式 v1 开始，之后每次格式变化都有对应的升级步骤，目前是格式 2。记忆处理库目前是格式 6，本地记忆索引为格式 3。
+
+`migrate_local_memory` 将本地索引从格式 2 升到 3，清除旧的 `.abstract.md`／`.overview.md` 派生摘要，保留正文、全文／向量索引和修改历史；迁移不调用模型。新摘要的生成时间写入索引，与记忆变更使用同一时钟。迁移后在记忆页明确整理，重新生成摘要。
 
 `migrate_config` 要在数据库升级之前执行，数据库升级会读取根配置。它删除旧版本的模型价格（`models.prices`、各用途的 `price`）和空的金额上限，原文件保存为 `lenbot.config.json.pre-tokens.bak`；对话测试实例的配置一并处理。金额上限（`limits.daily_model_cost`、`scene_daily_model_cost`、`worker.max_cost`）没法换算成 token，配置里填了这几项时命令直接报错并列出原值，文件不改；手动删掉它们、改填 `limits.daily_tokens`、`scene_daily_tokens`、`worker.max_tokens` 后再执行。
 
 业务数据库从格式 1 升到 2 时，各调用记录原来的估算金额被删除，改为从同一行保存的 usage 重新统计 token；usage 读不出 token 的行会让升级停下并报出行号。
+
+每日 token 限额按模型服务报告的输入加输出计算，首页使用同一计入范围，包含任务、记忆、公共／已移除场景和保留试聊；ASR 与 embedding 在用量页单列，不计入每日限额。失败或中断且未报告 token 的调用仍是未知，不按零计量，也不因此暂停当天请求；成功调用未报告 token 时暂停至当地零点。已报告的 token 无论调用最终是否失败都计入限额。
 
 ## 测试实例副本
 

@@ -86,11 +86,14 @@ def _field_info(manifest: Manifest) -> list[dict]:
     return [field(key, item) for key, item in manifest.config.items()]
 
 
-def _masked(manifest: Manifest | None, values: dict) -> dict:
+def _masked(manifest: Manifest | None, values: dict, *, installed: Sequence[Manifest] = ()) -> dict:
     if manifest is None:
         return {key: {"hidden": True} for key in values}
-    return {key: ({"configured": bool(value)} if key in manifest.config and manifest.config[key].type == "secret"
-                  else {"value": value}) for key, value in values.items()}
+    manifests = [manifest, *installed]
+    known = {key for item in manifests for key in item.config}
+    secrets = {key for item in manifests for key, field in item.config.items() if field.type == "secret"}
+    return {key: ({"configured": bool(value)} if key in secrets else
+                  {"value": value} if key in known else {"hidden": True}) for key, value in values.items()}
 
 
 def _entry(directory: Path) -> dict:
@@ -126,6 +129,8 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
         saved = _read_saved(root)
         _, raw = _read_root(root)
         available, errors = _available(saved)
+        installed = {name: [read_manifest(Path(entry['directory'])) for entry in entries
+                            if entry['error'] is None] for name, entries in available.items()}
         pending = manager.installer.pending()
         for record in pending:
             available[record.name] = [_entry(manager.installer.candidates / record.name)]
@@ -145,7 +150,8 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
             "saved": {"paths": raw_plugins.get("paths", ["plugins"]),
                       "data_directory": raw_plugins.get("data_directory", "plugins/.data"),
                       "disabled": [] if saved.plugins is None else saved.plugins.disabled,
-                      "plugins": {name: _masked(manifests[name], values) for name, values in configured.items()}},
+                      "plugins": {name: _masked(manifests[name], values, installed=installed.get(name, []))
+                                  for name, values in configured.items()}},
             "retained_data": ([] if saved.plugins is None or not saved.plugins.data_directory.is_dir() else
                               [{'name': path.name, 'directory': str(path)}
                                for path in sorted(saved.plugins.data_directory.iterdir()) if path.is_dir()

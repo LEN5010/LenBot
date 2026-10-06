@@ -50,11 +50,12 @@ git pull
 uv run --no-sync python -m len_bot.next.maintenance.migrate_config
 uv run --no-sync python -m len_bot.next.maintenance.migrate
 uv run --no-sync python -m len_bot.next.maintenance.migrate_memory_jobs
+uv run --no-sync python -m len_bot.next.maintenance.migrate_local_memory
 uv run --no-sync python -m len_bot.next.maintenance.plugin_dependencies
 uv run --no-sync len-bot
 ```
 
-四条维护命令依次是：升级根配置，升级业务数据库，升级记忆处理库，恢复已安装插件的依赖。已经是最新格式时什么也不做。升级前先备份实例。
+五条维护命令依次是：升级根配置，升级业务数据库，升级记忆处理库，升级本地记忆索引，恢复已安装插件的依赖。已经是最新格式时什么也不做。本地索引从格式 2 升到 3 会清除旧派生摘要，正文和修改历史保留；之后明确整理时重新生成。升级前先备份实例。
 
 在 macOS 上可以双击 [`current/start.command`](current/start.command) 启动。要做成系统服务，见[可选服务](current/README.md#作为系统服务运行)。
 

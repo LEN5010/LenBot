@@ -13,6 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response, WebSocket
 
 from len_bot.web.shell import mount_panel
 from ..config import HostConfig
+from ..models.usage import instance_calls
 from .routes.capabilities import register_host_capabilities
 from .routes.persona import register_host_persona
 from .routes.persona_stickers import register_host_persona_stickers
@@ -181,6 +182,9 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
         scenes = list(config.scenes)
         # The last 24 whole hours, ending with the current one.
         hour = now.replace(minute=0, second=0, microsecond=0).timestamp()
+        calls = instance_calls(runtime.store, config.database, None,
+                               min(start.timestamp(), hour - 23 * 3600), end.timestamp(),
+                               memory=runtime.memory, root=root)
         stuck = [] if runtime.ingestor is None else [
             {"scene": scene, "status": job["status"], "error": job["error"], "ended": job["ended"]}
             for scene in scenes if scene in runtime.chats
@@ -188,8 +192,8 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
             if job is not None and job["status"] in {"failed", "interrupted"}]
         return {"timezone": config.timezone, "sampled_at": now.timestamp(),
                 "since": start.timestamp(), "until": end.timestamp(),
-                **runtime.store.daily_overview(scenes, start.timestamp(), end.timestamp()),
-                "hourly": runtime.store.hourly_overview(scenes, hour - 23 * 3600, 24),
+                **runtime.store.daily_overview(scenes, start.timestamp(), end.timestamp(), calls=calls),
+                "hourly": runtime.store.hourly_overview(scenes, hour - 23 * 3600, 24, calls=calls),
                 "activity": runtime.store.recent_activity(scenes, 12),
                 "failed_tasks": runtime.store.failed_tasks(scenes, start.timestamp()),
                 "memory_stuck": stuck}

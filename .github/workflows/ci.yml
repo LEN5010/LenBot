@@ -33,16 +33,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: src/len_bot/web/frontend/package-lock.json
 
-      - name: Install frontend dependencies
-        working-directory: src/len_bot/web/frontend
-        run: npm ci --no-audit --no-fund
+      - name: Build release packages and deployment bundles
+        run: uv run --no-project --python 3.13 python scripts/build_release.py "$RUNNER_TEMP/release"
 
-      - name: Build control panel
-        working-directory: src/len_bot/web/frontend
-        run: npm run build
-
-      - name: Build source and wheel packages
-        run: uv build --sdist --wheel --out-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-packages
+          path: ${{ runner.temp }}/release/artifacts/*
+          if-no-files-found: error

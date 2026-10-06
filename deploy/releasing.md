@@ -58,6 +58,8 @@ uv run --no-sync python scripts/prepare_component.py browserskill /tmp/browsersk
 
 完成本版集中使用后，明确选择版本、更新 `pyproject.toml` 与 uv 锁文件、整理 `deploy/release-notes.md`，提交后再创建对应标签。推送 `v*` 标签会执行完整构建并发布**预发布版本**；这就是实际发布动作，不是候选检查。
 
+当前版本暂为 `0.1.0`，运行修复分支不创建标签或触发构建。CI 与发行工作流共用 `build_release.py` 构建面板、源码包、wheel 与 Linux／macOS 部署包，产物保存在 `release-packages`；CI 仍保留测试步骤。升级顺序包括新的本地记忆索引迁移，见[升级与备份](current/operations.md#升级与备份)。
+
 工作流向 GHCR 上传 `ghcr.io/<owner>/<repo>:<version>`和 `<repo>-worker:<version>`，先有架构标签，再组合对应版本的多架构清单，不更新 `latest`。所有构建作业成功后才创建 Release 并附包、源码、组件清单与镜像位置。标签必须已存在；发布命令使用 `--verify-tag`，不让工具隐式在默认分支创建标签。[GitHub Release 命令](https://cli.github.com/manual/gh_release_create)。
 
 手动发布只对同版已存在标签使用：
