@@ -5,7 +5,7 @@ from pathlib import Path
 
 from ..config import load_host_config
 from ..instance_lock import instance_lock
-from ..plugins.install import install_dependencies
+from ..plugins.install import PluginInstaller, install_dependencies
 from ..plugins.manifest import discover, read_manifest
 
 
@@ -18,7 +18,10 @@ async def install(root: Path) -> None:
     if errors:
         raise ValueError('\n'.join(errors))
     manifests = []
+    installer = PluginInstaller(root)
     for name in config.plugins.configured:
+        if (installer.records / (name + '.json')).is_file() and installer.read(name).installed is None:
+            continue
         directories = found.get(name, [])
         if len(directories) != 1:
             raise ValueError(f'插件 {name} 需要唯一源码目录，实际为：{directories}')
