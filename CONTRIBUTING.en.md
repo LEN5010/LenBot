@@ -2,7 +2,7 @@
 
 [中文](CONTRIBUTING.md)
 
-Rules for code, tests, documentation and commits live in [AGENTS.md](AGENTS.md) (Chinese) and apply to people and tools alike. If you only want to write a plugin, start from the [plugin guide](developer/plugins-v1.en.md) or the [plugin template](https://github.com/lendevs/lenbot-plugin-template) instead.
+If you only want to write a plugin, you can skip this page and start from the [plugin guide](developer/plugins-v1.en.md) or the [plugin template](https://github.com/lendevs/lenbot-plugin-template) instead.
 
 ## Local development
 
@@ -66,6 +66,14 @@ Elsewhere:
 
 Maintenance commands are run as `python -m len_bot.next.maintenance.<module>`. Import from concrete modules; `__init__.py` files do not re-export.
 
+## Writing code
+
+- Solve the problem at hand. Do not swallow exceptions and return defaults, guess field names, or check for cases the types already rule out. When a model or service call fails, do not automatically retry with another model, service or parameters.
+- Parse external data (platform messages, model and service responses, configuration files) once at the entry point. If parsing fails, raise an error that includes the raw snippet.
+- Catch exceptions only at the boundary of one chat turn, one tool or plugin call, or one task; log the original error and end that unit. Tool errors go back to the model verbatim.
+- Leave contextual judgement (who a request belongs to, what a reference points to, who is replying to whom) to the model. The host keeps only real identities and the state needed to execute. When you add a table, a state or a layer, explain in the PR what problem it solves.
+- Runtime settings come only from `lenbot.config.json` in the repository root and are saved by the panel while running. Do not add overrides through environment variables, dotenv, command-line flags or the database.
+
 ## Tests
 
 ```sh
@@ -73,9 +81,9 @@ uv run --no-sync pytest -q
 uv run --no-sync python -m compileall -q src/len_bot
 ```
 
-Tests cover external protocol boundaries, data migrations, permissions and configuration validation only; see [AGENTS.md](AGENTS.md#测试与报告).
+Tests cover only external protocol boundaries (parsing OneBot, Pi RPC, model and memory service responses), data migrations, permissions and configuration validation, using anonymized real samples. Do not mock call sequences, test private functions or snapshot prompts.
 
-When changing prompts or persona expression, compare replies before and after with the [expression replay](examples/replay/). When you find a bad reply, write the situation down as a replay case before changing prompts.
+When changing prompts or persona expression, compare replies before and after with the [expression replay](examples/replay/). When you find a bad reply, write the situation down as a replay case before changing prompts, rather than piling prohibitions into the prompt. General situations go in `examples/replay/`; cases taken from real group chats stay on your machine and are not committed.
 
 ## Data format
 
@@ -96,6 +104,8 @@ This rebuilds the panel in a copy and produces the sdist, the wheel and the Linu
 - Use the [bug template](.github/ISSUE_TEMPLATE/bug.md) and the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
 - Run `git diff --check` before committing. Never commit real configuration, databases, credentials, personal personas or build output.
 - Commit messages say what behavior changed, what you checked and what is still unconfirmed.
+- When behavior or interfaces change, update the matching docs in the README, `developer/` or `deploy/`.
+- Authors are people. Do not add tool or model attribution to commits or PRs, such as `Co-Authored-By:` lines pointing to machine identities or `Generated with …` footers.
 
 ## License
 
