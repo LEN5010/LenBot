@@ -1,6 +1,6 @@
 # LenBot 工程约束
 
-用户当前的决定优先于本文。设计在 `docs/design/`，待办只在 `docs/next.md`，观察结论在 `docs/iteration.md`；`docs/` 只在本机，不进 Git。
+用户当前的决定优先于本文。写代码、测试和数据格式的约定见 [CONTRIBUTING](CONTRIBUTING.md)。
 
 ## 交付
 
