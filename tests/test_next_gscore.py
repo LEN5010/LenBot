@@ -39,3 +39,67 @@ def test_core_manifest_requires_an_explicit_endpoint():
     with pytest.raises(ValueError):model.model_validate({})
     config=model.model_validate({'ws_url':'ws://127.0.0.1:9/ws/fixture'})
     assert config.access_token=='' and config.max_frame_bytes==20000000
+
+
+@pytest.mark.asyncio
+async def test_core_image_links_reject_internal_addresses_before_http(tmp_path):
+    import asyncio
+
+    from websockets.asyncio.server import serve
+
+    from len_bot.next.config import load_host_config
+    from len_bot.next.plugins.host import PluginHost
+
+    http_requests = []
+    async def internal(reader, writer):
+        http_requests.append(await reader.readuntil(b'\r\n\r\n'))
+        writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\ninternal')
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    ready = asyncio.Event()
+    completed = asyncio.get_running_loop().create_future()
+    http_server = await asyncio.start_server(internal, '127.0.0.1', 0)
+    port = http_server.sockets[0].getsockname()[1]
+    links = [f'http://127.0.0.1:{port}/internal', f'http://[::1]:{port}/internal',
+             'http://169.254.169.254/latest/meta-data/']
+
+    async def core(websocket):
+        try:
+            await ready.wait()
+            for index, url in enumerate(links):
+                await websocket.send(frame(echo=f'image-{index}', content=[{'type': 'image', 'data': 'link://' + url}]))
+                reply = json.loads(await websocket.recv())
+                assert reply['content'][0]['data'] == {'echo': f'image-{index}', 'id': None}
+            completed.set_result(None)
+            await websocket.wait_closed()
+        except Exception as error:
+            if not completed.done():
+                completed.set_exception(error)
+            raise
+
+    async with http_server, serve(core, '127.0.0.1', 0) as core_server:
+        source = {
+            'mode': 'isolated-multi', 'bot_id': 'onebot:90001', 'timezone': 'UTC', 'database': 'state.db',
+            'delivery': 'simulated', 'onebot': None, 'compaction': {'input_tokens': 2000},
+            'models': {'providers': {'sample': {'api': 'openai-chat', 'base_url': 'http://127.0.0.1:9/v1',
+                                               'api_key': 'synthetic-unused'}},
+                       'roles': {'mind': {'provider': 'sample', 'model': 'mind', 'context_window_tokens': 8192}}},
+            'plugins': {'gscore_adapter': {'ws_url': f'ws://127.0.0.1:{core_server.sockets[0].getsockname()[1]}',
+                                            'timeout_seconds': 2}},
+            'scenes': {'onebot:group:80001': {'persona': 'unused-role', 'plugins': ['gscore_adapter']}},
+        }
+        (tmp_path / 'lenbot.config.json').write_text(json.dumps(source))
+        host = PluginHost(load_host_config(tmp_path), core_tools=set())
+        try:
+            await host.start()
+            assert host.plugins['gscore_adapter'].status == 'running'
+            ready.set()
+            await asyncio.wait_for(completed, timeout=5)
+            errors = host.plugins['gscore_adapter'].errors
+            assert len(errors) == 3
+            assert all('blocked' in item['error'] for item in errors)
+            assert http_requests == []
+        finally:
+            await host.close()

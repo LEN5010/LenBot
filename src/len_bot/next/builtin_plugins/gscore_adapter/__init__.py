@@ -6,12 +6,12 @@ import json
 import math
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
-import httpx
 from websockets.asyncio.client import connect
 from websockets.protocol import State
 
 from len_bot.next.image_assets import MAX_IMAGE_BYTES
 from len_bot.next.plugin import Image, Invocation, Mention, Plugin, PluginContext, Text, command, tool
+from len_bot.next.tools.http_read import fetch_public
 
 from .protocol import AtPart, Frame, ImagePart, ImageSize, TextPart, parse_frame
 
@@ -142,20 +142,10 @@ class Gscore(Plugin):
                 or parsed.username is not None or parsed.password is not None or parsed.fragment):
             raise ValueError('Core图片link必须为不含凭据/fragment的HTTP(S)地址')
         timeout = self.ctx.config['timeout_seconds']
-        async with asyncio.timeout(timeout), httpx.AsyncClient(timeout=timeout,trust_env=False,follow_redirects=False) as client:
-            async with client.stream('GET',url) as response:
-                if not response.is_success:
-                    fragment = b''
-                    async for chunk in response.aiter_bytes():
-                        fragment += chunk[:max(0,500-len(fragment))]
-                        if len(fragment)>=500:break
-                    raise RuntimeError(f'Core图片HTTP {response.status_code}: {fragment!r}')
-                chunks, size = [], 0
-                async for chunk in response.aiter_bytes():
-                    size += len(chunk)
-                    if size>MAX_IMAGE_BYTES:raise ValueError('Core图片超过宿主原件字节上限')
-                    chunks.append(chunk)
-                return b''.join(chunks)
+        async with asyncio.timeout(timeout):
+            _, _, data = await fetch_public(url, timeout, lambda _type, _prefix: MAX_IMAGE_BYTES,
+                                           fake_ip_networks=self.ctx.host.config.network.networks())
+            return data
 
     async def deliver(self, frame: Frame):
         ids = None
