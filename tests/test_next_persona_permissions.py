@@ -153,3 +153,22 @@ async def test_chat_only_exposes_current_role_documents_after_allowed_discovery(
             assert "persona_knowledge" not in chat.toolset.tool_names
             with pytest.raises(ValueError, match="persona_knowledge"):
                 await chat.toolset.execute("unused-turn", read, wait_for_messages)
+
+
+@pytest.mark.asyncio
+async def test_plugin_messages_are_excluded_from_memory_input(tmp_path: Path) -> None:
+    import time
+    from len_bot.next.chat.context import ChatContext
+    from len_bot.next.chat.expression import ChatExpression
+    from len_bot.next.plugin import Text
+    package = _package(tmp_path, "plain", tools=[], documents={})
+    config = _config(tmp_path / "instance", package)
+    persona = load_persona(package)
+    excluded: list[int] = []
+    with Store(config.database) as store:
+        expression = ChatExpression(config, persona, store, context=ChatContext(config, persona, store, platform=False, memory=None),
+                                    send_message=None, notify=lambda: None, on_reply_sample=None, now=time.time,
+                                    exclude_from_memory=excluded.append)
+        await expression.send_plugin_content("clock", [Text("现在 12:00")], reply_to=None)
+        assert len(excluded) == 1
+        assert excluded == [store.max_message_seq(config.scene)]

@@ -89,7 +89,8 @@ class Chat:
         self.expression = ChatExpression(
             config, persona, store, context=self.context,
             send_message=send_message,
-            notify=self.notify, on_reply_sample=on_reply_sample, now=now)
+            notify=self.notify, on_reply_sample=on_reply_sample, now=now,
+            exclude_from_memory=None if memory is None else lambda seq: memory.jobs.exclude_records(config.scene, [seq]))
         self.toolset = SceneTools(
             config, persona, store, expression=self.expression, request=self.request, vision=vision,
             memory=memory, tasks=tasks, audio=audio_service, upload_file=upload_file,

@@ -334,6 +334,16 @@ class PluginHost:
             raise RuntimeError("插件宿主尚未接入运行中的场景")
         return self.runtime.store.recent(scene, limit)
 
+    def messages_between(self, plugin: str, scene: str, after: float, before: float,
+                         offset: int, limit: int) -> list[ChatMessage]:
+        self._active(plugin, scene)
+        if self.runtime is None:
+            raise RuntimeError("插件宿主尚未接入运行中的场景")
+        store = self.runtime.store
+        return [message for _, message in store.search_messages(
+            scene, query=None, who=None, after=after, before=before, snapshot=store.max_message_seq(scene),
+            offset=offset, limit=limit)]
+
     async def memory(self, plugin: str, scene: str, arguments: dict) -> str:
         self._active(plugin, scene)
         if self.runtime is None:

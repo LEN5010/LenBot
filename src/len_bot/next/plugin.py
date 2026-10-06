@@ -116,6 +116,8 @@ class HostPort(Protocol):
     def emit_event(self, plugin: str, scene: str, text: str) -> None: ...
     def scene_paused(self, scene: str) -> bool: ...
     def recent_messages(self, plugin: str, scene: str, limit: int) -> list[ChatMessage]: ...
+    def messages_between(self, plugin: str, scene: str, after: float, before: float,
+                         offset: int, limit: int) -> list[ChatMessage]: ...
     async def get_kv(self, plugin: str, key: str, default: JsonValue) -> JsonValue: ...
     async def set_kv(self, plugin: str, key: str, value: JsonValue) -> None: ...
     async def delete_kv(self, plugin: str, key: str) -> bool: ...
@@ -204,6 +206,15 @@ class PluginContext:
             raise ValueError("limit 必须在 1 到 100 之间")
         return self.host.recent_messages(self.name, self._scene(scene), limit)
 
+    def messages_between(self, scene: str, after: float, before: float, *, offset: int = 0,
+                         limit: int = 200) -> list[ChatMessage]:
+        """Stored messages with after <= time < before, oldest first; page with offset."""
+        if not 1 <= limit <= 500:
+            raise ValueError("limit 必须在 1 到 500 之间")
+        if offset < 0 or after >= before:
+            raise ValueError("需要 offset >= 0 且 after < before")
+        return self.host.messages_between(self.name, self._scene(scene), after, before, offset, limit)
+
     async def get_kv(self, key: str, default: JsonValue = None) -> JsonValue:
         """Read plugin-local business state, never runtime configuration."""
         return await self.host.get_kv(self.name, key, default)
@@ -280,6 +291,9 @@ class Invocation:
 
     def recent_messages(self, limit: int = 20) -> list[ChatMessage]:
         return self.plugin.recent_messages(self.scene, limit)
+
+    def messages_between(self, after: float, before: float, *, offset: int = 0, limit: int = 200) -> list[ChatMessage]:
+        return self.plugin.messages_between(self.scene, after, before, offset=offset, limit=limit)
 
     async def memory(self, arguments: dict) -> str:
         return await self.plugin.memory(self.scene, arguments)

@@ -62,6 +62,7 @@ Scene IDs are qualified, for example `onebot:group:80001`; accounts use `onebot:
 | Send | `await ctx.reply(text)`, `reply_image(bytes, description)`, `reply_parts(parts)` |
 | Message parts | `Text(text)`, `Image(bytes, description)`, `Mention("onebot:70001")` |
 | History | `ctx.recent_messages(limit=20)`, current scene only, up to 100 |
+| Time range | `ctx.messages_between(after, before, offset=0, limit=200)`, Unix times with `after <= time < before`, oldest first, up to 500 per page; page with offset |
 | Memory | `await ctx.memory(arguments)` through the permitted scene service |
 | Wake chat | `await ctx.emit_event(text)` |
 | One model request | `await ctx.generate(prompt, role="mind", system=None)` |

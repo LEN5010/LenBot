@@ -52,6 +52,13 @@ class _LocalHost(PluginHost):
         self._active(plugin, scene)
         return [item for item in self.messages if item.scene == scene][-limit:]
 
+    def messages_between(self, plugin: str, scene: str, after: float, before: float,
+                         offset: int, limit: int) -> list[ChatMessage]:
+        self._active(plugin, scene)
+        selected = sorted((item for item in self.messages if item.scene == scene and after <= item.time < before),
+                          key=lambda item: item.time)
+        return selected[offset:offset + limit]
+
     def emit_event(self, plugin: str, scene: str, text: str) -> None:
         self._active(plugin, scene)
         PluginStore(self.runtime.store).add_plugin_event(scene, plugin, 'event', self.redact(plugin, text))

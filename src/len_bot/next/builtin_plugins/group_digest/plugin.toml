@@ -1,5 +1,5 @@
 name = "group_digest"
-version = "1.0.0"
+version = "1.1.0"
 interface = 1
 requires_lenbot = ">=0.2,<1"
 requires_python = ">=3.13"
@@ -7,7 +7,7 @@ platforms = ["linux", "darwin", "win32"]
 reload = "plugin"
 authors = ["LEN5010"]
 license = "AGPL-3.0-only"
-description = "/群总结 显式单次生成；/群工作 按真实发送者委派文件或长工作。不是每条聊天自动调用。"
+description = "/群日报 和机器人工具生成过去 24 小时的总结卡片，可每天定时发；/群总结 单次文字总结；/群工作 委派长工作。"
 
 [config.message_limit]
 type = "integer"
@@ -23,3 +23,33 @@ label = "总结用的模型"
 description = "群总结使用的已有模型用途绑定"
 options = [{ value = "mind", label = "聊天模型（mind）" }, { value = "learner", label = "学习模型（learner）" }]
 default = "mind"
+
+[config.daily_scenes]
+type = "scene_list"
+label = "每天自动发总结的群"
+group = "每日总结"
+description = "到点自动发过去 24 小时的总结卡片；这些群也要启用本插件。不选就只在有人要时生成"
+default = []
+
+[config.daily_time]
+type = "string"
+label = "每天几点发"
+group = "每日总结"
+description = "24 小时制，按群的时区，例如 22:00"
+default = "22:00"
+
+[config.batch_chars]
+type = "integer"
+label = "每批读多少字"
+group = "每日总结"
+description = "聊天记录按这个字数分批交给模型，每批一次调用，最后再合并一次。模型上下文小就调低"
+minimum = 2000
+maximum = 200000
+default = 12000
+
+[config.font_path]
+type = "path"
+label = "卡片字体"
+group = "每日总结"
+description = "中文字体文件的绝对路径；留空时使用系统里的 PingFang、Noto Sans CJK 或微软雅黑"
+default = ""

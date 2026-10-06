@@ -135,6 +135,7 @@ default = []
 | 组合消息 | `Text(text)`、`Image(bytes, description)`、`Mention(user)` 从公共入口导入 |
 | KV | `get_kv(key, default=None)`、`set_kv(key, JSON值)`、`delete_kv(key)`；均 await |
 | 原消息 | `ctx.recent_messages(limit=20)`，只读当前场景，最多 100 条 |
+| 时间段消息 | `ctx.messages_between(after, before, offset=0, limit=200)`，Unix 时间 `after <= time < before`，按时间从早到晚，每页最多 500 条，用 offset 翻页 |
 | 记忆 | `await ctx.memory(arguments)`，当前场景记忆服务，不直连后端数据库 |
 | 主动交给大脑 | `await ctx.emit_event(text)`，与直接发送相反，它会唤醒大脑 |
 | 时间 | `ctx.now()` 和 `ctx.timezone()`，明确场景时区 |
