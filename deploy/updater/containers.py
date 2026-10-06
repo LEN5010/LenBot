@@ -11,7 +11,7 @@ from urllib.parse import quote
 import urllib.error
 import urllib.request
 
-from common import read_json, write_json
+from common import owned_like_parent, read_json, write_json
 
 
 class Engine(http.client.HTTPConnection):
@@ -143,8 +143,13 @@ class Containers:
             self.api('POST', '/containers/' + quote(target['container']) + '/rename?name=' + quote(name))
         selected = {**target, 'container': name}
         write_json(self.root / 'current.json', selected)
-        (self.root / 'host.version.compose.yaml').write_text(
-            f'services:\n  lenbot:\n    image: {selected["host_image"]}\nvolumes:\n  python:\n    name: {selected["python_volume"]}\n', encoding='utf-8')
+        self.write_version(selected)
+
+    def write_version(self, selected: dict) -> None:
+        path = self.root / 'host.version.compose.yaml'
+        path.write_text(f'services:\n  lenbot:\n    image: {selected["host_image"]}\nvolumes:\n  python:\n'
+                        f'    name: {selected["python_volume"]}\n', encoding='utf-8')
+        owned_like_parent(path)
 
     def start(self) -> None:
         self.api('POST', '/containers/' + quote(self.metadata()['container']) + '/start')
@@ -164,8 +169,7 @@ class Containers:
             self.api('POST', '/containers/' + quote(previous['container']) + '/rename?name=' + quote(self.deployment['container']))
         selected = {**previous, 'container': self.deployment['container']}
         write_json(self.root / 'current.json', selected)
-        (self.root / 'host.version.compose.yaml').write_text(
-            f'services:\n  lenbot:\n    image: {selected["host_image"]}\nvolumes:\n  python:\n    name: {selected["python_volume"]}\n', encoding='utf-8')
+        self.write_version(selected)
 
     def publish_reference(self, reference: dict) -> None:
         code = 'import json; from pathlib import Path; p=Path(".runtime/update-control.json"); p.parent.mkdir(exist_ok=True); p.write_text(DATA); p.chmod(0o600)'

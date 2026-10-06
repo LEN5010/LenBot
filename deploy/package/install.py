@@ -104,6 +104,10 @@ esac
 
 
 def main() -> None:
+    if sys.platform == 'win32':
+        # A redirected Windows console uses a legacy code page that cannot print the Chinese messages.
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('install', 'prepare', 'upgrade'))
     parser.add_argument('root', type=Path)

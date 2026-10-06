@@ -29,6 +29,14 @@ def read_json(path: Path):
     return json.loads(path.read_text(encoding='utf-8'))
 
 
+def owned_like_parent(path: Path) -> Path:
+    """The Docker updater runs as root; what it writes into the bind-mounted deployment stays editable by its owner."""
+    if hasattr(os, 'geteuid') and os.geteuid() == 0:
+        info = path.parent.stat()
+        os.chown(path, info.st_uid, info.st_gid)
+    return path
+
+
 def write_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + '.new')
@@ -39,6 +47,7 @@ def write_json(path: Path, value) -> None:
         os.fsync(stream.fileno())
     temporary.chmod(0o600)
     os.replace(temporary, path)
+    owned_like_parent(path)
 
 
 def fetch_json(url: str):

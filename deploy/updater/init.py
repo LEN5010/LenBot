@@ -7,7 +7,7 @@ import re
 import socket
 import subprocess
 
-from common import repository, version_key, write_json
+from common import owned_like_parent, repository, version_key, write_json
 
 
 def switch_updater(root: Path, version: str) -> None:
@@ -18,6 +18,7 @@ def switch_updater(root: Path, version: str) -> None:
     recipe = json.loads(path.read_text(encoding='utf-8'))
     recipe['services']['lenbot-updater']['image'] = image
     path.write_text(json.dumps(recipe, indent=2) + '\n')
+    owned_like_parent(path)
     print(f'更新器镜像已改为 {image}，宿主未改动。使用以下命令换上新的更新器：')
     print(f'docker compose -p {deployment["project"]} -f host.updater.compose.yaml up -d')
 
@@ -60,6 +61,8 @@ def main() -> None:
     recipe = recipe.replace('127.0.0.1:11307:11307', f'127.0.0.1:{args.panel_port}:11307')
     (root / 'host.compose.yaml').write_text(recipe)
     (root / 'host.version.compose.yaml').write_text('services:\n  lenbot: {}\n')
+    owned_like_parent(root / 'host.compose.yaml')
+    owned_like_parent(root / 'host.version.compose.yaml')
     updater = {'services': {'lenbot-updater': {
         'image': prefix + '-updater:' + args.version, 'restart': 'no', 'stop_grace_period': '240s',
         'ports': [f'127.0.0.1:{args.update_port}:11308'],
@@ -67,6 +70,7 @@ def main() -> None:
                     {'type': 'bind', 'source': '/var/run/docker.sock', 'target': '/var/run/docker.sock'}]}}}
     # JSON is a YAML subset and retains daemon-side path strings on every client OS.
     (root / 'host.updater.compose.yaml').write_text(json.dumps(updater, indent=2) + '\n')
+    owned_like_parent(root / 'host.updater.compose.yaml')
     write_json(root / 'deployment.json', {
         'mode': 'docker', 'project': args.project, 'container': args.project + '-host',
         'docker_socket': '/var/run/docker.sock', 'host_directory': args.host_directory,
@@ -78,6 +82,7 @@ def main() -> None:
     write_json(root / 'current.json', {'version': args.version, 'container': args.project + '-host',
         'host_image': image, 'worker_image': prefix + '-worker:' + args.version, 'python_volume': python_volume})
     (root / 'backups').mkdir(mode=0o700)
+    owned_like_parent(root / 'backups')
     print('已创建配方和新卷，未启动。使用以下命令显式启动：')
     print(f'docker compose -p {args.project} -f host.compose.yaml -f host.version.compose.yaml -f host.updater.compose.yaml up -d')
     print('后台任务另按任务挂载配方与根配置启用；更新器从根配置判断是否需要同步任务镜像。')

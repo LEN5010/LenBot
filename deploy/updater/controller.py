@@ -14,7 +14,7 @@ import time
 import traceback
 from urllib.parse import urlsplit
 
-from common import PROTOCOL, download, fetch_json, read_json, release_manifest, repository, version_key, write_json
+from common import PROTOCOL, download, fetch_json, owned_like_parent, read_json, release_manifest, repository, version_key, write_json
 from native import Native
 
 LABELS = {'prepare': '准备更新', 'apply': '停机升级', 'restore': '恢复快照', 'start': '启动程序'}
@@ -24,7 +24,9 @@ class Controller:
     def __init__(self, root: Path):
         self.root = root.resolve()
         self.root.joinpath('updates').mkdir(exist_ok=True)
+        owned_like_parent(self.root / 'updates')
         self.log = (root / 'updates/updater.log').open('a', encoding='utf-8', buffering=1)
+        owned_like_parent(root / 'updates/updater.log')
         self.deployment = read_json(root / 'deployment.json')
         if self.deployment['mode'] == 'native':
             self.backend = Native(root, self.log)
@@ -41,6 +43,7 @@ class Controller:
         if not token_file.exists():
             token_file.write_text(secrets.token_urlsafe(32), encoding='utf-8')
             token_file.chmod(0o600)
+            owned_like_parent(token_file)
         self.token = token_file.read_text(encoding='utf-8')
         self.recovery_token = secrets.token_urlsafe(32)
         self.reference = None
@@ -83,7 +86,10 @@ class Controller:
         return sorted(result, key=lambda item: version_key(item['version']), reverse=True)
 
     def submit(self, action: str, payload: dict) -> dict:
-        if not self.operation.acquire(blocking=False):
+        if self.state['status'] in ('preparing', 'applying', 'restoring'):
+            raise ValueError('已有一个更新操作正在执行')
+        # The finished operation writes its final status a moment before it releases the lock.
+        if not self.operation.acquire(timeout=10):
             raise ValueError('已有一个更新操作正在执行')
         try:
             if action not in LABELS:

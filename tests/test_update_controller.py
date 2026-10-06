@@ -318,3 +318,28 @@ def test_shutdown_endpoint_stops_the_controller_server(make, tmp_path):
     thread.join(5)
     http.server_close()
     assert not thread.is_alive()
+
+
+def test_files_the_root_updater_writes_keep_the_deployment_owner(tmp_path, monkeypatch):
+    import common
+    import init
+    owners = {}
+    monkeypatch.setattr(common.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(common.os, 'chown', lambda path, uid, gid: owners.__setitem__(Path(path).name, (uid, gid)))
+    write_json(tmp_path / 'deployment.json', {'mode': 'docker', 'project': 'lenbot'})
+    write_json(tmp_path / 'current.json', {'version': '0.2.0', 'host_image': 'ghcr.io/lendevs/lenbot:0.2.0'})
+    (tmp_path / 'host.updater.compose.yaml').write_text(json.dumps({'services': {'lenbot-updater': {'image': 'x'}}}))
+    init.switch_updater(tmp_path, '0.3.0')
+    expected = (tmp_path.stat().st_uid, tmp_path.stat().st_gid)
+    assert owners == {name: expected for name in ('deployment.json', 'current.json', 'host.updater.compose.yaml')}
+
+
+def test_next_action_waits_for_the_finishing_operation_to_release(make):
+    import threading
+    controller = make(Backend())
+    controller.operation.acquire()
+    controller.state.update(status='complete', snapshot_complete=True, old={'version': '0.1.0'}, snapshot='x')
+    threading.Timer(0.3, controller.operation.release).start()
+    assert controller.submit('restore', {}) == {'accepted': True}
+    with controller.operation:
+        assert controller.state['status'] == 'restored'
