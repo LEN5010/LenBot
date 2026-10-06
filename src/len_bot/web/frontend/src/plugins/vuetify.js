@@ -4,7 +4,7 @@ import { aliases, mdi } from 'vuetify/iconsets/mdi-svg'
 import { zhHans } from 'vuetify/locale'
 import { vuetifyColors } from '../styles/theme.js'
 
-const field = { variant: 'outlined', density: 'compact', hideDetails: 'auto', rounded: 'lg', color: 'primary' }
+const field = { variant: 'outlined', density: 'comfortable', hideDetails: 'auto', rounded: 'lg', color: 'primary' }
 
 export default createVuetify({
   locale: { locale: 'zhHans', messages: { zhHans } },
@@ -13,7 +13,7 @@ export default createVuetify({
   theme: { defaultTheme: 'light', themes: { light: { dark: false, colors: vuetifyColors } } },
   defaults: {
     VBtn: { variant: 'flat', rounded: 'lg', elevation: 0 },
-    VCard: { elevation: 0, border: true, rounded: 'xl' },
+    VCard: { elevation: 0, border: true, rounded: 'lg' },
     VTextField: field,
     VTextarea: field,
     VSelect: field,
@@ -21,13 +21,15 @@ export default createVuetify({
     VCombobox: field,
     VFileInput: field,
     VCheckbox: { color: 'primary', density: 'compact', hideDetails: 'auto' },
-    VSwitch: { color: 'primary', density: 'compact', hideDetails: 'auto', inset: true },
+    // Switches that are on use the brand pink; it is one of the few places the accent appears.
+    VSwitch: { color: 'brand', density: 'compact', hideDetails: 'auto', inset: true },
     VAlert: { density: 'compact', rounded: 'lg', variant: 'tonal' },
     VChip: { size: 'small', variant: 'tonal' },
     VProgressLinear: { color: 'primary', rounded: true },
     VProgressCircular: { color: 'primary' },
-    VMenu: { transition: 'scale-transition' },
+    VMenu: { transition: 'fade-transition' },
     VBtnToggle: { density: 'compact', color: 'primary', variant: 'outlined', divided: true, rounded: 'lg' },
+    VDialog: { transition: 'fade-transition' },
     VExpansionPanels: { variant: 'accordion' },
   },
 })

@@ -1,6 +1,7 @@
-"""Group names and private nicknames, read from the platform once per process.
+"""Group names, member counts and private nicknames, read from the platform once per process.
 
-They label scenes for the panel and for host management; they are not stored.
+They label scenes for the panel and for host management; they are not stored. Member
+counts are as of that first read.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ class SceneTitles:
     def __init__(self, runtime: NetworkRuntime):
         self.runtime = runtime
         self.titles: dict[str, str] = {}
+        self.members: dict[str, int] = {}
 
     async def read(self) -> tuple[dict[str, str], dict[str, str]]:
         """Titles of configured scenes, and the original error for scenes that could not be read."""
@@ -35,5 +37,7 @@ class SceneTitles:
             elif isinstance(result, BaseException):
                 raise result
             else:
-                self.titles[scene] = result
+                self.titles[scene], members = result
+                if members is not None:
+                    self.members[scene] = members
         return {scene: self.titles[scene] for scene in scenes if scene in self.titles}, errors

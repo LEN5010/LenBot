@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { login, useAuth } from '../composables/useAuth.js'
 import { returnPath } from '../router/index.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
-import markUrl from '../assets/lenbot-mark.svg'
+import markUrl from '../assets/lenbot-mark-tile.svg'
 const route=useRoute(),router=useRouter()
 const isolated=computed(()=>useAuth().panelContext?.mode==='isolated')
 const username=ref(''),password=ref(''),busy=ref(false),error=ref('')
@@ -29,7 +29,6 @@ async function submit(){
 </script>
 <template>
   <main class="login-page">
-    <span class="blob one" /><span class="blob two" /><span class="blob three" />
     <form class="login-card" @submit.prevent="submit">
       <img class="login-mark" :src="markUrl" alt="" />
       <div>
@@ -44,14 +43,11 @@ async function submit(){
   </main>
 </template>
 <style scoped>
-.login-page{position:relative;overflow:hidden;display:grid;place-items:center;min-height:100vh;padding:var(--sp-5);background:linear-gradient(160deg,var(--page),var(--canvas) 60%,var(--brand-soft))}
-.blob{position:absolute;border-radius:50%;filter:blur(60px);opacity:.75;animation:float 16s ease-in-out infinite;pointer-events:none}
-.blob.one{width:420px;height:420px;left:8%;top:6%;background:var(--brand)}
-.blob.two{width:360px;height:360px;right:6%;bottom:4%;background:var(--selected);animation-delay:-5s;animation-duration:19s}
-.blob.three{width:260px;height:260px;right:28%;top:12%;background:var(--info-bg);animation-delay:-9s}
-.login-card{position:relative;width:400px;max-width:100%;display:grid;gap:var(--sp-4);padding:var(--sp-6);background:var(--glass);backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);
-  border:1px solid rgb(255 255 255 / 70%);border-radius:var(--radius-xl);box-shadow:var(--shadow-float);animation:rise var(--dur-3) var(--ease-out)}
-.login-mark{width:48px;height:48px;border-radius:30%;box-shadow:var(--shadow-brand)}
+.login-page{display:grid;place-items:center;min-height:100vh;padding:var(--sp-5);background:var(--page)}
+.login-card{width:400px;max-width:100%;display:grid;gap:var(--sp-4);padding:var(--sp-6);background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--radius-lg);box-shadow:var(--shadow-card)}
+.login-mark{width:40px;height:40px;border-radius:var(--radius)}
+.login-card h1{font-size:var(--fs-xl)}
 .login-card p{margin:var(--sp-1) 0 0}
 @media(max-width:600px){.login-page{padding:var(--sp-4)}.login-card{padding:var(--sp-5)}}
 </style>

@@ -343,7 +343,7 @@ const facts = name => {
 </template>
 
 <style scoped>
-.plugin-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:var(--radius-sm);background:var(--brand-soft);color:var(--primary)}
+.plugin-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:var(--radius-sm);background:var(--track);color:var(--muted)}
 .plugin-icon.failed{background:var(--error-bg);color:var(--error)}
 .plugin-icon.unloaded,.plugin-icon.neutral{background:var(--hover);color:var(--muted)}
 .list{padding:0 var(--sp-2) var(--sp-2)}

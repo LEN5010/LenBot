@@ -76,8 +76,8 @@ def test_scene_title_reads_group_name_and_private_nickname():
             if action == "get_group_info" else {"user_id": 70001, "nickname": "群友甲", "sex": "unknown", "age": 0}
         return {"status": "ok", "retcode": 0, "data": data, "echo": "1"}
 
-    assert asyncio.run(scene_title("onebot:group:80001", call)) == "测试群"
-    assert asyncio.run(scene_title("onebot:private:70001", call)) == "群友甲"
+    assert asyncio.run(scene_title("onebot:group:80001", call)) == ("测试群", 12)
+    assert asyncio.run(scene_title("onebot:private:70001", call)) == ("群友甲", None)
     assert calls == [("get_group_info", {"group_id": 80001}), ("get_stranger_info", {"user_id": 70001})]
 
 

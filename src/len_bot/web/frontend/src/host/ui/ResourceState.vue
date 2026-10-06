@@ -23,7 +23,7 @@ defineProps({
 <style scoped>
 .loading{display:grid;gap:var(--sp-3);padding:var(--sp-5);border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--surface)}
 .loading.compact{padding:var(--sp-2) 0;border:0;background:none}
-.bar{height:14px;border-radius:7px;background:linear-gradient(90deg,var(--hover) 25%,var(--selected) 50%,var(--hover) 75%);background-size:300% 100%;animation:shimmer 1.4s ease-in-out infinite;animation-delay:calc(var(--i) * 120ms)}
+.bar{height:14px;border-radius:7px;background:linear-gradient(90deg,var(--hover) 25%,var(--track) 50%,var(--hover) 75%);background-size:300% 100%;animation:shimmer 1.4s ease-in-out infinite;animation-delay:calc(var(--i) * 120ms)}
 .bar:nth-child(1){width:42%}
 .bar:nth-child(2){width:88%}
 .bar:nth-child(3){width:64%}
