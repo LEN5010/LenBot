@@ -81,10 +81,11 @@ class ConfigItem(BaseModel):
     def annotation(self, scenes: Collection[str]):
         constraints = Field(ge=self.minimum, le=self.maximum) if self.type in {"integer", "number"} else Field()
         value_type = Annotated[FIELD_TYPES[self.type], constraints]
-        if self.type == "path":
-            value_type = Annotated[value_type, AfterValidator(_absolute_path)]
-        elif self.type == "url":
-            value_type = Annotated[value_type, AfterValidator(_web_url)]
+        if self.type in {"path", "url"}:
+            check = _absolute_path if self.type == "path" else _web_url
+            # ``default = ""`` declares the field may stay empty.
+            optional = "default" in self.model_fields_set and self.default == ""
+            value_type = Annotated[value_type, AfterValidator(lambda value: value if optional and value == "" else check(value))]
         elif self.type == "scene":
             value_type = Annotated[value_type, AfterValidator(_configured_scene(scenes))]
         elif self.type == "scene_list":

@@ -82,6 +82,11 @@ placeholder = "/usr/share/fonts/example.ttf"
 type = "url"
 description = "Feed address"
 
+[config.backup_font]
+type = "path"
+description = "Optional font"
+default = ""
+
 [config.note]
 type = "string"
 description = "Free text"
@@ -109,7 +114,8 @@ default = []
     values = {"font": "/srv/fonts/a.ttf", "feed": "https://example.com/rss",
               "rooms": [{"room_id": 123, "scenes": ["onebot:group:80001"]}]}
     assert model.model_validate(values).model_dump()["card_mode"] == "auto"
-    for change in ({"card_mode": "自动"}, {"font": "fonts/a.ttf"}, {"feed": "ftp://example.com/a"},
+    assert model.model_validate({**values, "backup_font": ""}).model_dump()["backup_font"] == ""
+    for change in ({"card_mode": "自动"}, {"font": "fonts/a.ttf"}, {"font": ""}, {"feed": ""}, {"backup_font": "a.ttf"}, {"feed": "ftp://example.com/a"},
                    {"feed": "https://"}, {"rooms": [{"room_id": 123, "scenes": ["onebot:group:80002"]}]},
                    {"rooms": [{"room_id": 123, "scenes": ["group 80001"]}]}):
         with pytest.raises(ValidationError):

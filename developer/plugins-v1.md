@@ -83,6 +83,8 @@ from len_bot.next.plugin import Plugin, Invocation, command, fullmatch, regex, t
 - `minimum`、`maximum`：integer／number 的范围，后端同样校验。
 - `object_list.fields`：一层对象子字段，可用除 secret 和 object_list 以外的类型；子字段不能设 `group`。没有声明子字段的对象列表只能按 JSON 编辑，面板会提示补充声明。
 
+`path` 和 `url` 写了 `default = ""` 时允许留空，表示不填；没写默认值的必须填有效值。
+
 `scene` 和 `scene_list` 保存和加载时都会核对群是否在宿主配置里；插件作者不知道运营者有哪些群，所以 `scene` 不能写 `default`，`scene_list` 的 `default` 只能是 `[]`。后来从配置里删掉的群仍留在插件参数里时，插件加载失败并报出这个群，需要在面板里改掉。
 
 例如订阅条目：
