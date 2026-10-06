@@ -18,7 +18,7 @@ const fresh = () => ({
   docker_binary: '', docker_host: '', image: '', workspace_root: '', runtime_root: '',
   delivery_root: '', storage_pool: null, uid: '', gid: '', cpus: 2, memory: '2g', tmpfs_size: '256m', pids_limit: 512,
   command_timeout_seconds: 30, max_running: 4, max_containers: 8, max_scene_containers: 4,
-  max_calls: 40, max_request_bytes: 8 * 1024 * 1024, max_response_bytes: 64 * 1024 * 1024, max_cost: null,
+  max_calls: 40, max_request_bytes: 8 * 1024 * 1024, max_response_bytes: 64 * 1024 * 1024, max_tokens: null,
   compaction_reserve_tokens: 16384, compaction_keep_recent_tokens: 20000,
   active_timeout_seconds: 1800, input_timeout_seconds: 1800, max_file_bytes: 25 * 1024 * 1024,
   input_support: 'text', model_reasoning: null, skills_directory: null, public_browser: false, mcp: false,
@@ -82,9 +82,9 @@ async function submit() {
         <v-select v-model="draft.model_reasoning" label="任务模型支持推理吗" :items="[{ title: '支持', value: true }, { title: '不支持', value: false }]"
           hint="按模型服务商的说明选择" persistent-hint />
         <v-select v-model="draft.input_support" label="任务模型能看图吗" :items="[{ title: '只看文字', value: 'text' }, { title: '能看图片', value: 'text-image' }]" />
-        <v-text-field :model-value="draft.max_cost ?? ''" label="整个任务累计最多花费" inputmode="decimal"
-          hint="留空不限制；需要先在模型页给任务模型填价格" persistent-hint
-          @update:model-value="value => draft.max_cost = value === '' ? null : value" />
+        <v-text-field :model-value="draft.max_tokens ?? ''" type="number" label="整个任务累计最多 token"
+          hint="输入加输出；留空不限制" persistent-hint
+          @update:model-value="value => draft.max_tokens = value === '' ? null : Number(value)" />
       </div>
       <v-switch v-model="draft.egress.enabled" color="primary" label="任务可以上网" hide-details />
       <v-switch v-model="draft.public_browser" color="primary" label="任务可以用浏览器打开网页" hint="需要先允许任务上网" persistent-hint />

@@ -117,7 +117,6 @@ class TaskExecution:
     async def _run(self) -> None:
         item = self.item
         binding = self.config.models.roles.worker
-        price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
         status, summary, error_text = "failed", None, None
         def bind_proxy(proxy: WorkerModelProxy) -> None:
             self._proxy = proxy
@@ -153,7 +152,7 @@ class TaskExecution:
                     task_timeout_seconds=self.active_limit,
                     public_browser=self.settings.public_browser,
                     settings=self.config.model_settings("worker"), provider=binding.provider,
-                    context_window_tokens=binding.context_window_tokens, price=price,
+                    context_window_tokens=binding.context_window_tokens,
                     limits=self._limits(item), model_reasoning=self.settings.model_reasoning,
                     input_support=self.settings.input_support, slots=self.slots,
                     compaction_reserve_tokens=self.settings.compaction_reserve_tokens,

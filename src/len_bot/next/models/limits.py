@@ -1,32 +1,37 @@
-"""Admission from actual settled costs and scene message records, without reservations."""
+"""Admission from actual reported tokens and scene message records, without reservations."""
 from __future__ import annotations
 from contextlib import closing
 from datetime import datetime, timedelta
-from decimal import Decimal
 from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from .pricing import Rate
 from .usage import usage
 from ..memory.jobs import processing_records
 
 
 class ResourceLimits(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
-    currency: str = Field(default='USD', pattern=r'^[A-Z]{3}$')
-    daily_model_cost: Rate | None = None
-    scene_daily_model_cost: dict[str, Rate] = Field(default_factory=dict)
+    # Input plus output tokens per local day, counted from what the model services reported.
+    daily_tokens: int | None = Field(default=None, gt=0)
+    scene_daily_tokens: dict[str, int] = Field(default_factory=dict)
     messages_per_hour: int | None = Field(default=60, ge=1)
     scene_messages_per_hour: dict[str, int | None] = Field(default_factory=dict)
 
-    @field_validator('scene_daily_model_cost', 'scene_messages_per_hour')
+    @field_validator('scene_daily_tokens', 'scene_messages_per_hour')
     @classmethod
     def scenes(cls, values):
         import re
         if any(re.fullmatch(r'[a-z][a-z0-9_-]*:(group|private):[^:\s/\\]+', scene) is None for scene in values):
             raise ValueError('limits scene keys must be actual platform group/private scenes')
+        return values
+
+    @field_validator('scene_daily_tokens')
+    @classmethod
+    def positive_tokens(cls, values):
+        if any(value < 1 for value in values.values()):
+            raise ValueError('daily token limits must be positive')
         return values
 
     @field_validator('scene_messages_per_hour')
@@ -71,7 +76,7 @@ class ModelBudget:
         self.config, self.store, self.memory = config, store, memory
         self.started_at = store.now()
         self.trials_root: Path | None = None if root is None else root / '.runtime' / 'chat-tests'
-        if config.limits.daily_model_cost is not None or config.limits.scene_daily_model_cost:
+        if config.limits.daily_tokens is not None or config.limits.scene_daily_tokens:
             self.validate_sources()
 
     def validate_sources(self) -> None:
@@ -113,26 +118,22 @@ class ModelBudget:
                 with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
                     with processing_records(path, None) as records:
                         samples.append(sample(SimpleNamespace(db=db), memory_db=None if records is None else records.db))
-        amounts = {}
-        for sample in samples:
-            for currency, amount in sample['known_amounts'].items():
-                amounts[currency] = amounts.get(currency, Decimal(0)) + Decimal(amount)
-        return {'known_amounts': amounts,
+        return {'tokens': sum(sample['budgeted']['input'] + sample['budgeted']['output'] for sample in samples),
                 'settled_unknown_calls': sum(sample['settled_unknown_calls'] + sample['unverified_summary_attempts'] for sample in samples),
                 'unfinished_calls': sum(sample['unfinished_calls'] for sample in samples)}
 
     def check(self, scene: str | None) -> None:
         limits = self.config.limits
-        checks = [(None, limits.daily_model_cost, self.config.timezone)]
-        if scene in limits.scene_daily_model_cost:
-            checks.append((scene, limits.scene_daily_model_cost[scene], self.config.scene_timezone(scene)))
+        checks = [(None, limits.daily_tokens, self.config.timezone)]
+        if scene in limits.scene_daily_tokens:
+            checks.append((scene, limits.scene_daily_tokens[scene], self.config.scene_timezone(scene)))
         for scope, cap, timezone in checks:
             if cap is None:
                 continue
             since, until = day_window(self.store.now(), timezone)
             result = self.totals(scope, since, until)
             label = '全局' if scope is None else '本场景'
-            if result['settled_unknown_calls'] or set(result['known_amounts']) - {limits.currency}:
-                raise LimitReached(f'{label}今日存在费用未知、历史计量不全或不同币种的调用，暂停模型请求；请核对计量。', until)
-            if result['known_amounts'].get(limits.currency, Decimal(0)) >= cap:
-                raise LimitReached(f'{label}今日模型金额已达 {cap} {limits.currency}，暂停模型请求。', until)
+            if result['settled_unknown_calls']:
+                raise LimitReached(f'{label}今日有模型调用没有报告 token，或历史计量不全，暂停模型请求；请核对计量。', until)
+            if result['tokens'] >= cap:
+                raise LimitReached(f'{label}今日模型 token 已达 {cap}，暂停模型请求。', until)

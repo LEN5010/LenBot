@@ -13,7 +13,7 @@ import json
 from typing import Any, NoReturn
 
 from ..models.client import ModelProtocolError, parse_token_usage
-from ..models.pricing import TokenUsage
+from ..models.tokens import TokenUsage
 
 
 @dataclass(frozen=True, slots=True)

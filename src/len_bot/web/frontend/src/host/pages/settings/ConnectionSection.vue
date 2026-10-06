@@ -108,7 +108,7 @@ async function submit() {
         @update:model-value="value => draft.max_steps = numberOrBlank(value)" />
       <v-text-field :model-value="draft.turn_timeout_seconds" type="number" label="每次回复最长时间（秒）"
         @update:model-value="value => draft.turn_timeout_seconds = numberOrBlank(value)" />
-      <v-text-field :model-value="draft.max_model_requests" type="number" label="同时进行的模型请求数" hint="所有群共用，越大越快，花费也可能更集中" persistent-hint
+      <v-text-field :model-value="draft.max_model_requests" type="number" label="同时进行的模型请求数" hint="所有群共用，越大越快，token 消耗也更集中" persistent-hint
         @update:model-value="value => draft.max_model_requests = numberOrBlank(value)" />
       <v-text-field :model-value="draft.text_delivery.max_chars" type="number" label="每条消息最多字数" hint="长回复会按这个长度分成多条发送" persistent-hint
         @update:model-value="value => draft.text_delivery.max_chars = numberOrBlank(value)" />

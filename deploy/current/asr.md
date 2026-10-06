@@ -46,7 +46,6 @@ state/services/asr/build-tools/bin/cmake --build state/services/asr/build \
 | 模型名 | `large-v3-turbo-q5_0` |
 | 语言 | `zh`；留空沿服务的自动语言识别 |
 | 超时 | `120` 秒 |
-| 价格 | 不填；该服务不返回用量计量 |
 
 密钥是非秘密占位：原生服务不鉴权，LenBot 契约要求非空字符串；该值不是访问控制，服务只部署于回环。
 

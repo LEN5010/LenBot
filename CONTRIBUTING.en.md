@@ -27,7 +27,7 @@ uv run --no-sync python -m len_bot.next.maintenance.test_copy . /tmp/lenbot-test
 cd /tmp/lenbot-test && uv run --project /path/to/LenBot --no-sync len-bot
 ```
 
-Only the configuration and the instance files it references (database, memory, personas, task directories and so on) are copied, not the source code. The copy uses simulated delivery, has no OneBot connection and listens on the given panel port; absolute paths pointing into the original instance are moved into the copy. Models, plugins and task services still run in the copy and cost money.
+Only the configuration and the instance files it references (database, memory, personas, task directories and so on) are copied, not the source code. The copy uses simulated delivery, has no OneBot connection and listens on the given panel port; absolute paths pointing into the original instance are moved into the copy. Models, plugins and task services still run in the copy, and model calls still use tokens.
 
 ## Source layout
 

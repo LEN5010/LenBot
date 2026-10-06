@@ -27,7 +27,7 @@ CREATE INDEX audio_results ON audio_cache(scene,transcribed_at)
 CREATE TABLE audio_calls (
     id INTEGER PRIMARY KEY, scene TEXT NOT NULL, platform_id TEXT NOT NULL,
     audio_index INTEGER NOT NULL, started REAL NOT NULL, ended REAL,
-    request TEXT NOT NULL, response TEXT, usage TEXT, error TEXT, cost TEXT
+    request TEXT NOT NULL, response TEXT, usage TEXT, error TEXT, tokens TEXT
 );
 CREATE INDEX audio_calls_source ON audio_calls(scene,platform_id,audio_index,id);
 CREATE INDEX audio_calls_usage ON audio_calls(started,scene);
@@ -107,14 +107,14 @@ class AudioStore:
             items = []
             for row in rows:
                 item = dict(row)
-                for field in ("request", "response", "usage", "cost"):
+                for field in ("request", "response", "usage", "tokens"):
                     item[field] = None if item[field] is None else json.loads(item[field])
                 items.append(item)
             return items
         return {
-            "off_turn": decoded(self.db.execute("SELECT id,started,ended,request,response,usage,cost,error FROM audio_calls "
+            "off_turn": decoded(self.db.execute("SELECT id,started,ended,request,response,usage,tokens,error FROM audio_calls "
                 "WHERE scene=? AND platform_id=? AND audio_index=? ORDER BY id DESC LIMIT 20", (scene, message, index))),
-            "in_turn": decoded(self.db.execute("SELECT c.id,c.turn_id,c.started,c.ended,c.request,c.response,c.usage,c.cost,c.error "
+            "in_turn": decoded(self.db.execute("SELECT c.id,c.turn_id,c.started,c.ended,c.request,c.response,c.usage,c.tokens,c.error "
                 "FROM model_calls c JOIN turns t ON t.id=c.turn_id WHERE t.scene=? AND c.role='asr' "
                 "AND json_extract(c.request,'$.file.platform_message_id')=? "
                 "AND json_extract(c.request,'$.file.audio')=? ORDER BY c.id DESC LIMIT 20", (scene, message, index))),
@@ -125,8 +125,8 @@ class AudioStore:
             return self.db.execute("INSERT INTO audio_calls(scene,platform_id,audio_index,started,request) VALUES (?,?,?,?,?)",
                                    (scene, message, index, self.store.now(), encode(request))).lastrowid
 
-    def end_call(self, call: int, response, usage, error: str | None = None, *, cost: dict | None = None) -> None:
+    def end_call(self, call: int, response, usage, error: str | None = None, *, tokens: dict | None = None) -> None:
         with self.db:
-            self.db.execute("UPDATE audio_calls SET ended=?,response=?,usage=?,error=?,cost=? WHERE id=?",
+            self.db.execute("UPDATE audio_calls SET ended=?,response=?,usage=?,error=?,tokens=? WHERE id=?",
                 (self.store.now(), None if response is None else encode(response),
-                 None if usage is None else encode(usage), error, None if cost is None else encode(cost), call))
+                 None if usage is None else encode(usage), error, None if tokens is None else encode(tokens), call))

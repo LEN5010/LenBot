@@ -14,7 +14,7 @@ from .jobs import MemoryJobs
 from .local import ABSTRACT_CHARS, OVERVIEW_CHARS, LocalMemory
 from ..models.client import ChatModel, ModelProtocolError, ModelReply
 from ..models.slots import ModelSlots
-from ..models.pricing import estimate_cost
+from ..models.tokens import token_record
 from ..storage.store import encode
 
 if TYPE_CHECKING:
@@ -79,7 +79,6 @@ class MemorySummarizer:
             await self.backend.clear_summary(scene, path, scope=scope)
             return {"path": path, "cleared": True, "skipped": "目录为空，已清除派生摘要"}
         binding = self.config.models.roles.memory
-        price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
         partition = "公共分区" if scope == "public" else scene
         messages = [{"role": "system", "content": self._prompt},
                     {"role": "user", "content": encode({"partition": partition,
@@ -87,8 +86,7 @@ class MemorySummarizer:
         estimate = estimate_request(messages, [], binding.max_output_tokens)
         request = {"provider": binding.provider, "settings": self.model.settings.model_dump(exclude={"api_key"}),
                    "messages": messages, "estimated_total_tokens": estimate,
-                   "context_window_tokens": binding.context_window_tokens,
-                   "price": None if price is None else price.model_dump(mode="json")}
+                   "context_window_tokens": binding.context_window_tokens}
         source = "public" if scope == "public" else scene
         if estimate > binding.context_window_tokens:
             raise ContextBudgetError(f"memory summary request estimated {estimate} tokens, exceeding "
@@ -100,10 +98,10 @@ class MemorySummarizer:
                 try:
                     reply = await self.model.complete(messages, [])
                 except ModelProtocolError as error:
-                    self.jobs.summary_response(run, error.response, error.usage, estimate_cost(price, error.token_usage))
+                    self.jobs.summary_response(run, error.response, error.usage, token_record(error.token_usage))
                     raise
             self.jobs.summary_response(run, {"message": reply.message, "finish_reason": reply.finish_reason},
-                                       reply.usage, estimate_cost(price, reply.token_usage))
+                                       reply.usage, token_record(reply.token_usage))
             abstract, overview = parse_summary(reply)
             summary = await self.backend.write_summary(scene, path, abstract, overview, scope=scope)
         except asyncio.CancelledError as error:

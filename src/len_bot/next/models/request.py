@@ -10,7 +10,7 @@ from .client import ChatModel, ModelProtocolError, ModelReply, parse_token_usage
 from .slots import ModelSlots
 from .projection import project_messages
 from urllib.parse import quote
-from .pricing import estimate_cost
+from .tokens import token_record
 from ..storage.store import Store
 from ..plugins.store import PluginStore
 
@@ -82,12 +82,10 @@ async def request_model(config: SharedConfig, store: Store, model: ChatModel,
         raise ContextBudgetError(
             f"{role} {scope}含预留输出估算 {estimated} token，超过配置窗口 {binding.context_window_tokens}；未调用模型")
     settings = {**model.settings.model_dump(exclude={"api_key"}), "max_output_tokens": tokens}
-    price = config.models.prices.get(binding.provider, {}).get(binding.model)
     async with (slots.slot(direct=direct, scene=scene) if slots is not None else nullcontext()):
         request = {"settings": settings, "messages": messages, "tools": tools, "provider": binding.provider,
                    "estimate_method": method,
                    **({"expression_ids": expression_ids} if expression_ids is not None else {}),
-                   "price": None if price is None else price.model_dump(mode="json"),
                    **({"estimated_text_tokens": estimated, "estimated_total_tokens": None} if role == "vision"
                       else {"estimated_total_tokens": estimated}),
                    "context_window_tokens": binding.context_window_tokens,
@@ -108,12 +106,12 @@ async def request_model(config: SharedConfig, store: Store, model: ChatModel,
             if isinstance(error, ModelProtocolError):
                 response, usage, token_usage = error.response, error.usage, error.token_usage
             store.end_call(call_id, response, usage, f"{type(error).__name__}: {error}",
-                           cost=estimate_cost(price, token_usage))
+                           tokens=token_record(token_usage))
             if notify is not None:
                 notify()
             raise
         store.end_call(call_id, {"message": reply.message, "finish_reason": reply.finish_reason, "raw": reply.response}, reply.usage,
-                       cost=estimate_cost(price, reply.token_usage),
+                       tokens=token_record(reply.token_usage),
                        append_to_scene=scene if append_to_scene else None, recap_for=recap_for)
         if notify is not None:
             notify()

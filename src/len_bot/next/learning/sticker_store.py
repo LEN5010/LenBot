@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 CALL_SUMMARY = (
-    "id,scene,candidate_id,source_message_seq,image_index,started,ended,status,model_started,usage,cost,error"
+    "id,scene,candidate_id,source_message_seq,image_index,started,ended,status,model_started,usage,tokens,error"
 )
 CANDIDATE_SELECT = (
     "SELECT c.*,m.mime_type,m.width,m.height,m.animated,length(m.data) AS bytes "
@@ -41,7 +41,7 @@ CREATE TABLE sticker_calls (
     candidate_id INTEGER NOT NULL, source_message_seq INTEGER NOT NULL,
     image_index INTEGER NOT NULL, started REAL NOT NULL, ended REAL,
     status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
-    model_started REAL, request TEXT, response TEXT, usage TEXT, cost TEXT, error TEXT
+    model_started REAL, request TEXT, response TEXT, usage TEXT, tokens TEXT, error TEXT
 );
 CREATE INDEX sticker_calls_scene ON sticker_calls(scene,id);
 CREATE INDEX sticker_calls_usage ON sticker_calls(model_started,scene);
@@ -78,7 +78,7 @@ class StickerStore:
         if row is None:
             return None
         value = dict(row)
-        for field in ("request", "response", "usage", "cost"):
+        for field in ("request", "response", "usage", "tokens"):
             if field in value and value[field] is not None:
                 value[field] = json.loads(value[field])
         return value
@@ -197,13 +197,13 @@ class StickerStore:
                             (self.store.now(), callid))
 
     def response(self, callid: int, response: object | None,
-                 usage: dict | None, cost: dict | None) -> None:
+                 usage: dict | None, tokens: dict | None) -> None:
         with self.db:
             self.db.execute(
-                "UPDATE sticker_calls SET response=?,usage=?,cost=? WHERE id=?",
+                "UPDATE sticker_calls SET response=?,usage=?,tokens=? WHERE id=?",
                 (None if response is None else encode(response),
                  None if usage is None else encode(usage),
-                 None if cost is None else encode(cost), callid),
+                 None if tokens is None else encode(tokens), callid),
             )
 
     def complete(self, callid: int, *, description: str, text: str,

@@ -14,7 +14,7 @@
 | 记忆 | 浏览、修改、删除和遗忘长期记忆 |
 | 任务、资源 | 后台任务、提醒、主动话题，任务文件和共享资料 |
 | 插件、能力 | 插件安装和配置；工具、技能、MCP、网页和任务环境 |
-| 模型、设置 | 服务商和用途、费用上限；连接、权限、面板 |
+| 模型、设置 | 服务商和用途、token 与发言上限；连接、权限、面板 |
 
 ## 账号与场景
 
@@ -105,7 +105,7 @@ Clash、Surge 等代理软件开启 fake-ip（假 IP）或增强模式时，本�
 ## 后台任务
 
 - **资料**：资源页可以上传本群共享资料。新建任务时可以从共享资料、其他任务的文件和交付里选，最多 16 份。任务拿到的是只读副本，原文件之后改了或删了都不影响任务。
-- **追问和续接**：任务可以向请求人提问，等回答期间不占执行名额。任务结束后可以明确续接，用原来的会话和文件。`worker.max_calls` 按每次执行计算，`max_cost` 按整个任务累计。失败不会自动重试。
+- **追问和续接**：任务可以向请求人提问，等回答期间不占执行名额。任务结束后可以明确续接，用原来的会话和文件。`worker.max_calls` 按每次执行计算，`max_tokens` 按整个任务累计输入加输出 token。失败不会自动重试。
 - **产物**：生成文件、登记为交付、发到 QQ 是三件事，各自有记录。在任务详情里可以预览、下载、登记和发送。
 - **清理**：资源页可以对任务做两种清理。清理临时文件会保留会话、输入和产物；释放环境会删除整个工作区，之后不能续接，已登记的交付和共享资料保留。任务还在运行、或还占着容器和浏览器会话时不能清理。
 - **渲染**：任务镜像带 `lenbot-render`，能把 HTML 渲染成 PDF、截图和打印预览，例如 `lenbot-render out/document.html --pdf out/document.pdf --screenshot out/page.png`。
@@ -135,6 +135,7 @@ python -m len_bot.next.maintenance.memory_reindex
 4. 依次执行：
 
    ```sh
+   python -m len_bot.next.maintenance.migrate_config
    python -m len_bot.next.maintenance.migrate
    python -m len_bot.next.maintenance.migrate_memory_jobs
    python -m len_bot.next.maintenance.plugin_dependencies
@@ -146,7 +147,11 @@ python -m len_bot.next.maintenance.memory_reindex
 
 部署包的 `install.sh upgrade` 和 Docker 的升级步骤会替你执行第 4 步，见[部署包](../package/README.md#升级)和 [Docker](docker.md#停机升级)。
 
-业务数据库从公开版本的格式 v1 开始，之后每次格式变化都有对应的升级步骤。记忆处理库目前是格式 5。
+业务数据库从公开版本的格式 v1 开始，之后每次格式变化都有对应的升级步骤，目前是格式 2。记忆处理库目前是格式 6。
+
+`migrate_config` 要在数据库升级之前执行，数据库升级会读取根配置。它删除旧版本的模型价格（`models.prices`、各用途的 `price`）和空的金额上限，原文件保存为 `lenbot.config.json.pre-tokens.bak`；对话测试实例的配置一并处理。金额上限（`limits.daily_model_cost`、`scene_daily_model_cost`、`worker.max_cost`）没法换算成 token，配置里填了这几项时命令直接报错并列出原值，文件不改；手动删掉它们、改填 `limits.daily_tokens`、`scene_daily_tokens`、`worker.max_tokens` 后再执行。
+
+业务数据库从格式 1 升到 2 时，各调用记录原来的估算金额被删除，改为从同一行保存的 usage 重新统计 token；usage 读不出 token 的行会让升级停下并报出行号。
 
 ## 测试实例副本
 

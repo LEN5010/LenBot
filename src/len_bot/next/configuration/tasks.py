@@ -9,7 +9,6 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..models.pricing import Rate
 from .storage_pool import StoragePool
 
 
@@ -50,10 +49,11 @@ class WorkerSettings(BaseModel):
     max_running: int = Field(default=4, gt=0, strict=True)
     max_containers: int = Field(default=8, gt=0, strict=True)
     max_scene_containers: int = Field(default=4, gt=0, strict=True)
-    max_calls: int = Field(default=40, gt=0, strict=True, description="每次执行的模型调用上限；明确续接开始新一次执行，费用仍按任务累计。")
+    max_calls: int = Field(default=40, gt=0, strict=True, description="每次执行的模型调用上限；明确续接开始新一次执行，token 仍按任务累计。")
     max_request_bytes: int = Field(default=8 * 1024 * 1024, gt=0, strict=True)
     max_response_bytes: int = Field(default=64 * 1024 * 1024, gt=0, strict=True)
-    max_cost: Rate | None = None
+    max_tokens: int | None = Field(default=None, gt=0, strict=True,
+                                   description="整个任务累计的输入加输出 token 上限；续接不清零。")
     compaction_reserve_tokens: int = Field(default=16384, gt=0, strict=True)
     compaction_keep_recent_tokens: int = Field(default=20000, gt=0, strict=True)
     active_timeout_seconds: float = Field(default=1800.0, gt=0, allow_inf_nan=False)

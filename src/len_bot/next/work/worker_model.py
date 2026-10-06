@@ -10,7 +10,6 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
-from decimal import Decimal, localcontext
 import hmac
 import json
 import math
@@ -21,7 +20,7 @@ import httpx
 from ..chat.recap import estimate_text_request
 from ..models.client import ModelProtocolError, ModelSettings
 from ..models.slots import ModelSlots
-from ..models.pricing import ModelPrice, estimate_cost
+from ..models.tokens import token_record
 from .worker_stream import ChatCompletionStream
 from ..runtime.operations import redact, redact_record
 
@@ -35,18 +34,16 @@ class Limits:
     max_calls: int
     max_request_bytes: int
     max_response_bytes: int
-    max_cost: Decimal | None = None
+    # Input plus output tokens left for this execution; None means no token cap.
+    max_tokens: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("max_calls", "max_request_bytes", "max_response_bytes"):
             value = getattr(self, name)
             if value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
-        if self.max_cost is not None and (
-            not self.max_cost.is_finite()
-            or self.max_cost < 0
-        ):
-            raise ValueError("max_cost must be a finite nonnegative Decimal or null")
+        if self.max_tokens is not None and self.max_tokens < 0:
+            raise ValueError("max_tokens must be a nonnegative integer or null")
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +70,6 @@ class WorkerModelProxy:
         settings: ModelSettings,
         provider: str,
         context_window_tokens: int,
-        price: ModelPrice | None,
         token: str,
         limits: Limits,
         *,
@@ -86,12 +82,9 @@ class WorkerModelProxy:
             raise ValueError("provider and task token must not be empty")
         if context_window_tokens <= 0:
             raise ValueError("context_window_tokens must be positive")
-        if limits.max_cost is not None and price is None:
-            raise ValueError("max_cost requires a configured model price")
         self.settings = settings
         self.provider = provider
         self.context_window_tokens = context_window_tokens
-        self.price = price
         self.limits = limits
         self.slots = slots
         self.scene = scene
@@ -102,8 +95,8 @@ class WorkerModelProxy:
         self._closed = False
         self._busy = False
         self._calls = 0
-        self._spent = Decimal(0)
-        self._cost_unknown = False
+        self._spent = 0
+        self._tokens_unknown = False
         self._active_task: asyncio.Task[Any] | None = None
         self._client = httpx.AsyncClient(
             base_url=settings.base_url.rstrip("/") + "/",
@@ -137,16 +130,11 @@ class WorkerModelProxy:
             async with self.slots.slot(scene=self.scene):
                 yield
 
-    def _add_cost(self, cost: dict[str, str] | None) -> None:
-        if cost is None:
-            self._cost_unknown = True
+    def _add_tokens(self, tokens: dict[str, int | None] | None) -> None:
+        if tokens is None:
+            self._tokens_unknown = True
             return
-        amount = Decimal(cost["amount"])
-        with localcontext() as context:
-            context.prec = max(self._spent.adjusted(), amount.adjusted(), 0) - min(
-                self._spent.as_tuple().exponent, amount.as_tuple().exponent
-            ) + 2
-            self._spent += amount
+        self._spent += tokens["input"] + tokens["output"]
 
     def _request(self, payload_bytes: bytes) -> tuple[dict[str, Any], bytes, int, bool]:
         if len(payload_bytes) > self.limits.max_request_bytes:
@@ -268,10 +256,10 @@ class WorkerModelProxy:
             raise WorkerModelError("worker model proxy already has an active call")
         if self._calls >= self.limits.max_calls:
             raise WorkerModelError("worker model call limit reached")
-        if self.limits.max_cost is not None and (
-            self._cost_unknown or self._spent >= self.limits.max_cost
+        if self.limits.max_tokens is not None and (
+            self._tokens_unknown or self._spent >= self.limits.max_tokens
         ):
-            raise WorkerModelError("worker model cost limit reached or prior cost is unknown")
+            raise WorkerModelError("worker model token limit reached, or an earlier call reported no tokens")
         self._busy = True
         self._active_task = asyncio.current_task()
         call_id: int | None = None
@@ -288,7 +276,6 @@ class WorkerModelProxy:
                 call_id = self.start_call({
                     "provider": self.provider,
                     "model": self.settings.model,
-                    "price": None if self.price is None else self.price.model_dump(mode="json"),
                     "request": self.recorded(outgoing),
                     "request_bytes": len(wire),
                     "incoming_bytes": len(payload_bytes),
@@ -318,7 +305,7 @@ class WorkerModelProxy:
 
                         def settle(*, result: Any = None, error: str | None = None) -> None:
                             nonlocal settled
-                            cost = estimate_cost(self.price, None if result is None else result.token_usage)
+                            tokens = token_record(None if result is None else result.token_usage)
                             facts = {
                                 "http_status": status,
                                 "request_bytes": len(wire),
@@ -327,7 +314,7 @@ class WorkerModelProxy:
                                 "usage": None if result is None else result.usage,
                                 "token_usage": None if result is None or result.token_usage is None
                                 else asdict(result.token_usage),
-                                "cost": cost,
+                                "tokens": tokens,
                                 "error": error,
                                 "error_body": error_body.decode("utf-8", errors="backslashreplace")
                                 if error_body else None,
@@ -338,7 +325,7 @@ class WorkerModelProxy:
                             except BaseException:
                                 self._closed = True
                                 raise
-                            self._add_cost(cost)
+                            self._add_tokens(tokens)
 
                         async def body() -> AsyncIterator[bytes]:
                             nonlocal response_bytes
@@ -384,7 +371,7 @@ class WorkerModelProxy:
                 settled = True
                 known_usage = error.usage if isinstance(error, ModelProtocolError) else None
                 known_tokens = error.token_usage if isinstance(error, ModelProtocolError) else None
-                cost = estimate_cost(self.price, known_tokens)
+                tokens = token_record(known_tokens)
                 facts = {
                     "http_status": status,
                     "request_bytes": len(wire),
@@ -392,7 +379,7 @@ class WorkerModelProxy:
                     "finish_reason": None,
                     "usage": known_usage,
                     "token_usage": None if known_tokens is None else asdict(known_tokens),
-                    "cost": cost,
+                    "tokens": tokens,
                     "error": f"{type(error).__name__}: {error}",
                     "error_body": error_body.decode("utf-8", errors="backslashreplace")
                     if error_body else None,
@@ -402,7 +389,7 @@ class WorkerModelProxy:
                 except BaseException as finish_error:
                     self._closed = True
                     error.add_note(f"model-call recording also failed: {finish_error}")
-                self._add_cost(cost)
+                self._add_tokens(tokens)
             if error is not original_error:
                 raise error from original_error
             raise

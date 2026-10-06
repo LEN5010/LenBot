@@ -47,13 +47,14 @@ The checkout is the instance directory. To update:
 # stop the bot first (Ctrl-C)
 git pull
 ./scripts/install.sh
+uv run --no-sync python -m len_bot.next.maintenance.migrate_config
 uv run --no-sync python -m len_bot.next.maintenance.migrate
 uv run --no-sync python -m len_bot.next.maintenance.migrate_memory_jobs
 uv run --no-sync python -m len_bot.next.maintenance.plugin_dependencies
 uv run --no-sync len-bot
 ```
 
-The three maintenance commands upgrade the business database, upgrade the memory job database and restore dependencies of installed plugins. They do nothing when everything is current. Back up the instance before upgrading.
+The four maintenance commands, in order, upgrade the root configuration, the business database and the memory job database, then restore dependencies of installed plugins. They do nothing when everything is current. Back up the instance before upgrading.
 
 On macOS you can double-click [`current/start.command`](current/start.command). To run as a system service, see [optional services (zh)](current/README.md#作为系统服务运行).
 

@@ -68,7 +68,7 @@ TASKS = _fields(TaskSettings, ('enabled', 'max_running', 'max_daily_tasks', 'egr
 MEMORY = _fields(LocalMemoryConfig, ('auto_recall', 'recall_budget_chars', 'recall_limit', 'ingest', 'summaries'))
 MODEL = _fields(Binding, ('context_window_tokens', 'temperature', 'max_output_tokens',
                          'timeout_seconds', 'reasoning_effort'))
-ASR = _fields(ASRBinding, ('timeout_seconds', 'language', 'price'))
+ASR = _fields(ASRBinding, ('timeout_seconds', 'language'))
 WORKER = _fields(WorkerSettings, tuple(name for name in WorkerSettings.model_fields if name not in {
     'docker_binary', 'docker_host', 'image', 'workspace_root', 'runtime_root', 'delivery_root',
     'storage_pool', 'skills_directory', 'uid', 'gid',

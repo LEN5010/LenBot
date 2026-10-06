@@ -37,7 +37,7 @@ const providerApis = [
   { title: '向量接口 · openai-embeddings', value: 'openai-embeddings' },
 ]
 const route = useRoute(), router = useRouter()
-const tabs = [['providers', '服务商'], ['roles', '用途'], ['prices', '价格'], ['usage', '花费与上限']]
+const tabs = [['providers', '服务商'], ['roles', '用途'], ['usage', '用量与上限']]
 const tab = computed(() => tabs.some(([key]) => key === route.query.tab) ? route.query.tab : 'providers')
 // The open provider is `?item=` (its row number in the draft).
 const selected = computed(() => typeof route.query.item === 'string' && draft.value?.providers[Number(route.query.item)] ? Number(route.query.item) : null)
@@ -50,17 +50,12 @@ function fromSaved(models) {
   return {
     providers: Object.entries(models.providers).map(([alias, value]) => ({ alias, api: value.api, base_url: value.base_url, api_key: '', saved: value.api_key_configured })),
     roles: clone(models.roles),
-    prices: Object.entries(models.prices).flatMap(([provider, entries]) => Object.entries(entries).map(([model, price]) => ({ provider, model, ...price }))),
   }
 }
 function body(value) {
   return {
     providers: Object.fromEntries(value.providers.map(row => [row.alias, { api: row.api, base_url: row.base_url, api_key: row.api_key || null }])),
     roles: value.roles,
-    prices: value.prices.reduce((all, { provider, model, ...price }) => {
-      (all[provider] ??= {})[model] = price
-      return all
-    }, {}),
   }
 }
 const saved = computed(() => settings.data.value?.saved.models)
@@ -73,7 +68,6 @@ const providerNames = computed(() => draft.value?.providers.map(row => row.alias
 const problem = computed(() => {
   if (!draft.value) return ''
   if (new Set(providerNames.value).size !== draft.value.providers.length) return '服务商名称不能为空，也不能重复'
-  if (new Set(draft.value.prices.map(row => `${row.provider}/${row.model}`)).size !== draft.value.prices.length) return '同一个模型的价格填了两次'
   return ''
 })
 
@@ -96,12 +90,7 @@ function toggleRole(name, value) {
     temperature: 0.6, max_output_tokens: 1024, timeout_seconds: 60, reasoning_effort: null, history_policy: 'native' } : null
 }
 function toggleAsr(value) {
-  draft.value.roles.asr = value ? { api: 'openai-audio', provider: providerNames.value[0] || '', model: '', timeout_seconds: 60, language: null, price: null } : null
-}
-function asrPrice(type) {
-  draft.value.roles.asr.price = type === 'none' ? null : type === 'duration'
-    ? { type: 'duration', currency: 'USD', per_second: '' }
-    : { type: 'tokens', currency: 'USD', input_audio: '', input_text: '', output: '' }
+  draft.value.roles.asr = value ? { api: 'openai-audio', provider: providerNames.value[0] || '', model: '', timeout_seconds: 60, language: null } : null
 }
 async function submit() {
   const result = await save.run(() => api('/api/host/settings/models', { method: 'PUT', body: JSON.stringify(body(draft.value)) }))
@@ -111,7 +100,7 @@ async function submit() {
 const period = ref('day')
 const usage = useResource(() => api(`/api/host/usage?period=${period.value}`))
 watch(period, () => usage.reload())
-const amounts = value => Object.entries(value || {}).map(([currency, amount]) => `${amount} ${currency}`).join(' · ') || '—'
+const count = value => value.toLocaleString('zh-CN')
 </script>
 
 <template>
@@ -185,55 +174,30 @@ const amounts = value => Object.entries(value || {}).map(([currency, amount]) =>
                 <v-text-field :model-value="draft.roles.asr.language ?? ''" label="语言" hint="例如 zh，留空自动识别" persistent-hint
                   @update:model-value="value => draft.roles.asr.language = value || null" />
               </div>
-              <AdvancedFields label="超时与价格">
+              <AdvancedFields label="超时">
                 <v-text-field :model-value="draft.roles.asr.timeout_seconds" type="number" label="超时（秒）"
                   @update:model-value="value => draft.roles.asr.timeout_seconds = numberOrBlank(value)" />
-                <v-select :model-value="draft.roles.asr.price?.type ?? 'none'" label="计价方式" @update:model-value="asrPrice"
-                  :items="[{ title: '不填价格', value: 'none' }, { title: '按秒', value: 'duration' }, { title: '按 token', value: 'tokens' }]" />
-                <template v-if="draft.roles.asr.price">
-                  <v-text-field v-model="draft.roles.asr.price.currency" label="币种" />
-                  <v-text-field v-if="draft.roles.asr.price.type === 'duration'" v-model="draft.roles.asr.price.per_second" label="每秒价格" />
-                  <template v-else>
-                    <v-text-field v-model="draft.roles.asr.price.input_audio" label="每百万音频输入 token" />
-                    <v-text-field v-model="draft.roles.asr.price.input_text" label="每百万文字输入 token" />
-                    <v-text-field v-model="draft.roles.asr.price.output" label="每百万输出 token" />
-                  </template>
-                </template>
               </AdvancedFields>
             </template>
           </Panel>
         </template>
 
-        <Panel v-else-if="tab === 'prices'" title="价格" description="用来估算花费，按每百万 token 填写。没填价格的模型花费显示为未知。">
-          <RowEditor :items="draft.prices" add-label="添加价格" columns="minmax(0,1.2fr) minmax(0,1.5fr) 80px repeat(3,minmax(0,1fr))"
-            :make="() => ({ provider: providerNames[0] || '', model: '', currency: 'USD', input: '', cache_read: '', output: '' })">
-            <template #default="{ item }">
-              <v-select v-model="item.provider" :items="providerNames" label="服务商" />
-              <v-text-field v-model="item.model" label="模型名" />
-              <v-text-field v-model="item.currency" label="币种" placeholder="USD" />
-              <v-text-field v-model="item.input" label="输入" inputmode="decimal" />
-              <v-text-field v-model="item.cache_read" label="缓存命中输入" inputmode="decimal" />
-              <v-text-field v-model="item.output" label="输出" inputmode="decimal" />
-            </template>
-          </RowEditor>
-        </Panel>
-
         <SaveBar :on-save="submit" :dirty="dirty" :saving="save.busy.value" :error="save.error.value" :problem="problem" label="保存模型设置" @discard="adopt" />
       </form>
 
       <div v-show="tab === 'usage'" class="stack">
-        <Panel title="花费">
+        <Panel title="token 用量" description="按模型服务实际报告的数字统计；缓存命中算在输入里。语音转写和向量调用单独列出，不计入每天上限。">
           <template #actions>
             <v-btn-toggle v-model="period" mandatory><v-btn value="day">今天</v-btn><v-btn value="month">本月</v-btn></v-btn-toggle>
           </template>
-          <ResourceState :resource="usage" error-title="读取花费失败" v-slot="{ data }">
-            <p class="usage-total"><strong>{{ amounts(data.known_amounts) }}</strong>
-              <span class="muted">共 {{ data.calls }} 次调用<template v-if="data.unknown_calls">，其中 {{ data.unknown_calls }} 次费用未知</template></span></p>
+          <ResourceState :resource="usage" error-title="读取用量失败" v-slot="{ data }">
+            <p class="usage-total"><strong>{{ count(data.input + data.output) }}</strong>
+              <span class="muted">输入 {{ count(data.input) }}（缓存命中 {{ count(data.cached) }}）· 输出 {{ count(data.output) }} · 共 {{ data.calls }} 次调用<template v-if="data.unknown_calls">，其中 {{ data.unknown_calls }} 次没有报告 token</template></span></p>
             <v-table v-if="data.groups.length" density="compact" class="usage-table">
-              <thead><tr><th>群聊</th><th>用途</th><th>次数</th><th>花费</th></tr></thead>
+              <thead><tr><th>群聊</th><th>用途</th><th>次数</th><th>输入</th><th>输出</th></tr></thead>
               <tbody><tr v-for="row in data.groups" :key="`${row.scene}/${row.role}`">
-                <td>{{ sceneName(row.scene) }}</td><td>{{ callRoleLabel(row.role) }}</td><td>{{ row.calls }}</td>
-                <td>{{ amounts(row.known_amounts) }}<span v-if="row.unknown_calls" class="muted">（{{ row.unknown_calls }} 次未知）</span></td></tr></tbody>
+                <td>{{ sceneName(row.scene) }}</td><td>{{ callRoleLabel(row.role) }}</td><td>{{ row.calls }}<span v-if="row.unknown_calls" class="muted">（{{ row.unknown_calls }} 次未报告）</span></td>
+                <td>{{ count(row.input) }}</td><td>{{ count(row.output) }}</td></tr></tbody>
             </v-table>
             <DevOnly label="统计范围与原始数据" :json="data" />
           </ResourceState>

@@ -10,6 +10,7 @@ import sys
 from ..config import load_instance_config
 from ..instance_lock import instance_lock
 from ..memory.jobs import FORMAT_VERSION
+from .token_backfill import rename_and_backfill, upgrade_memory_job_calls
 
 
 APPLICATION_ID = 0x4C424D4A
@@ -55,6 +56,10 @@ def _step(db: sqlite3.Connection, path: Path, version: int) -> Path:
             db.execute("CREATE INDEX memory_embedding_usage ON memory_embedding_calls(started,scene)")
         elif version == 4:
             db.execute('CREATE TABLE memory_personas (scene TEXT NOT NULL,persona_id TEXT NOT NULL,PRIMARY KEY(scene,persona_id))')
+        elif version == 5:
+            rename_and_backfill(db, 'memory_summary_runs', 'chat')
+            rename_and_backfill(db, 'memory_embedding_calls', 'embedding')
+            upgrade_memory_job_calls(db)
         db.execute(f"PRAGMA user_version={version + 1}")
         db.commit()
     except BaseException:

@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from len_bot.next.models.pricing import TokenUsage
+from len_bot.next.models.tokens import TokenUsage
 
 
 class ModelSettings(BaseModel):

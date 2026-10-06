@@ -110,83 +110,56 @@ def test_automatic_transcription_requires_explicit_runtime_binding(tmp_path):
         AudioSettings(wait_seconds=-1)
 
 
-@pytest.mark.parametrize('price,usage,expected',[
-    ({'type':'duration','currency':'USD','per_second':'0.01'}, {'type':'duration','seconds':4}, '0.04'),
-    ({'type':'tokens','currency':'USD','input_audio':'10','input_text':'2','output':'3'},
-     {'type':'tokens','input_tokens':5,'output_tokens':2,'total_tokens':7,
-      'input_token_details':{'audio_tokens':4,'text_tokens':1}}, '0.000048'),
-    ({'type':'tokens','currency':'USD','input_audio':'10','input_text':'10','output':'3'},
-     {'type':'tokens','input_tokens':5,'output_tokens':2,'total_tokens':7}, '0.000056'),
-    ({'type':'tokens','currency':'USD','input_audio':'10','input_text':'2','output':'3'},
-     {'type':'tokens','input_tokens':5,'output_tokens':2,'total_tokens':7}, None),
-    ({'type':'tokens','currency':'USD','input_audio':'10','input_text':'2','output':'3'},
-     {'type':'tokens','input_tokens':5,'output_tokens':2,'total_tokens':7,
-      'input_token_details':{'audio_tokens':5,'text_tokens':2}}, None),
-    ({'type':'duration','currency':'USD','per_second':'0.01'},
-     {'type':'tokens','input_tokens':5,'output_tokens':2,'total_tokens':7}, None),
-    ({'type':'duration','currency':'USD','per_second':'0.01'}, None, None),
+@pytest.mark.parametrize('usage,expected',[
+    ({'type':'tokens','input_tokens':5,'output_tokens':2,'total_tokens':7,
+      'input_token_details':{'audio_tokens':4,'text_tokens':1}}, {'input':5,'output':2,'cached':None}),
+    ({'type':'duration','seconds':4}, None),
+    (None, None),
 ])
-def test_transcription_metering_requires_matching_explicit_rates(price,usage,expected):
-    from decimal import Decimal
-    from len_bot.next.models.asr import estimate_transcription
-    binding=ASRBinding(provider='fixture',model='synthetic',price=price)
+def test_transcription_tokens_follow_reported_metering(usage,expected):
+    from len_bot.next.models.asr import transcription_tokens
     body={'text':'合成识别结果','usage':usage}
     reply=parse_transcription(body)
-    amount=estimate_transcription(binding.price,reply.metering)
     assert reply.response is body and reply.usage is usage
-    if expected is None:
-        assert amount is None
-    else:
-        assert amount['basis']=='configured_estimate' and amount['currency']=='USD'
-        assert Decimal(amount['amount'])==Decimal(expected)
+    assert transcription_tokens(reply.metering)==expected
 
 
-@pytest.mark.parametrize('price',[
-    {'type':'duration','currency':'USD','per_second':True},
-    {'type':'duration','currency':'USD','per_second':'-1'},
-    {'type':'duration','currency':'USD','per_second':'NaN'},
-    {'type':'duration','currency':'usd','per_second':'1'},
-    {'type':'tokens','currency':'USD','input_audio':'1','output':'1'},
-    {'type':'duration','currency':'USD','per_second':'1','input':'1'},
-])
-def test_asr_price_configuration_never_guesses_a_rate(price):
+def test_asr_binding_has_no_price():
     with pytest.raises(ValidationError):
-        ASRBinding(provider='fixture',model='synthetic',price=price)
+        ASRBinding(provider='fixture',model='synthetic',price={'type':'duration','currency':'USD','per_second':'1'})
 
 
 def test_invalid_transcript_retains_independently_valid_usage():
-    from len_bot.next.models.asr import estimate_transcription
-    body={'text':None,'usage':{'type':'duration','seconds':4}}
-    binding=ASRBinding(provider='fixture',model='synthetic',price={
-        'type':'duration','currency':'USD','per_second':'0.01'})
+    body={'text':None,'usage':{'type':'tokens','input_tokens':5,'output_tokens':2,'total_tokens':7}}
     with pytest.raises(ASRProtocolError) as caught:
         parse_transcription(body)
     error=caught.value
     assert error.response is body and error.usage is body['usage']
-    assert estimate_transcription(binding.price,error.metering)['amount']=='0.040'
+    from len_bot.next.models.asr import transcription_tokens
+    assert transcription_tokens(error.metering)=={'input':5,'output':2,'cached':None}
     with pytest.raises(ASRProtocolError) as invalid:
         parse_transcription({'text':None,'usage':{'type':'duration','seconds':-1}})
     assert invalid.value.usage is None and invalid.value.metering is None
 
 
-def test_daily_budget_accepts_asr_only_with_explicit_same_currency_price(tmp_path):
+def test_daily_token_limit_needs_no_prices(tmp_path):
     import json
     from len_bot.next.config import load_host_config
     binding={'provider':'fixture','model':'synthetic','context_window_tokens':4096}
     source={"compaction": {"input_tokens": 2000}, 'mode':'isolated-multi','bot_id':'onebot:90001','timezone':'UTC','database':'state.db',
         'onebot':{'mode':'reverse_ws','listen_host':'127.0.0.1','listen_port':0},
-        'limits':{'currency':'USD','daily_model_cost':'1'},
+        'limits':{'daily_tokens':1000000},
         'models':{'providers':{'fixture':{'api':'openai-chat','base_url':'http://127.0.0.1:9/v1','api_key':'synthetic'}},
-                  'roles':{'mind':binding,'asr':{'provider':'fixture','model':'synthetic-audio'}},
-                  'prices':{'fixture':{'synthetic':{'currency':'USD','input':'1','output':'1','cache_read':'1'}}}},
+                  'roles':{'mind':binding,'asr':{'provider':'fixture','model':'synthetic-audio'}}},
         'scenes':{'onebot:group:80001':{'persona':'role'}}}
     def load():
         (tmp_path/'lenbot.config.json').write_text(json.dumps(source))
         return load_host_config(tmp_path)
-    with pytest.raises(ValueError,match='ASR'):
+    assert load().limits.daily_tokens==1000000
+    source['limits']={'daily_tokens':0}
+    with pytest.raises(ValueError):
         load()
-    source['models']['roles']['asr']['price']={'type':'duration','currency':'EUR','per_second':'0.01'}
-    with pytest.raises(ValueError,match='同币种'):
+    source['limits']={'currency':'USD','daily_model_cost':'1'}
+    with pytest.raises(ValueError):
         load()
-    source['models']['roles']['asr']['price']['currency']='USD'
-    assert load().models.roles.asr.price.currency=='USD'
+
