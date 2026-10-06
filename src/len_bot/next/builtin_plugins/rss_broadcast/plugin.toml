@@ -11,33 +11,42 @@ description = "在明确时区的 cron 时刻直接播报 RSS 2.0 订阅，不�
 
 [config.subscriptions]
 type = "object_list"
+label = "订阅"
 description = "RSS 订阅"
 default = []
 
 [config.subscriptions.fields.name]
 type = "string"
+label = "名称"
 description = "订阅名称（同一群内唯一）"
 
 [config.subscriptions.fields.url]
-type = "string"
+type = "url"
+label = "RSS 地址"
 description = "RSS 2.0 地址"
+placeholder = "https://example.com/feed.xml"
 
 [config.subscriptions.fields.scenes]
-type = "string_list"
-description = "发送场景，如 group:80001；同时需要在该群启用插件"
+type = "scene_list"
+label = "推送到的群"
+description = "同时需要在这些群启用插件"
+default = []
 
 [config.subscriptions.fields.cron]
 type = "string"
+label = "推送时间（cron）"
 description = "五段 cron，例如 0 8 * * *"
 default = "0 8 * * *"
 
 [config.subscriptions.fields.timezone]
 type = "string"
+label = "时区"
 description = "IANA 时区，例如 Asia/Shanghai"
 default = "Asia/Shanghai"
 
 [config.subscriptions.fields.limit]
 type = "integer"
+label = "每次最多条数"
 description = "每次最多播报新条目数"
 minimum = 1
 maximum = 10

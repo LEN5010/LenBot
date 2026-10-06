@@ -19,7 +19,7 @@ async def apply(root: Path) -> None:
     manifests = {}
     for record in records:
         try:
-            manifests[record.name] = await installer.check_apply(record.name, config.plugins.configured[record.name])
+            manifests[record.name] = await installer.check_apply(record.name, config.plugins.configured[record.name], config.scenes)
         except Exception as error:
             installer.failed(record.name, error)
             raise

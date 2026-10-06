@@ -10,7 +10,7 @@ import { formatTime } from '../../time.js'
 import { same } from '../../forms.js'
 import { initialField, configValue } from '../../pluginConfig.js'
 import { pluginsApi } from '../../api/plugins.js'
-import PluginField from '../../components/PluginField.vue'
+import SchemaForm from '../../components/SchemaForm.vue'
 import PageTabs from '../../ui/PageTabs.vue'
 import ResourceState from '../../ui/ResourceState.vue'
 import MasterDetail from '../../ui/MasterDetail.vue'
@@ -276,8 +276,8 @@ const facts = name => {
           :error="errorOf(selected)" @save="savePlugin(selected)">
           <v-switch v-model="drafts[selected].enabled" label="启用这个插件" hint="停用后保留参数和数据" persistent-hint />
           <template v-if="drafts[selected].enabled">
-            <PluginField v-for="field in manifest(selected).fields" :key="field.key" :field="field"
-              v-model="drafts[selected].values[field.key]" :configured="snapshot.saved.plugins[selected]?.[field.key]?.configured" />
+            <SchemaForm v-model="drafts[selected].values" :fields="manifest(selected).fields" :scene-choices="snapshot.scene_choices"
+              :configured="Object.fromEntries(Object.entries(snapshot.saved.plugins[selected] || {}).map(([key, item]) => [key, Boolean(item.configured)]))" />
           </template>
         </SettingSection>
 

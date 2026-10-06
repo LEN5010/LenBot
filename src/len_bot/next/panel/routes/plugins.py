@@ -73,10 +73,14 @@ class PluginInstall(PluginVersion):
 
 def _field_info(manifest: Manifest) -> list[dict]:
     def field(key: str, item: ConfigItem) -> dict:
+        choices = item.choices()
         return {"key": key, "type": item.type, "description": item.description,
+                "label": item.label, "placeholder": item.placeholder, "multiline": item.multiline,
+                "group": item.group if isinstance(item, ConfigField) else None,
                 "required": "default" not in item.model_fields_set,
                 "default": None if item.type == "secret" else item.default,
-                "options": item.options, "minimum": item.minimum, "maximum": item.maximum,
+                "options": None if choices is None else [choice.model_dump() for choice in choices],
+                "minimum": item.minimum, "maximum": item.maximum,
                 "fields": ([field(name, child) for name, child in item.fields.items()]
                            if isinstance(item, ConfigField) else [])}
     return [field(key, item) for key, item in manifest.config.items()]
@@ -146,6 +150,7 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
                               [{'name': path.name, 'directory': str(path)}
                                for path in sorted(saved.plugins.data_directory.iterdir()) if path.is_dir()
                                and PLUGIN_NAME.fullmatch(path.name) and path.name not in configured]),
+            "scene_choices": list(saved.scenes),
             "scenes": {scene: {"saved": saved.scenes[scene].plugins if scene in saved.scenes else None,
                                "running": settings.plugins}
                        for scene, settings in running.scenes.items()},
@@ -296,7 +301,7 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
                     value = previous[key]
                 values[key] = value
             try:
-                manifest.values_model().model_validate(values)
+                manifest.values_model(saved.scenes).model_validate(values)
             except ValidationError as error:
                 raise ValueError(redact_values(f"plugins.{name}: {error}", manifest, values)) from None
             plugins[name] = values

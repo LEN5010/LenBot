@@ -174,7 +174,7 @@ class PluginHost:
         record.manifest = manifest = read_manifest(directory)
         record.skills = load_plugin_skills(directory / "skills", record.name)
         try:
-            parsed = manifest.values_model().model_validate(values)
+            parsed = manifest.values_model(self.config.scenes).model_validate(values)
         except ValidationError as error:
             raise ValueError(f"plugins.{record.name} 配置不合法：{error}") from error
         module_name = f"lenbot_plugin_{record.name}"

@@ -80,8 +80,8 @@ class PluginTest:
         self.manifest = parse_manifest(self.package / 'plugin.toml')
         self.manifest.require_compatible()
         self.values = {} if config is None else config
-        self.manifest.values_model().model_validate(self.values)
         self.scenes = tuple(validate_scene(scene) for scene in scenes)
+        self.manifest.values_model(self.scenes).model_validate(self.values)
         self.owners = list(owners)
         self.deliveries: list[Delivery] = []
         self.host: _LocalHost | None = None
