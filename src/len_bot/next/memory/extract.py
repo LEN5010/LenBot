@@ -68,7 +68,7 @@ TOOLS = [{"type": "function", "function": {
     "description": description,
     "parameters": arguments.model_json_schema(),
 }} for name, description, arguments in (
-    ("memory_browse", "列出当前来源场景的记忆目录；path为空表示本场景根目录。", BrowseArguments),
+    ("memory_browse", "列出当前来源场景某个目录下的条目；完整文件列表已随输入给出，一般不需要。", BrowseArguments),
     ("memory_read", "读取当前来源场景的完整 Markdown 文件，供修改前核对。", ReadArguments),
     ("memory_search", "仅在当前来源场景检索记忆正文，不读取公共或其他场景。", SearchArguments),
     ("memory_write", "替换当前来源场景的完整 Markdown 正文并记录实际修改原因。", WriteArguments),
@@ -158,9 +158,10 @@ async def extract_local(
     if max_steps <= 0 or context_window_tokens <= model.settings.max_output_tokens:
         raise ValueError("memory extraction needs positive steps and a window larger than output reservation")
     source = _source_messages(scene, messages, timezone, persona_ids)
+    files = await backend.tree(scene)
     conversation = [
-        {"role": "system", "content": Template(PROMPT.read_text()).substitute(scene=scene)},
-        {"role": "user", "content": encode({"scene": scene, "messages": source})},
+        {"role": "system", "content": Template(PROMPT.read_text()).substitute(scene=scene, max_steps=max_steps)},
+        {"role": "user", "content": encode({"scene": scene, "memory_files": files, "messages": source})},
     ]
     written = 0
     failed_tools = 0

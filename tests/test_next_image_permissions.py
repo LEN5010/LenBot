@@ -107,7 +107,7 @@ async def test_cached_images_with_same_platform_id_do_not_cross_scenes(tmp_path)
         async def look(scene: str, message: str) -> str:
             return await execute_look(
                 store, scene, LookArguments(message=message), ImageSettings(),
-                model_name="synthetic-vision", describe=cached_description,
+                model_name="synthetic-vision", describe=cached_description, fake_ip_networks=(),
             )
 
         local_result = await look("onebot:group:80001", "400")

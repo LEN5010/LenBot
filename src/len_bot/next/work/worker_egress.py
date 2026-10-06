@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 from collections.abc import Callable
 import json
 import os
@@ -11,9 +12,17 @@ import socket
 import time
 from typing import Mapping
 
-from .egress_policy import EgressBlocked, blocked_address_reason
+from .egress_policy import EgressBlocked, blocked_address_reason, blocked_resolved_reason
 
 from .egress_wire import CHUNK_BYTES, Channel, Pipe, read_frame
+
+
+def _is_literal_address(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 class EgressTransportError(RuntimeError):
@@ -23,11 +32,13 @@ class EgressTransportError(RuntimeError):
 class EgressTransport:
     def __init__(self, process: asyncio.subprocess.Process, *, stderr_file, port: int,
                  connect_timeout_seconds: float,
+                 fake_ip_networks: tuple,
                  bytes_per_second: int,
                  before_bytes: Callable[[int, str, int], None],
                  on_connection: Callable[[dict], None],
                  on_bytes: Callable[[int, str, int], None]):
         self.process = process
+        self.fake_ip_networks = fake_ip_networks
         self.stderr_file = stderr_file
         self.port = port
         self.connect_timeout_seconds = connect_timeout_seconds
@@ -45,6 +56,7 @@ class EgressTransport:
     async def spawn(cls, argv: list[str], *, cwd: Path, env: Mapping[str, str],
                     stderr_path: Path, max_connections: int,
                     connect_timeout_seconds: float,
+                    fake_ip_networks: tuple,
                     bytes_per_second: int,
                     before_bytes: Callable[[int, str, int], None],
                     on_connection: Callable[[dict], None],
@@ -61,6 +73,7 @@ class EgressTransport:
             raise
         transport = cls(process, stderr_file=stderr_file, port=0,
                         connect_timeout_seconds=connect_timeout_seconds,
+                        fake_ip_networks=fake_ip_networks,
                         bytes_per_second=bytes_per_second, before_bytes=before_bytes,
                         on_connection=on_connection, on_bytes=on_bytes)
         try:
@@ -135,9 +148,11 @@ class EgressTransport:
             answers = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
             if not answers:
                 raise EgressTransportError(f"public egress target {host}:{port} has no DNS answers")
+            literal = _is_literal_address(host)
             for entry in answers:
                 ip = entry[4][0]
-                reason = blocked_address_reason(ip)
+                reason = (blocked_address_reason(ip) if literal
+                          else blocked_resolved_reason(ip, self.fake_ip_networks))
                 if reason is not None:
                     raise EgressTransportError(
                         f"public egress target {host}:{port} resolved to {ip} ({reason})")

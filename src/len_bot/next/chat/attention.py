@@ -712,6 +712,9 @@ class SceneRunner:
         self.emit(result)
         if result["status"] == "limited" and channel == "direct":
             await self.limit_notice(LimitReached(result["error"], result["limit_until"]))
+        if self.chat.toolset.pause_after_turn:
+            self.chat.toolset.pause_after_turn = False
+            self.set_paused(True)
         if self.chat.toolset.restart_after_turn:
             self.chat.toolset.restart_after_turn = False
             await self.chat.toolset.host_management.finish_turn()

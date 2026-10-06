@@ -226,7 +226,7 @@ class PluginHost:
                 record.backgrounds.append(Background(attribute, mark[1]))
         data_dir.mkdir(parents=True, exist_ok=True)
         record.context = PluginContext(name=record.name, config=parsed.model_dump(), data_dir=data_dir,
-                                       scenes=record.scenes, host=self)
+                                       enabled_scenes=record.scenes, host=self)
         record.instance = cls(record.context)
         record.status = "loaded"
         self.commands.update(dict.fromkeys(record.commands, record.name))
@@ -278,6 +278,16 @@ class PluginHost:
     def scene_timezone(self, scene: str) -> str:
         return self.config.scene_timezone(scene)
 
+    def scene_paused(self, scene: str) -> bool:
+        """Whether the operator switched this scene's chat off; plugins stay silent there too."""
+        return self.runtime is not None and self.runtime.runners[scene].state.paused
+
+    def _speaking(self, plugin: str, scene: str) -> Loaded:
+        record = self._active(plugin, scene)
+        if self.scene_paused(scene):
+            raise PermissionError(f"场景 {scene} 已关闭聊天，插件 {plugin} 不在该群发言")
+        return record
+
     def _active(self, plugin: str, scene: str | None = None) -> Loaded:
         record = self.plugins[plugin]
         if scene is not None and scene not in record.scenes:
@@ -299,7 +309,7 @@ class PluginHost:
         return await self.send_parts(plugin, scene, [Text(text)], reply_to)
 
     async def send_parts(self, plugin: str, scene: str, parts: Sequence[Content], reply_to: str | None) -> Sent:
-        self._active(plugin, scene)
+        self._speaking(plugin, scene)
         if self.runtime is None:
             raise RuntimeError("插件宿主尚未接入运行中的场景")
         safe_parts = [Text(self.redact(plugin, part.text)) if isinstance(part, Text)
@@ -308,7 +318,7 @@ class PluginHost:
         return await self.runtime.chats[scene].expression.send_plugin_content(plugin, safe_parts, reply_to=reply_to)
 
     def emit_event(self, plugin: str, scene: str, text: str) -> None:
-        self._active(plugin, scene)
+        self._speaking(plugin, scene)
         if self.runtime is None:
             raise RuntimeError("插件宿主尚未接入运行中的场景")
         now = datetime.fromtimestamp(self.now(), ZoneInfo(self.scene_timezone(scene)))
@@ -377,6 +387,9 @@ class PluginHost:
         await record.ready.wait()
         while True:
             await asyncio.sleep(max(0, job.next_run - self.now()))
+            if self.scene_paused(job.scene):
+                job.next_run = next_cron(job.cron, job.timezone, self.now())
+                continue
             job.last_started = self.now()
             try:
                 await handler(Invocation(record.context, job.scene))
@@ -543,7 +556,8 @@ class PluginHost:
         keys = {notice.notice_type} | ({f"{notice.notice_type}.{notice.sub_type}"} if notice.sub_type else set())
         count = 0
         for record in self.plugins.values():
-            if record.status not in {"loaded", "running"} or notice.scene not in record.scenes:
+            if (record.status not in {"loaded", "running"} or notice.scene not in record.scenes
+                    or self.scene_paused(notice.scene)):
                 continue
             for key in sorted(keys & set(record.notices)):
                 method = getattr(record.instance, record.notices[key])

@@ -159,6 +159,7 @@ async def worker_session(
     task_timeout_seconds: float,
     public_browser: bool,
     egress_settings: EgressSettings,
+    fake_ip_networks: tuple,
     egress_bytes_per_second: int,
     before_bytes: Callable[[int, str, int], None],
     on_connection: Callable[[dict], None],
@@ -206,7 +207,7 @@ async def worker_session(
         )
         if egress_settings.enabled:
             egress = await sandbox.spawn_egress_bridge(
-                handle, settings=egress_settings,
+                handle, settings=egress_settings, fake_ip_networks=fake_ip_networks,
                 bytes_per_second=egress_bytes_per_second,
                 before_bytes=before_bytes, on_connection=on_connection,
                 on_bytes=on_bytes,

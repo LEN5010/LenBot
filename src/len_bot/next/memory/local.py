@@ -496,6 +496,25 @@ class LocalMemory:
         async with self._lock(source):
             return await asyncio.to_thread(self._browse_sync, source, path, offset, limit)
 
+    def _tree_sync(self, scope: str) -> list[dict]:
+        root = self._target(scope, "", file=False)
+        if not root.exists():
+            return []
+        files = []
+        for target in sorted(root.rglob("*.md")):
+            if target.name in SUMMARY_FILES:
+                continue
+            path = target.relative_to(root).as_posix()
+            self._target(scope, path, file=True)
+            files.append({"path": path, "chars": len(_source_text(target))})
+        return files
+
+    async def tree(self, scene: str) -> list[dict]:
+        """Every memory file of the scene with its length, for one-request orientation."""
+        source = self._source(scene, "scene")
+        async with self._lock(source):
+            return await asyncio.to_thread(self._tree_sync, source)
+
     def _read_sync(self, scope: str, path: str) -> MemoryDocument:
         target = self._target(scope, path, file=True)
         content = _source_text(target)

@@ -71,7 +71,7 @@ Scene IDs are qualified, for example `onebot:group:80001`; accounts use `onebot:
 
 `generate` uses an explicitly configured mind or learner binding, without tools, history injection, automatic sending or changing providers on error. `delegate` requires an actual non-self triggering message; the host uses its sender's task permissions. A returned task record confirms submission, not delivery.
 
-`self.ctx` is a `PluginContext`; scene-specific capabilities require a scene argument. Calls are limited to enabled scenes. Sends return `Sent` with sent, failed, unconfirmed, simulated or partial status. Only sent means platform confirmation.
+`self.ctx` is a `PluginContext`; scene-specific capabilities require a scene argument. Calls are limited to enabled scenes. `self.ctx.scenes` lists enabled scenes whose chat is on: when an operator switches a group's chat off in the panel, that group drops out of the list, commands and notices there are not dispatched, and sending or emitting events to it raises an error. Sends return `Sent` with sent, failed, unconfirmed, simulated or partial status. Only sent means platform confirmation.
 
 Register five-field cron jobs in start with `self.ctx.cron(name, expression, handler, scene=..., timezone=...)`. The handler receives an Invocation without a message. Use an IANA timezone. Restart calculates the next run from the current time and does not replay missed occurrences. Plugin `skills/<name>/SKILL.md` resources are read-only for workers and remain subject to persona skill permissions.
 
