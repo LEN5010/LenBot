@@ -119,7 +119,8 @@ def unpack(artifacts: Path, work: Path, platform: str | None = None) -> Path:
 def smoke_package(artifacts: Path, work: Path) -> dict:
     work.mkdir(parents=True, exist_ok=False)
     bundle = unpack(artifacts, work)
-    root = work / 'lenbot'
+    # A space and a single quote in the path exercise the quoting of every generated entry point.
+    root = work / "Len Bot's"
     install = ['uv', 'run', '--no-project', '--python', '3.13', str(bundle / 'install.py')] if sys.platform == 'win32' else [str(bundle / 'install.sh')]
     subprocess.run([*install, 'install', str(root)], check=True)
 
