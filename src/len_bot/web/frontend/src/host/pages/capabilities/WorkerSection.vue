@@ -74,7 +74,7 @@ async function submit() {
   <ResourceState :resource="settings" error-title="读取任务环境失败">
   <SettingSection title="独立任务" description="Bot 可以把耗时的活交给独立任务，在隔离的 Docker 容器里慢慢做完再交付。"
     :dirty="dirty" :problem="problem" :saving="save.busy.value" :error="save.error.value" @save="submit">
-    <v-switch :model-value="draft !== null" color="primary" label="启用独立任务" hide-details @update:model-value="toggle" />
+    <v-switch :model-value="draft !== null" label="启用独立任务" hide-details @update:model-value="toggle" />
     <template v-if="draft">
       <v-alert v-if="!workerModel" type="info">
         还没有给任务分配模型，请到 <RouterLink :to="{ name: 'host-models', query: { tab: 'roles' } }">模型</RouterLink> 页设置任务用的模型。</v-alert>
@@ -86,9 +86,9 @@ async function submit() {
           hint="输入加输出；留空不限制" persistent-hint
           @update:model-value="value => draft.max_tokens = value === '' ? null : Number(value)" />
       </div>
-      <v-switch v-model="draft.egress.enabled" color="primary" label="任务可以上网" hide-details />
-      <v-switch v-model="draft.public_browser" color="primary" label="任务可以用浏览器打开网页" hint="需要先允许任务上网" persistent-hint />
-      <v-switch v-model="draft.mcp" color="primary" label="任务可以用本群的 MCP 工具" hide-details />
+      <v-switch v-model="draft.egress.enabled" label="任务可以上网" hide-details />
+      <v-switch v-model="draft.public_browser" label="任务可以用浏览器打开网页" hint="需要先允许任务上网" persistent-hint />
+      <v-switch v-model="draft.mcp" label="任务可以用本群的 MCP 工具" hide-details />
 
       <h3>运行环境</h3>
       <div class="form-grid">

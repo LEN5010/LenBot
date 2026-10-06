@@ -1,40 +1,41 @@
 // The one color table. It becomes both the Vuetify theme and the CSS
 // variables (`--ink`, `--error-bg`, …) that scoped styles use.
-// `brand` is the LenBot pink; `primary` is a deeper shade of the same pink so
-// that white button text and pink links stay readable.
+// `brand` (#e799b0) is an accent only: the mark, the selected navigation bar,
+// charts and switches that are on. Buttons and links use `primary`, a deeper
+// shade that keeps white text above 4.5:1. Everything else is neutral gray.
 export const palette = {
   brand: '#e799b0',
-  'brand-soft': '#fcebf1',
-  primary: '#c25579',
-  'primary-bg': '#fcebf1',
+  'brand-soft': '#fbeff3',
+  primary: '#b4476a',
+  'primary-bg': '#f8e6ec',
   'on-primary': '#ffffff',
-  ink: '#2d2430',
-  muted: '#7d6f7a',
-  line: '#f0e2e8',
-  'line-strong': '#e4ceda',
-  // Shell background, the content canvas inside it, and cards on the canvas.
-  page: '#f8eef3',
-  canvas: '#fdf9fb',
+  ink: '#1d1b20',
+  muted: '#6b6870',
+  line: '#e9e9ec',
+  'line-strong': '#d9d8dd',
+  // Page background behind cards, the sidebar and top bar, and cards.
+  page: '#f7f7f8',
+  canvas: '#ffffff',
   surface: '#ffffff',
-  // Neutral-pink states: hover, a segmented-control track, and the selected row or tab.
-  hover: '#fbf1f5',
-  track: '#f6e8ee',
-  selected: '#fbe3ec',
-  success: '#2f9468',
-  'success-bg': '#e5f5ec',
-  warning: '#b86e14',
-  'warning-bg': '#fcf0dd',
-  error: '#cc3d4d',
-  'error-bg': '#fde8ea',
-  info: '#3f7fc0',
-  'info-bg': '#e7f0fa',
-  idle: '#cdbfc7',
-  'code-bg': '#faf4f7',
+  // Hover, a segmented-control track, and the selected row or tab.
+  hover: '#f2f2f4',
+  track: '#ededf0',
+  selected: '#fbeff3',
+  success: '#22875a',
+  'success-bg': '#e6f4ec',
+  warning: '#a8630f',
+  'warning-bg': '#fbf0de',
+  error: '#c4323f',
+  'error-bg': '#fce9ea',
+  info: '#2f6db0',
+  'info-bg': '#e8f0f9',
+  idle: '#c8c6cc',
+  'code-bg': '#f5f5f7',
 }
 
 // Background and letter colors for scene avatars, picked per scene.
-export const avatarTints = [['#fde4ec', '#c25579'], ['#f1e6fb', '#8a5cb8'], ['#ffeede', '#b9692c'],
-  ['#e3f3ee', '#2f8a68'], ['#e6effb', '#4a78b0'], ['#fff3d6', '#9a7414']]
+export const avatarTints = [['#f8e6ec', '#a8405f'], ['#eee8f6', '#6c4f96'], ['#f8ece0', '#93552a'],
+  ['#e4f1ec', '#2a7457'], ['#e6edf6', '#3d6596'], ['#f5efdc', '#7d6418']]
 
 export function applyPalette(root = document.documentElement) {
   for (const [name, value] of Object.entries(palette)) root.style.setProperty(`--${name}`, value)
@@ -42,10 +43,11 @@ export function applyPalette(root = document.documentElement) {
 
 export const vuetifyColors = {
   primary: palette.primary,
+  brand: palette.brand,
   secondary: palette.muted,
   background: palette.page,
   surface: palette.surface,
-  'surface-variant': palette.selected,
+  'surface-variant': palette.track,
   'on-surface-variant': palette.muted,
   success: palette.success,
   warning: palette.warning,

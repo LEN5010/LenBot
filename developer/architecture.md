@@ -142,6 +142,15 @@ MCP 服务的工具和插件工具走同一套发现和许可。技能是 `SKILL
 
 后端在 `panel/`，按业务分路由；前端是 `web/frontend/` 下的 Vue 3 + Vuetify。业务请求集中在 `src/host/api/`，通用组件在 `src/host/ui/`，颜色和尺度在 `src/styles/`。面板文案写给运营者看，说清对象和后果，不写开发细节。
 
+视觉规范：
+
+- 颜色只在 `styles/theme.js` 定义。品牌粉 `brand`（#E799B0）只用于标志、导航选中竖条、图表和开关的开启态；按钮和链接用加深的 `primary`，其余用中性灰。不用渐变、毛玻璃和回弹动画。
+- 圆角三档：控件 6px、小块 8px、卡片 12px。
+- 按钮分四级：主要按钮 `color="primary"`，每个区域最多一个；次要按钮 `variant="outlined"`（旧页面的 `tonal` 也按次要按钮显示）；文字按钮 `variant="text"`；危险按钮 `color="error"`，只用于确认删除这类破坏性操作。
+- 输入框统一 outlined、comfortable，由 `plugins/vuetify.js` 的默认值设置，页面里不单独改。
+- 插件参数表单由 `host/components/SchemaForm.vue` 按清单生成，不为单个插件写专用表单。
+- 首页的待处理事项在 `host/attention.js` 里汇总，顶栏的提醒数字和首页列表共用这一份。
+
 ## 发行
 
 `scripts/build_release.py` 从同一次提交构建 wheel、源码包和 Linux／macOS 部署包，Docker 宿主镜像安装同一个 wheel。部署包里 `releases/<版本>` 放程序和依赖环境，`instance/` 放数据，升级时先装新版本、停机迁移、恢复插件依赖，再切换 `current`。

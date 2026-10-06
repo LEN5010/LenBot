@@ -148,7 +148,9 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
     @app.get("/api/host/scene-titles")
     async def scene_titles(_: str = Depends(user)):
         titles, errors = await runtime.scene_titles.read()
-        return {"titles": titles, "errors": errors}
+        return {"titles": titles, "errors": errors,
+                "members": {scene: runtime.scene_titles.members[scene] for scene in titles
+                            if scene in runtime.scene_titles.members}}
 
     @app.post("/api/host/connection/connect", status_code=202)
     async def connect(_: str = Depends(user)):
@@ -176,9 +178,21 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
         now = datetime.now(ZoneInfo(config.timezone))
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=1)
+        scenes = list(config.scenes)
+        # The last 24 whole hours, ending with the current one.
+        hour = now.replace(minute=0, second=0, microsecond=0).timestamp()
+        stuck = [] if runtime.ingestor is None else [
+            {"scene": scene, "status": job["status"], "error": job["error"], "ended": job["ended"]}
+            for scene in scenes if scene in runtime.chats
+            for job in [runtime.ingestor.jobs.latest(scene)]
+            if job is not None and job["status"] in {"failed", "interrupted"}]
         return {"timezone": config.timezone, "sampled_at": now.timestamp(),
                 "since": start.timestamp(), "until": end.timestamp(),
-                **runtime.store.daily_overview(list(config.scenes), start.timestamp(), end.timestamp())}
+                **runtime.store.daily_overview(scenes, start.timestamp(), end.timestamp()),
+                "hourly": runtime.store.hourly_overview(scenes, hour - 23 * 3600, 24),
+                "activity": runtime.store.recent_activity(scenes, 12),
+                "failed_tasks": runtime.store.failed_tasks(scenes, start.timestamp()),
+                "memory_stuck": stuck}
 
     @app.get("/api/host/scenes/{scene}")
     async def scene_state(scene: str, _: str = Depends(user)):

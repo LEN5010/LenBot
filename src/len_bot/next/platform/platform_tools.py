@@ -173,16 +173,22 @@ async def open_forward(store: Store, scene: str, timezone: str, args: OpenForwar
         scene=scene, result=encode(result)).strip()
 
 
-async def scene_title(scene: str, call: PlatformCall) -> str:
-    """The group name or the private contact's nickname, for the panel."""
+async def scene_title(scene: str, call: PlatformCall) -> tuple[str, int | None]:
+    """The group name and member count, or the private contact's nickname, for the panel."""
     platform, kind, number = scene.split(":", 2)
     action, field = ("get_group_info", "group_name") if kind == "group" else ("get_stranger_info", "nickname")
     raw = await call(action, {"group_id" if kind == "group" else "user_id": int(number)})
     try:
-        title = _succeeded(raw, action)[field]
+        data = _succeeded(raw, action)
+        title = data[field]
         if not isinstance(title, str):
             raise ValueError(f"{field} must be text")
-        return title
+        if kind != "group":
+            return title, None
+        members = data["member_count"]
+        if type(members) is not int or members < 0:
+            raise ValueError("member_count must be a non-negative integer")
+        return title, members
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError(f"{action} 返回无法解析：{error}; raw={repr(raw)[:500]}") from error
 

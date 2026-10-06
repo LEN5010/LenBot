@@ -5,8 +5,9 @@
 import { reactive } from 'vue'
 import { api, sceneTitles } from '../api.js'
 
-export const host = reactive({ state: null, stateError: null, restart: null, toast: '', operator: '', titleErrors: {} })
-let stateRead = 0, restartRead = 0, titlesRead = 0
+export const host = reactive({ state: null, stateError: null, restart: null, toast: '', operator: '', titleErrors: {},
+  overview: null, overviewError: null, members: {} })
+let stateRead = 0, restartRead = 0, titlesRead = 0, overviewRead = 0
 
 export async function readHostState() {
   const own = ++stateRead
@@ -28,9 +29,24 @@ export async function readSceneTitles() {
     const value = await api('/api/host/scene-titles')
     if (own !== titlesRead) return
     Object.assign(sceneTitles, value.titles)
+    host.members = value.members
     host.titleErrors = value.errors
   } catch (error) {
     if (own === titlesRead) host.titleErrors = { '': error.message }
+  }
+}
+
+// Today's counts, the last 24 hours and recent activity; the home page and the
+// top bar's count of things to handle both read it.
+export async function readOverview() {
+  const own = ++overviewRead
+  try {
+    const value = await api('/api/host/overview')
+    if (own !== overviewRead) return
+    host.overview = value
+    host.overviewError = null
+  } catch (error) {
+    if (own === overviewRead) host.overviewError = error
   }
 }
 
@@ -52,6 +68,8 @@ export function clearHost() {
   ++stateRead
   ++restartRead
   ++titlesRead
-  Object.assign(host, { state: null, stateError: null, restart: null, toast: '', operator: '', titleErrors: {} })
+  ++overviewRead
+  Object.assign(host, { state: null, stateError: null, restart: null, toast: '', operator: '', titleErrors: {},
+    overview: null, overviewError: null, members: {} })
   for (const key of Object.keys(sceneTitles)) delete sceneTitles[key]
 }

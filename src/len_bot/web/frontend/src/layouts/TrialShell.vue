@@ -50,19 +50,17 @@ async function exit() {
     </template>
   </v-navigation-drawer>
   <v-main class="shell-wrap">
-    <div class="shell-canvas">
-      <header class="shell-top">
-        <v-btn v-if="mobile" :icon="mdiMenu" variant="text" aria-label="打开导航" @click="drawer = true" />
-        <span class="shell-top-title">{{ route.meta.title }}</span>
-        <v-spacer />
-        <span class="shell-pill muted">隔离 · 模拟发送</span>
-      </header>
-      <main class="shell-main" id="main-content">
-        <ErrorNote v-if="logoutError" title="退出登录失败" :error="logoutError" />
-        <slot />
-      </main>
-    </div>
+    <header class="shell-top">
+      <v-btn v-if="mobile" :icon="mdiMenu" variant="text" aria-label="打开导航" @click="drawer = true" />
+      <nav class="shell-crumbs" aria-label="当前位置"><strong>{{ route.meta.title }}</strong></nav>
+      <v-spacer />
+      <span class="shell-pill muted">隔离 · 模拟发送</span>
+    </header>
+    <main class="shell-main" id="main-content">
+      <ErrorNote v-if="logoutError" title="退出登录失败" :error="logoutError" />
+      <slot />
+    </main>
   </v-main>
   <ConfirmHost />
-  <v-snackbar v-model="toast" :timeout="3000" location="bottom" color="primary" rounded="pill">{{ host.toast }}</v-snackbar>
+  <v-snackbar v-model="toast" :timeout="3000" location="bottom" color="#1d1b20" rounded="lg">{{ host.toast }}</v-snackbar>
 </template>

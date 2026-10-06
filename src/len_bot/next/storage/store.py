@@ -289,6 +289,71 @@ class Store:
             "next_before": selected[-1][0] if len(rows) > limit else None,
         }
 
+    # Every table that records a model call, with the column holding its start time.
+    CALL_TABLES = (("model_calls", "started"), ("audio_calls", "started"), ("learning_batches", "model_started"),
+                   ("expression_embedding_calls", "started"), ("jargon_calls", "model_started"),
+                   ("sticker_calls", "model_started"), ("reply_effect_calls", "model_started"))
+
+    def _call_tokens(self, scenes: Sequence[str], since: float, until: float) -> list[tuple]:
+        placeholders = ",".join("?" for _ in scenes)
+        rows = []
+        for table, started in self.CALL_TABLES:
+            rows.extend(self.db.execute(
+                f"SELECT {started},ended,tokens FROM {table} "
+                f"WHERE scene IN ({placeholders}) AND {started}>=? AND {started}<?", (*scenes, since, until),
+            ).fetchall())
+        return rows
+
+    def hourly_overview(self, scenes: Sequence[str], since: float, hours: int) -> dict:
+        """Per-hour counts from ``since``: received and spoken messages, reply turns, reported tokens."""
+        placeholders = ",".join("?" for _ in scenes)
+        until = since + hours * 3600
+
+        def series(query: str) -> list[int]:
+            values = [0] * hours
+            for hour, count in self.db.execute(query, (since, *scenes, since, until)):
+                values[hour] = count
+            return values
+
+        received = series(
+            "SELECT CAST((received_at-?)/3600 AS INTEGER),COUNT(*) FROM messages "
+            f"WHERE scene IN ({placeholders}) AND raw IS NOT NULL AND received_at>=? AND received_at<? GROUP BY 1")
+        spoke = series(
+            "SELECT CAST((json_extract(body,'$.time')-?)/3600 AS INTEGER),COUNT(*) FROM messages "
+            f"WHERE scene IN ({placeholders}) AND raw IS NULL AND json_extract(body,'$.send_status') IN ('sent','simulated') "
+            "AND json_extract(body,'$.time')>=? AND json_extract(body,'$.time')<? GROUP BY 1")
+        turns = series(
+            "SELECT CAST((started-?)/3600 AS INTEGER),COUNT(*) FROM turns "
+            f"WHERE scene IN ({placeholders}) AND started>=? AND started<? GROUP BY 1")
+        tokens = [0] * hours
+        for started, _, raw in self._call_tokens(scenes, since, until):
+            if raw is not None:
+                record = json.loads(raw)
+                tokens[int((started - since) // 3600)] += record["input"] + record["output"]
+        return {"since": since, "hours": hours, "received": received, "spoke": spoke, "turns": turns, "tokens": tokens}
+
+    def recent_activity(self, scenes: Sequence[str], limit: int) -> list[dict]:
+        """Latest reply turns, finished tasks and failed sends, newest first."""
+        placeholders = ",".join("?" for _ in scenes)
+        items = [{"kind": "turn", "scene": row[0], "at": row[1], "id": row[2], "status": row[3]} for row in self.db.execute(
+            f"SELECT scene,started,id,status FROM turns WHERE scene IN ({placeholders}) ORDER BY started DESC LIMIT ?",
+            (*scenes, limit))]
+        items += [{"kind": "task", "scene": row[0], "at": row[1], "id": row[2], "status": row[3], "goal": row[4]}
+                  for row in self.db.execute(
+                      f"SELECT scene,ended,id,status,goal FROM tasks WHERE scene IN ({placeholders}) AND ended IS NOT NULL "
+                      "ORDER BY ended DESC LIMIT ?", (*scenes, limit))]
+        items += [{"kind": "send", "scene": row[0], "at": row[1], "id": row[2], "status": row[3]} for row in self.db.execute(
+            "SELECT scene,json_extract(body,'$.time'),seq,json_extract(body,'$.send_status') FROM messages "
+            f"WHERE scene IN ({placeholders}) AND raw IS NULL AND json_extract(body,'$.send_status') IN ('failed','unconfirmed') "
+            "ORDER BY json_extract(body,'$.time') DESC LIMIT ?", (*scenes, limit))]
+        return sorted(items, key=lambda item: item["at"], reverse=True)[:limit]
+
+    def failed_tasks(self, scenes: Sequence[str], since: float) -> dict[str, int]:
+        placeholders = ",".join("?" for _ in scenes)
+        return dict(self.db.execute(
+            f"SELECT scene,COUNT(*) FROM tasks WHERE scene IN ({placeholders}) AND status='failed' AND ended>=? GROUP BY scene",
+            (*scenes, since)))
+
     def daily_overview(self, scenes: Sequence[str], since: float, until: float) -> dict:
         placeholders = ",".join("?" for _ in scenes)
         messages = dict(self.db.execute(
@@ -302,41 +367,7 @@ class Store:
             f"SELECT status,COUNT(*) FROM turns WHERE scene IN ({placeholders}) "
             "AND started>=? AND started<? GROUP BY status", (*scenes, since, until),
         ))
-        calls = self.db.execute(
-            "SELECT model_calls.ended,model_calls.tokens FROM model_calls "
-            f"WHERE model_calls.scene IN ({placeholders}) AND model_calls.started>=? AND model_calls.started<?",
-            (*scenes, since, until),
-        ).fetchall()
-        calls.extend(self.db.execute(
-            "SELECT ended,tokens FROM audio_calls "
-            f"WHERE scene IN ({placeholders}) AND started>=? AND started<?",
-            (*scenes, since, until),
-        ).fetchall())
-        calls.extend(self.db.execute(
-            "SELECT ended,tokens FROM learning_batches "
-            f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
-            (*scenes, since, until),
-        ).fetchall())
-        calls.extend(self.db.execute(
-            "SELECT ended,tokens FROM expression_embedding_calls "
-            f"WHERE scene IN ({placeholders}) AND started>=? AND started<?",
-            (*scenes, since, until),
-        ).fetchall())
-        calls.extend(self.db.execute(
-            "SELECT ended,tokens FROM jargon_calls "
-            f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
-            (*scenes, since, until),
-        ).fetchall())
-        calls.extend(self.db.execute(
-            "SELECT ended,tokens FROM sticker_calls "
-            f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
-            (*scenes, since, until),
-        ).fetchall())
-        calls.extend(self.db.execute(
-            "SELECT ended,tokens FROM reply_effect_calls "
-            f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
-            (*scenes, since, until),
-        ).fetchall())
+        calls = [(ended, tokens) for _, ended, tokens in self._call_tokens(scenes, since, until)]
         reactions = dict(self.db.execute(
             "SELECT COALESCE(reaction,CASE WHEN observed_seqs='[]' THEN 'no_messages' ELSE 'waiting' END),"
             f"COUNT(*) FROM reply_effects WHERE scene IN ({placeholders}) AND closed_at IS NOT NULL "
