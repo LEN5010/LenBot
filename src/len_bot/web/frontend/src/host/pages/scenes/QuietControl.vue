@@ -28,12 +28,12 @@ async function change(kind) {
     <ResourceState :resource="state" error-title="读取安静状态失败" v-slot="{ data }">
       <div v-if="quietUntil(data)" class="inline">
         <span>Bot 暂时安静到 {{ formatTime(quietUntil(data), data.timezone) }}</span>
-        <v-btn variant="tonal" color="primary" :loading="action.busy.value" @click="change('resume')">现在恢复</v-btn>
+        <v-btn variant="outlined" :loading="action.busy.value" @click="change('resume')">现在恢复</v-btn>
       </div>
       <div v-else class="quiet-form">
         <v-text-field v-model="hours" type="number" label="安静几小时" min="0.1" />
         <v-select v-model="direct" label="期间被 @" :items="[{ title: '照常回复', value: 'allow' }, { title: '也先不回', value: 'defer' }]" />
-        <v-btn variant="tonal" color="primary" :loading="action.busy.value" @click="change('quiet')">开始安静</v-btn>
+        <v-btn variant="outlined" :loading="action.busy.value" @click="change('quiet')">开始安静</v-btn>
       </div>
     </ResourceState>
   </Panel>

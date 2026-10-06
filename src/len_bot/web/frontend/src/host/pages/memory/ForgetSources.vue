@@ -41,7 +41,7 @@ function toggle(item, on) {
     <form class="search" @submit.prevent="search">
       <v-text-field v-model="text" label="消息里的文字" />
       <v-text-field v-model="who" label="发言人账号" placeholder="onebot:QQ号" />
-      <v-btn type="submit" variant="tonal" :loading="page.loading.value">查找</v-btn>
+      <v-btn type="submit" variant="outlined" :loading="page.loading.value">查找</v-btn>
     </form>
     <ErrorNote v-if="page.error.value" title="查找消息失败" :error="page.error.value" />
     <p v-if="page.data.value && !rows.length" class="muted">没有找到消息</p>

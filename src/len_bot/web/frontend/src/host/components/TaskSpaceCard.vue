@@ -39,13 +39,13 @@ async function closeEnvironment() {
       <p v-if="storage.data.value.last_cleanup" class="muted small">最近清理：{{ formatTime(storage.data.value.last_cleanup.created) }} · {{ storage.data.value.last_cleanup.complete ? '完成' : '未完成' }}</p>
       <ErrorNote v-if="storage.data.value.last_cleanup?.error" title="上次清理出错" :error="storage.data.value.last_cleanup.error" />
       <div v-if="storage.data.value.cleanable" class="inline">
-        <v-btn size="small" variant="tonal" @click="operation = 'temporary'">清理临时文件</v-btn>
+        <v-btn size="small" variant="outlined" @click="operation = 'temporary'">清理临时文件</v-btn>
         <v-btn size="small" variant="text" color="error" @click="operation = 'environment'">释放环境</v-btn>
       </div>
       <p v-else class="muted small">任务结束、浏览器关闭后可以清理。</p>
       <div v-if="terminal && (storage.data.value.task.container || storage.data.value.task.browser_active)" class="inline">
         <span class="muted small">容器{{ storage.data.value.task.container ? '仍在运行' : '已关闭' }}，账号浏览{{ storage.data.value.task.browser_active ? '仍在使用' : '已关闭' }}</span>
-        <v-btn size="small" variant="tonal" :disabled="!validIdentity" :loading="closeAction.busy.value" @click="closeEnvironment">关闭遗留运行环境</v-btn>
+        <v-btn size="small" variant="outlined" :disabled="!validIdentity" :loading="closeAction.busy.value" @click="closeEnvironment">关闭遗留运行环境</v-btn>
       </div>
       <ErrorNote v-if="closeAction.error.value" title="关闭环境失败" :error="closeAction.error.value" />
     </template>

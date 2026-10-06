@@ -92,7 +92,7 @@ async function closeFile() {
             <v-btn value="scene">本群</v-btn><v-btn value="public">公共</v-btn></v-btn-toggle>
           <h2 v-else>本群记忆</h2>
         </template>
-        <template v-if="writable" #actions><v-btn size="small" variant="tonal" color="primary" @click="create">新建</v-btn></template>
+        <template v-if="writable" #actions><v-btn size="small" variant="outlined" @click="create">新建</v-btn></template>
         <div class="tree">
           <v-breadcrumbs :items="crumbs" density="compact" class="crumbs">
             <template #item="{ item }"><a href="#" @click.prevent="openDirectory(item.path)">{{ item.title }}</a></template>

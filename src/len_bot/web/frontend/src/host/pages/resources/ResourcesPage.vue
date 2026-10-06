@@ -95,7 +95,7 @@ function created(task) {
           </div>
           <template v-if="checked.length" #footer>
             <span class="small">已选 {{ checked.length }} 个<template v-if="checked.length > 100">，每批最多 100 个</template></span>
-            <v-btn size="small" variant="tonal" :disabled="checked.length > 100" @click="cleanup('temporary')">清理临时文件</v-btn>
+            <v-btn size="small" variant="outlined" :disabled="checked.length > 100" @click="cleanup('temporary')">清理临时文件</v-btn>
             <v-btn size="small" variant="text" color="error" :disabled="checked.length > 100" @click="cleanup('environment')">释放环境</v-btn>
           </template>
         </Panel>

@@ -74,7 +74,7 @@ async function close() {
     <MasterDetail :selected="Boolean(open)" @back="close">
       <template #list>
         <Panel title="资料" description="世界观、人物关系这类背景，聊天时它需要会自己翻。" flush>
-          <template #actions><v-btn size="small" variant="tonal" color="primary" @click="create">新建</v-btn></template>
+          <template #actions><v-btn size="small" variant="outlined" @click="create">新建</v-btn></template>
           <div class="list">
             <p v-if="!files.length" class="muted small">还没有资料。</p>
             <ObjectList>

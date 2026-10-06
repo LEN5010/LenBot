@@ -9,7 +9,7 @@ const tables = {
   turn: {
     queued: ['排队中', 'neutral'], running: ['进行中', 'info'], settling: ['收尾中', 'info'], settled: ['已完成', 'success'],
     error: ['失败', 'error'], timeout: ['超时', 'error'], cancelled: ['已取消', 'neutral'], interrupted: ['已中断', 'error'],
-    step_limit: ['步数用完', 'error'],
+    step_limit: ['步数用完', 'error'], manual_compaction: ['手动压缩上下文', 'neutral'],
   },
   message: {
     received: ['收到', 'neutral'], sent: ['已发送', 'success'], simulated: ['模拟发送（未发到 QQ）', 'neutral'],

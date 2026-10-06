@@ -29,7 +29,7 @@ async function submit() {
 <template>
   <v-alert type="info">
     这是从旧版导入的资料，Bot 还不会用到。整理成正式记忆后才会生效。
-    <template #append><v-btn size="small" variant="tonal" @click="open = true">整理成正式记忆</v-btn></template>
+    <template #append><v-btn size="small" variant="outlined" @click="open = true">整理成正式记忆</v-btn></template>
   </v-alert>
   <FormDialog v-model="open" title="整理成正式记忆" size="md" :busy="adopt.busy.value">
     <Fold label="查看原资料" code>{{ original }}</Fold>

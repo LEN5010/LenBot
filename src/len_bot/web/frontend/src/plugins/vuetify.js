@@ -28,7 +28,8 @@ export default createVuetify({
     VProgressLinear: { color: 'primary', rounded: true },
     VProgressCircular: { color: 'primary' },
     VMenu: { transition: 'fade-transition' },
-    VBtnToggle: { density: 'compact', color: 'primary', variant: 'outlined', divided: true, rounded: 'lg' },
+    // Drawn like the page tabs (gray track, white selected pill) by styles/base.css.
+    VBtnToggle: { density: 'compact', variant: 'text', rounded: 'lg' },
     VDialog: { transition: 'fade-transition' },
     VExpansionPanels: { variant: 'accordion' },
   },

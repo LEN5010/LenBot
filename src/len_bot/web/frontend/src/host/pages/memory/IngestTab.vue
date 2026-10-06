@@ -49,7 +49,7 @@ async function run(action) {
         <ErrorNote v-if="latest?.error" title="这次整理出错了" :error="latest.error" />
         <p v-if="!latest" class="muted">还没有整理过。开启后只整理之后的新消息。</p>
         <div v-if="actions.length" class="inline">
-          <v-btn v-for="[key, label] in actions" :key="key" variant="tonal" :loading="act.busy.value" @click="run(key)">{{ label }}</v-btn>
+          <v-btn v-for="[key, label] in actions" :key="key" :variant="key === 'retry' ? 'flat' : 'outlined'" :color="key === 'retry' ? 'primary' : undefined" :loading="act.busy.value" @click="run(key)">{{ label }}</v-btn>
         </div>
         <ErrorNote v-if="act.error.value" title="操作没有成功" :error="act.error.value" />
         <DevOnly label="整理记录详情" :json="current" />

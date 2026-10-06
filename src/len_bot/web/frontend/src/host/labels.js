@@ -28,11 +28,13 @@ const tools = {
   memory: '记忆', delegate: '委托任务', task: '任务', send_file: '发送文件', react: '表情回应',
   persona_knowledge: '查角色资料', scene_control: '让 Bot 暂时安静', open_forward: '看合并转发', member_info: '查群成员', transcribe: '转写语音',
 }
-const callRoles = { mind: '大脑', voice: '历史表达器', recap: '整理回想', vision: '看图' }
+const callRoles = { mind: '大脑', voice: '历史表达器', recap: '整理回想', vision: '看图', learner: '学习', worker: '后台任务',
+  asr: '语音转写', learning: '学说法', jargon: '学黑话', sticker: '表情收集', reply_effects: '回复效果',
+  expression_embedding: '表达向量', memory: '记忆整理', memory_summary: '记忆摘要', memory_embedding: '记忆向量' }
 const notices = {
   group_recall: '撤回了一条消息', friend_recall: '撤回了一条消息', group_increase: '加入了群聊', group_decrease: '离开了群聊',
   group_ban: '禁言状态变化', group_card: '修改了群名片', notify: '平台通知', group_upload: '上传了群文件',
 }
 export const toolLabel = name => tools[name] || name
-export const callRoleLabel = role => callRoles[role] || role
+export const callRoleLabel = role => role.startsWith('plugin:') ? `插件 ${role.slice(7)}` : callRoles[role] || role
 export const noticeLabel = kind => notices[kind] || kind

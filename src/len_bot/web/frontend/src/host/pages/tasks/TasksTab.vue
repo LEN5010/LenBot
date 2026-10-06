@@ -66,7 +66,7 @@ const accepting = computed(() => state.data.value?.configured && state.data.valu
         <Panel title="任务" flush>
           <template #actions>
             <LiveStatus :status="events.status.value" @reconnect="events.reconnect" />
-            <v-btn color="primary" variant="tonal" size="small" :disabled="!accepting" @click="creating = true">新建</v-btn>
+            <v-btn variant="outlined" size="small" :disabled="!accepting" @click="creating = true">新建</v-btn>
           </template>
           <div class="list">
             <v-select v-model="filter" :items="filters" aria-label="筛选" />

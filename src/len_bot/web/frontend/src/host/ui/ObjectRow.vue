@@ -35,8 +35,8 @@ defineEmits(['click'])
 .interactive:hover{background:var(--hover)}
 .row-main:hover{text-decoration:none}
 .active,.active:hover{background:var(--selected)}
-.active::before{content:'';position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:3px;background:var(--brand);animation:rise var(--dur-2) var(--ease-out)}
-.active .row-title{color:var(--primary)}
+.active::before{content:'';position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:3px;background:var(--brand)}
+.active .row-title{color:var(--ink);font-weight:600}
 .row-prepend{flex:none;display:inline-flex}
 .row-text{flex:1;min-width:0;display:grid;gap:2px}
 .row-title{font-weight:600;overflow-wrap:anywhere}

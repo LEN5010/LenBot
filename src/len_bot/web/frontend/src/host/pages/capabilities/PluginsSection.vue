@@ -202,7 +202,7 @@ const facts = name => {
       <template #list>
         <div class="stack">
           <Panel :title="`${names.length} 个插件`" flush>
-            <template #actions><v-btn size="small" variant="text" :prepend-icon="mdiPlus" @click="zipImport = true">导入 ZIP</v-btn><v-btn size="small" variant="tonal" color="primary" :prepend-icon="mdiPlus" @click="installing = true">从 Git 安装</v-btn></template>
+            <template #actions><v-btn size="small" variant="text" :prepend-icon="mdiPlus" @click="zipImport = true">导入 ZIP</v-btn><v-btn size="small" variant="outlined" :prepend-icon="mdiPlus" @click="installing = true">从 Git 安装</v-btn></template>
             <ObjectList class="list">
               <ObjectRow v-for="name in names" :key="name" :title="name" clickable :active="selected === name" @click="open(name)"
                 :subtitle="manifest(name)?.description || ''">
@@ -239,7 +239,7 @@ const facts = name => {
         <Panel :title="selected" :description="manifest(selected)?.description || ''" :icon="mdiPuzzleOutline">
           <template #actions>
             <StatusBadge v-bind="status(selected)" />
-            <v-chip v-if="recommended.includes(selected)" color="primary">内置推荐</v-chip>
+            <v-chip v-if="recommended.includes(selected)">内置推荐</v-chip>
             <v-menu>
               <template #activator="{ props: menu }"><v-btn v-bind="menu" :icon="mdiDotsVertical" variant="text" size="small" aria-label="更多操作" /></template>
               <v-list density="compact">

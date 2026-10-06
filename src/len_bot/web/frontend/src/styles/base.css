@@ -33,6 +33,12 @@ code { font-family:var(--mono);font-size:.92em }
 .v-btn--variant-outlined:not(.text-error), .v-btn--variant-tonal:not(.text-error) { color:var(--ink) }
 .v-btn--variant-tonal > .v-btn__underlay { opacity:0 }
 .v-btn--variant-outlined:not(.v-btn--disabled):hover, .v-btn--variant-tonal:not(.v-btn--disabled):hover { border-color:var(--muted) }
+/* Segmented choices look like the page tabs: a gray track and a white pill for the selected one. */
+.v-btn-toggle.v-btn-group { background:var(--track);padding:3px;gap:2px;border:0;height:auto;border-radius:var(--radius) }
+.v-btn-toggle .v-btn { height:30px;border-radius:var(--radius-sm) !important;color:var(--muted);background:transparent }
+/* Vuetify tints the active button with an overlay at higher specificity; the pill replaces it. */
+.v-btn-toggle .v-btn.v-btn--active { background:var(--surface) !important;color:var(--ink);box-shadow:var(--shadow-card) }
+.v-btn-toggle .v-btn > .v-btn__overlay { opacity:0 !important }
 .v-card { border-radius:var(--radius-lg) }
 .v-card--variant-outlined, .v-card.v-card--border { border-color:var(--line) }
 .v-field--variant-outlined { background:var(--surface) }

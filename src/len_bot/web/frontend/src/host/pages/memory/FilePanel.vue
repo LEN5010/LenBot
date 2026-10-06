@@ -93,7 +93,7 @@ const pending = computed(() => inScene && props.path?.startsWith('legacy-import/
   </Panel>
   <Panel v-else :title="path">
     <template #actions>
-      <v-btn v-if="writable && doc.data.value" size="small" variant="tonal" color="primary" @click="editing = true">编辑</v-btn>
+      <v-btn v-if="writable && doc.data.value" size="small" variant="outlined" @click="editing = true">编辑</v-btn>
       <v-btn v-if="inScene && can('history')" size="small" variant="text" @click="openHistory">修改历史</v-btn>
       <v-btn v-if="inScene && (can('delete') || can('forget')) && doc.data.value" size="small" variant="text" color="error"
         @click="removing = true; forget = !can('delete'); removeReason = ''; sources = []">删除</v-btn>
