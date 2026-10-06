@@ -6,7 +6,7 @@
 <p id="current"></p><p id="error" role="alert"></p>
 <button id="check">检查发行版本</button><label><input id="prerelease" type="checkbox">显示预发布版本</label>
 <select id="versions" aria-label="目标版本"></select><button id="prepare">准备更新</button>
-<pre id="notes">先检查版本，准备完成后再确认停机升级。</pre>
+<p id="worker"></p><pre id="notes">先检查版本，准备完成后再确认停机升级。</pre>
 <button id="apply" hidden>确认停机、备份并升级</button><button id="restore" hidden>恢复升级前程序和数据快照</button><button id="start" hidden>启动程序</button>
 <pre id="status"></pre><p>恢复会覆盖升级后对实例数据的修改，以页面显示的快照时间为准。</p>
 <details><summary>原始更新日志</summary><button id="read-log">读取日志</button><pre id="log"></pre></details>
@@ -21,7 +21,7 @@ async function request(path,body){const r=await fetch('/api/'+path,{method:body=
 async function action(path,body={}){try{$('error').textContent='';await request(path,body);await refresh()}catch(e){$('error').textContent=e.message}}
 function options(){const previous=$('versions').value;$('versions').replaceChildren(...releases.filter(r=>r.installable&&($('prerelease').checked||!r.prerelease)).map(r=>new Option(r.tag,r.tag)));if([...$('versions').options].some(o=>o.value===previous))$('versions').value=previous;notes()}
 function notes(){$('notes').textContent=releases.find(r=>r.tag===$('versions').value)?.notes||'没有可安装的发行版本。'}
-async function refresh(){try{const s=await request('status');$('current').textContent=`当前版本 ${s.current_version} · ${s.mode}`;$('status').textContent=JSON.stringify(s,null,2);for(const name of ['apply','restore','start'])$(name).hidden=!s.actions.includes(name);$('prepare').disabled=!s.actions.includes('prepare');if(s.error)$('error').textContent=s.error}catch(e){$('error').textContent=e.message}}
+async function refresh(){try{const s=await request('status');$('current').textContent=`当前版本 ${s.current_version} · ${s.mode}`;$('status').textContent=JSON.stringify(s,null,2);for(const name of ['apply','restore','start'])$(name).hidden=!s.actions.includes(name);$('prepare').disabled=!s.actions.includes('prepare');const w=s.status==='prepared'&&s.check?.worker_image;$('worker').textContent=!w?'':s.check.worker_follows_release?`任务镜像将换为 ${w}（已提前拉取）。`:`任务镜像 ${w} 不是发行镜像，不随本次更新，需要时自行重建并改配置。`;if(s.error)$('error').textContent=s.error}catch(e){$('error').textContent=e.message}}
 $('check').onclick=async()=>{try{releases=await request('releases');options()}catch(e){$('error').textContent=e.message}};
 $('prerelease').onchange=options;$('versions').onchange=notes;
 $('prepare').onclick=()=>action('prepare',{tag:$('versions').value});

@@ -13,7 +13,33 @@ import urllib.error
 import urllib.request
 import zipfile
 
-from common import read_json, write_json
+from common import read_json, repository, write_json
+
+# Task images published with each release; a locally built or other image is left for the owner to update.
+OFFICIAL_WORKERS = {'ghcr.io/lendevs/lenbot-worker', 'docker.io/lendevs/lenbot-worker', 'lendevs/lenbot-worker'}
+
+if sys.platform == 'win32':
+    import msvcrt
+else:
+    import fcntl
+
+
+def instance_busy(root: Path) -> bool:
+    """Whether some process holds the host's instance lock (the same lock the host takes at start)."""
+    path = root / '.lenbot-instance.lock'
+    if not path.exists():
+        return False
+    with path.open('r+b') as stream:
+        try:
+            if sys.platform == 'win32':
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(stream, fcntl.LOCK_UN)
+        except OSError:
+            return True
+    return False
 
 
 def python_path(environment: Path) -> Path:
@@ -28,6 +54,7 @@ class Native:
         self.deployment = read_json(root / 'deployment.json')
         self.instance = root / 'instance'
         self.child: subprocess.Popen | None = None
+        self.pid_file = root / 'updates/host.pid'
 
     def metadata(self) -> dict:
         return read_json(self.root / 'current.json')
@@ -69,15 +96,59 @@ class Native:
                       str(package / 'install.py'), 'prepare', str(self.root)])
         return metadata
 
+    def worker_image(self, target: dict) -> tuple[dict, str | None]:
+        """The task settings and the release image they follow, or None when the image is not an official one."""
+        worker = read_json(self.instance / 'lenbot.config.json').get('worker')
+        if worker is None or repository(worker['image']) not in OFFICIAL_WORKERS:
+            return worker, None
+        return worker, repository(worker['image']) + ':' + target['version']
+
     def inspect(self, target: dict) -> dict:
-        return json.loads(self.maintenance('inspect', target=target, capture=True))
+        result = json.loads(self.maintenance('inspect', target=target, capture=True))
+        worker, image = self.worker_image(target)
+        if image is not None:
+            # Pulled before any downtime; the configuration switches only during the stopped migration.
+            docker = [worker['docker_binary'], *(['--host', worker['docker_host']] if worker.get('docker_host') else [])]
+            self.command([*docker, 'pull', image])
+        result['worker_image'] = None if worker is None else image or worker['image']
+        result['worker_follows_release'] = image is not None
+        return result
+
+    def stop_orphan(self) -> None:
+        """A host left running by a controller that was killed outright is stopped before a new one starts."""
+        if not self.pid_file.exists():
+            return
+        pid = int(self.pid_file.read_text())
+        if instance_busy(self.instance):
+            print(f'上次的宿主进程 {pid} 仍在运行，先停止它', file=self.log)
+            if sys.platform == 'win32':
+                subprocess.run(['taskkill', '/T', '/F', '/PID', str(pid)], stdout=self.log, stderr=self.log)
+            else:
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                    deadline = time.monotonic() + self.stop_seconds
+                    while instance_busy(self.instance) and time.monotonic() < deadline:
+                        time.sleep(0.2)
+                    if instance_busy(self.instance):
+                        os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            deadline = time.monotonic() + 10
+            while instance_busy(self.instance):
+                if time.monotonic() > deadline:
+                    raise RuntimeError(f'实例仍被其他进程占用（记录的宿主进程 {pid}）；请先结束它')
+                time.sleep(0.2)
+        self.pid_file.unlink()
 
     def start(self) -> None:
         if self.child is not None and self.child.poll() is None:
             return
+        self.stop_orphan()
         self.child = subprocess.Popen([self.python(), '-X', 'utf8', '-m', 'len_bot.next.launcher'], cwd=self.instance, stderr=self.log,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0,
             start_new_session=sys.platform != 'win32')
+        self.pid_file.parent.mkdir(exist_ok=True)
+        self.pid_file.write_text(str(self.child.pid))
 
     def stop(self) -> None:
         if self.child is not None and self.child.poll() is None:
@@ -92,6 +163,9 @@ class Native:
                 else:
                     os.killpg(self.child.pid, signal.SIGKILL)
                 self.child.wait()
+        else:
+            self.stop_orphan()
+        self.pid_file.unlink(missing_ok=True)
 
     def discard(self, target: dict) -> None:
         if target['version'] != self.metadata()['version']:
@@ -102,6 +176,11 @@ class Native:
 
     def migrate(self, target: dict) -> None:
         self.maintenance('apply', target=target)
+        worker, image = self.worker_image(target)
+        if image is not None:
+            config = read_json(self.instance / 'lenbot.config.json')
+            config['worker']['image'] = image
+            write_json(self.instance / 'lenbot.config.json', config)
 
     def select(self, target: dict) -> None:
         write_json(self.root / 'current.json', target)

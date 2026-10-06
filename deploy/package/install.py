@@ -33,13 +33,35 @@ def entrypoints(root: Path, platform: str, uv: str) -> None:
         command = '& ' + quote_ps(root / 'control/.venv/Scripts/python.exe') + ' -X utf8 ' + quote_ps(root / 'control/code/controller.py') + ' ' + quote_ps(root)
         (root / 'run.ps1').write_text(command + '\n', encoding='utf-8')
         (root / 'run.cmd').write_text('@powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1"\n')
+        # Starts at logon through Task Scheduler; stop asks the controller, which stops the host before exiting.
+        (root / 'service.ps1').write_text('''param([Parameter(Mandatory)][ValidateSet('install', 'uninstall', 'start', 'stop', 'status')][string]$Action)
+$ErrorActionPreference = 'Stop'
+$Root = ROOT
+$Name = 'LenBot'
+switch ($Action) {
+  'install' {
+    $run = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + (Join-Path $Root 'run.ps1') + '"')
+    $logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName $Name -Action $run -Trigger $logon -Settings $settings -Force | Out-Null
+  }
+  'uninstall' { Unregister-ScheduledTask -TaskName $Name -Confirm:$false }
+  'start' { Start-ScheduledTask -TaskName $Name }
+  'stop' {
+    $control = Get-Content -Raw -Encoding UTF8 (Join-Path $Root 'instance/.runtime/update-control.json') | ConvertFrom-Json
+    Invoke-RestMethod -Method Post -Uri ($control.endpoint + '/api/shutdown') -Headers @{ Authorization = 'Bearer ' + $control.token } -ContentType 'application/json' -Body '{}' | Out-Null
+  }
+  'status' { Get-ScheduledTask -TaskName $Name | Get-ScheduledTaskInfo }
+}
+'''.replace('ROOT', quote_ps(root)), encoding='utf-8')
         return
     if platform == 'linux':
         def systemd(value: str) -> str:
             return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
+        # KillMode=mixed: only the controller gets SIGTERM, so it can let a running update step finish and stop the host itself.
         unit = ('[Unit]\nDescription=LenBot user instance\nAfter=network.target\n\n[Service]\nType=simple\n'
                 f'ExecStart={systemd(str(root / "run"))}\nWorkingDirectory={systemd(str(instance))}\n'
-                f'Environment={systemd("PATH=" + path)}\nRestart=no\nTimeoutStopSec=180\nUMask=0077\n'
+                f'Environment={systemd("PATH=" + path)}\nRestart=no\nKillMode=mixed\nTimeoutStopSec=240\nUMask=0077\n'
                 '\n[Install]\nWantedBy=default.target\n')
         (root / 'lenbot.service').write_text(unit)
         service = '''#!/bin/sh
@@ -56,7 +78,7 @@ esac
     else:
         plist = {'Label': 'local.lenbot', 'ProgramArguments': [str(root / 'run')],
                  'WorkingDirectory': str(instance), 'RunAtLoad': False, 'KeepAlive': False,
-                 'ExitTimeOut': 180, 'Umask': 0o077, 'EnvironmentVariables': {'PATH': path},
+                 'ExitTimeOut': 240, 'Umask': 0o077, 'EnvironmentVariables': {'PATH': path},
                  'StandardOutPath': str(root / 'logs/host.log'),
                  'StandardErrorPath': str(root / 'logs/host.stderr.log')}
         (root / 'local.lenbot.plist').write_bytes(plistlib.dumps(plist))
@@ -152,6 +174,14 @@ def main() -> None:
                 write_json(state_file, {'status': 'complete', 'stage': 'complete', **record, 'stopped': False})
             else:
                 write_json(state_file, {'status': 'idle', 'stage': 'installed'})
+        # The controller never replaces its own code; an offline upgrade is the explicit way to move it forward.
+        fresh, retired = root / 'control/code.new', root / 'control/code.old'
+        shutil.rmtree(fresh, ignore_errors=True)
+        shutil.rmtree(retired, ignore_errors=True)
+        shutil.copytree(BUNDLE / 'deploy/updater', fresh)
+        (root / 'control/code').rename(retired)
+        fresh.rename(root / 'control/code')
+        shutil.rmtree(retired)
     if args.action != 'prepare':
         write_json(root / 'current.json', metadata)
         entrypoints(root, metadata['platform'], uv)

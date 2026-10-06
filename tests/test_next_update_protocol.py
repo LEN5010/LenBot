@@ -74,3 +74,33 @@ description = "Compatibility fixture"
     configuration['plugins']['disabled'] = ['fixture']
     path.write_text(json.dumps(configuration))
     assert inspect(tmp_path, '0.2.0')['blocked_plugins'] == []
+
+
+def test_restore_removes_a_journal_created_after_the_snapshot_outside_the_instance(tmp_path):
+    root, data = tmp_path / 'instance', tmp_path / 'data'
+    root.mkdir()
+    data.mkdir()
+    database = data / 'state.db'
+    database.write_bytes(b'old database')
+    companions = [str(database.with_name('state.db' + suffix)) for suffix in ('-journal', '-shm', '-wal')]
+    snapshot = tmp_path / 'backup'
+    create([str(root), str(database), *companions], snapshot)
+    database.write_bytes(b'new database')
+    database.with_name('state.db-wal').write_bytes(b'frames from the failed new version')
+    restore(root, snapshot)
+    assert database.read_bytes() == b'old database'
+    assert not database.with_name('state.db-wal').exists()
+
+
+def test_backup_paths_cover_every_external_directory_once(tmp_path):
+    """Only role files and plugin sources may live outside the instance; everything else is inside the root copy."""
+    from len_bot.next.maintenance.upgrade import data_paths
+    from test_next_config import _host_config, _write_config
+    root = tmp_path / 'instance'
+    source = _host_config()
+    source['memory'] = {'backend': 'local', 'local': {'directory': 'memory'}}
+    source['plugins'] = {'paths': ['plugins', str(tmp_path / 'shared/plugins'), str(tmp_path / 'shared')],
+                         'data_directory': 'plugin-data'}
+    _write_config(root, source)
+    assert data_paths(root) == [str(root), *sorted(str(path.resolve()) for path in (
+        tmp_path / 'private-persona', tmp_path / 'shared'))]

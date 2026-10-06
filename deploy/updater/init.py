@@ -1,4 +1,4 @@
-"""Create a new Docker deployment recipe; no host start or existing-instance rewrite."""
+"""Create a new Docker deployment recipe, or switch an existing one to another updater image; never starts anything."""
 
 import argparse
 import json
@@ -7,7 +7,19 @@ import re
 import socket
 import subprocess
 
-from common import version_key, write_json
+from common import repository, version_key, write_json
+
+
+def switch_updater(root: Path, version: str) -> None:
+    deployment = json.loads((root / 'deployment.json').read_text(encoding='utf-8'))
+    current = json.loads((root / 'current.json').read_text(encoding='utf-8'))
+    image = repository(current['host_image']) + '-updater:' + version
+    path = root / 'host.updater.compose.yaml'
+    recipe = json.loads(path.read_text(encoding='utf-8'))
+    recipe['services']['lenbot-updater']['image'] = image
+    path.write_text(json.dumps(recipe, indent=2) + '\n')
+    print(f'更新器镜像已改为 {image}，宿主未改动。使用以下命令换上新的更新器：')
+    print(f'docker compose -p {deployment["project"]} -f host.updater.compose.yaml up -d')
 
 
 def main() -> None:
@@ -19,8 +31,13 @@ def main() -> None:
     parser.add_argument('--namespace', default='lendevs')
     parser.add_argument('--panel-port', type=int, default=11307)
     parser.add_argument('--update-port', type=int, default=11308)
+    parser.add_argument('--updater-only', action='store_true',
+                        help='In an existing deployment, only point host.updater.compose.yaml at this version')
     args = parser.parse_args()
     version_key(args.version)
+    if args.updater_only:
+        switch_updater(Path.cwd(), args.version)
+        return
     if re.fullmatch(r'[a-z0-9][a-z0-9_-]*', args.project) is None:
         parser.error('project uses lowercase letters, numbers, hyphens and underscores')
     if args.host_directory is None:

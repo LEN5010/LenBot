@@ -62,7 +62,8 @@ def data_paths(root: Path) -> list[str]:
         if not absolute.is_relative_to(root):
             outside.add(absolute)
             if absolute == config.database.resolve() or absolute.name.endswith('.sqlite3'):
-                outside.update(item for item in absolute.parent.glob(absolute.name + '-*'))
+                # Listed even when absent, so restore removes a journal the failed new version left behind.
+                outside.update(absolute.with_name(absolute.name + suffix) for suffix in ('-wal', '-shm', '-journal'))
     return [str(root), *(str(path) for path in sorted(outside) if not any(parent in outside for parent in path.parents))]
 
 

@@ -1,5 +1,6 @@
 """Every update failure leaves the user one concrete next action, and nothing is undone automatically."""
 
+import json
 import os
 from pathlib import Path
 import signal
@@ -225,3 +226,95 @@ def test_native_stop_kills_the_process_group_after_the_timeout(tmp_path):
     else:
         pytest.fail('the host child process outlived the forced stop')
     assert '强制结束' in (tmp_path / 'log').read_text()
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='process group signal')
+def test_restarted_controller_stops_the_host_left_by_a_killed_one(tmp_path):
+    instance = tmp_path / 'instance'
+    instance.mkdir()
+    write_json(tmp_path / 'deployment.json', {'mode': 'native', 'platform': 'linux', 'uv': 'uv'})
+    code = ('import fcntl, sys, time; f = open(".lenbot-instance.lock", "a+b"); fcntl.flock(f, fcntl.LOCK_EX); '
+            'print("locked", flush=True); time.sleep(60)')
+    with (tmp_path / 'log').open('w') as log:
+        first = Native(tmp_path, log)
+        orphan = subprocess.Popen([sys.executable, '-c', code], cwd=instance, stdout=subprocess.PIPE, text=True,
+                                  start_new_session=True)
+        assert orphan.stdout.readline().strip() == 'locked'
+        first.pid_file.parent.mkdir()
+        first.pid_file.write_text(str(orphan.pid))
+        restarted = Native(tmp_path, log)
+        restarted.stop()
+    assert orphan.wait(5) == -signal.SIGTERM
+    assert not restarted.pid_file.exists()
+    assert '仍在运行' in (tmp_path / 'log').read_text()
+
+
+def test_new_updater_protocol_gives_commands_instead_of_preparing(make, monkeypatch):
+    sources = {'releases': RELEASES, 'manifest': {**MANIFEST, 'updater_protocol': 2}}
+    monkeypatch.setattr(updater, 'fetch_json', lambda url: sources[url])
+    backend = Backend()
+    controller = make(backend)
+    state = run(controller, 'prepare', {'tag': 'v0.2.0'})
+    assert 'install.sh upgrade' in state['error'] and 'prepare' not in backend.calls and backend.running
+
+
+def test_docker_updater_switch_changes_only_the_updater_image(tmp_path):
+    import init
+    write_json(tmp_path / 'deployment.json', {'mode': 'docker', 'project': 'lenbot'})
+    write_json(tmp_path / 'current.json', {'version': '0.2.0', 'host_image': 'ghcr.io/lendevs/lenbot@sha256:' + SHA})
+    (tmp_path / 'host.updater.compose.yaml').write_text(json.dumps(
+        {'services': {'lenbot-updater': {'image': 'ghcr.io/lendevs/lenbot-updater:0.2.0', 'ports': ['x']}}}))
+    init.switch_updater(tmp_path, '0.3.0')
+    service = json.loads((tmp_path / 'host.updater.compose.yaml').read_text())['services']['lenbot-updater']
+    assert service == {'image': 'ghcr.io/lendevs/lenbot-updater:0.3.0', 'ports': ['x']}
+    assert json.loads((tmp_path / 'current.json').read_text())['host_image'].endswith(SHA)
+
+
+@pytest.mark.parametrize(('reference', 'name'), [
+    ('ghcr.io/lendevs/lenbot:0.2.0', 'ghcr.io/lendevs/lenbot'),
+    ('ghcr.io/lendevs/lenbot@sha256:' + SHA, 'ghcr.io/lendevs/lenbot'),
+    ('127.0.0.1:5000/lenbot:0.0.0', '127.0.0.1:5000/lenbot'),
+    ('lenbot-current:local', 'lenbot-current'),
+])
+def test_image_repository(reference, name):
+    from common import repository
+    assert repository(reference) == name
+
+
+@pytest.mark.parametrize(('image', 'follows'), [
+    ('ghcr.io/lendevs/lenbot-worker:0.1.0', 'ghcr.io/lendevs/lenbot-worker:0.2.0'),
+    ('lenbot-worker:local', None),
+])
+def test_native_task_image_follows_only_official_release_images(tmp_path, image, follows):
+    (tmp_path / 'instance').mkdir()
+    write_json(tmp_path / 'deployment.json', {'mode': 'native', 'platform': 'linux', 'uv': 'uv'})
+    write_json(tmp_path / 'instance/lenbot.config.json', {'worker': {'image': image, 'docker_binary': '/usr/bin/docker'}})
+    with (tmp_path / 'log').open('w') as log:
+        native = Native(tmp_path, log)
+        commands = []
+        native.maintenance = lambda action, **kwargs: '{"blocked_plugins": [], "work_enabled": true}'
+        native.command = lambda arguments, **kwargs: commands.append(arguments)
+        check = native.inspect({'version': '0.2.0'})
+        native.migrate({'version': '0.2.0'})
+    assert check['worker_image'] == (follows or image) and check['worker_follows_release'] == (follows is not None)
+    assert commands == ([['/usr/bin/docker', 'pull', follows]] if follows else [])
+    assert json.loads((tmp_path / 'instance/lenbot.config.json').read_text())['worker']['image'] == (follows or image)
+
+
+def test_shutdown_endpoint_stops_the_controller_server(make, tmp_path):
+    import threading
+    import urllib.request
+    (tmp_path / 'instance').mkdir()
+    controller = make(Backend())
+    controller.backend.instance = tmp_path / 'instance'
+    http = updater.server(controller)
+    thread = threading.Thread(target=http.serve_forever)
+    thread.start()
+    reference = json.loads((tmp_path / 'instance/.runtime/update-control.json').read_text())
+    request = urllib.request.Request(reference['endpoint'] + '/api/shutdown', data=b'{}', method='POST',
+                                     headers={'Authorization': 'Bearer ' + reference['token']})
+    with urllib.request.urlopen(request, timeout=5) as response:
+        assert response.status == 202
+    thread.join(5)
+    http.server_close()
+    assert not thread.is_alive()

@@ -34,8 +34,8 @@ def test_version_is_set_only_in_project_table(tmp_path, monkeypatch):
 ])
 def test_draft_notes_are_reported(tmp_path, monkeypatch, notes, problems):
     prepare = load('prepare_release')
-    monkeypatch.setattr(prepare, 'NOTES', tmp_path / 'release-notes.md')
-    prepare.NOTES.write_text(notes)
+    monkeypatch.setattr(prepare, 'NOTES', tmp_path)
+    (tmp_path / 'v0.2.0.md').write_text(notes)
     assert len(prepare.notes_problems('0.2.0')) == problems
 
 
@@ -51,3 +51,26 @@ def test_packaged_recipe_still_has_the_values_the_docker_smoke_replaces():
         recipe = smoke.replace_once(recipe, old, 'replaced')
     with pytest.raises(ValueError):
         smoke.replace_once(recipe, 'name: lenbot-data', 'again')
+
+
+def test_local_candidate_from_changed_sources_is_marked_dirty(tmp_path):
+    import subprocess
+    metadata = load('release_metadata')
+    git = lambda *args: subprocess.run(['git', *args], cwd=tmp_path, check=True, capture_output=True, text=True)
+    git('init', '-q')
+    (tmp_path / 'src').mkdir()
+    (tmp_path / 'src/module.py').write_text('a = 1\n')
+    git('add', '.')
+    git('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'base')
+    head = git('rev-parse', 'HEAD').stdout.strip()
+    (tmp_path / 'artifacts').mkdir()
+    (tmp_path / 'artifacts/images.json').write_text('{}')
+    assert metadata.source_revision(tmp_path) == head
+    (tmp_path / 'src/new.py').write_text('b = 2\n')
+    assert metadata.source_revision(tmp_path) == head + '-dirty'
+
+
+def test_missing_version_notes_are_reported(tmp_path, monkeypatch):
+    prepare = load('prepare_release')
+    monkeypatch.setattr(prepare, 'NOTES', tmp_path)
+    assert prepare.notes_problems('0.3.0') == ['缺少 ' + str(Path(tmp_path.name) / 'v0.3.0.md')]

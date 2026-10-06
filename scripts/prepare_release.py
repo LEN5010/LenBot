@@ -13,13 +13,16 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = re.compile(r'\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?')
-NOTES = ROOT / 'deploy/release-notes.md'
+NOTES = ROOT / 'changelogs'
 PLACEHOLDER = '（发布时填写'
 
 
 def notes_problems(version: str) -> list[str]:
     """What keeps the notes from being published as the Release body (the release workflow checks the same)."""
-    notes = NOTES.read_text()
+    path = NOTES / f'v{version}.md'
+    if not path.exists():
+        return [f'缺少 {path.relative_to(path.parents[1])}']
+    notes = path.read_text()
     problems = []
     if not notes.startswith(f'# LenBot {version}\n'):
         problems.append(f'第一行应为 "# LenBot {version}"，实际是 {notes.splitlines()[0]!r}')
@@ -63,7 +66,7 @@ def main() -> None:
         NOTES = version_notes
     problems = notes_problems(args.version)
     if problems:
-        print('deploy/release-notes.md 还不能作为 Release 正文：')
+        print(f'changelogs/v{args.version}.md 还不能作为 Release 正文：')
         for problem in problems:
             print('  - ' + problem)
     print('之后由你确认并执行：')

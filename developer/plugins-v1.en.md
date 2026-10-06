@@ -8,7 +8,7 @@ A plugin is a Python package containing `plugin.toml`, `__init__.py`, and exactl
 name = "counter"
 version = "1.0.0"
 interface = 1
-requires_lenbot = ">=0.1,<1"
+requires_lenbot = ">=0.2,<1"
 requires_python = ">=3.13"
 platforms = ["linux", "darwin", "win32"]
 reload = "plugin"

@@ -1,94 +1,117 @@
 # 构建候选与发布版本
 
-面向版本维护者。普通安装见[成品部署包](package/README.md)，程序运行参数仍来自实例根配置；以下参数仅控制构建与发布。
+面向版本维护者。普通安装见[成品部署包](package/README.md)和 [Docker](current/docker.md)；程序运行参数来自实例根配置，以下内容只管构建与发布。
+
+## 版本规则
+
+- 版本号只写在根 `pyproject.toml`，标签为 `v<版本>`。形如 `0.2.0` 是正式版，带 `a`／`b`／`rc` 后缀（如 `0.2.0rc1`）是预发布。
+- 发布过的版本和标签不覆盖、不移动。发布出了问题就发下一个补丁版本。
+- `0.x` 阶段：补丁版本（`0.2.1`）保持公开接口和数据格式兼容；有破坏性变化时升次版本（`0.3.0`）。`1.0` 之后破坏性变化升主版本。
+- 公开接口包括插件接口、根配置、OneBot 接入，以及部署包和 Docker 配方给用户的操作命令。
+
+### 兼容编号
+
+各编号写在源码常量里，构建时记入发行清单 `release-manifest.json`，更新器据此判断能否换版。
+
+| 编号 | 当前 | 位置 |
+|---|---|---|
+| 插件接口 | 1 | `plugin.py` 的 `INTERFACE` |
+| 根配置格式 | 1 | `config.py` 的 `CONFIG_VERSION` |
+| 业务数据库 | 3 | `storage/store.py` 的 `FORMAT_VERSION` |
+| 记忆处理库 | 6 | `memory/jobs.py` 的 `FORMAT_VERSION` |
+| 本地记忆索引 | 3 | `memory/local.py` 的 `FORMAT_VERSION` |
+| 更新器协议 | 1 | `deploy/updater/common.py` 的 `PROTOCOL` |
+
+- **插件接口**：同一代里只做兼容扩展；改了已有签名或语义就升代。插件的 `requires_lenbot` 写首个提供所需能力的宿主版本。`0.2.0` 是首个公开基线，开发期的宿主都叫 `0.1.0`，插件写 `>=0.2,<1` 就能把它们排除在外。
+- **数据格式**：每次变化加一步迁移，新版本保留它支持范围内的整条升级链。迁移只在停机时执行（面板更新或离线 `install.py upgrade`），之前先做完整快照。旧程序不读新格式，回退只能恢复升级前的快照。
+- **新安装**直接建最新结构。新版本加的设置如果没法从旧配置推导，就由用户在面板或配置里填写，迁移不替用户猜。
+- **更新器协议**：更新器不替换自己。发行清单的 `updater_protocol` 和已安装的更新器不一致时，面板不换版，恢复页直接给出命令：部署包用新版部署包执行离线 `install.sh upgrade`，它会同时更新程序和更新器；Docker 用新版更新器镜像执行 `init.py --updater-only`，再 `docker compose up -d` 换上新更新器。
+
+### 版本说明与发行清单
+
+- `changelogs/v<版本>.md` 是给人看的版本说明，原样成为 Release 正文；一个版本一个文件，这个目录就是变更记录。第一行必须是 `# LenBot <版本>`，不留「（发布时填写」占位。内容写清升级要求、插件和数据兼容、各平台实测结果与已知问题。
+- `release-manifest.json` 给程序读：版本、提交、兼容编号、每个附件的大小和 SHA-256，以及镜像引用（发布时写入不可变摘要）。更新器只认这份清单。
+- 清单里的 `revision` 取当前提交；本机构建时如果发行相关源码有未提交的改动，会标成 `<提交>-dirty`。发布作业遇到 `-dirty` 直接拒绝。
 
 ## 同一版本的产物
 
-版本号取根 `pyproject.toml`；公开标签必须为 `v<该版本号>`。工作流读取同一提交，不自动改版本、创建标签或挑选其他分支。
-
 | 产物 | 构建来源 |
 |---|---|
-| wheel、sdist、Linux／macOS 部署包 | `scripts/build_release.py`，两平台包采用同一 wheel |
-| 宿主镜像 | `deploy/current/Dockerfile` 的 wheel 构建路径，直接安装上述同一 wheel 与依赖清单 |
-| 任务镜像 | `docker/next-worker/Dockerfile`，同提交的桥接和浏览器文件协议 |
-| BrowserSkill 四平台包与源码包 | 固定上游提交及远程文件补丁，分别包含 bsk、文件助手、扩展及许可材料 |
+| wheel、sdist、Linux／macOS 部署包（tar.gz）、Windows x64 部署包（zip）、发行清单 | `scripts/build_release.py`，三个平台的包装的是同一个 wheel 和同一份依赖清单 |
+| 宿主镜像 | `deploy/current/Dockerfile` 的 wheel 构建路径，安装上面同一个 wheel 和依赖清单 |
+| 任务镜像 | `docker/next-worker/Dockerfile` |
+| 更新器镜像 | `docker/updater/Dockerfile`，Docker 安装里负责换版和恢复 |
+| BrowserSkill 四平台包与源码包 | 固定上游提交加远程文件补丁，见 `deploy/components.json` |
 
-宿主／任务镜像采用 Linux amd64 和 arm64 原生 runner 构建。浏览器组件使用 Linux amd64／arm64、macOS Intel／arm64 runner；Linux 二进制在 Ubuntu 24.04 构建，运行系统需要对应的 glibc，不将其声明为任意 Linux 发行版通用静态包。Python 平台包的依赖在目标机由 uv 安装，不包含一个预装的跨平台 Python 环境。[官方 runner 范围](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。
+三种镜像都在 Linux amd64 和 arm64 原生 runner 上构建，发布时同时推到 GHCR（`ghcr.io/lendevs/lenbot`、`-worker`、`-updater`）和 Docker Hub（`docker.io/lendevs/` 下同名）。浏览器组件在 Linux amd64／arm64、macOS Intel／arm64 上构建；Linux 二进制在 Ubuntu 24.04 构建，需要对应的 glibc。部署包不带 Python 环境，依赖在目标机由 uv 按锁定清单安装。[官方 runner 范围](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。
 
-`components.json` 是服务上游、工具版本和浏览器 Rust 目标三元组来源。工作流按平台选择明确 target，打包只读取 `target/<triple>/release` 下的对应二进制，不从宿主默认目录取文件后仅改平台标签。配套源码由 `prepare_component.py` 从固定提交取回后应用补丁，不打包维护者的本机检出、登录资料或服务目录。版本号是 LenBot 配套发行号，不冒充上游自己的软件版本。
+`components.json` 是服务上游、工具版本和浏览器 Rust 目标三元组的来源。配套源码由 `prepare_component.py` 从固定提交取回再打补丁，不打包维护者本机的检出、登录资料或服务目录。
 
-## 候选构建：默认不发布
+## 候选构建
 
-在工作流已进入远端后，对选定分支或标签手动运行：
+工作流推到远端后，对选定分支手动运行：
 
 ```sh
-gh workflow run release.yml --ref <分支或标签> -f publish=false
+gh workflow run release.yml --ref <分支>
 ```
 
-`publish=false` 不登录镜像仓库、不创建 Release：包文件保存在 `release-packages`、浏览器二进制在 `browser-*`，各架构镜像在 `image-*-*` artifact 的 `image.tar` 中。下载后 `docker load -i image.tar` 即可加载实际候选镜像。artifact 名称区分组件与架构，不依赖加载时猜测。[Docker 构建产物跨作业保存](https://docs.docker.com/build/ci/github-actions/share-image-jobs/)。
+默认 `publish=false`：不登录镜像仓库，不创建 Release。产物留在这次运行的 artifact 里：`release-packages` 是程序包和发行清单，`browser-*` 是浏览器组件，`image-<组件>-<架构>` 里的 `image.tar` 可以用 `docker load -i image.tar` 加载。[Docker 构建产物跨作业保存](https://docs.docker.com/build/ci/github-actions/share-image-jobs/)。
 
-同次构建同时导出根 `uv.lock` 的运行依赖清单 `requirements.txt`。平台部署包与发行宿主镜像共同安装这份清单，不在安装时重新挑选允许范围内的最新依赖；插件依赖仍由显式安装／恢复动作处理。
+镜像构建之前先跑 `install-smoke.yml`；推送到 master 或向 master 开 PR 时，CI 也会跑同一组检查：
 
-本机构建程序包仍使用：
+- 部署包：Linux amd64／arm64、macOS Intel／ARM64、Windows x64 各装一遍，走完首次配置、登录面板、正常停止；再用两个实际打包的版本走一遍面板升级、恢复，以及新版启动失败后的恢复。
+- Docker：amd64 和 arm64 各用包内配方初始化、登录、停止；再在临时本地 registry 上走一遍镜像换版和恢复，结束后删掉这次的容器、卷和网络。
+
+这些检查全程模拟发送，不接 OneBot、不调用模型，也不覆盖原生服务注册和真实任务。
+
+### 本机构建与检查
 
 ```sh
 uv run --no-sync python scripts/build_release.py /tmp/lenbot-release
-```
-
-它不执行 GitHub 工作流或构建全部镜像。用这次产物构建宿主镜像：
-
-```sh
-docker build --build-arg PACKAGE_SOURCE=wheel \
-  --build-context release=/tmp/lenbot-release/artifacts \
+docker build --build-arg PACKAGE_SOURCE=wheel --build-context release=/tmp/lenbot-release/artifacts \
   -f deploy/current/Dockerfile -t lenbot-current:candidate .
-```
-
-`release` 是明确传入的 [Docker 命名构建上下文](https://docs.docker.com/build/concepts/context/#named-contexts)，只读取其中的 wheel 和 `requirements.txt`。默认未传该构建参数时仍从源码构建，用于本地开发；两种路径明确选择，不因失败自动切换。
-
-### 安装检查
-
-`scripts/smoke_install.py` 按用户的做法安装这次的产物，走完首次配置，登录面板读到群列表，再发停止信号并要求退出码为 0。全程模拟发送，不需要 OneBot 服务和模型，只用标准库：
-
-```sh
-# 本平台的部署包：install.sh 安装到新目录，run 启动，经首次配置向导保存配置
+# 本平台部署包：安装到新目录，经首次配置向导保存配置，登录后停止
 python3 scripts/smoke_install.py package /tmp/lenbot-release/artifacts /tmp/lenbot-smoke
-# 宿主镜像：包内 Compose 配方和 first-setup.example.json，在新建的临时卷上离线初始化，结束后删除卷
+# 宿主镜像：包内 Compose 配方加 first-setup.example.json，在临时卷上离线初始化
 python3 scripts/smoke_install.py docker /tmp/lenbot-release/artifacts /tmp/lenbot-smoke-docker --image lenbot-current:candidate
+# 原生双版本升级与恢复
+uv run --no-project --python 3.13 python scripts/smoke_update.py /tmp/lenbot-release/artifacts /tmp/lenbot-update
 ```
 
-第二个参数每次用新目录。CI 和发行工作流在构建后调用 `install-smoke.yml`：Linux amd64／arm64 与 macOS arm64 的部署包，以及 Linux amd64 宿主镜像。发行工作流边构建边推送各架构镜像，所以这一步排在镜像构建之前，失败就不推送也不发布。它只说明安装链能走通，不覆盖 OneBot 收发、模型调用、原生服务注册、升级迁移和任务镜像。
+工作目录每次用新的。`release` 是明确传入的 [Docker 命名构建上下文](https://docs.docker.com/build/concepts/context/#named-contexts)，只读取其中的 wheel 和 `requirements.txt`；不传 `PACKAGE_SOURCE=wheel` 时从源码构建，用于本地开发。Docker 双版本检查的完整命令见 `install-smoke.yml` 的 `docker` 作业。
 
-独立准备浏览器组件源码：
+单独准备浏览器组件源码：
 
 ```sh
 uv run --no-sync python scripts/prepare_component.py browserskill /tmp/browserskill-release \
   --source-archive /tmp/browserskill-source.tar.gz
 ```
 
-每次使用新目录和输出文件；失败保留原错，不自动换 revision 或改锁文件重试。
+## 发布
 
-## 预发布与正式版
+### 一次性准备
 
-完成本版集中使用后，明确选择版本、更新 `pyproject.toml` 与 uv 锁文件、整理 `deploy/release-notes.md`，提交后再创建对应标签。`uv run --no-sync python scripts/prepare_release.py <版本>` 在干净工作区里改版本号、重新锁定依赖并检查版本说明，不提交、不打标签、不推送。
+- 仓库变量 `DOCKERHUB_NAMESPACE` 设为 `lendevs`，Secrets 配 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`（Docker Hub 的访问令牌，需要写权限）。凭据不进仓库。
+- Actions 需要包写入和 Release 写入权限。GHCR 包第一次上传后默认私有，要在包设置里改成公开，再用未登录的机器 `docker pull` 确认。
 
-`deploy/release-notes.md` 原样成为 Release 正文。发布时第一行必须是 `# LenBot <版本>`，且不留「（发布时填写」占位；不满足时发行工作流在构建前停止。推送 `v*` 标签会执行完整构建并发布**预发布版本**；这就是实际发布动作，不是候选检查。
+### 步骤
 
-当前版本暂为 `0.1.0`，运行修复分支不创建标签或触发构建。CI 与发行工作流共用 `build_release.py` 构建面板、源码包、wheel 与 Linux／macOS 部署包，产物保存在 `release-packages`；CI 仍保留测试步骤。升级顺序包括新的本地记忆索引迁移，见[升级与备份](current/operations.md#升级与备份)。
+1. 写好 `changelogs/v<版本>.md`，在干净的工作区运行 `uv run --no-sync python scripts/prepare_release.py <版本>`。它改版本号、重新锁定依赖、检查版本说明，最后打印提交和打标签的命令，自己不提交、不打标签、不推送。
+2. 检查改动后提交，创建标签 `v<版本>` 并推送。推送标签就是实际发布：完整构建、安装检查、上传镜像、创建 Release。
 
-工作流向 GHCR 上传 `ghcr.io/<owner>/<repo>:<version>`和 `<repo>-worker:<version>`，先有架构标签，再组合对应版本的多架构清单，不更新 `latest`。所有构建作业成功后才创建 Release 并附包、源码、组件清单与镜像位置。标签必须已存在；发布命令使用 `--verify-tag`，不让工具隐式在默认分支创建标签。[GitHub Release 命令](https://cli.github.com/manual/gh_release_create)。
+工作流在构建前检查：标签必须和版本号一致；版本说明存在且不是草稿；Docker Hub 命名空间已设置；这个版本的 Release 还不存在。任何一项不满足就停下，不上传任何东西。
 
-手动发布只对同版已存在标签使用：
+预发布版本的 Release 标为预发布，不更新 `latest`。正式版在 Release 完整创建后，才把两个 registry 上三种镜像的 `latest` 指向本版。
 
-```sh
-gh workflow run release.yml --ref v<版本> -f publish=true -f prerelease=true
-```
+### 中途失败
 
-已有预发布根据后续本机结果转正式版时，不重建或覆盖标签，明确执行 `gh release edit v<版本> --prerelease=false`。若确实要第一次直接创建正式版，手动入口可选 `prerelease=false`；本轮仍按先预发布、再正式版推进。
+- **上传之前失败**（构建、测试、安装检查）：什么都没发出去。偶发失败可以在同一次运行里 Re-run failed jobs；需要改代码就发下一个补丁版本，已推送的标签不移动。
+- **部分镜像已上传后失败**：只能在**同一次运行**里 Re-run failed jobs。成功作业的产物会沿用，已上传的同一镜像会保留。另开一次运行会重新构建镜像，摘要和已上传的不同，推送脚本会拒绝。
+- **Release 已创建、`latest` 更新失败**：同样 Re-run failed jobs，已上传的附件内容一致就保留，然后重做别名；也可以手动对两个 registry 执行 `docker buildx imagetools create -t <镜像>:latest <镜像>:<版本>`。
+- **已发布的版本发现问题**：发下一个补丁版本，不改已发布的标签、附件和镜像。
 
-GitHub 仓库需要 Actions 的包写入与 Release 写入权限；GHCR 包的公开可见性按仓库实际设置确认，不把上传成功自动等同于未登录用户可下载。中途失败可能已上传部分架构镜像，但不会回滚或伪造整体完成；检查失败作业后明确重跑。工作流本身不能替代实际安装、页面使用、QQ 回执或模型行为观察。
+上传成功不等于未登录用户能下载，也不能代替实际安装、面板使用、QQ 收发和模型行为的观察。
 
-## 许可与当前验证范围
+## 许可
 
 程序与服务各保留原许可。发行附 patched 服务源码、锁文件和实际可取得的依赖声明；BrowserSkill 包保留 Cargo 依赖许可原件、pnpm 许可元数据及扩展直接安装树的许可资料，不能据此声称已逐项核对所有二进制的全部第三方来源。原生系统包和浏览器发行物按镜像内对应声明处理。
-
-本机已核对浏览器固定基线可以应用本版补丁并生成源码包；工作流通过静态语法检查。macOS ARM64／Intel 与 Ubuntu 24.04 amd64／arm64 四组浏览器配套包已从同一 patched 源码完成 CLI、助手和扩展构建及打包，并核对包内二进制架构。macOS Intel 采用交叉编译，Linux amd64 通过本机 Docker 跨架构构建；全平台远端构建、镜像上传与公开 Release 尚未执行。未安装扩展或注册助手，平台矩阵不等同于运行通过。

@@ -14,7 +14,7 @@ import time
 import zipfile
 
 from build_deployment import build_deployments
-from release_metadata import write_manifest
+from release_metadata import source_revision, write_manifest
 
 
 REQUIRED_SOURCE = (
@@ -23,7 +23,7 @@ REQUIRED_SOURCE = (
     'deploy/updater/controller.py', 'deploy/updater/native.py', 'deploy/updater/common.py', 'deploy/updater/recovery.html',
     'deploy/package/install.ps1',
     'deploy/package/install.sh', 'deploy/package/install.py', 'deploy/package/README.md',
-    'deploy/components.json', 'deploy/release-notes.md', 'deploy/releasing.md', 'deploy/browser/README.md',
+    'deploy/components.json', 'deploy/releasing.md', 'scripts/prepare_release.py', 'deploy/updater/init.py', 'deploy/browser/README.md',
     '.github/workflows/release.yml', '.github/workflows/install-smoke.yml', 'scripts/smoke_install.py', 'scripts/prepare_component.py', 'scripts/package_browser.py',
     'scripts/collect_python_licenses.py',
     'scripts/collect_frontend_licenses.cjs', 'deploy/current/README.md',
@@ -221,8 +221,7 @@ def build(project: Path, output: Path, *, offline: bool, npm_cache: Path | None)
         report['artifacts']['requirements'] = str(requirements)
         report['artifacts']['deployment_bundles'] = [str(path) for path in
             build_deployments(Path(report['artifacts']['wheel']), stage, artifacts, requirements)]
-        revision = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=project, check=True, capture_output=True, text=True).stdout.strip()
-        report['artifacts']['manifest'] = str(write_manifest(stage, artifacts, revision=revision))
+        report['artifacts']['manifest'] = str(write_manifest(stage, artifacts, revision=source_revision(project)))
         report['finished'] = time.time()
     except BaseException as error:
         report['error'] = f'{type(error).__name__}: {error}'

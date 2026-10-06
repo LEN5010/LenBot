@@ -55,13 +55,11 @@ jobs:
               raise ValueError('Set the Docker Hub namespace before publishing')
           if publish and os.environ['GITHUB_REF'] != 'refs/tags/v' + version:
               raise ValueError('Publishing requires the checked-out tag v' + version)
-          # The notes become the Release body as they are; a draft is never published.
+          # changelogs/v<version>.md becomes the Release body as it is; a draft is never published.
           note_file = Path('changelogs') / f'v{version}.md'
-          if not note_file.exists():
-              note_file = Path('deploy/release-notes.md')
-          notes = note_file.read_text()
+          notes = note_file.read_text() if note_file.exists() else ''
           if publish and (not notes.startswith(f'# LenBot {version}\n') or '（发布时填写' in notes):
-              raise ValueError(f'deploy/release-notes.md must start with "# LenBot {version}" and keep no （发布时填写 placeholder')
+              raise ValueError(f'{note_file} must exist, start with "# LenBot {version}" and keep no （发布时填写 placeholder')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'version={version}\nimage=ghcr.io/{os.environ["GITHUB_REPOSITORY"].lower()}\npublish={str(publish).lower()}\n')
               output.write(f'prerelease={str(bool(re.search(r"(a|b|rc)\d+$", version))).lower()}\ndockerhub=docker.io/{os.environ["DOCKERHUB_NAMESPACE"]}/lenbot\n')
@@ -92,8 +90,8 @@ jobs:
           done
           cp deploy/components.json "$RUNNER_TEMP/release/artifacts/components.json"
           notes="changelogs/v$VERSION.md"
-          if [ ! -f "$notes" ]; then notes=deploy/release-notes.md; fi
-          cp "$notes" "$RUNNER_TEMP/release/artifacts/release-notes.md"
+          if [ -f "$notes" ]; then cp "$notes" "$RUNNER_TEMP/release/artifacts/release-notes.md"
+          else printf '# LenBot %s 候选构建\n\n本版还没有版本说明。\n' "$VERSION" > "$RUNNER_TEMP/release/artifacts/release-notes.md"; fi
           printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/release/artifacts/source-revision.txt"
       - uses: actions/upload-artifact@v4
         with:

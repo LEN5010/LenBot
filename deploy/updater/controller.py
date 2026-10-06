@@ -14,7 +14,7 @@ import time
 import traceback
 from urllib.parse import urlsplit
 
-from common import download, fetch_json, read_json, release_manifest, version_key, write_json
+from common import PROTOCOL, download, fetch_json, read_json, release_manifest, repository, version_key, write_json
 from native import Native
 
 LABELS = {'prepare': '准备更新', 'apply': '停机升级', 'restore': '恢复快照', 'start': '启动程序'}
@@ -130,7 +130,10 @@ class Controller:
         release, = [item for item in self.releases() if item['tag'] == tag]
         if version_key(release['version']) <= version_key(self.backend.metadata()['version']):
             raise ValueError('更新只能选择比当前程序更新的版本；回退使用快照恢复')
-        manifest = release_manifest(fetch_json(release['assets']['release-manifest.json']))
+        raw = fetch_json(release['assets']['release-manifest.json'])
+        if raw.get('updater_protocol') != PROTOCOL:
+            raise ValueError(self.updater_steps(tag))
+        manifest = release_manifest(raw)
         if manifest['tag'] != tag:
             raise ValueError('发行清单不属于所选标签')
         work = self.root / 'updates' / ('candidate-' + secrets.token_hex(8))
@@ -156,6 +159,20 @@ class Controller:
             shutil.rmtree(work, ignore_errors=True)
         self.state.update(target=target, manifest=manifest, check=check, notes=release['notes'])
         self.stage('prepared', status='prepared')
+
+    def updater_steps(self, tag: str) -> str:
+        """The updater never replaces itself; a newer protocol is switched by one explicit command."""
+        if self.deployment['mode'] == 'native':
+            return (f'{tag} 需要新版更新器，不能从面板换版。请停止 LenBot，下载 {tag} 的部署包并解压，'
+                    f'运行其中的 install.sh upgrade {self.root}（Windows 用 install.ps1 upgrade {self.root}），'
+                    '它会同时更新程序和更新器，然后照常启动。')
+        version = tag.removeprefix('v')
+        image = repository(self.backend.metadata()['host_image']) + '-updater:' + version
+        return (f'{tag} 需要新版更新器，请在部署目录 {self.deployment["host_directory"]} 依次运行：\n'
+                f'docker run --rm --mount type=bind,source={self.deployment["host_directory"]},target=/deployment '
+                f'--entrypoint python {image} /opt/lenbot-updater/init.py --version {version} --updater-only\n'
+                f'docker compose -p {self.deployment["project"]} -f host.updater.compose.yaml up -d\n'
+                '新的更新器启动后，回到这里再准备更新。')
 
     def apply(self) -> None:
         target = self.state['target']
@@ -254,6 +271,11 @@ def server(controller: Controller) -> ThreadingHTTPServer:
                 self.send(401, {'detail': '使用管理面板交接的更新链接'})
                 return
             path = urlsplit(self.path).path
+            if path == '/api/shutdown':
+                # Same as a stop signal; used where a service manager cannot send one (Windows scheduled task).
+                self.send(202, {'accepted': True})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
             if not path.startswith('/api/'):
                 self.send(404, {'detail': 'Unknown endpoint'})
                 return

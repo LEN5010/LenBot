@@ -63,11 +63,11 @@ async def test_zip_rejects_symlink_and_invalid_archive(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(('original', 'replacement', 'reason'), [
-    ('requires_lenbot = ">=0.1,<1"', 'requires_lenbot = ">=99"', 'requires host'),
+    ('requires_lenbot = ">=0.2,<1"', 'requires_lenbot = ">=99"', 'requires host'),
     ('requires_python = ">=3.13"', 'requires_python = "<3"', 'requires Python'),
     ('platforms = ["linux", "darwin", "win32"]', 'platforms = []', 'platforms'),
     ('version = "1.0.0"', 'version = "latest"', 'Invalid version'),
-    ('requires_lenbot = ">=0.1,<1"', 'requires_lenbot = ""', 'Version range must be explicit'),
+    ('requires_lenbot = ">=0.2,<1"', 'requires_lenbot = ""', 'Version range must be explicit'),
     ('interface = 1', 'interface = 0', '接口版本'),
 ])
 async def test_zip_compatibility_rejects_before_installation(tmp_path, original, replacement, reason):

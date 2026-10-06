@@ -9,6 +9,8 @@ import re
 import subprocess
 import tomllib
 
+SHIPPED = ('src', 'deploy', 'docker', 'scripts', 'pyproject.toml', 'uv.lock', 'README.md', 'LICENSE', 'NOTICE',
+           'THIRD_PARTY_NOTICES.md')
 VERSION = re.compile(r'\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?')
 
 
@@ -24,6 +26,14 @@ def constant(project: Path, module: str, name: str) -> int:
         if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
             return ast.literal_eval(node.value)
     raise ValueError(f'{module} has no literal {name}')
+
+
+def source_revision(project: Path) -> str:
+    """HEAD, marked -dirty when the working tree differs, so a local candidate never passes for that commit."""
+    git = lambda *args: subprocess.run(['git', *args], cwd=project, check=True, capture_output=True, text=True).stdout.strip()
+    # Only shipped sources count; downloaded artifacts in the checkout root do not make a CI build dirty.
+    changed = git('status', '--porcelain', '--untracked-files=normal', '--', *SHIPPED)
+    return git('rev-parse', 'HEAD') + ('-dirty' if changed else '')
 
 
 def write_manifest(project: Path, artifacts: Path, *, revision: str, images: dict | None = None) -> Path:
@@ -56,7 +66,9 @@ def main() -> None:
     parser.add_argument('--images', type=Path)
     args = parser.parse_args()
     project = Path(__file__).resolve().parents[1]
-    revision = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=project, check=True, capture_output=True, text=True).stdout.strip()
+    revision = source_revision(project)
+    if args.images is not None and revision.endswith('-dirty'):
+        raise SystemExit('Published manifests must come from a clean checkout of the tagged commit')
     images = None if args.images is None else json.loads(args.images.read_text())
     print(write_manifest(project, args.artifacts, revision=revision, images=images))
 

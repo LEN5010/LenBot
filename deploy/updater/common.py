@@ -18,6 +18,13 @@ def version_key(value: str) -> tuple:
     return (*map(int, match.group(1, 2, 3)), {'a': 0, 'b': 1, 'rc': 2, None: 3}[match[4]], int(match[5] or 0))
 
 
+def repository(reference: str) -> str:
+    """Image name without tag or digest; a registry port such as 127.0.0.1:5000 stays."""
+    name = reference.split('@', 1)[0]
+    head, slash, last = name.rpartition('/')
+    return head + slash + last.split(':', 1)[0]
+
+
 def read_json(path: Path):
     return json.loads(path.read_text(encoding='utf-8'))
 
