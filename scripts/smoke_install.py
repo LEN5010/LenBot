@@ -237,6 +237,10 @@ def smoke_docker(artifacts: Path, work: Path, image: str) -> dict:
 
 
 def main() -> None:
+    if sys.platform == 'win32':
+        # Chinese lines from the host would otherwise reach the CI log as backslash escapes.
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('package', 'docker'))
     parser.add_argument('artifacts', type=Path, help='artifacts/ from build_release.py, containing the deployment packages')

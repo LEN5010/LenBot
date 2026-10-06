@@ -195,7 +195,7 @@ async def run_setup(root: Path, *, container: bool = False) -> None:
         app = create_setup_app(root, token, completed, container=container)
         server = uvicorn.Server(uvicorn.Config(app, log_level='warning', access_log=False))
         print(f'尚无根配置。请打开 http://127.0.0.1:{port}/#token={token}\n'
-              '这里只保存首次配置，不连接 OneBot、不调用模型；保存后从此实例目录重新执行刚才的启动命令。', flush=True)
+              '保存后直接启动，按新配置连接 OneBot 并打开面板。', flush=True)
         serving = asyncio.create_task(server.serve(sockets=[listener]))
         saving = asyncio.create_task(completed.wait())
         try:

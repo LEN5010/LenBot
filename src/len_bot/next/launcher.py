@@ -8,6 +8,15 @@ import sys
 from .runtime.lifecycle import RESTART_EXIT
 
 
+def wait(child: subprocess.Popen) -> int:
+    """Wait in short steps: on Windows an untimed wait blocks signal handlers, so a stop could not be passed on."""
+    while True:
+        try:
+            return child.wait(0.5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def run(*, container: bool = False) -> int:
     root = Path.cwd()
     child: subprocess.Popen | None = None
@@ -31,7 +40,7 @@ def run(*, container: bool = False) -> int:
             )
             if stopping:
                 child.terminate()
-            code = child.wait()
+            code = wait(child)
             child = None
             if stopping or code != RESTART_EXIT:
                 return code if code >= 0 else 128 - code
@@ -41,7 +50,7 @@ def run(*, container: bool = False) -> int:
                                      creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0)
             if stopping:
                 child.terminate()
-            code = child.wait()
+            code = wait(child)
             child = None
             if stopping or code != 0:
                 return code if code >= 0 else 128 - code
