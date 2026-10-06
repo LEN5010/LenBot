@@ -111,7 +111,7 @@ const count = value => value.toLocaleString('zh-CN')
         <MasterDetail v-if="tab === 'providers'" :selected="selected !== null" @back="select(null)">
           <template #list>
             <Panel title="服务商" flush>
-              <template #actions><v-btn size="small" variant="tonal" color="primary" :prepend-icon="mdiPlus" @click="addProvider">添加</v-btn></template>
+              <template #actions><v-btn size="small" variant="outlined" :prepend-icon="mdiPlus" @click="addProvider">添加</v-btn></template>
               <ObjectList class="list">
                 <ObjectRow v-for="(row, index) in draft.providers" :key="index" :title="row.alias || '未命名'" clickable :active="selected === index"
                   :subtitle="`${apiTitle(row.api)}${usedBy(row.alias).length ? ` · ${usedBy(row.alias).join('、')}` : ''}`" @click="select(index)">
@@ -194,10 +194,10 @@ const count = value => value.toLocaleString('zh-CN')
             <p class="usage-total"><strong>{{ count(data.input + data.output) }}</strong>
               <span class="muted">输入 {{ count(data.input) }}（缓存命中 {{ count(data.cached) }}）· 输出 {{ count(data.output) }} · 共 {{ data.calls }} 次调用<template v-if="data.unknown_calls">，其中 {{ data.unknown_calls }} 次没有报告 token</template></span></p>
             <v-table v-if="data.groups.length" density="compact" class="usage-table">
-              <thead><tr><th>群聊</th><th>用途</th><th>次数</th><th>输入</th><th>输出</th></tr></thead>
+              <thead><tr><th>群聊</th><th>用途</th><th class="num">次数</th><th class="num">输入</th><th class="num">输出</th></tr></thead>
               <tbody><tr v-for="row in data.groups" :key="`${row.scene}/${row.role}`">
-                <td>{{ sceneName(row.scene) }}</td><td>{{ callRoleLabel(row.role) }}</td><td>{{ row.calls }}<span v-if="row.unknown_calls" class="muted">（{{ row.unknown_calls }} 次未报告）</span></td>
-                <td>{{ count(row.input) }}</td><td>{{ count(row.output) }}</td></tr></tbody>
+                <td>{{ sceneName(row.scene) }}</td><td>{{ callRoleLabel(row.role) }}</td><td class="num">{{ row.calls }}<span v-if="row.unknown_calls" class="muted">（{{ row.unknown_calls }} 次未报告）</span></td>
+                <td class="num">{{ count(row.input) }}</td><td class="num">{{ count(row.output) }}</td></tr></tbody>
             </v-table>
             <DevOnly label="统计范围与原始数据" :json="data" />
           </ResourceState>
@@ -214,5 +214,7 @@ const count = value => value.toLocaleString('zh-CN')
 .usage-total{display:flex;gap:var(--sp-3);align-items:baseline;flex-wrap:wrap;margin:0}
 .usage-total strong{font-size:var(--fs-xl)}
 .usage-table{border:1px solid var(--line);border-radius:var(--radius)}
+.usage-table .num{text-align:right;font-variant-numeric:tabular-nums}
+.usage-table th,.usage-table td{white-space:nowrap}
 p{margin:0}
 </style>

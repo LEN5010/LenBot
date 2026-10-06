@@ -61,7 +61,7 @@ async function saveRaw() {
 
 <template>
   <Panel title="导出" description="把这个角色的设定、资料、表情和头像打包成一个 ZIP，可以在别的 LenBot 上导入。">
-    <template #actions><v-btn variant="tonal" :loading="download.busy.value" @click="exportPackage">下载 ZIP</v-btn></template>
+    <template #actions><v-btn variant="outlined" :loading="download.busy.value" @click="exportPackage">下载 ZIP</v-btn></template>
     <ErrorNote v-if="download.error.value" title="没有导出成功" :error="download.error.value" />
   </Panel>
 
@@ -83,7 +83,7 @@ async function saveRaw() {
   <AdvancedFields label="直接编辑角色文件" class="raw">
     <div class="raw-body">
       <ErrorNote v-if="raw.error.value" title="读取角色文件失败" :error="raw.error.value" @retry="raw.reload()" />
-      <v-btn v-if="!raw.data.value && !raw.error.value" variant="tonal" class="start" :loading="raw.loading.value" @click="raw.reload()">读取角色文件</v-btn>
+      <v-btn v-if="!raw.data.value && !raw.error.value" variant="outlined" class="start" :loading="raw.loading.value" @click="raw.reload()">读取角色文件</v-btn>
       <form v-if="raw.data.value" class="stack" @submit.prevent="saveRaw">
         <p class="muted small">设定页改不到的内容可以在这里改。保存前会检查格式，格式不对不会保存。</p>
         <v-select :model-value="file" :items="files.map(([value, title]) => ({ value, title }))" label="文件" @update:model-value="pick" />

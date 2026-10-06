@@ -202,7 +202,7 @@ async function removeScene() {
         <ErrorNote v-if="binding.error.value" title="没有保存成功" :error="binding.error.value" />
         <div class="bind-row">
           <v-combobox v-model="persona" :items="personaOptions" label="角色包目录" hint="选择已有角色包，或填写新的角色包目录" persistent-hint />
-          <v-btn color="primary" variant="tonal" :loading="binding.busy.value" :disabled="!persona || persona === saved.persona" @click="rebind">换角色</v-btn>
+          <v-btn variant="outlined" :loading="binding.busy.value" :disabled="!persona || persona === saved.persona" @click="rebind">换角色</v-btn>
         </div>
         <template #footer>
           <span class="muted small grow">移除后聊天记录、记忆和提醒都保留。</span>

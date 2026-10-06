@@ -25,7 +25,7 @@ async function saveRestart() {
     <div class="save-row">
       <span class="hint" :class="{ problem }">{{ problem || (dirty ? '有未保存的修改' : '') }}</span>
       <v-btn variant="text" :disabled="!dirty || saving" @click="$emit('discard')">放弃修改</v-btn>
-      <v-btn v-if="restart" type="button" variant="tonal" :disabled="!dirty || saving || Boolean(problem)" @click="saveRestart">保存并重启</v-btn>
+      <v-btn v-if="restart" type="button" variant="outlined" :disabled="!dirty || saving || Boolean(problem)" @click="saveRestart">保存并重启</v-btn>
       <v-btn type="submit" color="primary" :loading="saving" :disabled="!dirty || Boolean(problem)">{{ label }}</v-btn>
     </div>
   </div>

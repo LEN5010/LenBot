@@ -83,8 +83,8 @@ const finished = status => ['done', 'failed', 'cancelled'].includes(status)
       <template v-if="browser.data.value.running">
         <h3>连接与设备</h3>
         <div class="inline">
-          <v-btn variant="tonal" :loading="act.busy.value" @click="check">查看连接和设备</v-btn>
-          <v-btn variant="tonal" :disabled="act.busy.value" @click="pair">生成配对链接</v-btn>
+          <v-btn variant="outlined" :loading="act.busy.value" @click="check">查看连接和设备</v-btn>
+          <v-btn variant="outlined" :disabled="act.busy.value" @click="pair">生成配对链接</v-btn>
         </div>
         <ErrorNote v-if="act.error.value" title="操作没有成功" :error="act.error.value" />
         <v-alert v-if="pairing" type="info" closable @click:close="pairing = ''">

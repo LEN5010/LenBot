@@ -92,7 +92,7 @@ const stats = computed(() => {
 })
 
 const activityText = {
-  turn: item => `${sceneName(item.scene)} 回复了一轮`,
+  turn: item => item.status === 'manual_compaction' ? `${sceneName(item.scene)} 压缩了一次上下文` : `${sceneName(item.scene)} 回复了一轮`,
   task: item => `${sceneName(item.scene)} 的任务结束：${item.goal}`,
   send: item => `${sceneName(item.scene)} 有一条消息${item.status === 'failed' ? '没发出去' : '不确定是否发出'}`,
 }

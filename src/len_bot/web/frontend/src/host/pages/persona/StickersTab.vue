@@ -76,7 +76,7 @@ async function remove(file) {
 <template>
   <ResourceState :resource="listing" error-title="读取表情失败">
     <Panel title="表情" description="Bot 聊天时会按描述挑合适的表情发出去。">
-      <template #actions><v-btn :prepend-icon="mdiPlus" color="primary" variant="tonal" @click="edit(null)">添加表情</v-btn></template>
+      <template #actions><v-btn :prepend-icon="mdiPlus" variant="outlined" @click="edit(null)">添加表情</v-btn></template>
       <ErrorNote v-if="removing.error.value" title="没有删除成功" :error="removing.error.value" />
       <p v-if="!entries.length" class="muted">还没有表情。</p>
       <ul class="plain-list grid">
@@ -87,7 +87,7 @@ async function remove(file) {
           </div>
           <p>{{ entry.description }}</p>
           <div v-if="entry.emotions.length || entry.tags.length" class="inline chips">
-            <v-chip v-for="item in entry.emotions" :key="`e${item}`" color="primary">{{ item }}</v-chip>
+            <v-chip v-for="item in entry.emotions" :key="`e${item}`">{{ item }}</v-chip>
             <v-chip v-for="item in entry.tags" :key="`t${item}`" variant="outlined">{{ item }}</v-chip>
           </div>
           <div class="actions">

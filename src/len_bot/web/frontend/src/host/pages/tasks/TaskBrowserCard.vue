@@ -31,8 +31,8 @@ function changed() { resourcesVersion.value++; emit('changed') }
       <p>{{ task.browser_active ? (task.browser_session ? '任务正在使用账号会话' : '正在创建或等待确认会话') : browser.binding ? '任务会话已结束，文件保留' : '任务还没有建立会话' }}</p>
       <p v-if="browser.binding" class="muted small">设备 {{ browser.binding.browser_instance_id }} · 会话 {{ browser.binding.session_id }}</p>
       <v-alert v-if="task.question?.method === 'request_help'" type="warning">需要你在专用浏览器里完成：{{ task.question.title }}。完成后在浏览器的接手提示里继续。</v-alert>
-      <div class="inline"><v-btn v-if="task.browser_active" size="small" variant="tonal" :loading="status.loading.value" @click="status.reload()">查看连接状态</v-btn>
-        <v-btn v-if="canClose" size="small" variant="tonal" :loading="closing.busy.value" @click="close">关闭遗留会话</v-btn>
+      <div class="inline"><v-btn v-if="task.browser_active" size="small" variant="outlined" :loading="status.loading.value" @click="status.reload()">查看连接状态</v-btn>
+        <v-btn v-if="canClose" size="small" variant="outlined" :loading="closing.busy.value" @click="close">关闭遗留会话</v-btn>
       </div>
       <p v-if="task.browser_active && status.data.value" class="small">设备{{ status.data.value.browser ? '在线' : '离线' }} · {{ status.data.value.session ? '会话存在' : '找不到这个会话' }}<template v-if="status.data.value.session?.agent_window_id"> · 窗口 {{ status.data.value.session.agent_window_id }}</template></p>
       <p v-if="task.browser_active && !task.browser_session && finished(task.status)" class="muted small">可以在能力 › 独立任务里找到这个会话并关闭。</p>

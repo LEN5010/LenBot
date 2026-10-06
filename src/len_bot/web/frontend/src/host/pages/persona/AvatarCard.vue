@@ -45,7 +45,7 @@ async function remove() {
     <div v-else class="blank" aria-hidden="true">{{ name.slice(0, 1) }}</div>
     <input ref="input" type="file" accept="image/png,.png" hidden @change="upload" />
     <div class="buttons">
-      <v-btn size="small" variant="tonal" :loading="change.busy.value" @click="input.click()">{{ image ? '换头像' : '上传头像' }}</v-btn>
+      <v-btn size="small" variant="outlined" :loading="change.busy.value" @click="input.click()">{{ image ? '换头像' : '上传头像' }}</v-btn>
       <v-btn v-if="image" size="small" variant="text" :disabled="change.busy.value" @click="remove">删除</v-btn>
     </div>
     <span class="muted">PNG 图片，只在面板里显示</span>

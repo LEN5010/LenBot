@@ -46,14 +46,14 @@ async function operate(kind) {
   <ErrorNote v-if="action.error.value" title="操作没有完成" :error="action.error.value" />
   <ResourceState :resource="page" error-title="读取会话失败" v-slot="{ data }">
     <Panel title="回想" description="Bot 对较早对话的概括，会和最近的对话一起交给大脑。">
-      <template #actions><v-btn variant="tonal" :loading="action.busy.value" @click="operate('compact')">整理回想</v-btn></template>
+      <template #actions><v-btn variant="outlined" :loading="action.busy.value" @click="operate('compact')">整理回想</v-btn></template>
       <p v-if="data.recap !== null" class="readable-copy recap">{{ data.recap }}</p>
       <p v-else class="muted recap">还没有回想。</p>
     </Panel>
     <Panel title="最近的会话">
       <template #actions>
         <v-switch :model-value="everything" label="显示之前的会话" @update:model-value="toggleEverything" />
-        <v-btn variant="tonal" :loading="action.busy.value" @click="operate('new-context')">开始新会话</v-btn>
+        <v-btn variant="outlined" :loading="action.busy.value" @click="operate('new-context')">开始新会话</v-btn>
       </template>
       <p v-if="!entries.length" class="muted">这里还没有内容。</p>
       <LoadMore v-if="data.next_before !== null" label="更早的内容" :loading="page.loading.value" @more="page.reload(data.next_before)" />

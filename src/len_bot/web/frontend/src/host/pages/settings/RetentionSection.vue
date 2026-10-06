@@ -61,7 +61,7 @@ async function runPrune() {
   </SettingSection>
   <Panel v-if="status.data.value?.enabled" title="立即清理">
     <template #actions>
-      <v-btn variant="tonal" color="error" :loading="prune.busy.value" :disabled="status.data.value.busy || !summary(status.data.value.preview || {})"
+      <v-btn variant="outlined" color="error" :loading="prune.busy.value" :disabled="status.data.value.busy || !summary(status.data.value.preview || {})"
         @click="runPrune">清理一批</v-btn>
     </template>
     <ErrorNote v-if="status.data.value.error" title="自动清理已停止" :error="status.data.value.error" />

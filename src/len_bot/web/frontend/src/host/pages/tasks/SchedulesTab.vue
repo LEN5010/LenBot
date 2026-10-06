@@ -68,7 +68,7 @@ const statuses = [{ title: '进行中', value: 'active' }, { title: '全部', va
   <Panel title="提醒">
     <template #actions>
       <v-select v-model="status" :items="statuses" class="filter" aria-label="筛选" />
-      <v-btn color="primary" variant="tonal" :disabled="!settings?.enabled || !settings?.tool_allowed" @click="adding = true">添加提醒</v-btn>
+      <v-btn variant="outlined" :disabled="!settings?.enabled || !settings?.tool_allowed" @click="adding = true">添加提醒</v-btn>
     </template>
     <p v-if="settings && !settings.enabled" class="muted">本群没有开启提醒，可以在
       <RouterLink :to="{ name: 'host-scenes', query: { scene, tab: 'settings' } }">群聊设置</RouterLink> 里打开。</p>

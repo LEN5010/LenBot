@@ -126,7 +126,7 @@ function created(task) {
       <template v-if="canAnswer">
         <div v-if="task.question.method === 'confirm'" class="inline">
           <v-btn color="primary" :disabled="!validIdentity" :loading="act.busy.value" @click="submitAnswer(true)">同意</v-btn>
-          <v-btn variant="tonal" :disabled="!validIdentity || act.busy.value" @click="submitAnswer(false)">拒绝</v-btn>
+          <v-btn variant="outlined" :disabled="!validIdentity || act.busy.value" @click="submitAnswer(false)">拒绝</v-btn>
         </div>
         <template v-else-if="task.question.method === 'select'">
           <v-radio-group v-model="choice" hide-details><v-radio v-for="option in task.question.options" :key="option" :label="option" :value="option" /></v-radio-group>
@@ -143,11 +143,11 @@ function created(task) {
       <template v-if="canCancel" #actions><v-btn variant="text" color="error" size="small" :disabled="!validIdentity" :loading="act.busy.value" @click="send('cancel')">取消任务</v-btn></template>
       <div v-if="canAppend" class="compose">
         <v-textarea v-model="append" label="追加要求" rows="2" auto-grow />
-        <v-btn variant="tonal" :disabled="!validIdentity || !append.trim()" :loading="act.busy.value" @click="send('append', { text: append })">追加</v-btn>
+        <v-btn variant="outlined" :disabled="!validIdentity || !append.trim()" :loading="act.busy.value" @click="send('append', { text: append })">追加</v-btn>
       </div>
       <div v-if="canContinue" class="compose">
         <v-textarea v-model="followUp" label="接着做" rows="2" auto-grow hint="在原来的基础上继续，例如“再加一张图表”" persistent-hint />
-        <v-btn variant="tonal" :disabled="!validIdentity || !followUp.trim()" :loading="act.busy.value" @click="send('continue', { text: followUp })">继续</v-btn>
+        <v-btn variant="outlined" :disabled="!validIdentity || !followUp.trim()" :loading="act.busy.value" @click="send('continue', { text: followUp })">继续</v-btn>
       </div>
       <p v-if="!validIdentity" class="muted small">在页面上方填写你的账号后才能操作。</p>
     </Panel>

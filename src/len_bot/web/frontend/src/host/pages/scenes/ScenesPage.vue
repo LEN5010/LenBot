@@ -40,7 +40,7 @@ async function addScene() {
 
 <template>
   <HostPage :title="scene ? sceneName(scene) : '群聊'" :description="current ? `${sceneNumber(scene)} · 角色：${current.persona.name}` : ''">
-    <template #actions><v-btn variant="tonal" color="primary" @click="adding = true">添加群聊</v-btn></template>
+    <template #actions><v-btn variant="outlined" @click="adding = true">添加群聊</v-btn></template>
     <EmptyState v-if="host.state && !scene" text="还没有群聊"><v-btn color="primary" @click="adding = true">添加群聊</v-btn></EmptyState>
     <template v-else-if="scene">
       <PageTabs :tabs="tabs" :model-value="tab" label="群聊内容" />

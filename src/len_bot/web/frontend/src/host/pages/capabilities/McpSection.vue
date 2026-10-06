@@ -109,7 +109,7 @@ const runtimeOf = name => running.value[name]
     <MasterDetail :selected="selected !== null" @back="back">
       <template #list>
         <Panel title="MCP 服务" flush>
-          <template #actions><v-btn variant="tonal" color="primary" size="small" :prepend-icon="mdiPlus" @click="select('')">添加</v-btn></template>
+          <template #actions><v-btn variant="outlined" size="small" :prepend-icon="mdiPlus" @click="select('')">添加</v-btn></template>
           <ObjectList class="list">
             <ObjectRow v-for="name in names" :key="name" :title="name" clickable :active="selected === name" @click="select(name)"
               :subtitle="runtimeOf(name) ? `${runtimeOf(name).tools.length} 个工具 · ${runtimeOf(name).scenes.map(sceneName).join('、') || '没有群在用'}` : '重启后生效'">
@@ -124,7 +124,7 @@ const runtimeOf = name => running.value[name]
       <Panel v-if="selected && runtimeOf(selected)" :title="selected">
         <template #actions>
           <StatusBadge kind="mcp" :value="runtimeOf(selected).status" />
-          <v-btn size="small" variant="tonal" :disabled="act.busy.value || runtimeOf(selected).status === 'disabled'" @click="control(selected, 'connect')">重新连接</v-btn>
+          <v-btn size="small" variant="outlined" :disabled="act.busy.value || runtimeOf(selected).status === 'disabled'" @click="control(selected, 'connect')">重新连接</v-btn>
           <v-btn size="small" variant="text" :disabled="act.busy.value || !['running', 'connecting'].includes(runtimeOf(selected).status)" @click="control(selected, 'disconnect')">断开</v-btn>
         </template>
         <ErrorNote v-if="act.error.value" title="操作没有成功" :error="act.error.value" />
