@@ -105,6 +105,13 @@ class Containers:
             self.command(['pull', target['worker_image']])
         return result
 
+    def discard(self, target: dict) -> None:
+        if target['container'] != self.metadata()['container']:
+            try:
+                self.api('DELETE', '/containers/' + quote(target['container']))
+            except RuntimeError as error:
+                print(error, file=self.log)
+
     def stop(self) -> None:
         container = self.metadata()['container']
         if self.info(container)['State']['Running']:

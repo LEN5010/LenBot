@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import secrets
+import shutil
 import signal
 import sys
 import threading
@@ -15,6 +16,8 @@ from urllib.parse import urlsplit
 
 from common import download, fetch_json, read_json, release_manifest, version_key, write_json
 from native import Native
+
+LABELS = {'prepare': '准备更新', 'apply': '停机升级', 'restore': '恢复快照', 'start': '启动程序'}
 
 
 class Controller:
@@ -47,6 +50,23 @@ class Controller:
         write_json(self.state_file, self.state)
         print(stage, file=self.log)
 
+    def actions(self) -> list[str]:
+        """What the user can do next; every failure leaves at least one of these."""
+        status = self.state['status']
+        if status in ('preparing', 'applying', 'restoring'):
+            return []
+        if status == 'failed' and self.state.get('snapshot_complete'):
+            return ['restore']
+        if status == 'restored' or (status == 'failed' and self.state.get('stopped')):
+            # Before the snapshot completes nothing is migrated or selected, so the stopped program is still the old one.
+            return ['start']
+        available = ['prepare']
+        if status == 'prepared':
+            available.append('apply')
+        if status == 'complete' and self.state.get('snapshot_complete'):
+            available.append('restore')
+        return available
+
     def releases(self) -> list[dict]:
         result = []
         for release in fetch_json(self.deployment['release_api']):
@@ -66,32 +86,28 @@ class Controller:
         if not self.operation.acquire(blocking=False):
             raise ValueError('已有一个更新操作正在执行')
         try:
+            if action not in LABELS:
+                raise ValueError('未知更新操作')
+            available = self.actions()
+            if action not in available:
+                raise ValueError(f'现在不能{LABELS[action]}；可以：' + ('、'.join(LABELS[item] for item in available) or '等待当前操作结束'))
             if action == 'prepare':
-                if self.state.get('snapshot_complete') and self.state['status'] == 'failed':
-                    raise ValueError('上次停机升级失败，请先恢复；不能覆盖恢复记录')
                 tag = payload['tag']
                 version_key(tag.removeprefix('v'))
                 if not tag.startswith('v'):
                     raise ValueError('更新目标必须是发行标签')
+                previous = self.state.get('target') if self.state['status'] == 'prepared' else None
                 self.stage('download', status='preparing', error=None, stopped=False, snapshot_complete=False)
-                operation = lambda: self.prepare(tag)
+                operation = lambda: self.prepare(tag, previous)
             elif action == 'apply':
-                if self.state['status'] != 'prepared':
-                    raise ValueError('先准备一个兼容的更新版本')
-                self.stage('stop', status='applying', error=None)
+                self.stage('compatibility', status='applying', error=None)
                 operation = self.apply
             elif action == 'restore':
-                if not self.state.get('snapshot_complete'):
-                    raise ValueError('没有已完成的升级前快照')
                 self.stage('restore', status='restoring', error=None)
                 operation = self.restore
-            elif action == 'start':
-                if self.state['status'] not in ('restored', 'idle', 'complete'):
-                    raise ValueError('先恢复已知可用的版本，再启动')
-                self.stage('start', status='applying')
-                operation = self.start
             else:
-                raise ValueError('未知更新操作')
+                self.stage('start', status='applying', error=None)
+                operation = self.start
         except BaseException:
             self.operation.release()
             raise
@@ -106,7 +122,11 @@ class Controller:
         threading.Thread(target=execute, daemon=False).start()
         return {'accepted': True}
 
-    def prepare(self, tag: str) -> None:
+    def prepare(self, tag: str, previous: dict | None = None) -> None:
+        if previous is not None:
+            # Choosing again replaces the earlier candidate instead of leaving its environment or container behind.
+            self.backend.discard(previous)
+            self.state.pop('target', None)
         release, = [item for item in self.releases() if item['tag'] == tag]
         if version_key(release['version']) <= version_key(self.backend.metadata()['version']):
             raise ValueError('更新只能选择比当前程序更新的版本；回退使用快照恢复')
@@ -115,18 +135,26 @@ class Controller:
             raise ValueError('发行清单不属于所选标签')
         work = self.root / 'updates' / ('candidate-' + secrets.token_hex(8))
         work.mkdir(mode=0o700)
-        archive = None
-        if self.deployment['mode'] == 'native':
-            name = manifest['bundles'][self.deployment['platform']]
-            archive = work / name
-            download(release['assets'][name], archive, manifest['files'][name])
-        self.stage('prepare_environment')
-        target = self.backend.prepare(manifest, archive, work)
-        self.stage('compatibility')
-        check = self.backend.inspect(target)
-        self.state.update(target=target, manifest=manifest, check=check, notes=release['notes'], work=str(work))
-        if check['blocked_plugins']:
-            raise ValueError('请先升级或停用不兼容插件：\n' + '\n'.join(check['blocked_plugins']))
+        target = None
+        try:
+            archive = None
+            if self.deployment['mode'] == 'native':
+                name = manifest['bundles'][self.deployment['platform']]
+                archive = work / name
+                download(release['assets'][name], archive, manifest['files'][name])
+            self.stage('prepare_environment')
+            target = self.backend.prepare(manifest, archive, work)
+            self.stage('compatibility')
+            check = self.backend.inspect(target)
+            if check['blocked_plugins']:
+                raise ValueError('请先升级或停用不兼容插件：\n' + '\n'.join(check['blocked_plugins']))
+        except BaseException:
+            if target is not None:
+                self.backend.discard(target)
+            raise
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        self.state.update(target=target, manifest=manifest, check=check, notes=release['notes'])
         self.stage('prepared', status='prepared')
 
     def apply(self) -> None:
@@ -136,9 +164,10 @@ class Controller:
             raise ValueError('配置或插件已改变，请先处理：\n' + '\n'.join(check['blocked_plugins']))
         old = self.backend.metadata()
         self.state['old'] = old
+        self.stage('stop', stopped=True)
         self.backend.stop()
         snapshot = self.root / 'backups' / (time.strftime('%Y%m%d-%H%M%S', time.gmtime()) + '-' + secrets.token_hex(4))
-        self.stage('backup', stopped=True, snapshot=str(snapshot))
+        self.stage('backup', snapshot=str(snapshot))
         self.backend.backup(snapshot)
         self.stage('migrate', snapshot_complete=True)
         self.backend.migrate(target)
@@ -170,7 +199,8 @@ class Controller:
                 self.backend.instance / '.runtime/update-control.json', self.reference)
 
     def status(self) -> dict:
-        return {**self.state, 'current_version': self.backend.metadata()['version'], 'mode': self.deployment['mode']}
+        return {**self.state, 'current_version': self.backend.metadata()['version'], 'mode': self.deployment['mode'],
+                'actions': self.actions()}
 
 
 def server(controller: Controller) -> ThreadingHTTPServer:
@@ -255,7 +285,8 @@ def main() -> None:
         threading.Thread(target=http.shutdown, daemon=True).start()
     for sig in ((signal.SIGINT, signal.SIGTERM, signal.SIGBREAK) if sys.platform == 'win32' else (signal.SIGINT, signal.SIGTERM)):
         signal.signal(sig, stop)
-    if controller.deployment['mode'] == 'native' and controller.state['status'] in ('idle', 'complete', 'prepared'):
+    # A stop for the update stays in effect across controller restarts until the user starts or restores.
+    if controller.deployment['mode'] == 'native' and not controller.state.get('stopped'):
         controller.backend.start()
     try:
         http.serve_forever()

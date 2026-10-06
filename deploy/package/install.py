@@ -106,8 +106,14 @@ def main() -> None:
             'mode': 'native', 'platform': metadata['platform'], 'uv': uv,
             'release_api': 'https://api.github.com/repos/lendevs/LenBot/releases?per_page=100',
         }, indent=2) + '\n', encoding='utf-8')
+    state_file = root / 'updates/state.json'
+    if args.action == 'upgrade' and state_file.exists():
+        state = json.loads(state_file.read_text(encoding='utf-8'))
+        if state['status'] == 'failed' and state.get('snapshot_complete'):
+            raise ValueError(f'上次升级失败且尚未恢复，快照在 {state["snapshot"]}；先运行 run 打开恢复页恢复，不能覆盖恢复记录')
     release = root / 'releases' / metadata['version']
-    if args.action == 'prepare' and release.exists():
+    # A version that was prepared, or restored away from, leaves its environment; rebuild it unless it is active.
+    if args.action in ('prepare', 'upgrade') and release.exists():
         current = json.loads((root / 'current.json').read_text(encoding='utf-8'))
         if current['version'] == metadata['version']:
             raise ValueError('Cannot rebuild the environment of the active release')
@@ -130,19 +136,22 @@ def main() -> None:
                 check = backend.inspect(metadata)
                 if check['blocked_plugins']:
                     raise ValueError('\n'.join(check['blocked_plugins']))
-                snapshot = root / 'backups' / (time.strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(4))
+                # Same names and record as the panel update, so the controller's recovery page covers both.
+                snapshot = root / 'backups' / (time.strftime('%Y%m%d-%H%M%S', time.gmtime()) + '-' + secrets.token_hex(4))
                 old = backend.metadata()
                 backend.backup(snapshot)
-                write_json(root / 'updates/state.json', {'status': 'applying', 'stage': 'migrate', 'old': old,
-                    'target': metadata, 'snapshot': str(snapshot), 'snapshot_complete': True, 'stopped': True})
+                record = {'old': old, 'target': metadata, 'snapshot': str(snapshot), 'snapshot_complete': True,
+                          'stopped': True, 'offline': True}
+                write_json(state_file, {'status': 'applying', 'stage': 'migrate', **record})
                 try:
                     backend.migrate(metadata)
                 except Exception as error:
-                    write_json(root / 'updates/state.json', {'status': 'failed', 'stage': 'migrate', 'old': old,
-                        'target': metadata, 'snapshot': str(snapshot), 'snapshot_complete': True,
-                        'stopped': True, 'error': str(error)})
+                    write_json(state_file, {'status': 'failed', 'stage': 'migrate', **record,
+                                            'error': f'{type(error).__name__}: {error}'})
                     raise
-            write_json(root / 'updates/state.json', {'status': 'idle', 'stage': 'installed'})
+                write_json(state_file, {'status': 'complete', 'stage': 'complete', **record, 'stopped': False})
+            else:
+                write_json(state_file, {'status': 'idle', 'stage': 'installed'})
     if args.action != 'prepare':
         write_json(root / 'current.json', metadata)
         entrypoints(root, metadata['platform'], uv)

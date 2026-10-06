@@ -1,7 +1,9 @@
 """A stable parent process selects versioned Python environments."""
 
 import json
+import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -19,6 +21,8 @@ def python_path(environment: Path) -> Path:
 
 
 class Native:
+    stop_seconds = 180
+
     def __init__(self, root: Path, log):
         self.root, self.log = root, log
         self.deployment = read_json(root / 'deployment.json')
@@ -70,7 +74,7 @@ class Native:
 
     def start(self) -> None:
         if self.child is not None and self.child.poll() is None:
-            raise RuntimeError('The host is already running')
+            return
         self.child = subprocess.Popen([self.python(), '-X', 'utf8', '-m', 'len_bot.next.launcher'], cwd=self.instance, stderr=self.log,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0,
             start_new_session=sys.platform != 'win32')
@@ -78,7 +82,20 @@ class Native:
     def stop(self) -> None:
         if self.child is not None and self.child.poll() is None:
             self.child.send_signal(signal.CTRL_BREAK_EVENT if sys.platform == 'win32' else signal.SIGTERM)
-            self.child.wait(timeout=180)
+            try:
+                self.child.wait(timeout=self.stop_seconds)
+            except subprocess.TimeoutExpired:
+                # Same limit as docker stop -t 180; the host's whole process tree goes, not only its first process.
+                print(f'宿主 {self.stop_seconds} 秒内没有退出，强制结束整个进程组', file=self.log)
+                if sys.platform == 'win32':
+                    subprocess.run(['taskkill', '/T', '/F', '/PID', str(self.child.pid)], stdout=self.log, stderr=self.log)
+                else:
+                    os.killpg(self.child.pid, signal.SIGKILL)
+                self.child.wait()
+
+    def discard(self, target: dict) -> None:
+        if target['version'] != self.metadata()['version']:
+            shutil.rmtree(self.root / 'releases' / target['version'], ignore_errors=True)
 
     def backup(self, snapshot: Path) -> None:
         self.maintenance('backup', snapshot=snapshot)
