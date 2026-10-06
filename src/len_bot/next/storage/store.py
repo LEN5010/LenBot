@@ -289,22 +289,13 @@ class Store:
             "next_before": selected[-1][0] if len(rows) > limit else None,
         }
 
-    # Every table that records a model call, with the column holding its start time.
-    CALL_TABLES = (("model_calls", "started"), ("audio_calls", "started"), ("learning_batches", "model_started"),
-                   ("expression_embedding_calls", "started"), ("jargon_calls", "model_started"),
-                   ("sticker_calls", "model_started"), ("reply_effect_calls", "model_started"))
+    def _call_tokens(self, scenes: Sequence[str], since: float, until: float, *, calls=None) -> list:
+        from ..models.usage import call_records
+        if calls is None:
+            return call_records(self, list(scenes), since, until)
+        return [call for call in calls if since <= call.started < until]
 
-    def _call_tokens(self, scenes: Sequence[str], since: float, until: float) -> list[tuple]:
-        placeholders = ",".join("?" for _ in scenes)
-        rows = []
-        for table, started in self.CALL_TABLES:
-            rows.extend(self.db.execute(
-                f"SELECT {started},ended,tokens FROM {table} "
-                f"WHERE scene IN ({placeholders}) AND {started}>=? AND {started}<?", (*scenes, since, until),
-            ).fetchall())
-        return rows
-
-    def hourly_overview(self, scenes: Sequence[str], since: float, hours: int) -> dict:
+    def hourly_overview(self, scenes: Sequence[str], since: float, hours: int, *, calls=None) -> dict:
         """Per-hour counts from ``since``: received and spoken messages, reply turns, reported tokens."""
         placeholders = ",".join("?" for _ in scenes)
         until = since + hours * 3600
@@ -326,10 +317,10 @@ class Store:
             "SELECT CAST((started-?)/3600 AS INTEGER),COUNT(*) FROM turns "
             f"WHERE scene IN ({placeholders}) AND started>=? AND started<? GROUP BY 1")
         tokens = [0] * hours
-        for started, _, raw in self._call_tokens(scenes, since, until):
-            if raw is not None:
-                record = json.loads(raw)
-                tokens[int((started - since) // 3600)] += record["input"] + record["output"]
+        from ..models.usage import UNBUDGETED_ROLES
+        for call in self._call_tokens(scenes, since, until, calls=calls):
+            if call.tokens is not None and call.role not in UNBUDGETED_ROLES:
+                tokens[int((call.started - since) // 3600)] += call.tokens["input"] + call.tokens["output"]
         return {"since": since, "hours": hours, "received": received, "spoke": spoke, "turns": turns, "tokens": tokens}
 
     def recent_activity(self, scenes: Sequence[str], limit: int) -> list[dict]:
@@ -354,7 +345,7 @@ class Store:
             f"SELECT scene,COUNT(*) FROM tasks WHERE scene IN ({placeholders}) AND status='failed' AND ended>=? GROUP BY scene",
             (*scenes, since)))
 
-    def daily_overview(self, scenes: Sequence[str], since: float, until: float) -> dict:
+    def daily_overview(self, scenes: Sequence[str], since: float, until: float, *, calls=None) -> dict:
         placeholders = ",".join("?" for _ in scenes)
         messages = dict(self.db.execute(
             "SELECT json_extract(body,'$.send_status'),COUNT(*) FROM messages "
@@ -367,14 +358,15 @@ class Store:
             f"SELECT status,COUNT(*) FROM turns WHERE scene IN ({placeholders}) "
             "AND started>=? AND started<? GROUP BY status", (*scenes, since, until),
         ))
-        calls = [(ended, tokens) for _, ended, tokens in self._call_tokens(scenes, since, until)]
+        calls = self._call_tokens(scenes, since, until, calls=calls)
         reactions = dict(self.db.execute(
             "SELECT COALESCE(reaction,CASE WHEN observed_seqs='[]' THEN 'no_messages' ELSE 'waiting' END),"
             f"COUNT(*) FROM reply_effects WHERE scene IN ({placeholders}) AND closed_at IS NOT NULL "
             "AND first_sent_at>=? AND first_sent_at<? GROUP BY 1", (*scenes, since, until),
         ))
-        token_records = token_summary([None if raw is None else json.loads(raw) for _, raw in calls])
-        unfinished = sum(ended is None for ended, _ in calls)
+        from ..models.usage import UNBUDGETED_ROLES
+        token_records = token_summary([call.tokens for call in calls if call.role not in UNBUDGETED_ROLES])
+        unfinished = sum(call.ended is None for call in calls)
         pending = self.db.execute(
             f"SELECT COUNT(*) FROM schedules WHERE scene IN ({placeholders}) AND status='pending'", scenes,
         ).fetchone()[0]

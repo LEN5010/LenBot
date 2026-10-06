@@ -14,6 +14,7 @@ from ...runtime.operations import diagnostic_zip
 from ...work.store import TaskStore
 from ...models.usage import usage
 from ...models.limits import LimitReached
+from ...models.client import ModelHTTPError, ModelProtocolError
 from ...memory.jobs import processing_records
 
 
@@ -63,7 +64,7 @@ def register_host_operations(app, *, runtime, user):
                 return {'compact_through': through, 'message': '已开启新上下文；原记录、未读输入和后台工作保留'}
             try:
                 return await runner.chat.compact_now()
-            except (ValueError, TimeoutError) as error:
+            except (ValueError, TimeoutError, ModelHTTPError, ModelProtocolError) as error:
                 raise HTTPException(422, f'{type(error).__name__}: {error}') from error
 
     @app.get('/api/host/scenes/{scene}/control')

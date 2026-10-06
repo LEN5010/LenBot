@@ -49,8 +49,8 @@ class SayArguments(BaseModel):
     content: str = Field(min_length=1)
     end_turn: bool = Field(default=False, description="这是本轮最后一次表达，成功后本轮即可结束；还需查看工具结果或继续行动时保持 false。")
     reply_to: str | None = Field(default=None, description="默认不填，直接接话。群里同时有几个话头、不引用会让人认错你在回哪句时，才填该平台消息 ID。")
-    mention: str | None = Field(default=None, pattern=r"^[0-9]+$",
-        description="默认不填。要叫不在当前对话里的人，或不 @ 会让人认错对象时，才填对方的实际账号。")
+    mention: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]*:[^:\s/\\]+$",
+        description="默认不填。要叫不在当前对话里的人，或不 @ 会让人认错对象时，才填平台账号，例如 onebot:70001。")
 
 
 class ReactArguments(BaseModel):

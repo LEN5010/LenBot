@@ -4,11 +4,9 @@ from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
-from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from .usage import usage
-from ..memory.jobs import processing_records
+from .usage import instance_calls, summarize_calls
 
 
 class ResourceLimits(BaseModel):
@@ -74,7 +72,6 @@ def check_speech(store, config) -> None:
 class ModelBudget:
     def __init__(self, config, store, memory, *, root: Path | None = None):
         self.config, self.store, self.memory = config, store, memory
-        self.started_at = store.now()
         self.trials_root: Path | None = None if root is None else root / '.runtime' / 'chat-tests'
         if config.limits.daily_tokens is not None or config.limits.scene_daily_tokens:
             self.validate_sources()
@@ -105,22 +102,13 @@ class ModelBudget:
 
     def totals(self, scene: str | None, since: float, until: float) -> dict:
         selected = None if scene is None else [scene]
-        def sample(store, memory=None, memory_db=None):
-            result = usage(store, selected, since, until, memory=memory, memory_db=memory_db)
-            if result['unfinished_calls']:
-                old = usage(store, selected, since, min(until, self.started_at), memory=memory, memory_db=memory_db)
-                result['settled_unknown_calls'] += old['unfinished_calls']
-            return result
-        with processing_records(self.config.database, None if self.memory is None else self.memory.jobs) as records:
-            samples = [sample(self.store, memory=self.memory, memory_db=None if records is None else records.db)]
-        if self.trials_root is not None:
-            for path in self.trials_root.glob('*/state.db'):
-                with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
-                    with processing_records(path, None) as records:
-                        samples.append(sample(SimpleNamespace(db=db), memory_db=None if records is None else records.db))
-        return {'tokens': sum(sample['budgeted']['input'] + sample['budgeted']['output'] for sample in samples),
-                'settled_unknown_calls': sum(sample['settled_unknown_calls'] + sample['unverified_summary_attempts'] for sample in samples),
-                'unfinished_calls': sum(sample['unfinished_calls'] for sample in samples)}
+        calls = instance_calls(self.store, self.config.database, selected, since, until,
+                               memory=self.memory, trials_root=self.trials_root)
+        result = summarize_calls(calls, since, until)
+        return {'tokens': result['budgeted']['input'] + result['budgeted']['output'],
+                'settled_unknown_calls': result['settled_unknown_calls'],
+                'successful_unknown_calls': result['successful_unknown_calls'],
+                'unfinished_calls': result['unfinished_calls']}
 
     def check(self, scene: str | None) -> None:
         limits = self.config.limits
@@ -133,7 +121,7 @@ class ModelBudget:
             since, until = day_window(self.store.now(), timezone)
             result = self.totals(scope, since, until)
             label = '全局' if scope is None else '本场景'
-            if result['settled_unknown_calls']:
-                raise LimitReached(f'{label}今日有模型调用没有报告 token，或历史计量不全，暂停模型请求；请核对计量。', until)
+            if result['successful_unknown_calls']:
+                raise LimitReached(f'{label}今日有成功模型调用没有报告 token，暂停模型请求；请核对计量。', until)
             if result['tokens'] >= cap:
                 raise LimitReached(f'{label}今日模型 token 已达 {cap}，暂停模型请求。', until)

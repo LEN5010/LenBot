@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import time
 from collections.abc import Callable
 
@@ -56,10 +57,10 @@ def install_panel_auth(app: FastAPI, settings: PanelSettings, *,
         key = f"isolated:{request.client.host}:{item.username}"
         if login_blocked(key):
             raise HTTPException(429, "登录尝试过于频繁，请稍后再试")
-        valid = (item.username == settings.username and
-                 await asyncio.to_thread(verify_password, item.password, settings.password_hash))
+        record_login_failure(key)
+        password_valid = await asyncio.to_thread(verify_password, item.password, settings.password_hash)
+        valid = hmac.compare_digest(item.username.encode('utf-8'), settings.username.encode('utf-8')) and password_valid
         if not valid:
-            record_login_failure(key)
             raise HTTPException(401, "Invalid username or password")
         clear_login_failures(key)
         last_login_at = time.time()
