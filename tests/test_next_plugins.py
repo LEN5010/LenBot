@@ -317,6 +317,21 @@ async def test_tool_reference_cannot_execute_in_disabled_scene(tmp_path):
         await host.close()
 
 
+@pytest.mark.asyncio
+async def test_local_harness_reports_enabled_scenes(tmp_path):
+    from len_bot.next.plugin_testing import PluginTest
+
+    directory = _copy_clock(tmp_path, "scenes")
+    (directory / "__init__.py").write_text(
+        'from len_bot.next.plugin import Plugin, command\n'
+        'class Scenes(Plugin):\n    @command("场景", "列出")\n'
+        '    async def list(self, ctx, args):\n        await ctx.reply(",".join(self.ctx.scenes))\n',
+        encoding="utf-8")
+    async with PluginTest(directory, config={"show_seconds": True}) as bot:
+        assert await bot.message("/场景")
+        assert bot.deliveries[-1].text == "onebot:group:80001"
+
+
 @pytest.mark.parametrize(("plugins", "scene_plugins", "message"), [
     (None, ["clock"], "not configured under root plugins"),
     ({"clock": {}}, ["clock", "clock"], "must not repeat"),
