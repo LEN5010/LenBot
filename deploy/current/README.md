@@ -49,7 +49,7 @@ docker exec lenbot-embeddings ollama pull bge-m3:567m
 
 后台任务把长工作交给独立 Docker 容器里的 Pi 执行，聊天不用等它做完。要启用，需要：
 
-1. 构建任务镜像：`docker build -t lenbot-worker:local -f docker/next-worker/Dockerfile .`
+1. 准备任务镜像：用官方的 `ghcr.io/lendevs/lenbot-worker:<版本>`（版本与 LenBot 一致），或从源码构建 `docker build -t lenbot-worker:local -f docker/next-worker/Dockerfile .`
 2. 在能力页配置任务环境：Docker 命令的绝对路径、Docker socket、工作目录、运行目录和交付目录。三个目录要分开，Docker 主机能访问，容器的 `uid/gid` 能读写。
 3. 绑定 `worker` 用途的模型。
 4. 在群设置里开启任务，并在设置页的权限里给出谁能发起任务。
@@ -59,7 +59,7 @@ docker exec lenbot-embeddings ollama pull bge-m3:567m
 
 要把任务产物发到 QQ，OneBot 那边也要能读到交付目录：把交付目录只读挂进 OneBot 所在的容器，并把 `onebot.upload_visible_root` 设成容器里看到的路径。
 
-升级 LenBot 不会自动更新任务镜像，需要时重新构建。给任务目录加硬上限见[任务存储池](task-storage.md)。
+部署包和 Docker 安装用官方任务镜像时，面板升级会一起换成同版本的任务镜像；自己构建的镜像和源码运行需要时自己重建。给任务目录加硬上限见[任务存储池](task-storage.md)。
 
 ## 账号浏览
 
@@ -73,7 +73,7 @@ docker exec lenbot-embeddings ollama pull bge-m3:567m
 
 `len-bot` 是一个前台进程：Ctrl-C 停止，面板里的重启由它自己完成。服务管理器只需要启动它，不需要自动拉起；异常退出时去看日志，处理后再启动。
 
-**部署包**自带 `service` 命令，管理 systemd 用户服务或 launchd 服务，见[部署包](../package/README.md#原生服务)。
+**部署包**自带 `service` 命令，管理 systemd 用户服务或 launchd 服务，见[部署包](../package/README.md#系统服务)。
 
 **源码或手动安装**在 Linux 上可以用 [systemd 模板](lenbot.service)：
 

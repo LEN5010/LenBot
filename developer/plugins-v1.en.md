@@ -17,7 +17,7 @@ license = "GPL-3.0-only"
 description = "A separate counter for each scene"
 ```
 
-All fields above are required. The installed directory must match `name`. Versions use Python packaging's version rules; compatibility ranges are explicit specifiers checked against the actual host and Python versions. Platform names are Python's `sys.platform` values. `win32` in a manifest does not imply a native Windows host release. `reload` is `plugin` or `host`. Optional fields are `repository`, `homepage`, `dependencies`, and `config`.
+All fields above are required. The installed directory must match `name`. Versions use Python packaging's version rules; compatibility ranges are explicit specifiers checked against the actual host and Python versions. Platform names are Python's `sys.platform` values; host packages exist for Linux (`linux`), macOS (`darwin`) and Windows (`win32`). `reload` is `plugin` or `host`. Optional fields are `repository`, `homepage`, `dependencies`, and `config`.
 
 Interface 1 is the supported generation. Additions within it preserve existing signatures and behavior; breaking changes require a new generation. Public imports are `len_bot.next.plugin`, the message types it exposes from `len_bot.next.platform.messages`, and `len_bot.next.plugin_testing`. Internal host modules are not library APIs.
 

@@ -19,7 +19,7 @@ license = "GPL-3.0-only"
 description = "每群独立计数"
 ```
 
-`version` 按 Python packaging 版本规范解析和规范化，推荐 X.Y.Z；两个 requires 字段是显式版本范围，与实际宿主和解释器比较。`platforms` 使用 Python 系统名称；列出 win32 不表示宿主已有 Windows 原生发行包。`reload` 为 `plugin`（允许单插件换版）或 `host`（需要宿主重启）。可选 `repository`、`homepage` 是 HTTP(S) 地址。
+`version` 按 Python packaging 版本规范解析和规范化，推荐 X.Y.Z；两个 requires 字段是显式版本范围，与实际宿主和解释器比较。`platforms` 使用 Python 的 `sys.platform` 名称，宿主有 Linux（`linux`）、macOS（`darwin`）和 Windows（`win32`）三种部署包。`reload` 为 `plugin`（允许单插件换版）或 `host`（需要宿主重启）。可选 `repository`、`homepage` 是 HTTP(S) 地址。
 
 `dependencies = ["包名>=版本"]` 声明 Python 依赖，由 uv 解析。当前环境已有版本作为约束，冲突原样报出，不自动换服务或改版本重试。系统软件、外部服务及凭据要求写在插件 README。公开作者入口是 `len_bot.next.plugin`、它返回的 `len_bot.next.platform.messages` 类型，以及下文的 `len_bot.next.plugin_testing`；其他内部模块不承诺兼容。
 

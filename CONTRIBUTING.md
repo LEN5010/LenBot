@@ -60,7 +60,9 @@ cd /tmp/lenbot-test && uv run --project /path/to/LenBot --no-sync len-bot
 - `src/len_bot/eval/`：表达回放。
 - `tests/`：测试。
 - `docker/next-worker/`：任务镜像。
-- `deploy/`：部署资料。
+- `deploy/`：部署资料；`deploy/updater/` 是部署包和 Docker 共用的更新器。
+- `website/`：文档站（VitePress），`cd website && npm ci && npm run dev` 本地预览。
+- `changelogs/`：每个版本一份版本说明。
 - `scripts/`：安装和打包脚本。
 - `examples/`：示例角色和公开回放用例。
 
@@ -87,7 +89,7 @@ uv run --no-sync python -m compileall -q src/len_bot
 
 ## 数据格式
 
-业务数据库从公开基线 v1 开始。改表结构时，在 `storage/schema.py` 直接建新结构，同时在 `maintenance/migrate.py` 的 `UPGRADES` 里加一步从上一版升级，并提高 `storage/store.py` 的 `FORMAT_VERSION`。升级只在停机时由维护命令执行，运行时不写新旧兼容分支。
+业务数据库从公开基线 v1 开始。改表结构时，在 `storage/schema.py` 直接建新结构，同时在 `maintenance/migrate.py` 的 `UPGRADES` 里加一步从上一版升级，并提高 `storage/store.py` 的 `FORMAT_VERSION`。记忆处理库、本地记忆索引和根配置同理，各自的编号见[发行指南](deploy/releasing.md#兼容编号)。升级只在停机时由维护命令执行，运行时不写新旧兼容分支。
 
 ## 构建与发布
 
@@ -95,7 +97,7 @@ uv run --no-sync python -m compileall -q src/len_bot
 uv run --no-sync python scripts/build_release.py /tmp/lenbot-release
 ```
 
-这条命令在副本里重建面板，生成源码包、wheel 和 Linux／macOS 部署包，不启动、不上传。正式发布走 [Release 工作流](.github/workflows/release.yml)，步骤见[发行指南](deploy/releasing.md)。
+这条命令在副本里重建面板，生成源码包、wheel、Linux／macOS／Windows 部署包和发行清单，不启动、不上传。正式发布走 [Release 工作流](.github/workflows/release.yml)，步骤见[发行指南](deploy/releasing.md)。
 
 [CI](.github/workflows/ci.yml) 会编译、跑测试、构建面板并打包。CI 通过不代表页面交互和真实聊天也没问题。
 
