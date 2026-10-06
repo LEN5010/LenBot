@@ -184,7 +184,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
         hour = now.replace(minute=0, second=0, microsecond=0).timestamp()
         calls = instance_calls(runtime.store, config.database, None,
                                min(start.timestamp(), hour - 23 * 3600), end.timestamp(),
-                               memory=runtime.memory, root=root)
+                               memory=runtime.memory, trials_root=root / '.runtime' / 'chat-tests')
         stuck = [] if runtime.ingestor is None else [
             {"scene": scene, "status": job["status"], "error": job["error"], "ended": job["ended"]}
             for scene in scenes if scene in runtime.chats

@@ -72,12 +72,12 @@ def call_records(store, scenes: list[str] | None, since: float, until: float, *,
 
 
 def instance_calls(store, database: Path, scenes: list[str] | None, since: float, until: float, *,
-                   memory=None, root: Path | None = None) -> list[UsageCall]:
+                   memory=None, trials_root: Path | None = None) -> list[UsageCall]:
     """The same main, memory and retained-trial sources used by the daily allowance."""
     with processing_records(database, None if memory is None else memory.jobs) as records:
         calls = call_records(store, scenes, since, until, memory_db=None if records is None else records.db)
-    if root is not None:
-        for path in (root / '.runtime' / 'chat-tests').glob('*/state.db'):
+    if trials_root is not None:
+        for path in trials_root.glob('*/state.db'):
             with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
                 with processing_records(path, None) as records:
                     calls.extend(call_records(SimpleNamespace(db=db), scenes, since, until,

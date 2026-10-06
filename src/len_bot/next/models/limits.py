@@ -72,7 +72,6 @@ def check_speech(store, config) -> None:
 class ModelBudget:
     def __init__(self, config, store, memory, *, root: Path | None = None):
         self.config, self.store, self.memory = config, store, memory
-        self.root = root
         self.trials_root: Path | None = None if root is None else root / '.runtime' / 'chat-tests'
         if config.limits.daily_tokens is not None or config.limits.scene_daily_tokens:
             self.validate_sources()
@@ -104,7 +103,7 @@ class ModelBudget:
     def totals(self, scene: str | None, since: float, until: float) -> dict:
         selected = None if scene is None else [scene]
         calls = instance_calls(self.store, self.config.database, selected, since, until,
-                               memory=self.memory, root=self.root)
+                               memory=self.memory, trials_root=self.trials_root)
         result = summarize_calls(calls, since, until)
         return {'tokens': result['budgeted']['input'] + result['budgeted']['output'],
                 'settled_unknown_calls': result['settled_unknown_calls'],
