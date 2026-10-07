@@ -114,7 +114,7 @@ uv run --no-sync python scripts/build_release.py /tmp/lenbot-release
 - 问题和改动分别用[缺陷模板](.github/ISSUE_TEMPLATE/bug.md)和 [PR 模板](.github/PULL_REQUEST_TEMPLATE.md)。
 - 提交前跑 `git diff --check`。真实配置、数据库、凭据、个人角色和构建产物都不要提交。
 - 提交说明写清行为变化、核对了什么、还有什么没确认。
-- 行为或接口有变化时，同步更新 README、`developer/` 或 `deploy/` 里对应的说明。
+- 行为或接口有变化时，同步更新 README、文档站 `website/`、`developer/` 或 `deploy/` 里对应的说明。中文是主版本，有英文版的文件（README、CONTRIBUTING、部署概览、插件接口）一起改。改了 `website/` 就在那里跑一次 `npm run build`，死链会让构建失败。
 - 作者只写人。提交信息和 PR 里不加工具或模型的署名，例如指向机器身份的 `Co-Authored-By:`、`Generated with …`。
 
 ## 许可证

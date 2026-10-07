@@ -114,7 +114,7 @@ This rebuilds the panel in a copy and produces the sdist, the wheel, the Linux/m
 - Use the [bug template](.github/ISSUE_TEMPLATE/bug.md) and the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
 - Run `git diff --check` before committing. Never commit real configuration, databases, credentials, personal personas or build output.
 - Commit messages say what behavior changed, what you checked and what is still unconfirmed.
-- When behavior or interfaces change, update the matching docs in the README, `developer/` or `deploy/`.
+- When behavior or interfaces change, update the matching docs in the README, the documentation site `website/`, `developer/` or `deploy/`. Chinese is the primary version; files that have an English version (README, CONTRIBUTING, deployment overview, plugin interface) are updated together. If you touch `website/`, run `npm run build` there; dead links fail the build.
 - Authors are people. Do not add tool or model attribution to commits or PRs, such as `Co-Authored-By:` lines pointing to machine identities or `Generated with …` footers.
 
 ## License
