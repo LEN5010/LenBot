@@ -39,21 +39,17 @@ from .configuration.chat import (
 from .configuration.plugin import PluginSettings, PluginCatalogSettings
 from .configuration.maintenance import (
     PanelSettings,
-    HistoryImportSettings,
-    MediaImportSettings,
-    MediaArchiveSettings,
     TaskArchiveSettings,
-    ReminderImportSettings,
     EvaluationSettings,
     ReplayClockSettings,
 )
 
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
 
 
 class SharedConfig(BaseModel):
     model_config = STRICT
-    config_version: Literal[1] = 1
+    config_version: Literal[2] = 2
     @property
     def _instance_root(self) -> Path | None:
         # Loader location is not a runtime setting and is not serialized or compared.
@@ -81,10 +77,6 @@ class SharedConfig(BaseModel):
     worker: WorkerSettings | None = None
     images: ImageSettings = Field(default_factory=ImageSettings)
     audio: AudioSettings = Field(default_factory=AudioSettings)
-    history_import: HistoryImportSettings | None = None
-    reminder_import: ReminderImportSettings | None = None
-    media_import: MediaImportSettings | None = None
-    media_archive: MediaArchiveSettings | None = None
     task_archive: TaskArchiveSettings | None = None
     models: Models
 
@@ -181,15 +173,6 @@ class SharedConfig(BaseModel):
             )
         return self
 
-    @model_validator(mode="after")
-    def distinct_history_paths(self) -> SharedConfig:
-        importing = self.history_import
-        if importing is not None:
-            paths = [self.database.resolve(), importing.source.resolve(), importing.backup.resolve()]
-            if len(set(paths)) != len(paths):
-                raise ValueError("history_import.source, history_import.backup and database must differ")
-        return self
-
     def model_settings(self, role: Literal["mind", "vision", "memory", "worker", "learner"]) -> ModelSettings:
         binding = getattr(self.models.roles, role)
         if binding is None:
@@ -246,14 +229,6 @@ class LabConfig(SharedConfig, SceneSettings):
             raise ValueError("plugins require the isolated-multi host, not the single-scene lab or replay")
         if self.transcribe_audio:
             raise ValueError("automatic audio transcription requires the isolated-multi host")
-        if self.history_import is not None and self.history_import.scenes != [self.scene]:
-            raise ValueError("history_import.scenes must contain only the configured scene")
-        if self.reminder_import is not None and self.reminder_import.scenes != [self.scene]:
-            raise ValueError('reminder_import.scenes must contain only the configured scene')
-        if self.media_import is not None and self.media_import.scenes != [self.scene]:
-            raise ValueError('media_import.scenes must contain only the configured scene')
-        if self.media_archive is not None and self.media_archive.scenes != [self.scene]:
-            raise ValueError('media_archive.scenes must contain only the configured scene')
         if self.task_archive is not None and self.task_archive.scenes != [self.scene]:
             raise ValueError('task_archive.scenes must contain only the configured scene')
         if self.replay_clock is not None:
@@ -265,10 +240,6 @@ class LabConfig(SharedConfig, SceneSettings):
                     ("web_search", self.web_search is not None and self.replay_web is None),
                     ("memory", self.memory is not None),
                     ("models.roles.vision", self.models.roles.vision is not None and self.replay_images is None),
-                    ("history_import", self.history_import is not None),
-                    ('reminder_import', self.reminder_import is not None),
-                    ('media_import', self.media_import is not None),
-                    ('media_archive', self.media_archive is not None),
                     ('task_archive', self.task_archive is not None),
                     ("worker", self.worker is not None),
                     ("delivery", self.delivery != "simulated"),
@@ -359,22 +330,6 @@ class HostConfig(SharedConfig):
                         and settings.learning.embedding.provider not in self.models.providers):
                     raise ValueError(f"scenes.{scene}.learning.embedding.provider references unknown provider "
                                      f"{settings.learning.embedding.provider!r}")
-        if self.history_import is not None:
-            unknown = [scene for scene in self.history_import.scenes if scene not in self.scenes]
-            if unknown:
-                raise ValueError(f"history_import.scenes are not configured: {unknown!r}")
-        if self.reminder_import is not None:
-            unknown = [scene for scene in self.reminder_import.scenes if scene not in self.scenes]
-            if unknown:
-                raise ValueError(f'reminder_import.scenes are not configured: {unknown!r}')
-        if self.media_import is not None:
-            unknown = set(self.media_import.scenes) - self.scenes.keys()
-            if unknown:
-                raise ValueError(f'media_import.scenes are not configured: {sorted(unknown)!r}')
-        if self.media_archive is not None:
-            unknown = set(self.media_archive.scenes) - self.scenes.keys()
-            if unknown:
-                raise ValueError(f'media_archive.scenes are not configured: {sorted(unknown)!r}')
         if self.task_archive is not None:
             unknown = set(self.task_archive.scenes) - self.scenes.keys()
             if unknown:
@@ -389,10 +344,6 @@ class HostConfig(SharedConfig):
         shared = {name: getattr(self, name) for name in SharedConfig.model_fields}
         # Offline settings belong to the original root object and their
         # commands, not to this derived runtime scene view or a saved root file.
-        shared["history_import"] = None
-        shared['reminder_import'] = None
-        shared['media_import'] = None
-        shared['media_archive'] = None
         shared['task_archive'] = None
         local = {name: getattr(self.scenes[scene], name) for name in SceneSettings.model_fields}
         shared["timezone"] = self.scene_timezone(scene)
@@ -447,7 +398,7 @@ def _validation_error(path: Path, error: ValidationError, kind: str) -> ValueErr
     return ValueError(f"{path}: invalid {kind} configuration: {details}")
 
 
-def _resolve_history_paths(root: Path, source: dict) -> None:
+def _resolve_archive_paths(root: Path, source: dict) -> None:
     tasks = source.get('task_archive')
     if isinstance(tasks, dict):
         tasks['destination'] = _resolved_path(root, tasks.get('destination'), within_root=True,
@@ -455,31 +406,6 @@ def _resolve_history_paths(root: Path, source: dict) -> None:
         backup_root = root.resolve() / '.backups'
         if tasks['destination'] == backup_root or not tasks['destination'].is_relative_to(backup_root):
             raise ValueError(f'task_archive.destination must be a new directory below root .backups: {tasks["destination"]}')
-    archive = source.get('media_archive')
-    if isinstance(archive, dict):
-        for field in ('source', 'directory', 'destination'):
-            archive[field] = _resolved_path(root, archive.get(field), within_root=field == 'destination',
-                                            field=f'media_archive.{field}')
-        backup_root = root.resolve() / '.backups'
-        if archive['destination'] == backup_root or not archive['destination'].is_relative_to(backup_root):
-            raise ValueError(f'media_archive.destination must be a new directory below the root .backups, not a release/source directory: {archive["destination"]}')
-    media = source.get('media_import')
-    if isinstance(media, dict):
-        for field in ('source', 'directory', 'backup'):
-            media[field] = _resolved_path(root, media.get(field), within_root=field == 'backup',
-                                          field=f'media_import.{field}')
-    reminders = source.get('reminder_import')
-    if isinstance(reminders, dict):
-        reminders['source'] = _resolved_path(root, reminders.get('source'), within_root=False, field='reminder_import.source')
-        reminders['backup'] = _resolved_path(root, reminders.get('backup'), within_root=True, field='reminder_import.backup')
-    importing = source.get("history_import")
-    if isinstance(importing, dict):
-        importing["source"] = _resolved_path(
-            root, importing.get("source"), within_root=False, field="history_import.source"
-        )
-        importing["backup"] = _resolved_path(
-            root, importing.get("backup"), within_root=True, field="history_import.backup"
-        )
 
 
 def _resolve_memory_path(root: Path, source: dict) -> None:
@@ -540,7 +466,7 @@ def _load_lab_source(path: Path, source: dict) -> LabConfig:
     if isinstance(source.get("logging"), dict):
         source["logging"]["directory"] = _resolved_path(root, source["logging"].get("directory"),
                                                        within_root=True, field="logging.directory")
-    _resolve_history_paths(root, source)
+    _resolve_archive_paths(root, source)
     _resolve_memory_path(root, source)
     _resolve_worker_paths(root, source)
     try:
@@ -574,7 +500,7 @@ def _load_host_source(path: Path, source: dict) -> HostConfig:
     if isinstance(source.get("logging"), dict):
         source["logging"]["directory"] = _resolved_path(root, source["logging"].get("directory"),
                                                        within_root=True, field="logging.directory")
-    _resolve_history_paths(root, source)
+    _resolve_archive_paths(root, source)
     _resolve_memory_path(root, source)
     _resolve_worker_paths(root, source)
     browser = source.get("account_browser")

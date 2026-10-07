@@ -10,6 +10,7 @@ import sqlite3
 
 import pytest
 
+from len_bot.next.config import CONFIG_VERSION
 from len_bot.next.maintenance.migrate import migrate
 from len_bot.next.maintenance.migrate_config import migrate_config
 from len_bot.next.maintenance.migrate_memory_jobs import migrate_memory_jobs
@@ -113,6 +114,7 @@ def test_config_upgrade_drops_prices_and_refuses_money_limits(tmp_path):
     path.write_text(json.dumps(source))
     assert migrate_config(path) is True
     upgraded = json.loads(path.read_text())
+    assert upgraded['config_version'] == CONFIG_VERSION
     assert "prices" not in upgraded["models"] and "price" not in upgraded["models"]["roles"]["asr"]
     assert upgraded["limits"] == {"messages_per_hour": 60}
     assert json.loads(path.with_name("lenbot.config.json.pre-tokens.bak").read_text()) == source
@@ -125,3 +127,23 @@ def test_config_upgrade_drops_prices_and_refuses_money_limits(tmp_path):
     with pytest.raises(ValueError, match="daily_model_cost"):
         migrate_config(money)
     assert json.loads(money.read_text()) == source
+
+
+@pytest.mark.parametrize('value', [None, {'source': 'old.sqlite3', 'backup': 'old-backup.sqlite3'}])
+def test_config_format1_upgrade_removes_retired_settings_and_preserves_archive(tmp_path, value):
+    path = tmp_path / 'lenbot.config.json'
+    retired = ('history_import', 'reminder_import', 'media_import', 'media_archive')
+    source = {'config_version': 1, 'models': {'providers': {}, 'roles': {}},
+              'task_archive': {'destination': '.backups/tasks', 'scenes': ['onebot:group:80001']},
+              **dict.fromkeys(retired, value)}
+    path.write_text(json.dumps(source))
+    original = tmp_path / 'old.sqlite3'
+    original.write_bytes(b'old-instance-data')
+
+    assert migrate_config(path) is True
+    upgraded = json.loads(path.read_text())
+    assert upgraded == {'config_version': CONFIG_VERSION, 'models': source['models'],
+                        'task_archive': source['task_archive']}
+    assert json.loads(path.with_name(path.name + '.pre-config-v1.bak').read_text()) == source
+    assert original.read_bytes() == b'old-instance-data'
+    assert migrate_config(path) is False

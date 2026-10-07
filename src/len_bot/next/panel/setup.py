@@ -20,7 +20,7 @@ import yaml
 
 from ..configuration.models import Binding, Provider
 from ..configuration.chat import Compaction
-from ..config import HostConfig
+from ..config import CONFIG_VERSION, HostConfig
 from ..configuration.onebot import OneBotSettings
 from ..platform.onebot import OneBot
 from .model_access import probe_model as run_model_probe
@@ -96,7 +96,7 @@ class ModelProbe(BaseModel):
 
 def setup_source(item: FirstSetup) -> dict:
     return {
-        'config_version': 1, 'mode': 'isolated-multi', 'bot_id': item.bot_id, 'owners': item.owners,
+        'config_version': CONFIG_VERSION, 'mode': 'isolated-multi', 'bot_id': item.bot_id, 'owners': item.owners,
         'timezone': item.timezone, 'delivery': item.delivery, 'database': 'state/lenbot.sqlite3',
         'onebot': item.onebot.model_dump(mode='json'),
         'compaction': item.compaction.model_dump(mode='json'),
