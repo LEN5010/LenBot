@@ -6,6 +6,10 @@
 |---|---|
 | [群聊总结](https://github.com/lendevs/lenbot-plugin-group-digest) | 每天定时或按需把指定时间范围的聊天做成总结卡片；可按群开启每小时增量整理，Bot 也能在聊天里自己调用；`/群总结` 文字总结，`/群工作` 把长工作交给后台任务 |
 | [GSUID Core 桥接](https://github.com/lendevs/lenbot-plugin-gscore-adapter) | `/gs` 转发给独立运行的 GsCore 服务，图文由 LenBot 发出 |
+| [A-SOUL 日程与动态](https://github.com/lendevs/lenbot-plugin-asoul) | `/日程` 发日程卡片，也能查询动态和二创并发送卡片 |
+| [哔哩哔哩](https://github.com/lendevs/lenbot-plugin-bilibili) | 查询视频和搜索，推送直播与关注更新；可配置主人账号读取与点赞、收藏 |
+
+以上源码仍在开发中，目录固定到已核对的提交，尚未发布版本标签或 Release。
 
 安装后在**插件页**里为每个群单独打开。从旧内置版本迁移时，更新宿主后安装同名插件，保留原参数、选群与数据。时间查询和 RSS 播报已删除，旧实例需清理 `clock`、`rss_broadcast` 配置；Bot 每轮仍能看到当前时间。
 
