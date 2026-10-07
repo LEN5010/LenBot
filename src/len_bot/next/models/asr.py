@@ -91,12 +91,13 @@ def parse_transcription(body: object) -> Transcript:
                                usage=usage, metering=metering) from error
 
 
-async def transcribe_audio(binding: ASRBinding, *, base_url: str, api_key: str, wav: bytes) -> Transcript:
+async def transcribe_audio(binding: ASRBinding, *, base_url: str, api_key: str, wav: bytes, proxy: str | None = None) -> Transcript:
     data = {"model": binding.model, "response_format": "json"}
     if binding.language is not None:
         data["language"] = binding.language
     async with asyncio.timeout(binding.timeout_seconds), httpx.AsyncClient(
-            timeout=binding.timeout_seconds, trust_env=False, follow_redirects=False) as client:
+            timeout=binding.timeout_seconds, trust_env=False, follow_redirects=False,
+            transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False, proxy=proxy)) as client:
         response = await client.post(base_url.rstrip("/") + "/audio/transcriptions",
             headers={"Authorization": f"Bearer {api_key}"}, data=data,
             files={"file": ("record.wav", wav, "audio/wav")})

@@ -2,9 +2,9 @@
 
 ## 最小插件
 
-一个目录包含 `plugin.toml`、`__init__.py`，并恰好定义一个 `Plugin` 子类。可直接复制 [counter](examples/counter/)，只使用 `len_bot.next.plugin`，不需要引用 Chat、Store 或 NetworkRuntime。
+一个目录包含 `plugin.toml`、`__init__.py`，并恰好定义一个 `Plugin` 子类。可从[插件模板](https://github.com/lendevs/lenbot-plugin-template)开始，只使用 `len_bot.plugin`，不需要引用 Chat、Store 或 NetworkRuntime。
 
-清单必填以下字段。`name` 等于安装目录名；仓库根或 ZIP 根不要求预先使用该目录名。公共接口代次为 **1**，同代接口兼容增加，破坏签名或语义时升代。宿主只加载当前代次，不猜旧包字段。
+清单必填以下字段。`name` 等于安装目录名；仓库根或 ZIP 根不要求预先使用该目录名。公共接口代次为 **1**，自 0.2.0 起冻结：之后只做兼容增加（新的可选参数、新方法、新的清单可选字段），不改已有签名和语义；确需破坏时升代。宿主只加载当前代次，不猜旧包字段。
 
 ```toml
 name = "counter"
@@ -19,9 +19,9 @@ license = "GPL-3.0-only"
 description = "每群独立计数"
 ```
 
-`version` 按 Python packaging 版本规范解析和规范化，推荐 X.Y.Z；两个 requires 字段是显式版本范围，与实际宿主和解释器比较。`platforms` 使用 Python 的 `sys.platform` 名称，宿主有 Linux（`linux`）、macOS（`darwin`）和 Windows（`win32`）三种部署包。`reload` 为 `plugin`（允许单插件换版）或 `host`（需要宿主重启）。可选 `repository`、`homepage` 是 HTTP(S) 地址。
+`version` 按 Python packaging 版本规范解析和规范化，推荐 X.Y.Z；两个 requires 字段是显式版本范围，与实际宿主和解释器比较。`platforms` 使用 Python 的 `sys.platform` 名称，宿主有 Linux（`linux`）、macOS（`darwin`）和 Windows（`win32`）三种部署包。`reload` 为 `plugin`（允许单插件换版）或 `host`（需要宿主重启）。可选 `repository`、`homepage` 是 HTTP(S) 地址。可选 `data_version`（正整数，默认 1）是插件数据目录和 KV 的格式编号，改变数据形状时提高它并实现 `migrate_data`，见下文[数据版本](#数据版本)。
 
-`dependencies = ["包名>=版本"]` 声明 Python 依赖，由 uv 解析。当前环境已有版本作为约束，冲突原样报出，不自动换服务或改版本重试。系统软件、外部服务及凭据要求写在插件 README。公开作者入口是 `len_bot.next.plugin`、它返回的 `len_bot.next.platform.messages` 类型，以及下文的 `len_bot.next.plugin_testing`；其他内部模块不承诺兼容。
+`dependencies = ["包名>=版本"]` 声明 Python 依赖，由 uv 解析。当前环境已有版本作为约束，冲突原样报出，不自动换服务或改版本重试。系统软件、外部服务及凭据要求写在插件 README。公开作者入口是 `len_bot.plugin`（含它导出的 `ChatMessage`、`Notice`、`Sender`、`Segment` 消息类型）、下文的 `len_bot.plugin_testing`，以及 `len_bot.image_assets`、`len_bot.text_cards` 辅助模块；`len_bot.next` 下的内部模块不承诺兼容。
 
 ## 安装与维护
 
@@ -34,14 +34,27 @@ description = "每群独立计数"
 - 依赖声明变化或 `reload=host`：应用动作选定候选，面板列为待重启。明确重启时，启动器等待旧宿主退出，再由 `maintenance.apply_plugins` 持实例锁，核对候选配置、一次安装合并依赖、切源码，最后启动新宿主。普通启动不消费候选。失败结束本次启动器，候选和原错保留；修正后显式再操作，不自动回滚环境。
 - 直接运行 host 的实例停机后，在实例根执行 `python -m len_bot.next.maintenance.apply_plugins`，再明确启动。它只处理面板已经选择应用的候选。重建环境后用 `python -m len_bot.next.maintenance.plugin_dependencies` 恢复已安装插件声明依赖；首次安装尚未应用的候选不参与恢复，已有安装的插件按已安装源码恢复。使用目标环境的解释器及 uv；服务和容器说明见[部署](../deploy/current/README.md)。
 - “取消候选”保留已安装源码；首次安装尚未应用时取消会移除其配置入口。停用保留参数、群选择和数据；卸载删除源码、候选和启用配置，保留插件业务数据和共享依赖包。删除数据仍是插件停止后的单独动作。
-- 插件自有文件／KV 格式由作者维护。增加必填配置或删除字段须在应用前明确填写；数据转换用作者提供的停机命令。选择旧源码不代表数据能回退，宿主不自动删除未知配置或回滚 KV。
+- 应用新版本时，被替换的源码移到 `plugins/.previous/<name>`，面板可「回到上一版本」一次。新版本加载、启动或数据迁移失败时，宿主自动回到上一版本源码；如果新版本已经迁移了数据，数据也恢复成迁移前的备份。面板上手动回退只换源码，不动数据（见下文）。
+- 增加必填配置或删除字段须在应用前明确填写；宿主不自动删除未知配置。
+
+### 数据版本
+
+插件数据放在 `ctx.data_dir`（含 KV 文件）。宿主在其中记录 `.lenbot-data.json`，写明数据按哪个 `data_version` 写成；没有记录的已有数据算版本 1，全新的空目录直接记为清单当前版本。
+
+清单的 `data_version` 比记录高时，宿主在 `start()` 之前：
+
+1. 把整个数据目录复制到 `plugins.data_directory/.backups/<name>-v<旧版本>-<时间>`；
+2. 调用 `await plugin.migrate_data(from_version)`，此时插件已加载，可以读写 `ctx.data_dir` 和 KV，但还没有 `start()`；
+3. 成功后写入新版本号并启动；抛错时把数据目录恢复成迁移前的样子，插件标记为失败，原错写进日志。
+
+一次迁移要能从任何受支持的旧版本走到当前版本（按 `from_version` 依次处理）。没有实现 `migrate_data` 却提高了 `data_version` 会直接失败。清单的 `data_version` 比记录低时宿主拒绝启动：旧版本插件不读新数据，回退版本需要同时从 `.backups` 恢复对应的数据。
 
 [独立插件与示例](plugin-examples.md)覆盖命令接管、生成与委派、外部服务。发现页仍使用[静态目录](plugin-catalog.md)，首版没有市场后端。
 
 ## 入口
 
 ```python
-from len_bot.next.plugin import Plugin, Invocation, command, fullmatch, regex, tool, background, on_notice
+from len_bot.plugin import Plugin, Invocation, command, fullmatch, regex, tool, background, on_notice
 ```
 
 | 装饰器 | async 方法参数 | 行为 |
@@ -143,7 +156,7 @@ instructions = "prompts/tools.md"
 ```python
 from typing import Annotated
 from pydantic import Field
-from len_bot.next.plugin import Invocation, Plugin, tool
+from len_bot.plugin import Invocation, Plugin, tool
 
 class Example(Plugin):
     @tool("recent_count", "统计当前群指定时段的消息数量；不发送。",
@@ -284,15 +297,15 @@ async def publish(self, ctx):
 
 插件可带 `skills/<技能名>/SKILL.md` 和相关资源。宿主只为启用该插件的场景提供目录，并继续应用角色 `skills` 许可；任务以只读方式挂载。名称遵循现有技能命名规则，与其他来源冲突就报错。插件技能可在面板查看，不能通过普通技能的移动／删除操作改写插件源码。
 
-[counter 教学示例](examples/counter/)和[独立群总结插件](https://github.com/lendevs/lenbot-plugin-group-digest)覆盖无模型、单次模型、独立工作三种路径。
+[插件模板](https://github.com/lendevs/lenbot-plugin-template)和[独立群总结插件](https://github.com/lendevs/lenbot-plugin-group-digest)覆盖无模型、单次模型、独立工作三种路径。
 
 ## 生命周期和错误
 
 `start()` 建立资源，`stop()` 关闭资源；启动协程也由宿主拥有，重载或停用会先取消并等待未完成的启动，再串行关闭该实例的资源。用 `self.ctx.start_task(name, coroutine)` 登记自有后台协程，宿主停止时会取消。它不是容器工作任务。不在 asyncio 主循环里跑阻塞网络请求。
 
-一次处理器报错结束该次调用，原错由宿主记录，不自动重试、换服务或停用整个插件。需要特权的具体入口可用 `ctx.require_owner()`；不必给普通查询加主人门槛。
+一次处理器报错结束该次调用，原错由宿主写进运行日志（`plugin_error`），不自动重试、换服务或停用整个插件。插件自己的记录用 `self.ctx.log`（标准 `logging.Logger`），写进宿主的 `logs/lenbot.jsonl`，自动带上插件名和当前的群、一轮、工具调用 ID；面板日志页可按插件筛选。需要特权的具体入口可用 `ctx.require_owner()`；不必给普通查询加主人门槛。
 
-插件是同进程代码，共享宿主依赖环境，不能宣称沙箱隔离。不使用 `ctx.plugin.host` 穿透到内部运行时。接口扩展随版本发布；当前安装与生效方式见 [示例说明](examples/counter/README.md)。
+插件是同进程代码，共享宿主依赖环境，不能宣称沙箱隔离。不使用 `ctx.plugin.host` 穿透到内部运行时。接口扩展随版本发布；安装与生效方式见[安装与维护](#安装与维护)。
 
 ## 本地测试与发布
 
@@ -300,7 +313,7 @@ async def publish(self, ctx):
 
 ```python
 from pathlib import Path
-from len_bot.next.plugin_testing import PluginTest
+from len_bot.plugin_testing import PluginTest
 
 async def check():
     async with PluginTest(Path("counter"), config={"step": 2}) as bot:
@@ -311,6 +324,8 @@ async def check():
 ```
 
 `scenes` 和 `owners` 可在构造器指定，`scene`／`scene_list` 参数按 `scenes` 校验；`message(text, scene=..., sender=...)` 模拟实际身份，返回是否被接管。`deliveries` 包含插件、场景、组合内容、reply_to 和 simulated 状态；`events()` 查看实际记录的插件事件。处理器或启动失败会使本次测试报错，退出上下文会停止插件并删除临时实例。模型默认关闭；`models=` 明确配置测试模型时，generate 经过真实宿主协议、预算与用量记录。记忆或工作服务仍明确报错；插件自行调用外部网络仍会执行，同进程测试不是沙箱。
+
+测试数据迁移时传入旧数据目录：`PluginTest(package, data=Path('tests/data-v1'), data_version=1)`，进入上下文时会像真实升级一样先跑 `migrate_data` 再 `start()`。
 
 固定时钟使用 `PluginTest(..., now=lambda: 1791298800)`。`add_message(text, sender=..., scene=..., message_id=..., timestamp=...)` 保存测试消息并返回 ChatMessage；用其 platform_message_id 调用需要来源的工具。无需修改宿主私有字段。
 
@@ -331,10 +346,10 @@ async with PluginTest(package, models=models, now=lambda: fixed_time) as bot:
 
 模型配置不是网络沙箱；用本机协议服务验证，不填写生产凭据。模板同时提供 JSON 查询 `counter_read` 与后台生成／自行发送 `counter_card`。四个业务插件与[回放场景](../examples/plugin-tools/README.md)用于核对真实 ID、时间范围与结果含义；协议通过不表示真实模型选择或平台送达已经实测。
 
-在 GitHub 上打开[插件模板仓库](https://github.com/lendevs/lenbot-plugin-template)，点 Use this template 生成自己的仓库。模板 CI 安装指定版本的宿主再跑插件测试；打 `v*` 标签时，发布工作流把完整运行源码、prompts／skills／assets 资源及许可说明打成可导入的 ZIP 挂到 Release。发布前填写自己的 name／authors，更新版本及兼容范围。
+在 GitHub 上打开[插件模板仓库](https://github.com/lendevs/lenbot-plugin-template)，点 Use this template 生成自己的仓库。模板 CI 调用 LenBot 提供的可复用工作流 `plugin-ci.yml`，默认用宿主 `master` 跑插件测试和打包检查，可传入 `host_ref` 固定宿主版本；打 `v*` 标签时，发布工作流把完整运行源码、prompts／skills／assets 资源及许可说明打成可导入的 ZIP 挂到 Release。发布前填写自己的 name／authors，更新版本及兼容范围。
 
 **许可证**：LenBot 宿主采用 AGPL-3.0-only，插件模板和计数示例采用 GPL-3.0-only。插件和宿主运行在同一个进程里，推荐插件也使用 GPL-3.0；GPLv3 第 13 条允许 GPLv3 作品与 AGPLv3 作品组合使用。选择其他许可证前，请自行确认它与 GPLv3／AGPLv3 兼容。
 
 [English](plugins-v1.en.md)
 
-0.2.0 仍未发行；当前独立插件 CI 固定到包含本页接口的宿主开发提交，不能把较早同名 0.2.0 开发提交当作已经支持。公开后补丁版保持兼容，新接口最低宿主版本写进 requires_lenbot；破坏接口才升代。
+0.2.0 仍未发行。官方插件的 CI 跟随宿主 `master`，宿主 CI 也会按插件目录固定的版本跑官方插件测试，两边任何一方破坏兼容都会直接失败。公开后补丁版保持兼容，新接口最低宿主版本写进 requires_lenbot；破坏接口才升代。

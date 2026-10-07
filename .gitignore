@@ -95,3 +95,7 @@ node_modules/
 website/node_modules/
 website/.vitepress/dist/
 website/.vitepress/cache/
+
+# Instances written by older data formats are test inputs, not local data.
+!tests/fixtures/history/**/*.db
+!tests/fixtures/history/**/*.sqlite3

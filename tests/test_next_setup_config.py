@@ -114,3 +114,68 @@ async def test_setup_model_probe_makes_one_request_and_returns_original_error(tm
                 assert result.status_code == 422 and 'fixture provider rejected probe' in result.text
     assert len(requests) == 1 and requests[0]['model'] == 'fixture'
     assert not (tmp_path / 'lenbot.config.json').exists()
+
+
+def test_first_setup_rejects_bad_account_before_creating_files(tmp_path):
+    from pydantic import ValidationError
+    from len_bot.next.panel.setup import FirstSetup, initialize
+    source = json.loads((Path(__file__).parents[1] / 'deploy/current/first-setup.example.json').read_text())
+    source.update(password='fixture-password', password_confirmation='fixture-password')
+    for fields in ({'username': ' '}, {'username': ' leading'}, {'password': '        ', 'password_confirmation': '        '},
+                   {'password_confirmation': 'different'}, {'password': 'short', 'password_confirmation': 'short'}):
+        with pytest.raises(ValidationError):
+            initialize(tmp_path, FirstSetup.model_validate({**source, **fields}))
+        assert not (tmp_path/'lenbot.config.json').exists()
+        assert not (tmp_path/'personas').exists()
+
+
+@pytest.mark.asyncio
+async def test_setup_official_plugins_are_optional_and_selected_sources_stay_disabled(tmp_path):
+    from io import BytesIO
+    import zipfile
+    from len_bot.next.panel.setup import FirstSetup, initialize
+    from len_bot.next.plugins.install import PluginInstaller
+    body = json.loads((Path(__file__).parents[1] / 'deploy/current/first-setup.example.json').read_text())
+    body['password'] = 'fixture-password'
+    app = create_setup_app(tmp_path, 'fixture-token', asyncio.Event())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://127.0.0.1') as client:
+        assert (await client.get('/api/setup/plugins')).status_code == 401
+        client.headers['X-Setup-Token'] = 'fixture-token'
+        choices = (await client.get('/api/setup/plugins')).json()['plugins']
+        assert {p['name'] for p in choices} == {'group_digest', 'gscore_adapter', 'asoul', 'bilibili'}
+        assert all(not p['installed'] and p['repository'].startswith('https://github.com/lendevs/') for p in choices)
+        invalid = await client.post('/api/setup', json={**body, 'install_plugins': ['unknown']})
+        assert invalid.status_code == 422 and not (tmp_path/'lenbot.config.json').exists()
+        invalid = await client.post('/api/setup', json={**body, 'install_plugins': ['group_digest', 'group_digest']})
+        assert invalid.status_code == 422
+        with pytest.raises(ValueError, match='尚未安装'):
+            initialize(tmp_path, FirstSetup.model_validate({**body, 'install_plugins': ['group_digest']}))
+        assert not (tmp_path/'personas').exists()
+        # A prepared local source exercises the same managed-installation boundary without network downloads.
+        archive = BytesIO()
+        with zipfile.ZipFile(archive, 'w') as package:
+            package.writestr('plugin.toml', '''name = "group_digest"
+version = "1.3.0"
+interface = 1
+requires_lenbot = ">=0.2,<1"
+requires_python = ">=3.13"
+platforms = ["linux", "darwin", "win32"]
+reload = "plugin"
+authors = ["LEN5010"]
+license = "AGPL-3.0-only"
+description = "本机安装边界样本"
+''')
+            package.writestr('__init__.py', '')
+        installer = PluginInstaller(tmp_path)
+        await installer.prepare_zip(archive.getvalue(), 'fixture.zip', [])
+        installer.apply_files('group_digest')
+        result = await client.post('/api/setup', json={**body, 'install_plugins': ['group_digest']})
+        assert result.status_code == 200, result.text
+        assert result.json()['plugins'] == [{'name': 'group_digest', 'installed': True, 'version': '1.3.0'}]
+        cfg = load_host_config(tmp_path)
+        assert cfg.plugins.disabled == ['group_digest'] and cfg.plugins.configured == {'group_digest': {}}
+        assert cfg.scenes[body['scene']].plugins == []
+        before = (tmp_path/'lenbot.config.json').read_bytes()
+        assert (await client.get('/api/setup/plugins')).status_code == 409
+        assert (await client.post('/api/setup', json=body)).status_code == 409
+        assert (tmp_path/'lenbot.config.json').read_bytes() == before

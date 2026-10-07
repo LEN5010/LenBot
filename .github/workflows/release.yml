@@ -21,8 +21,11 @@ jobs:
   checks:
     uses: ./.github/workflows/check.yml
 
+  official-plugins:
+    uses: ./.github/workflows/official-plugins.yml
+
   packages:
-    needs: checks
+    needs: [checks, official-plugins]
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}

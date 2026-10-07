@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -30,6 +31,9 @@ from ..persona.profile import Persona, select_style
 from ..platform.platform_tools import PlatformCall
 from ..storage.store import Store, encode
 from ..work.service import WorkTasks
+from ..runtime.logs import add_context, log_event
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -238,7 +242,7 @@ class Chat:
                        plugin_events: list[tuple[int, str]] | None = None,
                        direct: bool = False, wake_received_at: float | None = None,
                        channels: set[str] | None = None,
-                       proactive: tuple[str, str, float] | None = None) -> dict:
+                       proactive: tuple[str, str, float] | None = None, channel: str | None = None) -> dict:
         self.direct_request = direct
         observed_at = self.now()
         self.turn_channels = set() if channels is None else set(channels)
@@ -247,6 +251,12 @@ class Chat:
                                        scheduled=scheduled, task_notices=task_notices,
                                        plugin_events=plugin_events,
                                        wake_received_at=wake_received_at, proactive=proactive)
+        add_context(turn_id=turn_id)
+        # The link from waking input to this turn: message seqs, schedules, task notices and plugin events.
+        log_event(logger, 'turn_start', channel=channel, channels=sorted(self.turn_channels), direct=direct,
+                  batch=None if batch is None else {'through_seq': batch[0], 'entries': len(batch[1])},
+                  schedules=[item[0] for item in scheduled or []], task_notices=[item[0] for item in task_notices or []],
+                  plugin_events=[item[0] for item in plugin_events or []], proactive=proactive is not None)
         self.notify()
         expressions: list[str] = []
         extensions = 0

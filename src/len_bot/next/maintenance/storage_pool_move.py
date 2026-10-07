@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import sqlite3
 import stat
 import tempfile
 
@@ -16,6 +15,7 @@ from ..config import HostConfig, _load_host_source, _read_root
 from ..instance_lock import instance_lock
 from ..storage.pool import inspect_pool, worker_pool_usage
 from ..configuration.storage_pool import StoragePool
+from ..storage.sqlite import connect
 from ..storage.store import FORMAT_VERSION
 
 
@@ -33,7 +33,7 @@ def configured_paths(value: object, prefix: str = '') -> Iterator[tuple[str, Pat
 def stopped_tasks(config: HostConfig, sources: tuple[Path, Path]) -> None:
     if not config.database.exists():
         return
-    with closing(sqlite3.connect(config.database.as_uri() + '?mode=ro', uri=True)) as db:
+    with closing(connect(config.database, readonly=True)) as db:
         version = (db.execute('PRAGMA application_id').fetchone()[0], db.execute('PRAGMA user_version').fetchone()[0])
         if version != (0x4C424E31, FORMAT_VERSION):
             raise ValueError(f'Task storage move needs the current database format: {version!r}')

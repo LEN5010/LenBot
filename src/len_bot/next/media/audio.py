@@ -11,12 +11,13 @@ from weakref import WeakValueDictionary
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..models.asr import ASRProtocolError, AudioSettings, transcribe_audio, transcription_tokens
+from ..models.asr import ASRProtocolError, transcribe_audio, transcription_tokens
 from .audio_store import AudioStore
 from ..models.slots import ModelSlots
 from ..platform.platform_tools import PlatformCall
 from ..platform.onebot_audio import fetch_record
 from ..storage.store import Store, encode
+from ..runtime.logs import log_context
 
 if TYPE_CHECKING:
     from ..config import LabConfig
@@ -108,7 +109,7 @@ async def process_audio(store, config, arguments, *, turn_id, platform, slots, d
                     store.end_call(call_id, response, usage, error, tokens=tokens)
             notify()
             try:
-                reply = await transcribe_audio(binding, base_url=provider.base_url, api_key=provider.api_key, wav=row["wav"])
+                reply = await transcribe_audio(binding, base_url=provider.base_url, api_key=provider.api_key, wav=row["wav"], proxy=provider.proxy)
             except BaseException as error:
                 error_text = f"{type(error).__name__}: {error}"
                 if isinstance(error, ASRProtocolError):
@@ -164,7 +165,10 @@ class AudioService:
         return 0 if since is None else max(0, since + self.configs[scene].audio.wait_seconds - now)
 
     def start(self) -> None:
-        self.workers = [asyncio.create_task(self.run(scene), name=f"audio:{scene}") for scene in self.changed]
+        self.workers = []
+        for scene in self.changed:
+            with log_context(scene=scene, job='audio'):
+                self.workers.append(asyncio.create_task(self.run(scene), name=f"audio:{scene}"))
 
     async def close(self) -> None:
         self.closing = True

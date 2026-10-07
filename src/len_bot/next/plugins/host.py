@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 import importlib.util
@@ -24,16 +24,19 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, Valid
 from ..config import HostConfig
 from ..tools.external_tools import ExternalTool
 from ..platform.messages import ChatMessage
-from ..plugin import (INTERFACE, MARK, Content, GenerationRole, Image, Text,
+from ...plugin import (MARK, Content, GenerationRole, Image, Text,
                      Invocation, Notice, Plugin, PluginContext, Sent)
 from .kv import PluginKV
+from .data import prepare_data
 from ..models.client import ChatModel, ModelReply
 from ..models.request import request_model
 from ..chat.schedule_time import Cron, next_cron, parse_cron
+from ..chat.request_source import SOURCE_DESCRIPTION, source_message
+from ..runtime.logs import SECRETS, error_text, log_context, log_event, recorded_errors
 from ..tools.skills import Skill, load_plugin_skills
-from .manifest import Manifest, discover, read_manifest, redact_values
+from .manifest import Manifest, discover, read_manifest, redact_values, secret_values
 from ..storage.store import encode
-from ..image_assets import MAX_IMAGE_BYTES, inspect_image
+from ...image_assets import MAX_IMAGE_BYTES, inspect_image
 from ..tools.http_read import fetch_public
 from .store import PluginStore
 
@@ -132,8 +135,7 @@ def _arguments(tool: str, function: Callable, *, needs_source: bool) -> type[Bas
     if needs_source:
         if "source_message_id" in fields:
             raise ValueError(f"工具 {tool} 的 source_message_id 由宿主提供，不能声明在处理函数中")
-        fields["source_message_id"] = (str, Field(min_length=1,
-            description="发起这项请求的真实群消息 ID；从聊天记录选择，宿主据此读取实际发送者，不能填写账号 ID"))
+        fields["source_message_id"] = (str, Field(min_length=1, description=SOURCE_DESCRIPTION))
     return create_model(f"PluginTool_{tool}", __config__=STRICT, **fields)
 
 
@@ -169,9 +171,11 @@ class PluginHost:
             self.available[name] = entries
         if settings is None:
             return
+        previous = recorded_errors(config.logging.directory, 'plugin_error', 'plugin', limit=ERROR_LIMIT)
         for name, values in settings.configured.items():
             scenes = tuple(scene for scene, item in config.scenes.items() if name in item.plugins)
             record = Loaded(name, None, None, scenes, values=values)
+            record.errors.extend(previous.get(name, []))
             self.plugins[name] = record
             if name in settings.disabled:
                 record.status = "stopped"
@@ -190,6 +194,7 @@ class PluginHost:
                              "多个目录提供同名插件：" + "、".join(map(str, directories)))
         record.directory = directory = directories[0]
         record.manifest = manifest = read_manifest(directory)
+        SECRETS.add(secret_values(manifest, values))
         if manifest.model is not None:
             instructions = (directory / manifest.model.instructions).resolve()
             if not instructions.is_relative_to(directory.resolve()):
@@ -320,14 +325,15 @@ class PluginHost:
             raise RuntimeError(f"插件 {plugin} 未处于可运行状态：{record.status}")
         return record
 
+    # KV runs in a worker thread: a lock wait in one plugin's file must not stall the event loop.
     async def get_kv(self, plugin: str, key: str, default: JsonValue) -> JsonValue:
-        return PluginKV(self._active(plugin).context.data_dir).get(key, default)
+        return await asyncio.to_thread(PluginKV(self._active(plugin).context.data_dir).get, key, default)
 
     async def set_kv(self, plugin: str, key: str, value: JsonValue) -> None:
-        PluginKV(self._active(plugin).context.data_dir).set(key, value)
+        await asyncio.to_thread(PluginKV(self._active(plugin).context.data_dir).set, key, value)
 
     async def delete_kv(self, plugin: str, key: str) -> bool:
-        return PluginKV(self._active(plugin).context.data_dir).delete(key)
+        return await asyncio.to_thread(PluginKV(self._active(plugin).context.data_dir).delete, key)
 
     async def fetch_image(self, plugin: str, url: str, timeout_seconds: float) -> bytes:
         self._active(plugin)
@@ -338,13 +344,7 @@ class PluginHost:
         return data
 
     def source_message(self, scene: str, platform_id: str) -> ChatMessage:
-        message = self.runtime.store.find_message(scene, platform_id)
-        if (message is None or message.is_self or message.recalled or message.send_status != "received"
-                or message.sender.uid in self.config.scene_config(scene).attention.other_bot_ids):
-            raise ValueError(f"source_message_id 不是当前场景的真实请求消息：{platform_id!r}")
-        if message.sender.uid in self.config.scene_config(scene).permissions.blacklist:
-            raise PermissionError(f"账号 {message.sender.uid} 在当前场景黑名单中")
-        return message
+        return source_message(self.runtime.store, self.config.scene_config(scene), platform_id)
 
     async def send_text(self, plugin: str, scene: str, text: str, reply_to: str | None) -> Sent:
         return await self.send_parts(plugin, scene, [Text(text)], reply_to)
@@ -468,20 +468,23 @@ class PluginHost:
             self.on_update()
 
     def _record(self, record: Loaded, where: str, error: BaseException) -> str:
-        text = redact_values(f"{type(error).__name__}: {error}", record.manifest, record.values)
+        text = redact_values(error_text(error), record.manifest, record.values)
         where = redact_values(where, record.manifest, record.values)
         record.errors.append({"at": self.now(), "where": where, "error": text})
-        logger.error("插件 %s %s 出错：%s", record.name, where, text)
+        with log_context(plugin=record.name):
+            log_event(logger, 'plugin_error', f'插件 {record.name} {where} 出错', level=logging.ERROR,
+                      error=error, where=where)
         self._notify()
         return text
 
     async def _guard(self, record: Loaded, where: str, call: Awaitable[object]) -> None:
-        try:
-            await call
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            self._record(record, where, error)
+        with log_context(plugin=record.name):
+            try:
+                await call
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self._record(record, where, error)
 
     def _spawn(self, record: Loaded, where: str, call: Coroutine) -> asyncio.Task:
         task = asyncio.get_running_loop().create_task(self._guard(record, where, call), name=f"{record.name}:{where}")
@@ -545,8 +548,9 @@ class PluginHost:
                 parsed = entry.model.model_validate(arguments)
                 values = {key: getattr(parsed, key) for key in entry.model.model_fields}
                 message = self.source_message(scene, values.pop("source_message_id")) if entry.needs_source else None
-                task = asyncio.create_task(getattr(record.instance, entry.method)(
-                    Invocation(record.context, scene, message), **values), name=f"{record.name}:tool:{name}")
+                with log_context(plugin=record.name):
+                    task = asyncio.create_task(getattr(record.instance, entry.method)(
+                        Invocation(record.context, scene, message), **values), name=f"{record.name}:tool:{name}")
                 self.tasks[task] = record.name
                 task.add_done_callback(lambda done: self.tasks.pop(done, None))
                 try:
@@ -667,6 +671,11 @@ class PluginHost:
 
     async def start_plugin(self, record: Loaded) -> None:
         async def start() -> None:
+            data_dir = record.context.data_dir
+            migrated = await prepare_data(record.name, record.manifest.data_version, data_dir,
+                                          data_dir.parent / '.backups', record.instance.migrate_data)
+            if migrated is not None:
+                log_event(logger, 'plugin_data_migrated', **migrated)
             await record.instance.start()
             if record.status != "loaded":
                 return
@@ -679,7 +688,8 @@ class PluginHost:
                 task.add_done_callback(lambda done: self.tasks.pop(done, None))
             self._notify()
 
-        task = asyncio.create_task(start(), name=f"{record.name}:start")
+        with log_context(plugin=record.name):
+            task = asyncio.create_task(start(), name=f"{record.name}:start")
         self.tasks[task] = record.name
         task.add_done_callback(lambda done: self.tasks.pop(done, None))
         try:

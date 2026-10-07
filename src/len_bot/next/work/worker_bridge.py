@@ -103,8 +103,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         self.close_connection = True
-        if self.path not in {"/v1/chat/completions", "/task/deliver-file", "/task/browser-file", "/task/network",
-                             "/task/recall-chat", "/task/memory", "/task/transcribe", "/task/account-browser", "/task/mcp"}:
+        path = "/v1/messages" if self.path == "/v1/messages?beta=true" else self.path
+        if (path not in {"/v1/chat/completions", "/v1/responses", "/v1/messages", "/task/deliver-file", "/task/browser-file", "/task/network",
+                             "/task/recall-chat", "/task/memory", "/task/transcribe", "/task/account-browser", "/task/mcp"}
+                and not (path.startswith("/v1beta/models/") and path.endswith(":streamGenerateContent?alt=sse"))):
             self._error(404, f"unsupported worker route: {self.path}")
             return
         lengths = self.headers.get_all("Content-Length", [])
@@ -116,12 +118,23 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if not 0 < length <= self.server.max_request_bytes:
             self._error(413, f"worker request exceeds {self.server.max_request_bytes} bytes or is empty")
             return
-        authorizations = self.headers.get_all("Authorization", [])
-        if len(authorizations) != 1 or not authorizations[0].startswith("Bearer "):
-            self._error(401, "worker request needs one Bearer task token")
+        if path == "/v1/messages":
+            authorizations = self.headers.get_all("x-api-key", [])
+        elif path.startswith("/v1beta/models/"):
+            authorizations = self.headers.get_all("x-goog-api-key", [])
+        else:
+            authorizations = self.headers.get_all("Authorization", [])
+            if len(authorizations) == 1 and authorizations[0].startswith("Bearer "):
+                authorizations = [authorizations[0][7:]]
+            else:
+                authorizations = []
+        if len(authorizations) != 1:
+            self._error(401, "worker request needs one task token")
             return
-        metadata = json.dumps({"token": authorizations[0][7:], "path": self.path,
-                               "body_bytes": length}).encode()
+        metadata = {"token": authorizations[0], "path": path, "body_bytes": length}
+        if path == "/v1/messages" and self.headers.get("anthropic-beta"):
+            metadata["headers"] = {"anthropic-beta": self.headers["anthropic-beta"]}
+        metadata = json.dumps(metadata).encode()
         if len(metadata) > MAX_METADATA_BYTES:
             self._error(431, "worker authorization header is too large")
             return

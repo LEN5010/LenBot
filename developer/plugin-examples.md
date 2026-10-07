@@ -8,7 +8,7 @@ LenBot 提供插件接口、安装和运行能力，业务插件独立安装和�
 | gscore_adapter | `/gs 命令`、`/gs连接` | 已运行的 GSUID Core；状态工具沿角色许可 | [GSUID Core 桥接](https://github.com/lendevs/lenbot-plugin-gscore-adapter) |
 | asoul | `/日程`、`/日程高亮`；日程、动态、二创查询和卡片工具 | 日历与动态站配置；四个工具沿角色许可 | [A-SOUL](https://github.com/lendevs/lenbot-plugin-asoul) |
 | bilibili | 视频与搜索、直播与关注推送；五个工具 | 公开查询无需账号；账号读取与动作需开启配置并校验真实发送者为主人 | [哔哩哔哩](https://github.com/lendevs/lenbot-plugin-bilibili) |
-| counter | `/计数`、`计数加一`、`/计数清零` | 基础计数无需模型；每群独立 KV；卡片说明需要模型 | [教学示例](examples/counter/)、[插件模板](https://github.com/lendevs/lenbot-plugin-template) |
+| counter | `/计数`、`计数加一`、`/计数清零` | 基础计数无需模型；每群独立 KV；卡片说明需要模型 | [插件模板](https://github.com/lendevs/lenbot-plugin-template) |
 
 在「能力 → 插件 → 发现」选择插件并安装，或填写仓库地址、上传 ZIP。准备后填写参数并应用，再为目标群打开。详情显示目录介绍版本、已安装源码版本与实际加载版本。
 

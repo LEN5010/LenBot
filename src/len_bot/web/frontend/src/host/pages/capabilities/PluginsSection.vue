@@ -261,6 +261,9 @@ const facts = name => {
             <v-btn color="primary" :loading="save.busy.value" :disabled="pluginDirty(selected)" @click="manage(selected, 'apply')">{{ manifest(selected).source.application === 'host' ? '应用并等待重启' : '应用候选版本' }}</v-btn>
             <v-btn variant="text" :disabled="save.busy.value" @click="manage(selected, 'cancel')">取消候选</v-btn>
           </div>
+          <div v-if="manifest(selected)?.source?.previous && !manifest(selected)?.source?.candidate" class="inline">
+            <v-btn variant="text" :disabled="save.busy.value" @click="manage(selected, 'rollback')">回到上一版本 v{{ manifest(selected).source.previous.version }}</v-btn>
+          </div>
           <ErrorNote v-if="manifest(selected)?.source?.error" title="版本应用失败" :error="manifest(selected).source.error" />
           <div class="inline">
             <a v-if="manifest(selected)?.repository" :href="manifest(selected).repository" target="_blank" rel="noopener noreferrer">源码仓库</a>

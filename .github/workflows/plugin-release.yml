@@ -1,0 +1,37 @@
+name: Plugin release (reusable)
+# Called by plugin repositories on `v*` tags: `uses: lendevs/LenBot/.github/workflows/plugin-release.yml@master`.
+on:
+  workflow_call:
+    inputs:
+      host_ref:
+        description: LenBot ref providing the packaging script
+        type: string
+        default: master
+permissions:
+  contents: write
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: plugin
+      - uses: actions/checkout@v4
+        with:
+          repository: lendevs/LenBot
+          ref: ${{ inputs.host_ref }}
+          path: host-source
+          sparse-checkout: scripts
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.13"
+      - run: uv python install 3.13
+      - name: Package plugin and take this version's notes
+        run: >
+          uv run --no-project --python 3.13 python host-source/scripts/package_plugin.py plugin
+          "plugin-${GITHUB_REF_NAME}.zip" --tag "$GITHUB_REF_NAME" --notes release-notes.md
+      - name: Publish ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: plugin
+        run: gh release create "$GITHUB_REF_NAME" "../plugin-${GITHUB_REF_NAME}.zip" --verify-tag --notes-file ../release-notes.md

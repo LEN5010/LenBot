@@ -3,7 +3,6 @@
 import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import os
 from pathlib import Path
 import secrets
 import shutil
@@ -12,12 +11,20 @@ import sys
 import threading
 import time
 import traceback
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from common import PROTOCOL, download, fetch_json, owned_like_parent, read_json, release_manifest, repository, version_key, write_json
 from native import Native
 
 LABELS = {'prepare': '准备更新', 'apply': '停机升级', 'restore': '恢复快照', 'start': '启动程序'}
+LOG_LIMIT = 5 * 1024 * 1024
+
+
+def rotate(path: Path) -> None:
+    """Keep one previous file once a log grows past the limit; checked when the updater starts."""
+    if path.exists() and path.stat().st_size > LOG_LIMIT:
+        path.replace(path.with_name(path.name + '.1'))
 
 
 class Controller:
@@ -25,6 +32,11 @@ class Controller:
         self.root = root.resolve()
         self.root.joinpath('updates').mkdir(exist_ok=True)
         owned_like_parent(self.root / 'updates')
+        # updater.jsonl: the updater's own records in the host log's shape; updater.log: raw output of child processes.
+        for name in ('updater.jsonl', 'updater.log'):
+            rotate(self.root / 'updates' / name)
+        self.records = (root / 'updates/updater.jsonl').open('a', encoding='utf-8', buffering=1)
+        owned_like_parent(root / 'updates/updater.jsonl')
         self.log = (root / 'updates/updater.log').open('a', encoding='utf-8', buffering=1)
         owned_like_parent(root / 'updates/updater.log')
         self.deployment = read_json(root / 'deployment.json')
@@ -48,10 +60,35 @@ class Controller:
         self.recovery_token = secrets.token_urlsafe(32)
         self.reference = None
 
+    def record(self, event: str, *, level: str = 'INFO', error: BaseException | str | None = None, **fields) -> None:
+        entry = {'ts': datetime.now(timezone.utc).isoformat(timespec='milliseconds'), 'level': level,
+                 'source': 'updater', 'event': event, **fields}
+        if isinstance(error, str):
+            entry['error'] = {'message': error}
+        elif error is not None:
+            entry['error'] = {'type': type(error).__name__, 'message': str(error),
+                              'traceback': ''.join(traceback.format_exception(error))}
+        print(json.dumps(entry, ensure_ascii=False, default=str), file=self.records)
+
     def stage(self, stage: str, **values) -> None:
         self.state.update(stage=stage, updated_at=time.time(), **values)
         write_json(self.state_file, self.state)
-        print(stage, file=self.log)
+        self.record('stage', level='ERROR' if values.get('status') == 'failed' else 'INFO', stage=stage, **values)
+        print(f'[{datetime.now(timezone.utc).isoformat(timespec="seconds")}] {stage}', file=self.log)
+
+    def log_text(self) -> str:
+        """The recovery page view: recent updater records, then the tail of child process output."""
+        lines = (self.root / 'updates/updater.jsonl').read_text(encoding='utf-8').splitlines()[-200:]
+        records = []
+        for line in lines:
+            entry = json.loads(line)
+            extra = {key: value for key, value in entry.items() if key not in ('ts', 'level', 'source', 'event', 'error')}
+            text = f"{entry['ts']} {entry['level']} {entry['event']} {json.dumps(extra, ensure_ascii=False)}"
+            if 'error' in entry:
+                text += '\n' + entry['error'].get('traceback', entry['error']['message'])
+            records.append(text)
+        output = (self.root / 'updates/updater.log').read_text(encoding='utf-8')[-16000:]
+        return '\n'.join(records) + '\n\n--- 进程输出 ---\n' + output
 
     def actions(self) -> list[str]:
         """What the user can do next; every failure leaves at least one of these."""
@@ -121,7 +158,7 @@ class Controller:
             try:
                 operation()
             except Exception as error:
-                traceback.print_exc(file=self.log)
+                self.record('operation_failed', level='ERROR', error=error, stage=self.state['stage'])
                 self.stage(self.state['stage'], status='failed', error=f'{type(error).__name__}: {error}')
             finally:
                 self.operation.release()
@@ -229,7 +266,9 @@ class Controller:
 def server(controller: Controller) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
-            print(format % args, file=controller.log)
+            # Request lines are only kept for failures; the recovery page polls state continuously.
+            if args and str(args[1] if len(args) > 1 else '')[:1] in {'4', '5'}:
+                controller.record('http', level='WARNING', request=format % args)
 
         def send(self, code: int, value) -> None:
             data = json.dumps(value, ensure_ascii=False).encode()
@@ -266,7 +305,7 @@ def server(controller: Controller) -> ThreadingHTTPServer:
                 elif path == '/api/session':
                     self.send(200, {'url': controller.reference['public_url'] + '/#session=' + controller.recovery_token})
                 elif path == '/api/log':
-                    self.send(200, {'text': (controller.root / 'updates/updater.log').read_text(encoding='utf-8')[-16000:]})
+                    self.send(200, {'text': controller.log_text()})
                 else:
                     self.send(404, {'detail': 'Unknown endpoint'})
             except Exception as error:
@@ -327,6 +366,7 @@ def main() -> None:
             controller.backend.stop()
         http.server_close()
         controller.log.close()
+        controller.records.close()
 
 
 if __name__ == '__main__':

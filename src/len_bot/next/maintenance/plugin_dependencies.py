@@ -7,6 +7,7 @@ from ..config import load_host_config
 from ..instance_lock import instance_lock
 from ..plugins.install import PluginInstaller, install_dependencies
 from ..plugins.manifest import discover, read_manifest
+from ..runtime.logs import run_maintenance
 
 
 async def install(root: Path) -> None:
@@ -46,4 +47,4 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    run_maintenance(main, 'plugin_dependencies')

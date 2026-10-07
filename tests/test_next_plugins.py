@@ -205,7 +205,7 @@ async def test_dependency_restore_ignores_unapplied_first_install_candidate(tmp_
     from len_bot.next.plugins.install import PluginInstaller
 
     root = _root(tmp_path, {'paths': ['plugins'], 'sample': {}, 'counter': {}, 'disabled': ['counter']})
-    package = Path(__file__).parents[1] / 'developer/examples/counter'
+    package = _copy_sample(tmp_path / 'zip-source', 'counter')
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, 'w') as archive:
         for name in ('plugin.toml', '__init__.py'):
@@ -281,7 +281,7 @@ def test_duplicate_message_rules_fail_plugin_configuration(tmp_path, decorator):
     for name in ("first", "duplicate"):
         directory = _copy_sample(extra, name)
         (directory / "__init__.py").write_text(
-            'from len_bot.next.plugin import Plugin, fullmatch, regex\n'
+            'from len_bot.plugin import Plugin, fullmatch, regex\n'
             f'class Rules(Plugin):\n    @{decorator}\n'
             '    async def handle(self, ctx, *args):\n        pass\n', encoding="utf-8")
     root = _root(tmp_path, {"paths": [str(extra)], "first": {}, "duplicate": {}}, ["first", "duplicate"])
@@ -313,7 +313,7 @@ async def test_tool_reference_cannot_execute_in_disabled_scene(tmp_path):
     extra.mkdir()
     directory = _copy_sample(extra, "scoped")
     (directory / "__init__.py").write_text(
-        'from len_bot.next.plugin import Plugin, tool\n'
+        'from len_bot.plugin import Plugin, tool\n'
         'class Scoped(Plugin):\n    @tool("scoped_read", "读取")\n'
         '    async def read(self, ctx) -> str:\n        return "local"\n', encoding="utf-8")
     root = _root(tmp_path, {"paths": [str(extra)], "scoped": {}}, ["scoped"])
@@ -329,11 +329,11 @@ async def test_tool_reference_cannot_execute_in_disabled_scene(tmp_path):
 
 @pytest.mark.asyncio
 async def test_local_harness_reports_enabled_scenes(tmp_path):
-    from len_bot.next.plugin_testing import PluginTest
+    from len_bot.plugin_testing import PluginTest
 
     directory = _copy_sample(tmp_path, "scenes")
     (directory / "__init__.py").write_text(
-        'from len_bot.next.plugin import Plugin, command\n'
+        'from len_bot.plugin import Plugin, command\n'
         'class Scenes(Plugin):\n    @command("场景", "列出")\n'
         '    async def list(self, ctx, args):\n        await ctx.reply(",".join(self.ctx.scenes))\n',
         encoding="utf-8")
@@ -375,7 +375,7 @@ def test_onebot_notice_samples_route_to_scenes():
 async def test_scene_disable_keeps_other_scene_cron(tmp_path):
     directory = _copy_sample(tmp_path / "plugins", "scheduled")
     (directory / "__init__.py").write_text(
-        'from len_bot.next.plugin import Plugin\n'
+        'from len_bot.plugin import Plugin\n'
         'class Scheduled(Plugin):\n'
         '    async def start(self):\n'
         '        for scene in self.ctx.enabled_scenes:\n'

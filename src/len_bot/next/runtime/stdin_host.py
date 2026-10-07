@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import signal
 import sqlite3
 from typing import TYPE_CHECKING
 
@@ -19,7 +18,6 @@ async def run_stdin(runtime: NetworkRuntime, *, manage_signals: bool) -> None:
         runtime._status('stopped')
         return
     runtime._status('starting')
-    loop = asyncio.get_running_loop()
     remove_signals = lambda: None
     original: BaseException | None = None
     try:

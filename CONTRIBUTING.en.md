@@ -46,7 +46,6 @@ The runtime core is in `src/len_bot/next/`. The entry point is `len_bot.next.hos
 | `work/`, `browser/` | Background tasks (Pi containers) and browser cooperation |
 | `storage/` | Database schema and codecs |
 | `plugins/` | Plugin runtime and installation; business plugins live in separate repositories |
-| `plugin.py`, `plugin_testing.py`, `text_cards.py`, `image_assets.py` | Public interfaces for plugins |
 | `tools/`, `media/` | Web, skills, MCP and other tools; image and voice handling |
 | `panel/` | Panel backend and the first-run wizard |
 | `maintenance/` | Commands run while stopped: data upgrades, reindexing, plugin dependencies, storage pools, test copies |
@@ -54,6 +53,7 @@ The runtime core is in `src/len_bot/next/`. The entry point is `len_bot.next.hos
 
 Elsewhere:
 
+- `src/len_bot/plugin.py`, `plugin_testing.py`, `text_cards.py`, `image_assets.py`: public interfaces for plugins; plugins import only from these.
 - `src/len_bot/prompts/`: prompts.
 - `src/len_bot/builtin_skills/`: task skills.
 - `src/len_bot/web/frontend/`: the Vue panel.
@@ -74,6 +74,7 @@ Maintenance commands are run as `python -m len_bot.next.maintenance.<module>`. I
 - Parse external data (platform messages, model and service responses, configuration files) once at the entry point. If parsing fails, raise an error that includes the raw snippet.
 - Catch exceptions only at the boundary of one chat turn, one tool or plugin call, or one task; log the original error and end that unit. Tool errors go back to the model verbatim.
 - Leave contextual judgement (who a request belongs to, what a reference points to, who is replying to whom) to the model. The host keeps only real identities and the state needed to execute. When you add a table, a state or a layer, explain in the PR what problem it solves.
+- Log through a module `logging.getLogger(__name__)` and record events with `log_event(logger, 'event', **fields)` from `runtime/logs.py`; do not `print`. Pass exceptions as `error=`; database error columns keep one line `Type: message` (`error_text`). New long-running entry points (background jobs, external callbacks) bind correlation IDs with `log_context`.
 - Runtime settings come only from `lenbot.config.json` in the repository root and are saved by the panel while running. Do not add overrides through environment variables, dotenv, command-line flags or the database.
 
 ## Tests
@@ -81,6 +82,7 @@ Maintenance commands are run as `python -m len_bot.next.maintenance.<module>`. I
 ```sh
 uv run --no-sync pytest -q
 uv run --no-sync python -m compileall -q src/len_bot
+uv run --no-sync ruff check src/len_bot scripts deploy/updater deploy/package
 ```
 
 Tests cover only external protocol boundaries (parsing OneBot, Pi RPC, model and memory service responses), data migrations, permissions and configuration validation, using anonymized real samples. Do not mock call sequences, test private functions or snapshot prompts.
@@ -89,7 +91,13 @@ When changing prompts or persona expression, compare replies before and after wi
 
 ## Data format
 
-The business database starts from public baseline v1. To change the schema, create the new structure directly in `storage/schema.py`, add an upgrade step from the previous version to `UPGRADES` in `maintenance/migrate.py`, and bump `FORMAT_VERSION` in `storage/store.py`. The memory job database, local memory index and root configuration work the same way; their numbers are listed in the [release guide (zh)](deploy/releasing.md#兼容编号). Upgrades run only from the maintenance command while stopped; the runtime has no old/new compatibility branches.
+The business database starts from public baseline v1. To change the schema, create the new structure directly in `storage/schema.py`, add an upgrade step from the previous version to `BUSINESS` in `maintenance/migrate.py`, and bump `FORMAT_VERSION` in `storage/store.py`. The memory job database, local memory index and root configuration work the same way; their numbers are listed in the [release guide (zh)](deploy/releasing.md#兼容编号). Upgrades run only from the maintenance command while stopped; the runtime has no old/new compatibility branches.
+
+All three databases upgrade through `maintenance/migrations.py`: an integrity check before and after, one transaction per step that also sets `user_version`, and work outside the database (such as deleting files) returned by the step and run after it commits. A standalone migration command keeps one copy of the input format beside the file, `<file>.v<format>.bak`; `upgrade apply` already holds a full snapshot and skips it.
+
+JSON bodies stored in the databases decode strictly into dataclasses (`ChatMessage`, `Sender`, `Segment`, `Task`, `TaskFile`, `Schedule`, and the records inside model calls and memory jobs). Adding, removing or changing a field there changes the data format: bump the format number and rewrite existing bodies in the upgrade step.
+
+`tests/fixtures/history/` holds small instances written by older formats' own code; `tests/test_history_migrations.py` upgrades them and requires the same schema as a fresh instance and that every body decodes. Before bumping any format number, register the last commit before the change in `scripts/build_history_fixtures.py` and run it (`uv run --no-sync python scripts/build_history_fixtures.py`); rebuilding the same input gives byte-identical files.
 
 ## Build and release
 
@@ -111,4 +119,4 @@ This rebuilds the panel in a copy and produces the sdist, the wheel, the Linux/m
 
 ## License
 
-Code contributed to this repository is licensed under [AGPL-3.0-only](LICENSE); `developer/examples/counter/` and the plugin template are GPL-3.0-only. Sources and licenses of third-party material are listed in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md); update it when you bring in third-party code or assets.
+Code contributed to this repository is licensed under [AGPL-3.0-only](LICENSE); the plugin template is GPL-3.0-only. Sources and licenses of third-party material are listed in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md); update it when you bring in third-party code or assets.

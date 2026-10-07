@@ -3,7 +3,7 @@
 from pathlib import Path
 import stat
 
-from ..image_assets import MAX_IMAGE_BYTES, OriginalImage, inspect_image
+from ...image_assets import MAX_IMAGE_BYTES, OriginalImage, inspect_image
 
 
 def avatar_file(directory: Path) -> Path:

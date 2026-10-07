@@ -55,6 +55,14 @@
 
 群总结、GSUID、A-SOUL、哔哩哔哩和[插件模板](https://github.com/lendevs/lenbot-plugin-template)均已公开在 lendevs 组织下。随附目录收录四个业务插件，模板作为开发入口。所有独立插件和模板使用接口 1、requires_lenbot >=0.2,<1；当前源码需要包含插件接口扩展的宿主开发提交，最低基线见各插件 CHANGELOG。运行配置与业务库不变。
 
-每个插件的 `CHANGELOG.md` 记录版本、最低接口能力、参数变化和数据迁移事项。`scripts/package.py` 从 Git 中的运行文件生成 ZIP，包含 prompts、skills、assets 和许可；本机测试文件、环境与缓存不进入包。`release.yml` 仅在维护者明确推送 v<清单版本> 标签后发布，不覆盖版本。
+每个插件的 `CHANGELOG.md` 记录版本、最低接口能力、参数变化和数据迁移事项，标题用 `# X.Y.Z`。插件仓库的 CI 和发行都调用宿主提供的可复用工作流（`.github/workflows/plugin-ci.yml`、`plugin-release.yml`），打包统一用宿主的 `scripts/package_plugin.py`：从 Git 中的运行文件生成 ZIP，包含 prompts、skills、assets 和许可，本机测试文件、环境与缓存不进入包。发行只在维护者明确推送 `v<清单版本>` 标签后进行，标签必须和 `plugin.toml` 的版本一致，发行说明取 CHANGELOG 中该版本一节。
 
-当前仍未发行，目录锁定四个公开插件已核对的开发提交；不会创建标签、Release 或发布镜像。各插件仓库的 `catalog-entry.json` 提供目录条目。CI 同样固定开发提交，不依赖未创建的 v0.2.0 标签。更新、回退按插件 CHANGELOG 选择与宿主匹配的版本，不清除业务数据。
+随附目录的条目不手写，以各插件仓库的 `catalog-entry.json` 为准，用同步脚本写入并固定到提交：
+
+```sh
+uv run --no-sync python scripts/sync_plugin_catalog.py ../lenbot-plugin-asoul ../lenbot-plugin-bilibili@v1.1.0
+```
+
+参数是插件仓库的本机检出，`@ref` 可选，默认当前 `HEAD`。脚本核对条目和该提交的 `plugin.toml` 名称、版本、接口一致，并要求提交已推送到远端分支。宿主 CI 的 `official-plugins` 作业按目录固定的提交检出每个 lendevs 插件，用当前宿主跑它们的测试和打包检查，所以宿主改动如果让目录里的插件跑不起来，CI 会直接失败。
+
+当前仍未发行，目录固定四个公开插件已核对的开发提交；不会创建标签、Release 或发布镜像。更新、回退按插件 CHANGELOG 选择与宿主匹配的版本，不清除业务数据。

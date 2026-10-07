@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, model_validator
 from ...configuration.types import STRICT
 from ...runtime.network import NetworkRuntime
 from ...chat.recall import RecallArguments, message_page
-from ...runtime.operations import credentials, redact, redact_record
+from ...runtime.logs import credentials, redact, redact_record
 from ...memory.jobs import processing_records
 
 

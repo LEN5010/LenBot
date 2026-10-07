@@ -1,8 +1,8 @@
 # 写插件
 
-插件是一个 Python 包：一个 `plugin.toml` 清单，一个 `__init__.py`，里面恰好定义一个 `Plugin` 子类。插件和 LenBot 在同一个进程里运行，只从 `len_bot.next.plugin` 导入接口。
+插件是一个 Python 包：一个 `plugin.toml` 清单，一个 `__init__.py`，里面恰好定义一个 `Plugin` 子类。插件和 LenBot 在同一个进程里运行，只从 `len_bot.plugin` 导入接口。
 
-最快的开始方式是在 GitHub 上用[插件模板](https://github.com/lendevs/lenbot-plugin-template)生成仓库，或者复制[计数插件示例](https://github.com/lendevs/LenBot/tree/master/developer/examples/counter)。
+最快的开始方式是在 GitHub 上用[插件模板](https://github.com/lendevs/lenbot-plugin-template)生成仓库。
 
 ## 清单
 
@@ -27,7 +27,7 @@ description = "每群独立计数"
 ## 入口
 
 ```python
-from len_bot.next.plugin import Invocation, Plugin, command, fullmatch
+from len_bot.plugin import Invocation, Plugin, command, fullmatch
 
 
 class Counter(Plugin):
@@ -59,6 +59,6 @@ class Counter(Plugin):
 
 ## 测试与发布
 
-`len_bot.next.plugin_testing` 提供本地测试工具，模板仓库里带好了测试和发布工作流：打 `v*` 标签时把插件打成可导入的 ZIP 挂到 Release。
+`len_bot.plugin_testing` 提供本地测试工具，模板仓库里带好了测试和发布工作流：打 `v*` 标签时把插件打成可导入的 ZIP 挂到 Release。
 
 完整的接口说明见仓库里的[插件接口 v1](https://github.com/lendevs/LenBot/blob/master/developer/plugins-v1.md)。

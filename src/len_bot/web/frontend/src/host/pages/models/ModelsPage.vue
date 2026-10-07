@@ -23,6 +23,7 @@ import AdvancedFields from '../../ui/AdvancedFields.vue'
 import SaveBar from '../../ui/SaveBar.vue'
 import DevOnly from '../../ui/DevOnly.vue'
 import LimitsSection from './LimitsSection.vue'
+import ProviderTools from './ProviderTools.vue'
 
 const roles = [
   ['mind', '大脑', '决定说不说、说什么、用哪些工具。更换模型前需要先停机', true],
@@ -31,11 +32,17 @@ const roles = [
   ['learner', '学习', '学习群里的说话方式、黑话和表情', false],
   ['worker', '任务', '执行群友委托的任务', false],
 ]
-const providerApis = [
-  { title: '聊天接口 · openai-chat', value: 'openai-chat' },
-  { title: '语音转写接口 · openai-audio', value: 'openai-audio' },
-  { title: '向量接口 · openai-embeddings', value: 'openai-embeddings' },
-]
+const protocols = useResource(() => api('/api/host/models/protocols'))
+const providerApis = computed(() => (protocols.data.value?.protocols || []).map(row => ({ title: row.title, value: row.api })))
+const catalog = ref({})
+const protocol = api => protocols.data.value?.protocols.find(row => row.api === api)
+const providerFor = alias => draft.value.providers.find(row => row.alias === alias)
+const providerChoices = role => draft.value.providers.filter(row => protocol(row.api)?.roles.includes(role)).map(row => row.alias).filter(Boolean)
+function changeProtocol(row, api) {
+  const previous = protocol(row.api)
+  if (!row.base_url || row.base_url === previous?.base_url) row.base_url = protocol(api)?.base_url || ''
+  row.api = api
+}
 const route = useRoute(), router = useRouter()
 const tabs = [['providers', '服务商'], ['roles', '用途'], ['usage', '用量与上限']]
 const tab = computed(() => tabs.some(([key]) => key === route.query.tab) ? route.query.tab : 'providers')
@@ -48,18 +55,21 @@ const save = useAction()
 
 function fromSaved(models) {
   return {
-    providers: Object.entries(models.providers).map(([alias, value]) => ({ alias, api: value.api, base_url: value.base_url, api_key: '', saved: value.api_key_configured })),
+    providers: Object.entries(models.providers).map(([alias, value]) => ({ alias, api: value.api, base_url: value.base_url, api_key: '', proxy: value.proxy || '', saved: value.api_key_configured })),
     roles: clone(models.roles),
   }
 }
 function body(value) {
   return {
-    providers: Object.fromEntries(value.providers.map(row => [row.alias, { api: row.api, base_url: row.base_url, api_key: row.api_key || null }])),
+    providers: Object.fromEntries(value.providers.map(row => [row.alias, { api: row.api, base_url: row.base_url, api_key: row.api_key || null, proxy: row.proxy || null }])),
     roles: value.roles,
   }
 }
+watch(() => draft.value?.providers.map(row => JSON.stringify([row.alias, row.api, row.base_url, row.proxy, row.api_key])), (rows, old = []) => {
+  rows?.forEach((value, index) => { if (value !== old[index] && draft.value.providers[index].alias) delete catalog.value[draft.value.providers[index].alias] })
+})
 const saved = computed(() => settings.data.value?.saved.models)
-function adopt() { draft.value = fromSaved(saved.value) }
+function adopt() { draft.value = fromSaved(saved.value); catalog.value = {} }
 watch(saved, value => { if (value && !draft.value) adopt() })
 const dirty = computed(() => Boolean(draft.value) && !same(body(draft.value), body(fromSaved(saved.value))))
 const limitsDirty = ref(false)
@@ -72,7 +82,7 @@ const problem = computed(() => {
 })
 
 function addProvider() {
-  draft.value.providers.push({ alias: '', api: 'openai-chat', base_url: '', api_key: '', saved: false })
+  draft.value.providers.push({ alias: '', api: 'openai-chat', base_url: '', api_key: '', proxy: '', saved: false })
   select(draft.value.providers.length - 1)
 }
 async function removeProvider(index) {
@@ -84,13 +94,13 @@ async function removeProvider(index) {
 }
 const roleTitles = Object.fromEntries([...roles.map(([name, title]) => [name, title]), ['asr', '语音识别']])
 const usedBy = alias => alias ? Object.entries(draft.value.roles).filter(([, value]) => value?.provider === alias).map(([name]) => roleTitles[name] || name) : []
-const apiTitle = value => providerApis.find(item => item.value === value)?.title.split(' · ')[0] || value
+const apiTitle = value => providerApis.value.find(item => item.value === value)?.title.split(' · ')[0] || value
 function toggleRole(name, value) {
-  draft.value.roles[name] = value ? { provider: providerNames.value[0] || '', model: '', context_window_tokens: 128000,
+  draft.value.roles[name] = value ? { provider: providerChoices(name)[0] || '', model: '', context_window_tokens: 128000,
     temperature: 0.6, max_output_tokens: 1024, timeout_seconds: 60, reasoning_effort: null, history_policy: 'native' } : null
 }
 function toggleAsr(value) {
-  draft.value.roles.asr = value ? { api: 'openai-audio', provider: providerNames.value[0] || '', model: '', timeout_seconds: 60, language: null } : null
+  draft.value.roles.asr = value ? { api: 'openai-audio', provider: providerChoices('asr')[0] || '', model: '', timeout_seconds: 60, language: null } : null
 }
 async function submit() {
   const result = await save.run(() => api('/api/host/settings/models', { method: 'PUT', body: JSON.stringify(body(draft.value)) }))
@@ -126,11 +136,15 @@ const count = value => value.toLocaleString('zh-CN')
             <template #actions><v-btn variant="text" color="error" size="small" @click="removeProvider(selected)">删除</v-btn></template>
             <div class="form-grid">
               <v-text-field v-model="draft.providers[selected].alias" label="名称" :readonly="draft.providers[selected].saved" hint="自己起的名字，选模型时用；保存后不能改" persistent-hint />
-              <v-select v-model="draft.providers[selected].api" :items="providerApis" label="接口类型" hint="只有语音或向量接口的服务不能用于聊天" persistent-hint />
+              <v-select :model-value="draft.providers[selected].api" :items="providerApis" label="原生协议" @update:model-value="value => changeProtocol(draft.providers[selected], value)" />
             </div>
             <v-text-field v-model="draft.providers[selected].base_url" label="接口地址" placeholder="https://api.example.com/v1" />
             <v-text-field v-model="draft.providers[selected].api_key" type="password" autocomplete="new-password" label="密钥"
               :placeholder="draft.providers[selected].saved ? '已设置，留空保持不变' : ''" persistent-placeholder />
+            <p class="muted small">{{ protocol(draft.providers[selected].api)?.description }} 协议支持不等于每个模型都支持，能力与额度以服务商说明为准。</p>
+            <v-text-field v-model="draft.providers[selected].proxy" label="网络代理（选填）" placeholder="http://127.0.0.1:7890" hint="此服务商的聊天、后台任务、语音和向量调用共用；留空直连，不读取系统代理" persistent-hint />
+            <ProviderTools :can-probe="protocol(draft.providers[selected].api)?.roles.includes('mind')" :key="selected" :provider="draft.providers[selected]" @models="value => catalog[draft.providers[selected].alias] = value" />
+            <ErrorNote v-if="protocols.error.value" title="读取协议说明失败" :error="protocols.error.value" />
             <p v-if="usedBy(draft.providers[selected].alias).length" class="muted small">用于：{{ usedBy(draft.providers[selected].alias).join('、') }}</p>
           </Panel>
         </MasterDetail>
@@ -142,24 +156,27 @@ const count = value => value.toLocaleString('zh-CN')
             </template>
             <template v-if="draft.roles[name]">
               <div class="form-grid">
-                <v-select v-model="draft.roles[name].provider" :items="providerNames" label="服务商" />
-                <v-text-field v-model="draft.roles[name].model" label="模型名" hint="和服务商文档里的名字完全一致" persistent-hint />
+                <v-select v-model="draft.roles[name].provider" :items="providerChoices(name)" label="服务商" />
+                <v-combobox v-model="draft.roles[name].model" :items="(catalog[draft.roles[name].provider] || []).map(item => item.id)" label="模型名（可手动填写）" hint="列表需先在服务商页读取；能力与窗口照服务商文档填写" persistent-hint />
                 <v-text-field :model-value="draft.roles[name].context_window_tokens" type="number" label="上下文长度（token）"
                   hint="模型一次能读的最大长度，见服务商文档" persistent-hint
                   @update:model-value="value => draft.roles[name].context_window_tokens = numberOrBlank(value)" />
               </div>
+              <ProviderTools v-if="providerFor(draft.roles[name].provider)" :provider="providerFor(draft.roles[name].provider)" :binding="draft.roles[name]" />
               <AdvancedFields>
-                <v-select v-model="draft.roles[name].history_policy" label="历史续接方式"
+                <v-select v-if="providerFor(draft.roles[name].provider)?.api === 'openai-chat'" v-model="draft.roles[name].history_policy" label="历史续接方式"
                   :items="[{ title: '原生保留', value: 'native' }, { title: '省去可读思考', value: 'omit-reasoning' }]"
                   hint="只有确认路由自己保持签名续接时才选后者" persistent-hint />
                 <v-text-field :model-value="draft.roles[name].max_output_tokens" type="number" label="最长输出（token）"
                   @update:model-value="value => draft.roles[name].max_output_tokens = numberOrBlank(value)" />
-                <v-text-field :model-value="draft.roles[name].temperature" type="number" step="0.1" label="温度" hint="越高越随机" persistent-hint
-                  @update:model-value="value => draft.roles[name].temperature = numberOrBlank(value)" />
+                <v-text-field :model-value="draft.roles[name].temperature" type="number" step="0.1" label="温度" hint="越高越随机；留空不发送。Anthropic 思考模式必须留空" persistent-hint
+                  @update:model-value="value => draft.roles[name].temperature = value === '' || value === null ? null : numberOrBlank(value)" />
                 <v-text-field :model-value="draft.roles[name].timeout_seconds" type="number" label="超时（秒）"
                   @update:model-value="value => draft.roles[name].timeout_seconds = numberOrBlank(value)" />
                 <v-text-field :model-value="draft.roles[name].reasoning_effort ?? ''" label="思考强度" hint="支持推理的模型可填 low、medium、high，留空不设置" persistent-hint
                   @update:model-value="value => draft.roles[name].reasoning_effort = value || null" />
+                <v-text-field :model-value="draft.roles[name].thinking_budget_tokens ?? ''" type="number" label="思考额度（token，选填）" hint="Anthropic 旧式思考或 Gemini 的额度；与思考强度二选一" persistent-hint @update:model-value="value => draft.roles[name].thinking_budget_tokens = value === '' || value === null ? null : numberOrBlank(value)" />
+                <v-select v-if="providerFor(draft.roles[name].provider)?.api === 'openai-chat'" v-model="draft.roles[name].output_token_field" label="输出额度字段" :items="['max_completion_tokens', 'max_tokens']" hint="按兼容服务要求选择，不会在失败后自动换字段" persistent-hint />
               </AdvancedFields>
             </template>
           </Panel>
@@ -169,7 +186,7 @@ const count = value => value.toLocaleString('zh-CN')
             </template>
             <template v-if="draft.roles.asr">
               <div class="form-grid">
-                <v-select v-model="draft.roles.asr.provider" :items="providerNames" label="服务商" />
+                <v-select v-model="draft.roles.asr.provider" :items="providerChoices('asr')" label="服务商" />
                 <v-text-field v-model="draft.roles.asr.model" label="模型名" placeholder="例如 whisper-1" />
                 <v-text-field :model-value="draft.roles.asr.language ?? ''" label="语言" hint="例如 zh，留空自动识别" persistent-hint
                   @update:model-value="value => draft.roles.asr.language = value || null" />

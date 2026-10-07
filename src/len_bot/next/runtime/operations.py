@@ -1,90 +1,12 @@
-"""Host log files and portable, redacted diagnostic data; no extra event store."""
+"""Portable, redacted diagnostic exports built from stored records and the host log."""
 from __future__ import annotations
 
-from contextlib import contextmanager
 from io import BytesIO
 import json
-import logging
-from logging.handlers import TimedRotatingFileHandler
-from pathlib import Path
 import re
-import time
 from zipfile import ZipFile, ZIP_DEFLATED
 
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Literal
-
-
-class LoggingSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    directory: Path
-    retention_days: int = Field(default=14, ge=1, le=3650)
-    level: Literal["INFO", "WARNING", "ERROR"] = "INFO"
-
-
-def credentials(config) -> tuple[str, ...]:
-    """Explicit configuration credential fields, including arbitrary MCP headers."""
-    found: set[str] = set()
-    def visit(value):
-        if isinstance(value, dict):
-            for key, item in value.items():
-                if key in {"api_key", "access_token", "password", "password_hash"} and isinstance(item, str) and item:
-                    found.add(item)
-                elif key in {"headers", "env"} and isinstance(item, dict):
-                    found.update(v for v in item.values() if isinstance(v, str) and v)
-                else:
-                    visit(item)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item)
-    visit(config.model_dump(mode="json"))
-    return tuple(sorted(found, key=len, reverse=True))
-
-
-def redact_record(value, clean):
-    if isinstance(value, str):
-        return clean(value)
-    if isinstance(value, list):
-        return [redact_record(item, clean) for item in value]
-    if isinstance(value, dict):
-        return {key: redact_record(item, clean) for key, item in value.items()}
-    return value
-
-
-def redact(text: str, secrets: tuple[str, ...], *, identities: bool = False) -> str:
-    for secret in secrets:
-        text = text.replace(secret, "[credential removed]")
-        text = text.replace(json.dumps(secret, ensure_ascii=False)[1:-1], "[credential removed]")
-    text = re.sub(r'(?i)(authorization["\s:=]+(?:bearer\s+)?)[^\s",}]+', r'\1[credential removed]', text)
-    if identities:
-        # Export-only masking; no stable identity aliases or replacement identities.
-        text = re.sub(r"(?<!\d)\d{5,}(?!\d)", "[number removed]", text)
-    return text
-
-
-@contextmanager
-def host_logging(settings: LoggingSettings | None, secrets: tuple[str, ...]):
-    if settings is None:
-        yield
-        return
-    settings.directory.mkdir(parents=True, exist_ok=True)
-    class Formatter(logging.Formatter):
-        def format(self, record):
-            return redact(super().format(record), secrets)
-    handler = TimedRotatingFileHandler(settings.directory / "host.log", when="midnight", utc=True,
-                                       backupCount=settings.retention_days, encoding="utf-8")
-    handler.setFormatter(Formatter("%(asctime)sZ %(levelname)s %(name)s %(message)s"))
-    handler.formatter.converter = time.gmtime
-    logger = logging.getLogger("len_bot.next")
-    previous = logger.level
-    logger.setLevel(settings.level)
-    logger.addHandler(handler)
-    try:
-        yield
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(previous)
-        handler.close()
+from .logs import credentials, redact
 
 
 def diagnostic_value(value):

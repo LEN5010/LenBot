@@ -6,8 +6,18 @@ on:
   pull_request:
     branches: [ master, main ]
 
+permissions:
+  contents: read
+
 jobs:
+  checks:
+    uses: ./.github/workflows/check.yml
+
+  official-plugins:
+    uses: ./.github/workflows/official-plugins.yml
+
   build:
+    needs: checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,15 +29,6 @@ jobs:
 
       - name: Set up Python
         run: uv python install 3.13
-
-      - name: Install dependencies
-        run: uv sync --locked
-
-      - name: Compile Python modules
-        run: uv run --no-sync python -m compileall -q src/len_bot
-
-      - name: Run tests
-        run: uv run --no-sync pytest -q
 
       - name: Set up Node
         uses: actions/setup-node@v4

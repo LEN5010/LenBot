@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from len_bot.next.configuration.onebot import ONEBOT_SETTINGS, OneBotForward, OneBotReverse
-from len_bot.next.configuration.maintenance import HistoryImportSettings, PanelSettings
+from len_bot.next.configuration.maintenance import PanelSettings
 from len_bot.next.config import (
     HostConfig,
     LabConfig,
@@ -284,7 +284,6 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.images.max_pixels == 25000000
     assert config.images.max_dimension == 1280
     assert config.images.timeout_seconds == 20
-    assert config.history_import is None
     assert config.evaluation is None
     assert config.persona_aliases == []
     assert config.relationships == {}
@@ -343,7 +342,6 @@ def test_explicit_multiscene_host_roundtrips_and_derives_existing_scene_contract
     assert host.bot_id == 'onebot:90001' and host.max_model_requests == 4
     assert host.delivery == "simulated"
     assert host.panel is None
-    assert host.history_import is None
     assert isinstance(host.onebot, OneBotReverse)
     assert list(host.scenes) == ["onebot:group:80001", "onebot:private:80002"]
     assert host.scenes["onebot:group:80001"].persona == root / "personas/group"
@@ -968,9 +966,6 @@ def test_replay_clock_rejects_invalid_values(tmp_path, clock, field):
     (lambda source: source["models"]["roles"].update(vision={
         "provider": "sample", "model": "synthetic-vision", "context_window_tokens": 4096,
     }), "models.roles.vision"),
-    (lambda source: source.update(history_import={
-        "source": "old.sqlite3", "backup": "backup.sqlite3", "scenes": ["onebot:group:80001"],
-    }), "history_import"),
 ])
 def test_replay_clock_rejects_entries_without_shared_time_source(tmp_path, change, field):
     root = tmp_path / "isolated"
@@ -1099,107 +1094,6 @@ def test_multiscene_host_accepts_explicit_positive_model_slots(tmp_path):
     assert HostConfig.model_validate_json(host.model_dump_json()) == host
 
 
-def test_history_import_paths_and_explicit_scene_scope_roundtrip(tmp_path):
-    single_root = tmp_path / "single"
-    single_source = _config("personas/example")
-    single_source["history_import"] = {
-        "source": "../offline-old.sqlite3", "backup": "data/pre-import.sqlite3",
-        "scenes": ["onebot:group:80001"],
-    }
-    _write_config(single_root, single_source)
-
-    single = load_instance_config(single_root)
-
-    assert isinstance(single, LabConfig)
-    assert single == load_config(single_root)
-    assert isinstance(single.history_import, HistoryImportSettings)
-    assert single.history_import.source == tmp_path / "offline-old.sqlite3"
-    assert single.history_import.backup == single_root / "data/pre-import.sqlite3"
-    assert single.history_import.scenes == [single.scene]
-    assert single.history_import.recent_messages == 50
-    assert LabConfig.model_validate_json(single.model_dump_json()) == single
-
-    host_root = tmp_path / "multi"
-    host_source = _host_config()
-    host_source["history_import"] = {
-        "source": "../offline-old.sqlite3", "backup": "data/pre-import.sqlite3",
-        "scenes": ["onebot:private:80002"], "recent_messages": 17,
-    }
-    _write_config(host_root, host_source)
-
-    host = load_instance_config(host_root)
-
-    assert isinstance(host, HostConfig)
-    assert host == load_host_config(host_root)
-    assert host.history_import.source == tmp_path / "offline-old.sqlite3"
-    assert host.history_import.backup == host_root / "data/pre-import.sqlite3"
-    assert host.history_import.scenes == ["onebot:private:80002"]
-    assert host.history_import.recent_messages == 17
-    assert HostConfig.model_validate_json(host.model_dump_json()) == host
-    assert host.scene_config("onebot:private:80002").history_import is None
-    assert host.scene_config("onebot:group:80001").history_import is None
-    assert host.history_import.scenes == ["onebot:private:80002"]
-
-
-@pytest.mark.parametrize(
-    ("mode", "scenes", "field"),
-    [
-        ("isolated", [], "scenes"),
-        ("isolated", ["onebot:group:80001", "onebot:group:80001"], "repeat"),
-        ("isolated", ["onebot:group:0"], "platform:group:id"),
-        ("isolated", ["onebot:private:80002"], "only the configured scene"),
-        ("isolated-multi", ["onebot:group:80001", "onebot:group:80001"], "repeat"),
-        ("isolated-multi", ["onebot:group:99999"], "not configured"),
-    ],
-)
-def test_history_import_rejects_invalid_scene_selection(tmp_path, mode, scenes, field):
-    root = tmp_path / "lab"
-    source = _config("personas/example") if mode == "isolated" else _host_config()
-    source["history_import"] = {
-        "source": "../offline-old.sqlite3", "backup": "data/pre-import.sqlite3",
-        "scenes": scenes,
-    }
-    _write_config(root, source)
-
-    with pytest.raises(ValueError) as failure:
-        load_instance_config(root)
-    assert field in str(failure.value)
-    assert "synthetic-secret-marker" not in str(failure.value)
-
-
-@pytest.mark.parametrize(
-    ("change", "field"),
-    [
-        (lambda item: item.pop("source"), "history_import.source"),
-        (lambda item: item.pop("backup"), "history_import.backup"),
-        (lambda item: item.update(backup="../outside.sqlite3"), "history_import.backup"),
-        (lambda item: item.update(source="data/isolated-chat.db"), "database must differ"),
-        (lambda item: item.update(backup="data/isolated-chat.db"), "database must differ"),
-        (lambda item: item.update(source="data/pre-import.sqlite3"), "database must differ"),
-        (lambda item: item.update(recent_messages=0), "recent_messages"),
-        (lambda item: item.update(recent_messages=-1), "recent_messages"),
-        (lambda item: item.update(recent_messages=True), "recent_messages"),
-        (lambda item: item.update(recent_messages="50"), "recent_messages"),
-        (lambda item: item.update(recent_messages=1.5), "recent_messages"),
-        (lambda item: item.update(unexpected=True), "unexpected"),
-    ],
-)
-def test_history_import_rejects_invalid_paths_limits_and_fields(tmp_path, change, field):
-    root = tmp_path / "lab"
-    source = _config("personas/example")
-    source["history_import"] = {
-        "source": "../offline-old.sqlite3", "backup": "data/pre-import.sqlite3",
-        "scenes": ["onebot:group:80001"],
-    }
-    change(source["history_import"])
-    _write_config(root, source)
-
-    with pytest.raises(ValueError) as failure:
-        load_config(root)
-    assert field in str(failure.value)
-    assert "synthetic-secret-marker" not in str(failure.value)
-
-
 @pytest.mark.parametrize("mode", [None, "other", 123])
 def test_instance_config_rejects_missing_or_unknown_mode(tmp_path, mode):
     root = tmp_path / "lab"
@@ -1215,8 +1109,8 @@ def test_instance_config_rejects_missing_or_unknown_mode(tmp_path, mode):
 
 
 @pytest.mark.parametrize("mode", ["isolated", "isolated-multi"])
-@pytest.mark.parametrize("field", ["history_export", "reminder_export"])
-def test_instance_config_rejects_retired_rollback_settings(tmp_path, mode, field):
+@pytest.mark.parametrize("field", ["history_export", "reminder_export", "history_import", "reminder_import", "media_import", "media_archive"])
+def test_instance_config_rejects_retired_maintenance_settings(tmp_path, mode, field):
     root = tmp_path / "lab"
     source = _config("personas/example") if mode == "isolated" else _host_config()
     source[field] = {"target": "old.sqlite3", "backup": "old-before.sqlite3",
@@ -1251,7 +1145,7 @@ def test_offline_version_upgrade_cli_selects_explicit_multiscene_root(tmp_path):
         [sys.executable, "-m", "len_bot.next.maintenance.migrate"], cwd=root,
         text=True, capture_output=True, check=False,
     )
-    assert rejected.returncode != 0 and "Unsupported business database format" in rejected.stderr
+    assert rejected.returncode != 0 and "不是可升级的业务数据库" in rejected.stderr
 
 
 @pytest.mark.parametrize("port", [0, 65535])

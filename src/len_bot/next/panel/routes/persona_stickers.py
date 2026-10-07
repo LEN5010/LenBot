@@ -16,7 +16,7 @@ from pydantic import field_validator
 from ...configuration.types import STRICT
 from ...config import HostConfig, load_host_config
 from .persona import PersonaFileChange, finish_role_write, validate_dependencies
-from ...image_assets import MAX_IMAGE_BYTES, inspect_image
+from ....image_assets import MAX_IMAGE_BYTES, inspect_image
 from ...runtime.network import NetworkRuntime
 from ...persona.profile import PersonaTarget, parse_persona_files, read_persona_files, require_persona_target
 from ...persona.stickers import StickerEntry, parse_sticker_index, sticker_entries

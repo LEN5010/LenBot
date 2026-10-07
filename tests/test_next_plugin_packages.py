@@ -11,15 +11,15 @@ from len_bot.next.plugins.install import PluginInstaller
 from len_bot.next.plugins.manifest import read_manifest
 
 
-COUNTER = Path(__file__).parents[1] / 'developer' / 'examples' / 'counter'
-COUNTER_VERSION = read_manifest(COUNTER).version
+SAMPLE = Path(__file__).parent / 'fixtures' / 'plugins' / 'sample'
+SAMPLE_VERSION = read_manifest(SAMPLE).version
 
 
 def package(*, prefix='', changed_manifest=None, member=None):
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, 'w') as archive:
-        for name in ('plugin.toml', '__init__.py', 'README.md', 'prompts/tools.md'):
-            data = (COUNTER / name).read_bytes()
+        for name in ('plugin.toml', '__init__.py'):
+            data = (SAMPLE / name).read_bytes()
             if name == 'plugin.toml' and changed_manifest is not None:
                 data = changed_manifest.encode()
             archive.writestr(prefix + name, data)
@@ -29,16 +29,16 @@ def package(*, prefix='', changed_manifest=None, member=None):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('prefix', ['', 'counter-v1/'])
+@pytest.mark.parametrize('prefix', ['', 'sample-v1/'])
 async def test_zip_root_layout_and_source_identity(tmp_path, prefix):
     installer = PluginInstaller(tmp_path)
-    manifest, record, output = await installer.prepare_zip(package(prefix=prefix), 'counter-v1.zip', [])
-    assert manifest.name == record.name == 'counter'
+    manifest, record, output = await installer.prepare_zip(package(prefix=prefix), 'sample-v1.zip', [])
+    assert manifest.name == record.name == 'sample'
     assert record.installed is None and record.candidate.kind == 'zip'
-    assert record.candidate.version == COUNTER_VERSION and len(record.candidate.revision) == 64
+    assert record.candidate.version == SAMPLE_VERSION and len(record.candidate.revision) == 64
     assert record.application == 'plugin' and record.requested is False and output == ''
-    assert read_manifest(installer.candidates / 'counter').version == COUNTER_VERSION
-    assert not (installer.directory / 'counter').exists()
+    assert read_manifest(installer.candidates / 'sample').version == SAMPLE_VERSION
+    assert not (installer.directory / 'sample').exists()
 
 
 @pytest.mark.asyncio
@@ -46,8 +46,8 @@ async def test_zip_root_layout_and_source_identity(tmp_path, prefix):
 async def test_zip_rejects_paths_outside_package(tmp_path, name):
     installer = PluginInstaller(tmp_path)
     with pytest.raises(ValueError, match='Invalid plugin ZIP member'):
-        await installer.prepare_zip(package(member=name), 'counter.zip', [])
-    assert not (installer.records / 'counter.json').exists()
+        await installer.prepare_zip(package(member=name), 'sample.zip', [])
+    assert not (installer.records / 'sample.json').exists()
 
 
 @pytest.mark.asyncio
@@ -57,7 +57,7 @@ async def test_zip_rejects_symlink_and_invalid_archive(tmp_path):
     member.create_system = 3
     member.external_attr = (stat.S_IFLNK | 0o777) << 16
     with pytest.raises(ValueError, match='Invalid plugin ZIP member'):
-        await installer.prepare_zip(package(member=member), 'counter.zip', [])
+        await installer.prepare_zip(package(member=member), 'sample.zip', [])
     with pytest.raises(ValueError, match="ZIP raw=b'not a zip'"):
         await installer.prepare_zip(b'not a zip', 'invalid.zip', [])
 
@@ -67,13 +67,13 @@ async def test_zip_rejects_symlink_and_invalid_archive(tmp_path):
     ('requires_lenbot = ">=0.2,<1"', 'requires_lenbot = ">=99"', 'requires host'),
     ('requires_python = ">=3.13"', 'requires_python = "<3"', 'requires Python'),
     ('platforms = ["linux", "darwin", "win32"]', 'platforms = []', 'platforms'),
-    (f'version = "{COUNTER_VERSION}"', 'version = "latest"', 'Invalid version'),
+    (f'version = "{SAMPLE_VERSION}"', 'version = "latest"', 'Invalid version'),
     ('requires_lenbot = ">=0.2,<1"', 'requires_lenbot = ""', 'Version range must be explicit'),
     ('interface = 1', 'interface = 0', '接口版本'),
 ])
 async def test_zip_compatibility_rejects_before_installation(tmp_path, original, replacement, reason):
     installer = PluginInstaller(tmp_path)
-    manifest = (COUNTER / 'plugin.toml').read_text().replace(original, replacement)
+    manifest = (SAMPLE / 'plugin.toml').read_text().replace(original, replacement)
     with pytest.raises(ValueError, match=reason):
-        await installer.prepare_zip(package(changed_manifest=manifest), 'counter.zip', [])
-    assert not (installer.records / 'counter.json').exists()
+        await installer.prepare_zip(package(changed_manifest=manifest), 'sample.zip', [])
+    assert not (installer.records / 'sample.json').exists()

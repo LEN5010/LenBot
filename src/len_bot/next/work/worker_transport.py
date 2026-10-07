@@ -111,10 +111,10 @@ class WorkerTransport:
                 kind, data = await self._read_frame(MAX_METADATA_BYTES)
                 request = json.loads(data)
                 if (kind != b"Q" or not isinstance(request, dict)
-                        or set(request) != {"token", "path", "body_bytes"}
+                        or set(request) not in ({"token", "path", "body_bytes"}, {"token", "path", "body_bytes", "headers"})
                         or not isinstance(request["token"], str)
                         or not isinstance(request["path"], str)
-                        or request["path"] not in {"/v1/chat/completions", "/task/deliver-file", "/task/browser-file", "/task/network",
+                        or request["path"] not in {self.proxy.path, "/task/deliver-file", "/task/browser-file", "/task/network",
                                                    "/task/recall-chat", "/task/memory", "/task/transcribe", "/task/account-browser", "/task/mcp"}
                         or type(request["body_bytes"]) is not int
                         or not 0 < request["body_bytes"] <= self.proxy.limits.max_request_bytes):
@@ -137,7 +137,7 @@ class WorkerTransport:
                             await self._write_frame(b"D", content[offset:offset + CHUNK_BYTES])
                         await self._write_frame(b"E")
                         continue
-                    async with self.proxy.open(request["token"], body) as response:
+                    async with self.proxy.open(request["token"], body, headers=request.get("headers", {})) as response:
                         headers = {name.lower(): value for name, value in response.headers.items()
                                    if name.lower() == "content-type"}
                         await self._write_frame(b"H", json.dumps({
@@ -150,14 +150,14 @@ class WorkerTransport:
                 except Exception as error:
                     # Pi loses the cause when a started model stream is cut off.
                     # Its owner already waits on this failure channel.
-                    if request["path"] == "/v1/chat/completions":
+                    if request["path"] == self.proxy.path:
                         self._fail(error)
                     detail = ''.join(traceback.format_exception_only(error)).strip().encode('utf-8')
                     if len(detail) > CHUNK_BYTES:
                         detail = detail[:CHUNK_BYTES - 64].decode(
                             "utf-8", errors="ignore").encode("utf-8") + b"\n[error text truncated at pipe frame limit]"
                     await self._write_frame(b"X", detail)
-                    if request["path"] == "/v1/chat/completions":
+                    if request["path"] == self.proxy.path:
                         return
         except asyncio.CancelledError:
             raise

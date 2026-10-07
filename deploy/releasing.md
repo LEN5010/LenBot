@@ -16,7 +16,7 @@
 | 编号 | 当前 | 位置 |
 |---|---|---|
 | 插件接口 | 1 | `plugin.py` 的 `INTERFACE` |
-| 根配置格式 | 1 | `config.py` 的 `CONFIG_VERSION` |
+| 根配置格式 | 2 | `config.py` 的 `CONFIG_VERSION` |
 | 业务数据库 | 3 | `storage/store.py` 的 `FORMAT_VERSION` |
 | 记忆处理库 | 6 | `memory/jobs.py` 的 `FORMAT_VERSION` |
 | 本地记忆索引 | 3 | `memory/local.py` 的 `FORMAT_VERSION` |
@@ -61,6 +61,8 @@ gh workflow run release.yml --ref <分支>
 
 - 部署包：Linux amd64／arm64、macOS Intel／ARM64、Windows x64 各装一遍，走完首次配置、登录面板、正常停止；再用两个实际打包的版本走一遍面板升级、恢复，以及新版启动失败后的恢复。
 - Docker：amd64 和 arm64 各用包内配方初始化、登录、停止；再在临时本地 registry 上走一遍镜像换版和恢复，结束后删掉这次的容器、卷和网络。
+
+构建程序包之前还要通过 `check.yml`（编译、ruff、pytest）和 `official-plugins.yml`：后者按随附插件目录固定的提交检出每个官方插件，用这次的宿主跑插件自己的测试和打包检查。CI 和发行工作流调用的是同一组可复用工作流，检查内容不会两边不一致。
 
 这些检查全程模拟发送，不接 OneBot、不调用模型，也不覆盖原生服务注册和真实任务。
 

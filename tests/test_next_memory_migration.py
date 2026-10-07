@@ -41,9 +41,7 @@ def test_memory_processing_upgrade_keeps_rows_and_adds_summary_runs(tmp_path, st
     path = tmp_path / "state.db.memory.sqlite3"
     _format1(path)
     if start == 2:
-        migrate_memory_jobs(path)
-        for version in range(1, FORMAT_VERSION):
-            path.with_name(path.name + f".v{version}.bak").unlink()
+        migrate_memory_jobs(path).unlink()
         with sqlite3.connect(path) as db:
             db.execute("DROP TABLE memory_embedding_calls")
             db.execute("DROP TABLE memory_summary_runs")
@@ -71,17 +69,16 @@ def test_memory_processing_upgrade_keeps_rows_and_adds_summary_runs(tmp_path, st
         assert jobs.summary_run(run)["request"] == {"messages": []}
 
 
-def test_memory_processing_collision_rolls_back_and_backup_is_not_overwritten(tmp_path):
+def test_memory_processing_failed_step_rolls_back_and_keeps_the_input_copy(tmp_path):
     path = tmp_path / "state.db.memory.sqlite3"
     _format1(path)
-    migrate_memory_jobs(path)
+    assert migrate_memory_jobs(path) == path.with_name(path.name + ".v1.bak")
     with sqlite3.connect(path) as db:
         db.execute("PRAGMA user_version=2")
-    with pytest.raises(FileExistsError, match="v2.bak"):
-        migrate_memory_jobs(path)
-    for version in range(2, FORMAT_VERSION):
-        path.with_name(path.name + f".v{version}.bak").unlink()
     with pytest.raises(sqlite3.OperationalError, match="already exists"):
         migrate_memory_jobs(path)
     with sqlite3.connect(path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert path.with_name(path.name + ".v2.bak").exists()
+    with pytest.raises(FileExistsError, match="v2.bak"):
+        migrate_memory_jobs(path)

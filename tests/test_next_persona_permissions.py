@@ -160,7 +160,7 @@ async def test_plugin_messages_are_excluded_from_memory_input(tmp_path: Path) ->
     import time
     from len_bot.next.chat.context import ChatContext
     from len_bot.next.chat.expression import ChatExpression
-    from len_bot.next.plugin import Text
+    from len_bot.plugin import Text
     package = _package(tmp_path, "plain", tools=[], documents={})
     config = _config(tmp_path / "instance", package)
     persona = load_persona(package)

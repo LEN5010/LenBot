@@ -313,7 +313,7 @@ async def open_memory_backend(config: SharedConfig):
         else:
             provider = config.models.providers[binding.provider]
             resolved = EmbeddingSettings(**binding.model_dump(), base_url=provider.base_url,
-                                         api_key=provider.api_key)
+                                         api_key=provider.api_key, proxy=provider.proxy)
             async with EmbeddingClient(resolved) as embedding:
                 backend = await asyncio.to_thread(LocalMemory, settings.local, embedding=embedding)
                 yield backend
@@ -332,7 +332,6 @@ async def open_memory(config: SharedConfig, store: Store, *, active_personas: di
             service = MemoryService(config.memory, backend, jobs=jobs, store=store,
                                     active_personas={} if active_personas is None else active_personas)
             if backend.embedding is not None:
-                binding = config.memory.local.embedding
                 async def embed(source, texts, purpose):
                     async with (slots.slot(scene=source) if slots is not None else nullcontext()):
                         with jobs.db:

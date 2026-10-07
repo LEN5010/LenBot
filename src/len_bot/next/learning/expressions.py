@@ -20,6 +20,7 @@ from ..models.client import ChatModel, ModelProtocolError, ModelReply
 from ..models.slots import ModelSlots
 from ..models.tokens import token_record
 from ..storage.store import Store, encode
+from ..runtime.logs import log_context
 
 
 LOG = logging.getLogger(__name__)
@@ -101,7 +102,8 @@ class ExpressionLearner:
         if self._workers:
             raise RuntimeError("expression learning workers already started")
         for scene in self.scenes:
-            self._workers[scene] = asyncio.create_task(self._worker(scene), name=f"expression-learning:{scene}")
+            with log_context(scene=scene, job='expression_learning'):
+                self._workers[scene] = asyncio.create_task(self._worker(scene), name=f"expression-learning:{scene}")
 
     async def close(self) -> None:
         for worker in self._workers.values():

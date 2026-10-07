@@ -1,0 +1,41 @@
+name: Plugin tests (reusable)
+# Called by plugin repositories: `uses: lendevs/LenBot/.github/workflows/plugin-ci.yml@master`.
+on:
+  workflow_call:
+    inputs:
+      host_ref:
+        description: LenBot branch, tag or commit to test against
+        type: string
+        default: master
+      apt_packages:
+        description: Extra Debian packages the plugin's tests need, space separated
+        type: string
+        default: ''
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: plugin
+      - uses: actions/checkout@v4
+        with:
+          repository: lendevs/LenBot
+          ref: ${{ inputs.host_ref }}
+          path: host-source
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.13"
+      - if: inputs.apt_packages != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ inputs.apt_packages }}
+      - run: uv python install 3.13
+      - run: uv venv --python 3.13
+      - run: uv pip install ./host-source pytest pytest-asyncio
+      - name: Install declared plugin dependencies
+        run: |
+          uv run --no-project --python .venv/bin/python python -c 'import pathlib,tomllib; data=tomllib.loads(pathlib.Path("plugin/plugin.toml").read_text()); pathlib.Path("plugin-requirements.txt").write_text("\n".join(data.get("dependencies", [])))'
+          uv pip install --requirements plugin-requirements.txt
+      - run: uv run --no-project --python ../.venv/bin/python python -m pytest -q --confcutdir=tests
+        working-directory: plugin
+      - name: Check runtime ZIP resources
+        run: uv run --no-project --python .venv/bin/python python host-source/scripts/package_plugin.py plugin "$RUNNER_TEMP/plugin.zip"

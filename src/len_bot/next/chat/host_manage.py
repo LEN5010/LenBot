@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, JsonValue, model_validator
 
 from ..configuration.types import STRICT
+from .request_source import source_schema
 
 
 Section = Literal['chat', 'scene', 'learning', 'schedules', 'tasks', 'memory', 'models',
@@ -15,7 +16,8 @@ ModelRole = Literal['mind', 'vision', 'memory', 'learner', 'worker', 'asr']
 class HostManageArguments(BaseModel):
     model_config = STRICT
     action: Literal['status', 'describe', 'update', 'chat', 'restart']
-    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$', description='实际发出管理请求的人的账号')
+    # Filled by the host from source_message_id; never accepted from the model.
+    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
     section: Section | None = None
     scene: str | None = Field(default=None, pattern=r'^[a-z][a-z0-9_-]*:(group|private):[^:\s/\\]+$',
                               description='场景设置和 chat 默认当前会话；status 可按群查看。restart 始终重启整个宿主')
@@ -59,6 +61,7 @@ HOST_MANAGE_TOOL = {'type': 'function', 'function': {
     'description': '管理员查看和修改宿主：各群名称与聊天开关、插件启停与参数、场景设置、模型参数、重启；'
         'status 列出各群（群名、聊天开关）、插件和可管理设置块，describe 按块读取字段说明与当前值，'
         'update 保存指定修改，chat 打开或关闭某个群的聊天，restart 按明确请求在当前轮收尾后重启。'
-        '请求人使用原话中的真实账号。',
-    'parameters': HostManageArguments.model_json_schema(),
+        'source_message_id 选择实际发出管理请求的那条消息，宿主读取其发送者判断权限。',
+    'parameters': source_schema(HostManageArguments.model_json_schema(),
+        description='实际发出这次管理请求的消息 ID；宿主读取其发送者判断权限，不能填写账号 ID'),
 }}

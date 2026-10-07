@@ -37,6 +37,7 @@ class EmbeddingSettings(EmbeddingBinding):
 
     base_url: str
     api_key: str = Field(repr=False)
+    proxy: str | None = Field(default=None, repr=False)
     timeout_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
 
     @field_validator("base_url")
@@ -138,7 +139,7 @@ class EmbeddingClient:
         self.settings = settings
         self._client = httpx.AsyncClient(
             timeout=settings.timeout_seconds, trust_env=False, follow_redirects=False,
-            transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False),
+            transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False, proxy=settings.proxy),
             headers={"Authorization": f"Bearer {settings.api_key}"},
         )
 
