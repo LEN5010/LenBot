@@ -5,13 +5,40 @@ permissions:
   contents: read
 jobs:
   check:
+    name: check (python ${{ matrix.python }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.13 is the minimum in pyproject.toml; 3.14 catches breakage on the next interpreter early.
+        python: ['3.13', '3.14']
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           version: '0.12.13'
-      - run: uv sync --locked
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked --python ${{ matrix.python }}
       - run: uv run --no-sync python -m compileall -q src/len_bot scripts deploy/updater deploy/package
-      - run: uv run --no-sync ruff check src/len_bot scripts deploy/updater deploy/package
+      - run: uv run --no-sync ruff check src/len_bot scripts deploy/updater deploy/package tests
       - run: uv run --no-sync pytest -q
+
+  workflows:
+    # Static check of the workflow files themselves (expressions, needs, shell in run blocks).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      ACTIONLINT_VERSION: '1.7.12'
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run actionlint
+        run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color

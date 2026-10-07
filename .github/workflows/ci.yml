@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same PR makes the older run pointless; master runs always finish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   checks:
     uses: ./.github/workflows/check.yml
@@ -18,7 +23,8 @@ jobs:
 
   build:
     needs: checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

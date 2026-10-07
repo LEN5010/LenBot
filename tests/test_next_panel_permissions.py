@@ -105,6 +105,11 @@ async def test_rotating_usernames_share_one_ip_login_limit(panel_config):
             assert Counter(response.status_code for response in responses) == {
                 401: LOGIN_ATTEMPT_LIMIT, 429: 40 - LOGIN_ATTEMPT_LIMIT,
             }
+            # While blocked even the right password is refused, so a guess cannot be told apart by its status.
+            assert (await client.post('/api/auth/login', json={
+                'username': panel_config.panel.username, 'password': 'synthetic-panel-password',
+            })).status_code == 429
+            clear_login_failures(key)
             assert (await client.post('/api/auth/login', json={
                 'username': panel_config.panel.username, 'password': 'synthetic-panel-password',
             })).status_code == 200

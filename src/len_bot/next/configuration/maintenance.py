@@ -20,6 +20,9 @@ class PanelSettings(BaseModel):
     password_hash: str = Field(repr=False)
     cookie_secure: bool = False
     assets_dir: Path | None = None
+    # Once a day the panel asks GitHub (or a managed installation's updater) whether a newer release exists.
+    # Nothing is downloaded or installed; false turns the background request off, the explicit check stays.
+    update_check: bool = True
 
     @field_validator("host", "username")
     @classmethod
