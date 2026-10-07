@@ -76,13 +76,14 @@ def install_panel_auth(app: FastAPI, settings: PanelSettings, *,
     async def login(item: Login, request: Request, response: Response):
         nonlocal last_login_at
         key = f"isolated:{request.client.host if request.client is not None else 'local'}"
-        blocked = login_blocked(key)
+        # A blocked address is refused before the password is checked: answering a correct guess with 200
+        # while wrong ones get 429 would leave the guessing loop as fast as before.
+        if login_blocked(key):
+            raise HTTPException(429, "登录尝试过于频繁，请稍后再试")
         record_login_failure(key)
         password_valid = await asyncio.to_thread(verify_password, item.password, settings.password_hash)
         valid = hmac.compare_digest(item.username.encode('utf-8'), settings.username.encode('utf-8')) and password_valid
         if not valid:
-            if blocked:
-                raise HTTPException(429, "登录尝试过于频繁，请稍后再试")
             raise HTTPException(401, "Invalid username or password")
         clear_login_failures(key)
         last_login_at = time.time()
