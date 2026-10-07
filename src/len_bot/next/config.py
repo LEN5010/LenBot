@@ -95,6 +95,8 @@ class SharedConfig(BaseModel):
             provider = self.memory.local.embedding.provider
             if provider not in self.models.providers:
                 raise ValueError(f"memory.local.embedding.provider references unknown provider {provider!r}")
+            if self.models.providers[provider].api not in {"openai-chat", "openai-embeddings"}:
+                raise ValueError("memory embedding requires an openai-chat or openai-embeddings provider")
         if (self.memory is not None and self.memory.ingest is not None
                 and self.models.roles.memory is None):
             raise ValueError("local memory ingest requires explicit models.roles.memory")
@@ -193,16 +195,7 @@ class SharedConfig(BaseModel):
         if binding is None:
             raise ValueError(f"models.roles.{role} is not configured")
         provider = self.models.providers[binding.provider]
-        return ModelSettings(
-            api=provider.api,
-            base_url=provider.base_url,
-            api_key=provider.api_key,
-            model=binding.model,
-            temperature=binding.temperature,
-            max_output_tokens=binding.max_output_tokens,
-            timeout_seconds=binding.timeout_seconds,
-            reasoning_effort=binding.reasoning_effort,
-        )
+        return ModelSettings.from_binding(provider, binding)
 
 
 def _check_schedule_identity(bot_id: str, schedules: ScheduleSettings) -> None:

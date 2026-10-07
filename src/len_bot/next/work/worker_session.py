@@ -76,8 +76,9 @@ def _configure_pi(handle: SandboxHandle, *, token: str, port: int,
     _write_json(agent_dir / "models.json", {
         "providers": {
             _PI_PROVIDER: {
-                "api": "openai-completions",
-                "baseUrl": f"http://127.0.0.1:{port}/v1",
+                "api": {"openai-chat": "openai-completions", "openai-responses": "openai-responses",
+                        "anthropic": "anthropic-messages", "gemini": "google-generative-ai"}[settings.api],
+                "baseUrl": f"http://127.0.0.1:{port}" + ({"anthropic": "", "gemini": "/v1beta"}.get(settings.api, "/v1")),
                 "apiKey": token,
                 "models": [{
                     "id": settings.model,
@@ -85,15 +86,15 @@ def _configure_pi(handle: SandboxHandle, *, token: str, port: int,
                     "input": inputs,
                     "contextWindow": context_window_tokens,
                     "maxTokens": settings.max_output_tokens,
-                    "compat": {
+                    "compat": ({
                         "supportsStore": False,
                         "supportsUsageInStreaming": True,
                         "supportsFinishReason": True,
-                        "maxTokensField": "max_completion_tokens",
+                        "maxTokensField": settings.output_token_field,
                         "supportsLongCacheRetention": False,
                         "supportsDeveloperRole": False,
                         "supportsReasoningEffort": False,
-                    },
+                    } if settings.api == "openai-chat" else {"supportsLongCacheRetention": False} if settings.api == "openai-responses" else {}),
                 }],
             },
         },

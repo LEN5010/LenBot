@@ -1,4 +1,4 @@
-"""One-task, byte-transparent Chat Completions stream boundary.
+"""One-task, byte-transparent native model stream boundary.
 
 The caller owns the task record and the HTTP route. This object owns only one
 configured upstream binding, its task token, and actual model-call limits.
@@ -22,6 +22,9 @@ from ..models.client import ModelProtocolError, ModelSettings
 from ..models.slots import ModelSlots
 from ..models.tokens import token_record
 from .worker_stream import ChatCompletionStream
+from .native_stream import NativeStream
+from ..models.providers import http_client, auth_headers
+from urllib.parse import quote
 from ..runtime.operations import redact, redact_record
 
 
@@ -98,13 +101,83 @@ class WorkerModelProxy:
         self._spent = 0
         self._tokens_unknown = False
         self._active_task: asyncio.Task[Any] | None = None
-        self._client = httpx.AsyncClient(
-            base_url=settings.base_url.rstrip("/") + "/",
-            timeout=settings.timeout_seconds,
-            trust_env=False,
-            follow_redirects=False,
-            transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False),
-        )
+        self._client = http_client(base_url=settings.base_url, api_key=settings.api_key, api=settings.api,
+                                   timeout_seconds=settings.timeout_seconds, proxy=settings.proxy)
+
+    @property
+    def path(self) -> str:
+        return {'openai-chat': '/v1/chat/completions', 'openai-responses': '/v1/responses',
+                'anthropic': '/v1/messages', 'gemini': '/v1beta/models/' + quote(self.settings.model.removeprefix('models/'), safe='') + ':streamGenerateContent?alt=sse'}[self.settings.api]
+
+    @property
+    def upstream_path(self) -> str:
+        return {'openai-chat': 'chat/completions', 'openai-responses': 'responses',
+                'anthropic': 'messages', 'gemini': 'models/' + quote(self.settings.model.removeprefix('models/'), safe='') + ':streamGenerateContent?alt=sse'}[self.settings.api]
+
+    def _native_request(self, inbound: dict, payload_bytes: bytes):
+        api = self.settings.api
+        if api != 'gemini' and inbound.get('model') != self.settings.model:
+            raise WorkerModelError('worker model does not match the configured binding')
+        if api != 'gemini' and inbound.get('stream') is not True:
+            raise WorkerModelError('worker native request must use stream=true')
+        allowed = ({'model', 'input', 'instructions', 'tools', 'tool_choice', 'parallel_tool_calls', 'stream', 'store', 'include', 'max_output_tokens', 'temperature', 'reasoning', 'prompt_cache_key', 'service_tier'} if api == 'openai-responses' else
+                   {'model', 'messages', 'system', 'tools', 'tool_choice', 'stream', 'max_tokens', 'temperature', 'thinking', 'output_config', 'metadata', 'cache_control'} if api == 'anthropic' else
+                   {'contents', 'systemInstruction', 'tools', 'toolConfig', 'generationConfig', 'safetySettings'})
+        unknown = inbound.keys() - allowed
+        if unknown:
+            raise WorkerModelError(f'unsupported worker {api} fields: {sorted(unknown)}')
+        key = 'input' if api == 'openai-responses' else 'messages' if api == 'anthropic' else 'contents'
+        if not isinstance(inbound.get(key), list):
+            raise WorkerModelError(f'worker {key} must be an array')
+        outgoing = inbound.copy()
+        options = dict(inbound.get('generationConfig', {})) if api == 'gemini' else outgoing
+        output_field = 'max_output_tokens' if api == 'openai-responses' else 'max_tokens' if api == 'anthropic' else 'maxOutputTokens'
+        output_tokens = options.get(output_field, self.settings.max_output_tokens)
+        if type(output_tokens) is not int or not 0 < output_tokens <= self.settings.max_output_tokens:
+            raise WorkerModelError('worker output tokens exceed configured binding')
+        options[output_field] = output_tokens
+        if self.settings.temperature is None:
+            options.pop('temperature', None)
+        else:
+            options['temperature'] = self.settings.temperature
+        if api == 'openai-responses':
+            if outgoing.get('store') is True:
+                raise WorkerModelError('worker store may only be false')
+            outgoing.update(store=False, include=['reasoning.encrypted_content'])
+            outgoing.pop('reasoning', None)
+            if self.settings.reasoning_effort is not None:
+                outgoing['reasoning'] = {'effort': self.settings.reasoning_effort}
+        elif api == 'anthropic':
+            outgoing.pop('thinking', None)
+            outgoing.pop('output_config', None)
+            if self.settings.thinking_budget_tokens is not None:
+                outgoing['thinking'] = {'type': 'enabled', 'budget_tokens': self.settings.thinking_budget_tokens}
+            elif self.settings.reasoning_effort is not None:
+                outgoing.update(thinking={'type': 'adaptive'}, output_config={'effort': self.settings.reasoning_effort})
+        else:
+            options.pop('thinkingConfig', None)
+            if self.settings.thinking_budget_tokens is not None:
+                options['thinkingConfig'] = {'thinkingBudget': self.settings.thinking_budget_tokens}
+            elif self.settings.reasoning_effort is not None:
+                options['thinkingConfig'] = {'thinkingLevel': self.settings.reasoning_effort}
+            outgoing['generationConfig'] = options
+        # Count readable JSON, retaining signed continuation in the estimate; image token cost is unknown.
+        image_unknown = False
+        def readable(value):
+            nonlocal image_unknown
+            if isinstance(value, dict):
+                if value.get('type') in {'input_image', 'image'} or 'inlineData' in value or 'fileData' in value:
+                    image_unknown = True
+                    return '[image tokens unknown]'
+                return {k: readable(v) for k, v in value.items()}
+            return [readable(v) for v in value] if isinstance(value, list) else value
+        estimated = math.ceil(len(json.dumps(readable(outgoing), ensure_ascii=False).encode()) / 3) + output_tokens
+        if estimated > self.context_window_tokens:
+            raise WorkerModelError(f'worker native request estimate {estimated} exceeds configured context window {self.context_window_tokens}')
+        wire = json.dumps(outgoing, ensure_ascii=False, allow_nan=False).encode()
+        if len(wire) > self.limits.max_request_bytes:
+            raise WorkerModelError('forwarded worker model request exceeds max_request_bytes')
+        return outgoing, wire, estimated, image_unknown
 
     async def __aenter__(self) -> WorkerModelProxy:
         if self._entered or self._closed:
@@ -150,9 +223,11 @@ class WorkerModelProxy:
             raise WorkerModelError(
                 f"worker Chat Completions request must be an object: {payload_bytes[:500]!r}"
             )
+        if self.settings.api != "openai-chat":
+            return self._native_request(inbound, payload_bytes)
         allowed = {
             "model", "messages", "tools", "tool_choice", "stream", "stream_options",
-            "temperature", "max_completion_tokens", "reasoning_effort", "store",
+            "temperature", "max_completion_tokens", "max_tokens", "reasoning_effort", "store",
         }
         unsupported = sorted(inbound.keys() - allowed)
         if unsupported:
@@ -185,7 +260,10 @@ class WorkerModelProxy:
             store = False
         else:
             store = None
-        output_tokens = inbound.get("max_completion_tokens", self.settings.max_output_tokens)
+        other_output_field = 'max_tokens' if self.settings.output_token_field == 'max_completion_tokens' else 'max_completion_tokens'
+        if other_output_field in inbound:
+            raise WorkerModelError(f'worker output budget must use configured field {self.settings.output_token_field}')
+        output_tokens = inbound.get(self.settings.output_token_field, self.settings.max_output_tokens)
         if type(output_tokens) is not int or not 0 < output_tokens <= self.settings.max_output_tokens:
             raise WorkerModelError(
                 f"worker max_completion_tokens must be a positive integer <= "
@@ -193,11 +271,12 @@ class WorkerModelProxy:
         outgoing: dict[str, Any] = {
             "model": self.settings.model,
             "messages": messages,
-            "temperature": self.settings.temperature,
-            "max_completion_tokens": output_tokens,
+            self.settings.output_token_field: output_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if self.settings.temperature is not None:
+            outgoing["temperature"] = self.settings.temperature
         if tools or "tools" in inbound:
             outgoing["tools"] = tools
         if "tool_choice" in inbound:
@@ -250,8 +329,12 @@ class WorkerModelProxy:
         self.finish_call(call_id, recorded)
 
     @asynccontextmanager
-    async def open(self, token: str, payload_bytes: bytes) -> AsyncIterator[WorkerResponse]:
+    async def open(self, token: str, payload_bytes: bytes, *, headers: dict | None = None) -> AsyncIterator[WorkerResponse]:
         self.authorize(token)
+        headers = {} if headers is None else headers
+        if (headers.keys() - {"anthropic-beta"} or any(not isinstance(v, str) for v in headers.values())
+                or (headers and self.settings.api != "anthropic")):
+            raise WorkerModelError("unsupported worker protocol headers")
         if self._busy:
             raise WorkerModelError("worker model proxy already has an active call")
         if self._calls >= self.limits.max_calls:
@@ -286,9 +369,10 @@ class WorkerModelProxy:
                 deadline = asyncio.timeout(self.settings.timeout_seconds)
                 async with deadline:
                     request = self._client.build_request(
-                        "POST", "chat/completions", content=wire,
+                        "POST", self.upstream_path, content=wire,
                         headers={
-                            "Authorization": f"Bearer {self.settings.api_key}",
+                            **auth_headers(self.settings.api, self.settings.api_key),
+                            **headers,
                             "Content-Type": "application/json",
                             "Accept": "text/event-stream",
                             "Accept-Encoding": "identity",
@@ -300,7 +384,8 @@ class WorkerModelProxy:
                         encoding = upstream.headers.get("content-encoding", "identity")
                         if encoding != "identity":
                             raise WorkerModelError(f"unsupported upstream content-encoding: {encoding}")
-                        parser = (ChatCompletionStream(self.limits.max_response_bytes)
+                        parser = ((ChatCompletionStream(self.limits.max_response_bytes) if self.settings.api == "openai-chat"
+                                   else NativeStream(self.settings, self.limits.max_response_bytes))
                                   if upstream.is_success else None)
 
                         def settle(*, result: Any = None, error: str | None = None) -> None:
@@ -361,7 +446,7 @@ class WorkerModelProxy:
             original_error = error
             if isinstance(error, TimeoutError) and deadline is not None and deadline.expired():
                 error = TimeoutError(
-                    f"worker model {self.provider}/{self.settings.model} POST chat/completions "
+                    f"worker model {self.provider}/{self.settings.model} POST {self.upstream_path} "
                     f"exceeded {self.settings.timeout_seconds:g} seconds; "
                     f"HTTP status={status}, received_bytes={response_bytes}; request did not finish"
                 )

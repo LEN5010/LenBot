@@ -13,7 +13,7 @@ from typing import Literal
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 import uvicorn
 import yaml
@@ -23,7 +23,9 @@ from ..configuration.chat import Compaction
 from ..config import HostConfig
 from ..configuration.onebot import OneBotSettings
 from ..platform.onebot import OneBot
-from ..models.client import ChatModel, ModelSettings
+from .model_access import probe_model as run_model_probe
+from ..models.providers import PROTOCOLS, list_models
+from .setup_plugins import official_plugins, plugin_choices, install_official
 from ..persona.profile import Persona, load_persona
 from len_bot.web.auth import hash_password
 
@@ -47,8 +49,37 @@ class FirstSetup(BaseModel):
     boundaries: str
     panel_host: str = "127.0.0.1"
     panel_port: int = Field(ge=1, le=65535)
-    username: str = Field(min_length=1)
+    username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=8, repr=False)
+    password_confirmation: str | None = Field(default=None, repr=False)
+    install_plugins: list[str] = Field(default_factory=list)
+
+    @field_validator('install_plugins')
+    @classmethod
+    def official_selection(cls, values: list[str]) -> list[str]:
+        if len(set(values)) != len(values) or set(values) - official_plugins().keys():
+            raise ValueError('只能选择目录中不重复的官方插件名')
+        return values
+
+    @model_validator(mode='after')
+    def matching_password(self):
+        if not self.password.strip():
+            raise ValueError('密码不能全部是空白')
+        if self.password_confirmation is not None and self.password != self.password_confirmation:
+            raise ValueError('两次密码不一致')
+        return self
+
+    @field_validator('username')
+    @classmethod
+    def username_text(cls, value: str) -> str:
+        if value != value.strip() or not value.strip():
+            raise ValueError('用户名不能为空，且首尾不能有空白')
+        return value
+
+
+class ProviderList(BaseModel):
+    model_config = ConfigDict(strict=True, extra='forbid', hide_input_in_errors=True)
+    provider: Provider
 
 
 class PlatformProbe(BaseModel):
@@ -60,7 +91,24 @@ class ModelProbe(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid', hide_input_in_errors=True)
     provider: Provider
     mind: Binding
+    kind: Literal["text", "tools"] = "text"
 
+
+def setup_source(item: FirstSetup) -> dict:
+    return {
+        'config_version': 1, 'mode': 'isolated-multi', 'bot_id': item.bot_id, 'owners': item.owners,
+        'timezone': item.timezone, 'delivery': item.delivery, 'database': 'state/lenbot.sqlite3',
+        'onebot': item.onebot.model_dump(mode='json'),
+        'compaction': item.compaction.model_dump(mode='json'),
+        'models': {'providers': {'primary': item.provider.model_dump(mode='json')},
+                   'roles': {'mind': item.mind.model_dump(mode='json')}},
+        'plugins': {'paths': ['plugins'], 'data_directory': 'plugins/.data',
+                    'disabled': item.install_plugins, **{name: {} for name in item.install_plugins}},
+        'panel': {'host': item.panel_host, 'port': item.panel_port, 'username': item.username,
+                  'password_hash': hash_password(item.password)},
+        'scenes': {item.scene: {'persona': f'personas/{item.persona_id}', 'voice_mode': item.voice_mode,
+                                'attention': {'only_direct': True}}},
+    }
 
 
 def initialize(root: Path, item: FirstSetup) -> dict:
@@ -71,21 +119,15 @@ def initialize(root: Path, item: FirstSetup) -> dict:
         raise FileExistsError('根配置已经存在；初始化不覆盖，继续使用正常管理面板')
     if role_path.exists():
         raise FileExistsError(f'角色目录已经存在，请换一个新角色目录名：{role_path}')
+    installed = {p['name'] for p in plugin_choices(root) if p['installed']}
+    if set(item.install_plugins) - installed:
+        raise ValueError('所选官方插件尚未安装完成，请完成安装或取消选择后继续')
     persona = Persona(id=item.persona_id, name=item.persona_name, brief=item.brief,
                       behavior=item.brief, self_reference=['我'], aliases=[], tools='all', skills=[],
                       styles=[], voice=item.voice_text, boundaries=item.boundaries, examples=[])
-    source = {
-        'config_version': 1, 'mode': 'isolated-multi', 'bot_id': item.bot_id, 'owners': item.owners,
-        'timezone': item.timezone, 'delivery': item.delivery, 'database': 'state/lenbot.sqlite3',
-        'onebot': item.onebot.model_dump(mode='json'),
-        'compaction': item.compaction.model_dump(mode='json'),
-        'models': {'providers': {'primary': item.provider.model_dump(mode='json')},
-                   'roles': {'mind': item.mind.model_dump(mode='json')}},
-        'panel': {'host': item.panel_host, 'port': item.panel_port, 'username': item.username,
-                  'password_hash': hash_password(item.password)},
-        'scenes': {item.scene: {'persona': f'personas/{item.persona_id}', 'voice_mode': item.voice_mode,
-                                'attention': {'only_direct': True}}},
-    }
+    source = setup_source(item)
+    prepared = [p['name'] for p in plugin_choices(root) if p['installed'] or p['prepared']]
+    source['plugins'].update(disabled=prepared, **{name: {} for name in prepared})
     # Validate all cross-field requirements before creating any role/config files.
     HostConfig.model_validate_json(json.dumps(source))
     role_path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +153,7 @@ def initialize(root: Path, item: FirstSetup) -> dict:
     finally:
         temporary.unlink(missing_ok=True)
     return {'saved': True, 'config': str(config_path), 'persona': str(role_path),
-            'panel_url': f'http://127.0.0.1:{item.panel_port}', 'delivery': item.delivery,
+            'panel_url': f'http://127.0.0.1:{item.panel_port}', 'panel_port': item.panel_port, 'delivery': item.delivery,
             'voice_mode': item.voice_mode,
             'next': '配置已保存。首次配置向导将进入面板；离线初始化命令仍需显式启动。'}
 
@@ -127,7 +169,12 @@ def create_setup_app(root: Path, token: str, completed: asyncio.Event, *, contai
             {key: item[key] for key in ('loc', 'msg', 'type')} for item in error.errors()
         ]})
 
+    def config_exists():
+        return (root / "lenbot.config.json").exists()
+
     async def authorize(x_setup_token: str = Header(default='')):
+        if config_exists():
+            raise HTTPException(409, '实例已配置，请进入正常面板登录；首次向导不能覆盖配置')
         if not secrets.compare_digest(x_setup_token, token):
             raise HTTPException(401, '请使用本次启动在终端显示的初始化链接')
 
@@ -147,18 +194,25 @@ def create_setup_app(root: Path, token: str, completed: asyncio.Event, *, contai
 
     @app.post('/api/setup/model', dependencies=[Depends(authorize)])
     async def probe_model(item: ModelProbe):
-        provider, binding = item.provider, item.mind
         try:
-            settings = ModelSettings(api=provider.api, base_url=provider.base_url, api_key=provider.api_key,
-                                     model=binding.model, temperature=binding.temperature,
-                                     max_output_tokens=binding.max_output_tokens,
-                                     timeout_seconds=binding.timeout_seconds,
-                                     reasoning_effort=binding.reasoning_effort)
-            async with ChatModel(settings) as model:
-                reply = await model.complete([{'role': 'user', 'content': '请回复连接成功。'}], [])
-            return {'model': binding.model, 'text': reply.text, 'usage': reply.usage}
+            return await run_model_probe(item.provider, item.mind, item.kind)
         except Exception as error:
             raise HTTPException(422, f'{type(error).__name__}: {error}') from error
+
+    @app.get('/api/setup/protocols', dependencies=[Depends(authorize)])
+    async def protocols():
+        return {'protocols': [p for p in PROTOCOLS if 'mind' in p['roles']]}
+
+    @app.post('/api/setup/models', dependencies=[Depends(authorize)])
+    async def models(item: ProviderList):
+        try:
+            return {'models': await list_models(item.provider)}
+        except Exception as error:
+            raise HTTPException(422, f'{type(error).__name__}: {error}') from error
+
+    @app.get('/api/setup/plugins', dependencies=[Depends(authorize)])
+    async def plugins():
+        return {'plugins': await asyncio.to_thread(plugin_choices, root)}
 
     @app.post('/api/setup', dependencies=[Depends(authorize)])
     async def save(item: FirstSetup):
@@ -166,7 +220,21 @@ def create_setup_app(root: Path, token: str, completed: asyncio.Event, *, contai
             if container:
                 item = item.model_copy(update={'panel_host': '0.0.0.0'})
             try:
+                if (root / 'lenbot.config.json').exists():
+                    raise FileExistsError('根配置已经存在，请进入正常面板登录')
+                if (root / 'personas' / item.persona_id).exists():
+                    raise FileExistsError('角色目录已经存在，请换一个新角色目录名')
+                HostConfig.model_validate_json(json.dumps(setup_source(item)))
+                installed = []
+                entries = official_plugins()
+                for name in item.install_plugins:
+                    try:
+                        installed.append(await install_official(root, entries[name]))
+                    except Exception as error:
+                        raise HTTPException(422, f'{entries[name].title} 安装失败：{type(error).__name__}: {error}。'
+                                            '账号与配置尚未保存；可重试，或取消勾选该插件继续。已安装插件保留。') from error
                 result = await asyncio.to_thread(initialize, root, item)
+                result['plugins'] = installed
                 if container:
                     result['panel_url'] = '/'
             except FileExistsError as error:

@@ -108,7 +108,7 @@ async def process_audio(store, config, arguments, *, turn_id, platform, slots, d
                     store.end_call(call_id, response, usage, error, tokens=tokens)
             notify()
             try:
-                reply = await transcribe_audio(binding, base_url=provider.base_url, api_key=provider.api_key, wav=row["wav"])
+                reply = await transcribe_audio(binding, base_url=provider.base_url, api_key=provider.api_key, wav=row["wav"], proxy=provider.proxy)
             except BaseException as error:
                 error_text = f"{type(error).__name__}: {error}"
                 if isinstance(error, ASRProtocolError):

@@ -313,7 +313,7 @@ async def open_memory_backend(config: SharedConfig):
         else:
             provider = config.models.providers[binding.provider]
             resolved = EmbeddingSettings(**binding.model_dump(), base_url=provider.base_url,
-                                         api_key=provider.api_key)
+                                         api_key=provider.api_key, proxy=provider.proxy)
             async with EmbeddingClient(resolved) as embedding:
                 backend = await asyncio.to_thread(LocalMemory, settings.local, embedding=embedding)
                 yield backend
