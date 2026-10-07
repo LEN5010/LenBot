@@ -33,14 +33,14 @@ async function submit() {
     <v-alert v-for="item in blocked" :key="item.scene" type="warning">
       {{ sceneName(item.scene) }} 已到上限，{{ item.until ? `${formatTime(item.until, host.state?.timezone)} 恢复` : '暂停中' }}：{{ item.reason }}
     </v-alert>
-    <SettingSection v-if="draft" title="token 与发言上限" description="到上限后 Bot 暂停调用模型或暂停发言，到时间自动恢复。"
+    <SettingSection v-if="draft" title="token 与发言上限"
       :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
       <div class="form-grid">
         <v-text-field :model-value="draft.daily_tokens ?? ''" type="number" label="每天模型 token 上限"
-          hint="所有群加起来，输入加输出；留空不限" persistent-hint
+          placeholder="不限"
           @update:model-value="value => draft.daily_tokens = numberOrNull(value)" />
         <v-text-field :model-value="draft.messages_per_hour ?? ''" type="number" label="每个群每小时最多发言条数"
-          hint="留空不限" persistent-hint @update:model-value="value => draft.messages_per_hour = numberOrNull(value)" />
+          placeholder="不限" @update:model-value="value => draft.messages_per_hour = numberOrNull(value)" />
       </div>
       <AdvancedFields label="按群单独设置">
         <div>

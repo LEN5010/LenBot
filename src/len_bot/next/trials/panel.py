@@ -9,9 +9,10 @@ from dataclasses import asdict
 from pathlib import Path
 from threading import Lock
 import time
+from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, Response, WebSocket
 from pydantic import BaseModel, Field, field_validator
 import uvicorn
 
@@ -41,8 +42,10 @@ class TestMessage(BaseModel):
     uid: str = Field(pattern=r"^[a-z][a-z0-9_-]*:[^:\s/\\]+$")
     nickname: str = Field(min_length=1)
     text: str = Field(min_length=1)
-    mention_bot: bool
-    reply_to: str | None
+    # Accounts this message @-mentions, in order; `all` is @全体成员.
+    mentions: list[Annotated[str, Field(pattern=r"^(all|[a-z][a-z0-9_-]*:[^:\s/\\]+)$")]] = Field(default_factory=list, max_length=20)
+    role: Literal["member", "admin", "owner"] = "member"
+    reply_to: str | None = None
 
     @field_validator("nickname", "text")
     @classmethod
@@ -50,6 +53,14 @@ class TestMessage(BaseModel):
         if not value.strip():
             raise ValueError("must not be blank")
         return value
+
+
+def stored_image(store: Store, scene: str, seq: int, image_index: int) -> Response:
+    image = store.original_image(scene, seq, image_index)
+    if image is None:
+        raise HTTPException(404, "测试场景里没有这张图片")
+    mime_type, data = image
+    return Response(data, media_type=mime_type, headers={"Cache-Control": "no-store"})
 
 
 class PanelSession:
@@ -89,7 +100,7 @@ class PanelSession:
             "models": {"mind": self.config.models.roles.mind.model},
             "delivery": "simulated", "running": not self.closing and not self.task.done(), "error": self.error(),
             "messages": [{"seq": seq, "rendered": self.chat.context.render(message), "text": self.chat.context.render_text(message),
-                          **asdict(message)}
+                          **asdict(message), "images": self.store.message_media(self.config.scene, seq)}
                          for seq, message in self.store.recent_records(self.config.scene)],
             "turns": self.store.recent_turns(self.config.scene),
         }
@@ -107,17 +118,22 @@ class PanelSession:
         parts = []
         if item.reply_to is not None:
             parts.append(Segment("reply", {"id": item.reply_to}))
-        if item.mention_bot:
-            parts.append(Segment("mention", {"user": self.config.bot_id}))
+        parts.extend(Segment("mention", {"user": user}) for user in dict.fromkeys(item.mentions))
         parts.append(Segment("text", {"text": item.text}))
         message = ChatMessage(id=str(uuid4()), platform=platform, bot_id=self.config.bot_id,
                               scene=self.config.scene, platform_message_id=str(uuid4()),
-                              sender=Sender(item.uid, item.nickname, None, "member"), time=time.time(),
-                              segments=parts, reply_to=item.reply_to, mentions_bot=item.mention_bot,
+                              sender=Sender(item.uid, item.nickname, None, item.role), time=time.time(),
+                              segments=parts, reply_to=item.reply_to, mentions_bot=self.config.bot_id in item.mentions,
                               is_self=False, send_status="received")
         receipt = self.runner.receive_message(message, asdict(message))
         self.notify()
         return receipt
+
+    def avatar(self) -> Response:
+        avatar = self.chat.persona.avatar
+        if avatar is None:
+            raise HTTPException(404, "角色没有头像")
+        return Response(avatar.data, media_type=avatar.mime_type, headers={"Cache-Control": "no-store"})
 
     async def close(self) -> None:
         self.closing = True
@@ -217,6 +233,14 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
     @app.post("/api/chat-test/messages")
     async def message(item: TestMessage, _: str = Depends(user)):
         return app.state.session.receive(item)
+
+    @app.get("/api/chat-test/messages/{seq}/images/{image_index}")
+    async def image(seq: int, image_index: int, _: str = Depends(user)):
+        return stored_image(app.state.session.store, config.scene, seq, image_index)
+
+    @app.get("/api/chat-test/avatar")
+    async def avatar(_: str = Depends(user)):
+        return app.state.session.avatar()
 
     @app.get("/api/chat-test/turns/{turn_id}")
     async def turn(turn_id: str, _: str = Depends(user)):

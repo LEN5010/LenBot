@@ -124,7 +124,7 @@ async function learnNow() {
 
 <template>
   <ResourceState :resource="config" error-title="读取学习设置失败">
-    <SettingSection title="学习" description="黑话推断后自动使用，可随时纠正或禁用。说话方式按自动采用开关生效，收集的表情仍需人工采用。"
+    <SettingSection title="学习"
       :dirty="configDirty" :saving="saveConfig.busy.value" :error="saveConfig.error.value" @save="submitConfig">
       <v-switch :model-value="draft !== null" label="开启学习" @update:model-value="toggleLearning" />
       <v-alert v-if="draft && noLearner" type="warning">
@@ -133,8 +133,8 @@ async function learnNow() {
         <div class="form-grid">
           <v-switch v-model="draft.extract" label="学说话方式" />
           <v-switch v-model="draft.jargon_extract" label="学黑话" />
-          <v-switch v-model="draft.collect_stickers" label="学习群聊表情包" hint="关闭后不再采集或使用群聊候选，角色自带表情仍可发送" persistent-hint />
-          <v-switch v-model="draft.reply_effects" label="观察群友对 Bot 发言的反应" hint="主动开话题需要打开这一项" persistent-hint />
+          <v-switch v-model="draft.collect_stickers" label="学习群聊表情包" />
+          <v-switch v-model="draft.reply_effects" label="观察群友对 Bot 发言的反应" />
         </div>
         <v-switch v-model="draft.auto_adopt" label="学到的说话方式不经审核直接使用" />
         <AdvancedFields>
@@ -162,7 +162,6 @@ async function learnNow() {
           <v-btn value="pending">自动学习</v-btn><v-btn value="adopted">人工固定</v-btn><v-btn value="rejected">已禁用</v-btn>
         </v-btn-toggle>
       </div>
-      <p v-if="kind === 'jargon'" class="muted small">有推断词义就自动用于上下文；人工固定后不被后续推断覆盖。</p>
       <ResourceState :resource="lists[kind]" :error-title="`读取${item.title}失败`" :empty="!lists[kind].data.value?.items.length" empty-text="没有内容" compact v-slot="{ data }">
         <article v-for="entry in data.items" :key="entry.id" class="review-card">
           <div v-if="kind === 'expressions'" class="form-grid">

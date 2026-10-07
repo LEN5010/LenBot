@@ -41,7 +41,7 @@ function saved(value) {
       <template v-else-if="tab === 'advanced'">
         <Panel title="开发者模式">
           <v-switch v-model="developerMode" label="显示内部编号、原始请求与响应、完整数据"
-            hint="只对当前浏览器页签有效，刷新页面后关闭" persistent-hint />
+            />
         </Panel>
         <ProcessingSection :snapshot="data" @saved="saved" @dirty="value => dirty.processing = value" />
       </template>

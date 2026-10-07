@@ -1,7 +1,7 @@
 <script setup>
 import { computed, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, sceneName, sceneNumber } from '../../../api.js'
+import { api, sceneName, sceneSubtitle } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'
 import { sceneTarget, useCurrentScene } from '../../../composables/useCurrentScene.js'
 import { useUnsavedChanges } from '../../../composables/useUnsavedChanges.js'
@@ -43,7 +43,7 @@ async function addScene() {
 </script>
 
 <template>
-  <HostPage title="群聊" description="每个群的消息、设置、权限和学习。点左边的群切换，未保存的修改会先提醒。" wide>
+  <HostPage title="群聊" wide>
     <template #actions><v-btn variant="outlined" @click="adding = true">添加群聊</v-btn></template>
     <EmptyState v-if="host.state && !scene" text="还没有群聊"><v-btn color="primary" @click="adding = true">添加群聊</v-btn></EmptyState>
     <div v-else-if="scene" class="scene-workbench">
@@ -52,14 +52,14 @@ async function addScene() {
           :aria-current="item.scene === scene ? 'page' : undefined" @click="open(item.scene)">
           <SceneAvatar :scene="item.scene" :size="34" />
           <span class="rail-text"><strong>{{ sceneName(item.scene) }}</strong>
-            <span>{{ sceneNumber(item.scene) }} · {{ item.persona.name }}<template v-if="!item.chat_enabled"> · 已关闭</template></span></span>
+            <span>{{ [sceneSubtitle(item.scene), item.persona.name, item.chat_enabled ? '' : '已关闭'].filter(Boolean).join(' · ') }}</span></span>
         </button>
       </nav>
       <v-select class="scene-select" :model-value="scene" :items="scenes.map(item => ({ title: sceneName(item.scene), value: item.scene }))"
         label="群聊" hide-details @update:model-value="open" />
       <section class="scene-detail">
       <header class="detail-head"><SceneAvatar :scene="scene" :size="40" />
-        <div><h2>{{ sceneName(scene) }}</h2><p class="muted">{{ sceneNumber(scene) }}<template v-if="current"> · 角色：{{ current.persona.name }}</template></p></div></header>
+        <div><h2>{{ sceneName(scene) }}</h2><p class="muted">{{ [sceneSubtitle(scene), current ? `角色：${current.persona.name}` : ''].filter(Boolean).join(' · ') }}</p></div></header>
       <PageTabs :tabs="tabs" :model-value="tab" label="群聊内容" />
       <MessagesTab v-if="tab === 'messages'" :key="`m${scene}`" :scene="scene" />
       <SettingsTab v-else-if="tab === 'settings'" :key="`s${scene}`" :scene="scene" @dirty="value => dirty.settings = value" />
@@ -74,8 +74,7 @@ async function addScene() {
       <v-btn-toggle v-model="kind" mandatory>
         <v-btn value="group">群聊</v-btn><v-btn value="private">私聊</v-btn></v-btn-toggle>
       <v-text-field v-model="qq" :label="kind === 'group' ? '群号' : '对方 QQ 号'" />
-      <v-combobox v-model="persona" :items="personas" label="角色包目录" hint="可以填已有角色包，例如 personas/my-bot" persistent-hint />
-      <p class="muted">新群默认只在被 @ 时说话，添加后可以在群设置里修改。重启后生效。</p>
+      <v-combobox v-model="persona" :items="personas" label="角色包目录" placeholder="personas/my-bot" />
       <ErrorNote v-if="create.error.value" title="没有添加成功" :error="create.error.value" />
       <template #actions>
         <v-btn color="primary" :loading="create.busy.value" :disabled="!qq.trim() || !persona" @click="addScene">添加</v-btn>

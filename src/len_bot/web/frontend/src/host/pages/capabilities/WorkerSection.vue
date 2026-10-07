@@ -27,7 +27,7 @@ const fresh = () => ({
     bytes_per_second: 8388608, connect_timeout_seconds: 30, header_timeout_seconds: 30 },
 })
 const advanced = [
-  ['cpus', 'CPU 核数'], ['memory', '内存上限', '例如 2g'], ['tmpfs_size', '临时文件空间', '例如 256m'], ['pids_limit', '进程数上限'],
+  ['cpus', 'CPU 核数'], ['memory', '内存上限', '2g'], ['tmpfs_size', '临时文件空间', '256m'], ['pids_limit', '进程数上限'],
   ['command_timeout_seconds', '单条命令超时（秒）'], ['max_running', '同时运行的任务数'],
   ['max_containers', '任务容器总数上限'], ['max_scene_containers', '每个群的任务容器上限'],
   ['max_calls', '每次执行最多调用模型几次'], ['max_request_bytes', '单次模型请求大小上限（字节）'],
@@ -74,7 +74,7 @@ async function submit() {
 
 <template>
   <ResourceState :resource="settings" error-title="读取任务环境失败">
-  <SettingSection title="独立任务" description="Bot 可以把耗时的活交给独立任务，在隔离的 Docker 容器里慢慢做完再交付。"
+  <SettingSection title="独立任务"
     :dirty="dirty" :problem="problem" :saving="save.busy.value" :error="save.error.value" @save="submit">
     <v-switch :model-value="draft !== null" label="启用独立任务" hide-details @update:model-value="toggle" />
     <template v-if="draft">
@@ -82,27 +82,27 @@ async function submit() {
         还没有给任务分配模型，请到 <RouterLink :to="{ name: 'host-models', query: { tab: 'roles' } }">模型</RouterLink> 页设置任务用的模型。</v-alert>
       <div class="form-grid">
         <v-select v-model="draft.model_reasoning" label="任务模型支持推理吗" :items="[{ title: '支持', value: true }, { title: '不支持', value: false }]"
-          hint="按模型服务商的说明选择" persistent-hint />
+          />
         <v-select v-model="draft.input_support" label="任务模型能看图吗" :items="[{ title: '只看文字', value: 'text' }, { title: '能看图片', value: 'text-image' }]" />
         <v-text-field :model-value="draft.max_tokens ?? ''" type="number" label="整个任务累计最多 token"
-          hint="输入加输出；留空不限制" persistent-hint
+          placeholder="不限"
           @update:model-value="value => draft.max_tokens = value === '' ? null : Number(value)" />
       </div>
       <v-switch v-model="draft.egress.enabled" label="任务可以上网" hide-details />
-      <v-switch v-model="draft.public_browser" label="任务可以用浏览器打开网页" hint="需要先允许任务上网" persistent-hint />
+      <v-switch v-model="draft.public_browser" label="任务可以用浏览器打开网页" />
       <v-switch v-model="draft.mcp" label="任务可以用本群的 MCP 工具" hide-details />
 
       <h3>运行环境</h3>
       <div class="form-grid">
         <v-text-field v-model="draft.image" label="任务镜像" />
-        <v-text-field v-model="draft.docker_binary" label="Docker 程序路径" hint="完整路径，例如 /usr/local/bin/docker" persistent-hint />
-        <v-text-field v-model="draft.docker_host" label="Docker 地址" hint="例如 unix:///var/run/docker.sock" persistent-hint />
+        <v-text-field v-model="draft.docker_binary" label="Docker 程序路径" placeholder="/usr/local/bin/docker" />
+        <v-text-field v-model="draft.docker_host" label="Docker 地址" placeholder="unix:///var/run/docker.sock" />
         <v-text-field :model-value="draft.uid" type="number" label="容器用户 UID" @update:model-value="value => draft.uid = numberOrBlank(value)" />
         <v-text-field :model-value="draft.gid" type="number" label="容器用户 GID" @update:model-value="value => draft.gid = numberOrBlank(value)" />
-        <v-text-field v-model="draft.workspace_root" label="任务工作目录" hint="完整路径，三个目录不能互相包含" persistent-hint />
-        <v-text-field v-model="draft.runtime_root" label="任务运行目录" hint="完整路径" persistent-hint />
-        <v-text-field v-model="draft.delivery_root" label="任务交付目录" hint="完整路径，任务做好的文件放在这里" persistent-hint />
-        <v-text-field :model-value="draft.skills_directory ?? ''" label="技能目录" hint="留空不用技能，例如 data/skills" persistent-hint
+        <v-text-field v-model="draft.workspace_root" label="任务工作目录" />
+        <v-text-field v-model="draft.runtime_root" label="任务运行目录" />
+        <v-text-field v-model="draft.delivery_root" label="任务交付目录" />
+        <v-text-field :model-value="draft.skills_directory ?? ''" label="技能目录" placeholder="data/skills"
           @update:model-value="value => draft.skills_directory = value ? value : null" />
       </div>
 
@@ -111,7 +111,7 @@ async function submit() {
         实际用量见 <RouterLink :to="{ name: 'host-resources' }">资源页</RouterLink>。</p>
 
       <AdvancedFields>
-        <v-text-field v-for="[key, label, hint] in advanced" :key="key" :model-value="draft[key]" :label="label" :hint="hint" :persistent-hint="Boolean(hint)"
+        <v-text-field v-for="[key, label, example] in advanced" :key="key" :model-value="draft[key]" :label="label" :placeholder="example"
           :type="textKeys.includes(key) ? 'text' : 'number'"
           @update:model-value="value => draft[key] = textKeys.includes(key) ? value : numberOrBlank(value)" />
         <v-text-field v-for="[key, label] in network" :key="key" :model-value="draft.egress[key]" :label="label" type="number"

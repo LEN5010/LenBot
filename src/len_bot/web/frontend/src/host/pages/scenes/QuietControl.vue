@@ -22,7 +22,7 @@ async function change(kind) {
 </script>
 
 <template>
-  <Panel title="暂时安静" description="立即生效。消息照常保存，结束后 Bot 会看到这期间的聊天。">
+  <Panel title="暂时安静">
     <ErrorNote v-if="action.error.value" title="操作没有完成" :error="action.error.value" />
     <ResourceState :resource="state" error-title="读取安静状态失败" v-slot="{ data }">
       <div v-if="quietUntil(data)" class="inline">

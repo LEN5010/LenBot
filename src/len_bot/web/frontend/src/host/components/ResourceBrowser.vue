@@ -17,7 +17,7 @@ import FormDialog from '../ui/FormDialog.vue'
 import CodeBlock from '../ui/CodeBlock.vue'
 import LoadMore from '../ui/LoadMore.vue'
 
-const props = defineProps({ scene: { type: String, required: true }, taskId: { type: Number, default: null }, operator: { type: String, default: '' },
+const props = defineProps({ scene: { type: String, required: true }, taskId: { type: Number, default: null },
   initialPath: { type: String, default: '' }, selectable: { type: Boolean, default: true } })
 const emit = defineEmits(['changed', 'select'])
 const scope = ref(props.taskId === null ? 'shared' : 'workspace'), path = ref(props.initialPath), rows = ref([])
@@ -59,7 +59,7 @@ function chooseCopy(entry, mode) {
   copying.value = entry; copyMode.value = mode; name.value = entry.name; note.value = ''; save.error.value = null
 }
 async function copy() {
-  const body = { reference: copying.value.reference, requester: props.operator, name: name.value.trim() }
+  const body = { reference: copying.value.reference, name: name.value.trim() }
   const value = await save.run(() => copyMode.value === 'register'
     ? resourcesApi.register(props.scene, { ...body, note: note.value }) : resourcesApi.adopt(props.scene, body))
   if (!value) return
@@ -70,7 +70,7 @@ const removal = useAction()
 async function remove(entry) {
   const effect = scope.value === 'deliveries' ? '删除本地交付副本，任务记录和发送记录保留。' : '删除这个文件，已经给到任务的副本和登记的交付不受影响。'
   if (!await confirm({ title: `删除 ${entry.name}？`, text: `${effect}\n${resourceLabel(entry.reference)}`, confirmLabel: '删除', danger: true })) return
-  const value = await removal.run(() => resourcesApi.remove(props.scene, { reference: entry.reference, requester: props.operator }))
+  const value = await removal.run(() => resourcesApi.remove(props.scene, { reference: entry.reference }))
   if (!value) return
   notify(`已删除：${value.name}`); listing.reload(); emit('changed')
 }
@@ -78,7 +78,7 @@ const uploading = ref(false), file = ref(null), uploadName = ref(''), uploadActi
 watch(file, value => { uploadName.value = value ? value.name : '' })
 function chooseUpload() { file.value = null; uploadName.value = ''; uploadAction.error.value = null; uploading.value = true }
 async function uploadFile() {
-  const value = await uploadAction.run(() => resourcesApi.upload(props.scene, { file: file.value, requester: props.operator, name: uploadName.value.trim() }))
+  const value = await uploadAction.run(() => resourcesApi.upload(props.scene, { file: file.value, name: uploadName.value.trim() }))
   if (!value) return
   uploading.value = false; file.value = null; notify(`已上传共享资料：${value.name}`); listing.reload(); emit('changed')
 }
@@ -87,7 +87,6 @@ function sourceLabel(entry) {
     ? (entry.source.reference ? resourceLabel(entry.source.reference) : entry.source.source_path)
     : resourceLabel(entry.source)
 }
-const validOperator = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
 const openable = entry => entry.kind === 'directory' || (entry.kind === 'file' && entry.exists && entry.preview !== 'download')
 function details(entry) {
   const lines = [`${purpose[entry.purpose]} · ${size(entry.size)} · ${formatTime(entry.modified)}${entry.kind === 'symlink' ? ' · 符号链接' : ''}${!entry.exists && !entry.deletion ? ' · 副本已不在磁盘' : ''}`]
@@ -102,7 +101,7 @@ function details(entry) {
 <template>
   <Panel title="文件" flush class="resource-browser">
     <template #actions>
-      <v-btn v-if="scope === 'shared'" size="small" variant="outlined" :disabled="!validOperator" @click="chooseUpload">上传资料</v-btn>
+      <v-btn v-if="scope === 'shared'" size="small" variant="outlined" @click="chooseUpload">上传资料</v-btn>
       <v-btn size="small" variant="text" :loading="listing.loading.value" @click="listing.reload()">刷新</v-btn>
     </template>
     <div class="browser-body">
@@ -129,16 +128,15 @@ function details(entry) {
               <v-list density="compact">
                 <v-list-item v-if="entry.preview === 'download'" title="查看文本" @click="open({ ...entry, preview: 'text' })" />
                 <v-list-item v-if="selectable && scope !== 'runtime'" title="用作任务资料" @click="emit('select', entry)" />
-                <v-list-item v-if="scope === 'workspace'" title="登记交付" :disabled="!validOperator" @click="chooseCopy(entry, 'register')" />
-                <v-list-item v-if="['workspace', 'inputs', 'deliveries'].includes(scope)" title="存为共享资料" :disabled="!validOperator" @click="chooseCopy(entry, 'adopt')" />
-                <v-list-item v-if="entry.deletable" title="删除" base-color="error" :disabled="!validOperator || removal.busy.value" @click="remove(entry)" />
+                <v-list-item v-if="scope === 'workspace'" title="登记交付" @click="chooseCopy(entry, 'register')" />
+                <v-list-item v-if="['workspace', 'inputs', 'deliveries'].includes(scope)" title="存为共享资料" @click="chooseCopy(entry, 'adopt')" />
+                <v-list-item v-if="entry.deletable" title="删除" base-color="error" :disabled="removal.busy.value" @click="remove(entry)" />
               </v-list>
             </v-menu>
           </template>
         </ObjectRow>
       </ObjectList>
       <LoadMore v-if="listing.data.value?.next_offset != null" :loading="listing.loading.value" @more="listing.reload(true)" />
-      <p v-if="taskId && !validOperator" class="muted small">在页面上方填写你的账号后可以登记成果、存为共享资料或删除。</p>
     </div>
   </Panel>
 
@@ -156,13 +154,13 @@ function details(entry) {
     <v-text-field v-model="name" label="文件名" />
     <v-textarea v-if="copyMode === 'register'" v-model="note" label="说明" rows="2" />
     <ErrorNote v-if="save.error.value" title="保存失败" :error="save.error.value" />
-    <template #actions><v-btn color="primary" :disabled="!name.trim() || !validOperator" :loading="save.busy.value" @click="copy">保存</v-btn></template>
+    <template #actions><v-btn color="primary" :disabled="!name.trim()" :loading="save.busy.value" @click="copy">保存</v-btn></template>
   </FormDialog>
   <FormDialog v-model="uploading" title="上传本群共享资料" :busy="uploadAction.busy.value">
     <v-file-input v-model="file" label="选择文件" :disabled="uploadAction.busy.value" />
-    <v-text-field v-model="uploadName" label="共享文件名" hint="不会覆盖已有同名文件" persistent-hint :disabled="uploadAction.busy.value" />
+    <v-text-field v-model="uploadName" label="共享文件名" :disabled="uploadAction.busy.value" />
     <ErrorNote v-if="uploadAction.error.value" title="上传失败" :error="uploadAction.error.value" />
-    <template #actions><v-btn color="primary" :loading="uploadAction.busy.value" :disabled="!file || !uploadName.trim() || !validOperator" @click="uploadFile">上传</v-btn></template>
+    <template #actions><v-btn color="primary" :loading="uploadAction.busy.value" :disabled="!file || !uploadName.trim()" @click="uploadFile">上传</v-btn></template>
   </FormDialog>
 </template>
 

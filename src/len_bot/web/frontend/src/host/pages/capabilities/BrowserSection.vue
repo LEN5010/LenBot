@@ -64,15 +64,15 @@ const finished = status => ['done', 'failed', 'cancelled'].includes(status)
 
 <template>
   <ResourceState :resource="browser" error-title="读取账号浏览器设置失败">
-    <SettingSection title="账号浏览器" description="主人发起的任务可以使用专用账号浏览器。浏览器所在电脑需要安装对应扩展；远程传文件还需要文件助手。"
+    <SettingSection title="账号浏览器"
       :dirty="dirty" :problem="problem" :saving="save.busy.value" :error="save.error.value" @save="submit">
       <v-switch :model-value="draft !== null" label="启用账号浏览器"
         @update:model-value="value => draft = value ? (saved ? clone(saved) : blank()) : null" />
       <div v-if="draft" class="form-grid">
-        <v-text-field v-model="draft.socket" label="守护进程 socket 路径" hint="完整路径" persistent-hint />
-        <v-text-field v-model="draft.binary" label="浏览器命令行程序路径" hint="完整路径" persistent-hint />
-        <v-text-field v-model="draft.home" label="守护进程 home 目录" hint="完整路径" persistent-hint />
-        <v-text-field :model-value="draft.browser_instance_id ?? ''" label="浏览器实例 ID" hint="配对后从下方的连接状态里复制" persistent-hint
+        <v-text-field v-model="draft.socket" label="守护进程 socket 路径" />
+        <v-text-field v-model="draft.binary" label="浏览器命令行程序路径" />
+        <v-text-field v-model="draft.home" label="守护进程 home 目录" />
+        <v-text-field :model-value="draft.browser_instance_id ?? ''" label="浏览器实例 ID"
           @update:model-value="value => draft.browser_instance_id = value ? value : null" />
         <v-text-field :model-value="draft.timeout_seconds" type="number" label="单次操作超时（秒）"
           @update:model-value="value => draft.timeout_seconds = numberOrBlank(value)" />
@@ -107,7 +107,7 @@ const finished = status => ['done', 'failed', 'cancelled'].includes(status)
           </ObjectRow>
         </ObjectList>
         <DevOnly>
-          <v-text-field v-model="session" label="要关闭的会话 ID" hint="任务没有记下会话时，从守护进程状态里找到并填写" persistent-hint />
+          <v-text-field v-model="session" label="要关闭的会话 ID" />
         </DevOnly>
       </template>
     </SettingSection>

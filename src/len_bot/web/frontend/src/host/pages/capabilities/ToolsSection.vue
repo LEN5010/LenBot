@@ -52,7 +52,7 @@ async function submit() {
 <template>
   <ResourceState :resource="caps" error-title="读取工具失败">
   <SettingSection v-if="draft !== null" title="工具"
-    :description="`已保存角色 ${caps.data.value.role_tools.persona.name} 在群里能用哪些工具。` + (shared.length ? `这个角色也用在 ${shared.map(sceneName).join('、')}，修改会一起生效。` : '')"
+    :description="shared.length ? `这个角色也用在 ${shared.map(sceneName).join('、')}，修改会一起生效。` : ''"
     :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
     <AllowList :model-value="draft" @update:model-value="update" :items="items" all-label="全部可用的工具">
       <template #item="{ item }">

@@ -76,7 +76,7 @@ async function close() {
   <ResourceState :resource="listing" error-title="读取资料失败">
     <MasterDetail :selected="Boolean(open)" :empty="!files.length" @back="close">
       <template #list>
-        <Panel title="资料" description="世界观、人物关系这类背景，聊天时它需要会自己翻。" flush>
+        <Panel title="资料" flush>
           <template #actions><v-btn size="small" variant="outlined" @click="create">新建</v-btn></template>
           <div class="list">
             <p v-if="!files.length" class="muted small">还没有资料。</p>
@@ -92,8 +92,8 @@ async function close() {
       <template #placeholder>选择一份资料，或者新建一份。</template>
       <Panel v-if="open" tag="form" :title="open.creating ? '新资料' : open.filename.replace(/\.md$/, '')" @submit.prevent="save">
         <template v-if="!open.creating" #actions><v-btn variant="text" color="error" size="small" :disabled="write.busy.value" @click="remove">删除</v-btn></template>
-        <v-text-field v-if="open.creating" v-model="name" label="文件名" suffix=".md" hint="可以用 / 分文件夹，比如 人物/小明" persistent-hint />
-        <v-textarea v-model="text" label="内容" rows="16" auto-grow hint="在开头写 ---、tags: [标签]、--- 三行可以给资料加标签" persistent-hint />
+        <v-text-field v-if="open.creating" v-model="name" label="文件名" suffix=".md" placeholder="人物/小明" />
+        <v-textarea v-model="text" label="内容" rows="16" auto-grow />
         <ErrorNote v-if="write.error.value" title="没有保存成功" :error="write.error.value" />
         <template #footer>
           <span v-if="problem" class="problem small">{{ problem }}</span>

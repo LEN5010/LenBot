@@ -5,7 +5,6 @@ import { mdiFolderAccountOutline } from '@mdi/js'
 import { useResource } from '../../../composables/useResource.js'
 import { useCurrentScene } from '../../../composables/useCurrentScene.js'
 import { useUnsavedChanges } from '../../../composables/useUnsavedChanges.js'
-import { host } from '../../store.js'
 import { taskStorageApi } from '../../api/taskStorage.js'
 import { formatTime } from '../../time.js'
 import { continuationLabel, fileSize, rootLabel } from '../../spaceLabels.js'
@@ -19,7 +18,6 @@ import StatusBadge from '../../ui/StatusBadge.vue'
 import ErrorNote from '../../ui/ErrorNote.vue'
 import LoadMore from '../../ui/LoadMore.vue'
 import Fold from '../../ui/Fold.vue'
-import OperatorField from '../../components/OperatorField.vue'
 import ResourceBrowser from '../../components/ResourceBrowser.vue'
 import ResourceTaskDraft from '../tasks/ResourceTaskDraft.vue'
 import TaskSpaceCard from '../../components/TaskSpaceCard.vue'
@@ -29,7 +27,6 @@ import StoragePoolCard from '../../components/StoragePoolCard.vue'
 const route = useRoute(), router = useRouter()
 const { scene } = useCurrentScene()
 const taskId = computed(() => /^[1-9][0-9]*$/.test(route.query.task || '') ? Number(route.query.task) : null)
-const operator = computed(() => host.operator)
 const status = ref('all'), rows = ref([])
 const environment = ref('all'), since = ref(''), before = ref(''), measure = ref(false), checked = ref([])
 const resourceVersion = ref(0), spaceVersion = ref(0), operation = ref(null), cleanIds = ref([])
@@ -59,8 +56,7 @@ function created(task) {
 </script>
 
 <template>
-  <HostPage title="资源" description="浏览文件、保留成果，或选作下一个任务的资料。" wide>
-    <template #actions><OperatorField /></template>
+  <HostPage title="资源" wide>
     <StoragePoolCard :version="resourceVersion + spaceVersion" />
     <MasterDetail v-if="scene" :selected="route.query.task !== undefined" default-detail list-width="340px" @back="select(null)">
       <template #list>
@@ -102,16 +98,16 @@ function created(task) {
 
       <Panel :title="taskId ? (selected?.goal || `任务 #${taskId}`) : '本群共享资料'">
         <template v-if="taskId" #actions><v-btn size="small" variant="text" :to="{ name: 'host-tasks', query: { scene, id: taskId } }">查看任务</v-btn></template>
-        <TaskSpaceCard v-if="taskId" :key="`space:${scene}:${taskId}`" :scene="scene" :task-id="taskId" :operator="operator" :version="spaceVersion" @changed="filesChanged" />
+        <TaskSpaceCard v-if="taskId" :key="`space:${scene}:${taskId}`" :scene="scene" :task-id="taskId" :version="spaceVersion" @changed="filesChanged" />
         <p v-else class="muted">新建任务时可以选这里的资料。</p>
       </Panel>
-      <ResourceTaskDraft :key="scene" :scene="scene" :operator="operator" @dirty="value => dirty = value" @created="created">
+      <ResourceTaskDraft :key="scene" :scene="scene" @dirty="value => dirty = value" @created="created">
         <template #default="{ select: selectFile }">
-          <ResourceBrowser :key="`${scene}:${taskId}:${resourceVersion}`" :scene="scene" :task-id="taskId" :operator="operator" @select="selectFile" @changed="spaceVersion++" />
+          <ResourceBrowser :key="`${scene}:${taskId}:${resourceVersion}`" :scene="scene" :task-id="taskId" @select="selectFile" @changed="spaceVersion++" />
         </template>
       </ResourceTaskDraft>
     </MasterDetail>
-    <TaskCleanupDialog v-if="cleaning" :scene="scene" :task-ids="cleanIds" :operator="operator" :operation="operation" @close="operation = null" @changed="batchChanged" />
+    <TaskCleanupDialog v-if="cleaning" :scene="scene" :task-ids="cleanIds" :operation="operation" @close="operation = null" @changed="batchChanged" />
   </HostPage>
 </template>
 

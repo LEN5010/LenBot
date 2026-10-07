@@ -24,16 +24,16 @@ async function submit() {
 </script>
 
 <template>
-  <SettingSection v-if="draft" title="面板账号" description="登录这个管理面板用的账号。"
+  <SettingSection v-if="draft" title="面板账号"
     :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
     <div class="form-grid">
       <v-text-field v-model="draft.username" label="用户名" autocomplete="username" />
       <v-text-field v-model="password" type="password" autocomplete="new-password" label="新密码" placeholder="留空保持不变" />
     </div>
     <AdvancedFields>
-      <v-text-field v-model="draft.host" label="面板监听地址" hint="只在本机访问时填 127.0.0.1" persistent-hint />
+      <v-text-field v-model="draft.host" label="面板监听地址" />
       <v-text-field :model-value="draft.port" type="number" label="面板端口" @update:model-value="value => draft.port = numberOrBlank(value)" />
-      <v-switch v-model="draft.cookie_secure" label="仅通过 HTTPS 登录" hint="面板放在 HTTPS 反向代理后面时打开" persistent-hint />
+      <v-switch v-model="draft.cookie_secure" label="仅通过 HTTPS 登录" />
     </AdvancedFields>
   </SettingSection>
 </template>

@@ -32,9 +32,8 @@ async function submit() {
   </v-alert>
   <FormDialog v-model="open" title="整理成正式记忆" size="md" :busy="adopt.busy.value">
     <Fold label="查看原资料" code>{{ original }}</Fold>
-    <v-text-field v-model="target" label="保存为" hint="新文件路径，例如 people/小明.md" persistent-hint />
-    <p v-if="personaIds.length" class="muted small">关于 Bot 自己的资料放在 bot/{{ personaIds[0] }}/ 下。</p>
-    <v-textarea v-model="content" label="整理后的内容" rows="8" auto-grow hint="只写核对过、确实要记住的内容" persistent-hint />
+    <v-text-field v-model="target" label="保存为" placeholder="people/小明.md" />
+    <v-textarea v-model="content" label="整理后的内容" rows="8" auto-grow />
     <v-text-field v-model="reason" label="原因" />
     <v-checkbox v-model="removeSource" label="保存后删除这份旧资料" />
     <ErrorNote v-if="adopt.error.value" title="没有保存成功" :error="adopt.error.value" />

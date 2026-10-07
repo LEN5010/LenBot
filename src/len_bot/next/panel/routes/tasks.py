@@ -7,10 +7,10 @@ import os
 import stat
 import traceback
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from ...configuration.types import STRICT
 from ..task_models import TaskDetail, TaskPage
@@ -19,16 +19,20 @@ from ...work.files import file_info
 from ...work.store import TERMINAL, TaskStore
 from ...work.tools import DelegateArguments, TaskArguments, perform_task_action
 from ..auth import require_panel_origin
+from .owner import panel_owner
 from .resources import ResourceDownload
 from ...work.resources import TaskResources, ResourceFileRef
 
 
 class WorkspaceDiscard(BaseModel):
     model_config = STRICT
-    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
     workspace: str = Field(min_length=1)
     runtime: str = Field(min_length=1)
     confirmed: bool
+
+
+class PanelDelegate(DelegateArguments):
+    requester: None = None
 
 
 class _SessionDownload(StreamingResponse):
@@ -126,7 +130,7 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
             raise HTTPException(409, '当前没有任务执行器，无法按当前worker定位/管理工作环境')
         async with write_lock:
             try:
-                result = await runtime.tasks.discard_workspace(scene, id, **body.model_dump())
+                result = await runtime.tasks.discard_workspace(scene, id, requester=panel_owner(runtime), **body.model_dump())
                 user(request)
                 return result
             except PermissionError as error:
@@ -239,12 +243,13 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
             await asyncio.gather(pushing, receiving, return_exceptions=True)
 
     @app.post("/api/host/tasks/delegate")
-    async def delegate(scene: str, body: DelegateArguments, _: str = Depends(user)):
+    async def delegate(scene: str, body: PanelDelegate, _: str = Depends(user)):
         scene_exists(scene)
         if runtime.tasks is None:
             raise HTTPException(409, "尚未配置任务执行器")
         try:
-            return await runtime.tasks.delegate(scene, **body.model_dump(exclude={'resources'}), resources=body.resources)
+            return await runtime.tasks.delegate(scene, **body.model_dump(exclude={'resources', 'requester'}),
+                                                requester=panel_owner(runtime), resources=body.resources)
         except PermissionError as error:
             raise HTTPException(403, ''.join(traceback.format_exception_only(error)).strip()) from error
         except (ValueError, RuntimeError) as error:
@@ -253,12 +258,20 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
             raise HTTPException(500, ''.join(traceback.format_exception_only(error)).strip()) from error
 
     @app.post("/api/host/tasks/action")
-    async def action(scene: str, body: TaskArguments, _: str = Depends(user)):
+    async def action(scene: str, body: dict = Body(), _: str = Depends(user)):
         scene_exists(scene)
         if runtime.tasks is None:
             raise HTTPException(409, "尚未配置任务执行器")
+        if 'requester' in body:
+            raise HTTPException(422, "面板以主人账号操作，不接受 requester")
+        if body.get('action') not in {'list', 'status'}:
+            body = {**body, 'requester': panel_owner(runtime)}
         try:
-            return await perform_task_action(runtime.tasks, scene, body)
+            parsed = TaskArguments.model_validate(body)
+        except ValidationError as error:
+            raise HTTPException(422, error.errors(include_url=False, include_input=False, include_context=False)) from error
+        try:
+            return await perform_task_action(runtime.tasks, scene, parsed)
         except PermissionError as error:
             raise HTTPException(403, str(error)) from error
         except (ValueError, RuntimeError) as error:

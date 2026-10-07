@@ -13,7 +13,6 @@ import { pluginsApi } from '../../api/plugins.js'
 import SchemaForm from '../../components/SchemaForm.vue'
 import PageTabs from '../../ui/PageTabs.vue'
 import ResourceState from '../../ui/ResourceState.vue'
-import MasterDetail from '../../ui/MasterDetail.vue'
 import Panel from '../../ui/Panel.vue'
 import SettingSection from '../../ui/SettingSection.vue'
 import ObjectList from '../../ui/ObjectList.vue'
@@ -50,6 +49,7 @@ const loaded = computed(() => Object.keys(snapshot.value?.saved.plugins || {}).s
 const sceneList = computed(() => Object.keys(snapshot.value?.scenes || {}))
 const sceneSaved = scene => snapshot.value?.scenes[scene]?.saved || []
 const usedIn = name => sceneList.value.filter(scene => sceneSaved(scene).includes(name))
+const version = name => running.value[name]?.version || manifest(name)?.source?.installed?.version || manifest(name)?.version || ''
 
 function manifest(name) {
   const entries = snapshot.value.available[name] || []
@@ -200,156 +200,149 @@ const facts = name => {
     <PluginCatalog v-if="view === 'discover'" :snapshot="snapshot" :busy="save.busy.value" @dirty="value => catalogDirty = value"
       @install="installEntry" @configure="open" @update="entry => chooseUpdate(entry.name, entry.ref)" />
 
-    <MasterDetail v-else :selected="selected !== null" :empty="!names.length" @back="back">
-      <template #list>
-        <div class="stack">
-          <Panel :title="`${names.length} 个插件`" flush>
-            <template #actions><v-btn size="small" variant="outlined" :prepend-icon="mdiPlus" @click="installing = true">从 Git 安装</v-btn><v-btn size="small" variant="outlined" :prepend-icon="mdiPlus" @click="zipImport = true">导入 ZIP</v-btn></template>
-            <ObjectList class="list">
-              <ObjectRow v-for="name in names" :key="name" :title="name" clickable :active="selected === name" @click="open(name)"
-                :subtitle="manifest(name)?.description || ''">
-                <template #prepend><span class="plugin-icon" :class="status(name).tone || status(name).value"><v-icon :icon="mdiPuzzleOutline" size="18" /></span></template>
-                <template #meta>
-                  <span v-if="usedIn(name).length" class="small muted">{{ usedIn(name).length }} 个群</span>
-                  <StatusBadge dot v-bind="status(name)" />
-                </template>
-              </ObjectRow>
-              <li v-if="!names.length" class="muted empty">还没有插件。<RouterLink :to="{ query: { ...route.query, view: 'discover' } }">去发现插件里看看</RouterLink></li>
-            </ObjectList>
-          </Panel>
-          <ErrorNote v-for="error in [...snapshot.discovery_errors, ...snapshot.running.discovery_errors]" :key="error" title="有插件目录读不了" :error="error" />
-          <Panel v-if="snapshot.retained_data.length" title="已卸载插件留下的数据" flush>
-            <ObjectList class="list" divided>
-              <ObjectRow v-for="item in snapshot.retained_data" :key="item.name" :title="item.name" :subtitle="item.directory">
-                <template #actions><v-btn variant="text" size="small" color="error" :disabled="save.busy.value" @click="remove(item.name, 'data')">删除数据</v-btn></template>
-              </ObjectRow>
-            </ObjectList>
-          </Panel>
-          <form @submit.prevent="savePaths">
-            <AdvancedFields label="插件目录">
-              <v-textarea v-model="paths.paths" rows="2" auto-grow label="插件目录" hint="每行一个，相对路径从 LenBot 目录算起，默认 plugins" persistent-hint />
-              <v-text-field v-model="paths.data_directory" label="插件数据目录" hint="插件保存自己数据的地方" persistent-hint />
-              <ErrorNote v-if="errorOf('paths')" title="没有保存成功" :error="errorOf('paths')" />
-              <v-btn type="submit" color="primary" class="justify-self-start" :loading="save.busy.value && active === 'paths'" :disabled="!pathsDirty">保存插件目录</v-btn>
-            </AdvancedFields>
-          </form>
-        </div>
-      </template>
-      <template #placeholder>从左边选一个插件查看和配置。</template>
-
-      <template v-if="selected && names.includes(selected)">
-        <Panel :title="selected" :description="manifest(selected)?.description || ''" :icon="mdiPuzzleOutline">
-          <template #actions>
-            <StatusBadge v-bind="status(selected)" />
-            <v-menu>
-              <template #activator="{ props: menu }"><v-btn v-bind="menu" :icon="mdiDotsVertical" variant="text" size="small" aria-label="更多操作" /></template>
-              <v-list density="compact">
-                <v-list-item v-if="snapshot.saved.plugins[selected]" title="重载" :disabled="save.busy.value || pluginDirty(selected)" @click="manage(selected, 'reload')" />
-                <v-list-item v-if="manifest(selected)?.source?.installed?.kind === 'git'" title="更新／选择版本" :disabled="save.busy.value || pluginDirty(selected)" @click="chooseUpdate(selected)" />
-                <v-list-item v-if="manifest(selected)?.managed" title="卸载（保留数据）" base-color="error" :disabled="save.busy.value" @click="remove(selected, 'source')" />
-                <v-list-item v-if="snapshot.saved.disabled.includes(selected)" title="删除插件数据" base-color="error" :disabled="save.busy.value" @click="remove(selected, 'data')" />
-              </v-list>
-            </v-menu>
-          </template>
-          <FactList :items="facts(selected)" />
-          <div v-if="manifest(selected)?.source?.candidate" class="inline">
-            <v-btn color="primary" :loading="save.busy.value" :disabled="pluginDirty(selected)" @click="manage(selected, 'apply')">{{ manifest(selected).source.application === 'host' ? '应用并等待重启' : '应用候选版本' }}</v-btn>
-            <v-btn variant="text" :disabled="save.busy.value" @click="manage(selected, 'cancel')">取消候选</v-btn>
-          </div>
-          <div v-if="manifest(selected)?.source?.previous && !manifest(selected)?.source?.candidate" class="inline">
-            <v-btn variant="text" :disabled="save.busy.value" @click="manage(selected, 'rollback')">回到上一版本 v{{ manifest(selected).source.previous.version }}</v-btn>
-          </div>
-          <ErrorNote v-if="manifest(selected)?.source?.error" title="版本应用失败" :error="manifest(selected).source.error" />
-          <div class="inline">
-            <a v-if="manifest(selected)?.repository" :href="manifest(selected).repository" target="_blank" rel="noopener noreferrer">源码仓库</a>
-            <a v-if="manifest(selected)?.homepage" :href="manifest(selected).homepage" target="_blank" rel="noopener noreferrer">使用说明</a>
-          </div>
-          <ErrorNote v-if="errorOf(selected)" title="操作没有完成" :error="errorOf(selected)" />
-          <ErrorNote v-if="errorOf('scene')" title="群的启用设置没有保存" :error="errorOf('scene')" />
-          <ErrorNote v-if="running[selected]?.error" title="插件没有启动成功" :error="running[selected].error" @retry="manage(selected, 'reload')" />
-          <ErrorNote v-for="entry in (snapshot.available[selected] || []).filter(item => item.error)" :key="entry.directory"
-            title="插件说明文件读不了" :error="entry.error" />
-          <v-alert v-if="(snapshot.available[selected] || []).length > 1" type="warning">有多个目录提供了同名插件，需要删掉多余的一份才能加载。</v-alert>
-          <div v-if="loaded.includes(selected)" class="scene-picks">
-            <h3>在哪些群使用</h3>
-            <div class="inline">
-              <v-chip v-for="item in sceneList" :key="item" :disabled="save.busy.value || snapshot.scenes[item].saved === null"
-                :color="sceneSaved(item).includes(selected) ? 'primary' : undefined" :variant="sceneSaved(item).includes(selected) ? 'tonal' : 'outlined'"
-                :prepend-icon="sceneSaved(item).includes(selected) ? mdiCheck : undefined" :aria-pressed="sceneSaved(item).includes(selected)"
-                @click="toggleScene(item, selected, !sceneSaved(item).includes(selected))">
-                <v-progress-circular v-if="switching === item" indeterminate size="14" width="2" class="mr-1" />{{ sceneName(item) }}
-              </v-chip>
-              <span v-if="!sceneList.length" class="muted small">还没有配置群。</span>
-            </div>
-            <p class="muted small">{{ manifest(selected)?.source?.candidate ? '候选应用时生效。' : '点一下立即生效，只重载这个插件，聊天不中断。' }}</p>
-          </div>
-        </Panel>
-
-        <SettingSection v-if="manifest(selected) && drafts[selected]" title="参数" :restart="false" save-label="保存并应用"
-          :description="manifest(selected)?.source?.candidate ? '参数保存后用于候选版本；再点击应用。' : '保存后只重载这个插件，聊天不用重启。'" :dirty="pluginDirty(selected)" :saving="save.busy.value && active === selected"
-          :error="errorOf(selected)" @save="savePlugin(selected)">
-          <v-switch v-model="drafts[selected].enabled" label="启用这个插件" hint="停用后保留参数和数据" persistent-hint />
-          <template v-if="drafts[selected].enabled">
-            <SchemaForm v-model="drafts[selected].values" :fields="manifest(selected).fields" :scene-choices="snapshot.scene_choices"
-              :configured="Object.fromEntries(Object.entries(snapshot.saved.plugins[selected] || {}).map(([key, item]) => [key, Boolean(item.configured)]))" />
-          </template>
-        </SettingSection>
-
-        <Panel v-if="running[selected]" title="运行情况">
-          <p v-if="!running[selected].commands.length && !running[selected].rules.length && !running[selected].crons.length && !running[selected].errors.length && !running[selected].model_calls.length && !running[selected].skills.length && !running[selected].tools.length"
-            class="muted">没有命令、规则或后台任务。</p>
-          <div v-if="running[selected].commands.length || running[selected].rules.length" class="stack">
-            <h3>命令与规则</h3>
-            <ul class="plain-list commands">
-              <li v-for="item in running[selected].commands" :key="item.name"><code>/{{ item.name }}</code> {{ item.description }}</li>
-              <li v-for="item in running[selected].rules" :key="`${item.kind}:${item.pattern}`">
-                {{ item.kind === 'fullmatch' ? '全文' : '正则' }} <code>{{ item.pattern }}</code> {{ item.description }}（直接处理，不调用模型）</li>
-            </ul>
-          </div>
-          <p v-if="running[selected].tools.length" class="small">模型工具：{{ running[selected].tools.map(item => item.name).join('、') }}</p>
-          <p v-if="running[selected].skills.length" class="small">附带技能：{{ running[selected].skills.join('、') }}</p>
-          <Fold v-if="running[selected].crons.length" :label="`定点播报 ${running[selected].crons.length} 项`">
-            <div v-for="job in running[selected].crons" :key="`${job.scene}:${job.name}`" class="entry">
-              <strong>{{ job.name }} · {{ sceneName(job.scene) }}</strong>
-              <span class="muted small">{{ job.expression }} · {{ job.timezone }} · 下次 {{ formatTime(job.next_run) }}</span>
-              <ErrorNote v-if="job.last_error" title="上次播报失败" :error="job.last_error" />
-            </div>
-          </Fold>
-          <Fold v-if="running[selected].errors.length" :label="`最近报错 ${running[selected].errors.length} 次`">
-            <div v-for="(item, index) in running[selected].errors" :key="index" class="entry">
-              <span class="muted small">{{ formatTime(item.at) }}</span><ErrorNote title="插件报错" :error="item.error" /></div>
-          </Fold>
-          <Fold v-if="running[selected].model_calls.length" :label="`最近单次生成 ${running[selected].model_calls.length} 次`">
-            <div v-for="call in running[selected].model_calls" :key="call.id" class="entry">
-              <span class="small">{{ formatTime(call.started) }} · {{ sceneName(call.scene) }} · {{ call.role }} · {{ call.ended === null ? '进行中' : call.error ? '失败' : '已返回' }}</span>
-              <ErrorNote v-if="call.error" title="生成失败" :error="call.error" />
-              <DevOnly label="用量与 token" :json="{ usage: call.usage, tokens: call.tokens }" />
-            </div>
-          </Fold>
-        </Panel>
-        <DevOnly label="插件详情" :json="{ available: snapshot.available[selected], running: running[selected] }" />
-      </template>
-    </MasterDetail>
+    <div v-else class="stack">
+      <div class="inline toolbar">
+        <strong>{{ names.length }} 个插件</strong>
+        <v-btn class="ml-auto" size="small" variant="outlined" :prepend-icon="mdiPlus" @click="installing = true">从 Git 安装</v-btn>
+        <v-btn size="small" variant="outlined" :prepend-icon="mdiPlus" @click="zipImport = true">导入 ZIP</v-btn>
+      </div>
+      <div v-if="names.length" class="plugin-grid">
+        <button v-for="name in names" :key="name" type="button" class="plugin-card" @click="open(name)">
+          <span class="card-head">
+            <span class="plugin-icon" :class="status(name).tone || status(name).value"><v-icon :icon="mdiPuzzleOutline" size="18" /></span>
+            <span class="card-title"><strong>{{ name }}</strong><span v-if="version(name)" class="muted small">v{{ version(name) }}</span></span>
+            <StatusBadge dot v-bind="status(name)" />
+          </span>
+          <span class="card-description muted">{{ manifest(name)?.description || '' }}</span>
+          <span class="small muted">{{ usedIn(name).length ? `${usedIn(name).length} 个群` : '没有群在用' }}</span>
+        </button>
+      </div>
+      <p v-else class="muted">还没有插件。<RouterLink :to="{ query: { ...route.query, view: 'discover' } }">去发现插件里看看</RouterLink></p>
+      <ErrorNote v-for="error in [...snapshot.discovery_errors, ...snapshot.running.discovery_errors]" :key="error" title="有插件目录读不了" :error="error" />
+      <Panel v-if="snapshot.retained_data.length" title="已卸载插件留下的数据" flush>
+        <ObjectList class="list" divided>
+          <ObjectRow v-for="item in snapshot.retained_data" :key="item.name" :title="item.name" :subtitle="item.directory">
+            <template #actions><v-btn variant="text" size="small" color="error" :disabled="save.busy.value" @click="remove(item.name, 'data')">删除数据</v-btn></template>
+          </ObjectRow>
+        </ObjectList>
+      </Panel>
+      <form @submit.prevent="savePaths">
+        <AdvancedFields label="插件目录">
+          <v-textarea v-model="paths.paths" rows="2" auto-grow label="插件目录（每行一个）" placeholder="plugins" />
+          <v-text-field v-model="paths.data_directory" label="插件数据目录" />
+          <ErrorNote v-if="errorOf('paths')" title="没有保存成功" :error="errorOf('paths')" />
+          <v-btn type="submit" color="primary" class="justify-self-start" :loading="save.busy.value && active === 'paths'" :disabled="!pathsDirty">保存插件目录</v-btn>
+        </AdvancedFields>
+      </form>
+    </div>
   </ResourceState>
 
+  <FormDialog v-if="snapshot" :model-value="Boolean(selected && names.includes(selected))" :title="selected || ''" size="lg" cancel-label="关闭"
+    @update:model-value="value => { if (!value) back() }">
+    <template v-if="selected && names.includes(selected)">
+      <div class="inline">
+        <StatusBadge v-bind="status(selected)" />
+        <a v-if="manifest(selected)?.repository" :href="manifest(selected).repository" target="_blank" rel="noopener noreferrer">源码仓库</a>
+        <a v-if="manifest(selected)?.homepage" :href="manifest(selected).homepage" target="_blank" rel="noopener noreferrer">使用说明</a>
+        <v-menu>
+          <template #activator="{ props: menu }"><v-btn v-bind="menu" class="ml-auto" :icon="mdiDotsVertical" variant="text" size="small" aria-label="更多操作" /></template>
+          <v-list density="compact">
+            <v-list-item v-if="snapshot.saved.plugins[selected]" title="重载" :disabled="save.busy.value || pluginDirty(selected)" @click="manage(selected, 'reload')" />
+            <v-list-item v-if="manifest(selected)?.source?.installed?.kind === 'git'" title="更新／选择版本" :disabled="save.busy.value || pluginDirty(selected)" @click="chooseUpdate(selected)" />
+            <v-list-item v-if="manifest(selected)?.managed" title="卸载（保留数据）" base-color="error" :disabled="save.busy.value" @click="remove(selected, 'source')" />
+            <v-list-item v-if="snapshot.saved.disabled.includes(selected)" title="删除插件数据" base-color="error" :disabled="save.busy.value" @click="remove(selected, 'data')" />
+          </v-list>
+        </v-menu>
+      </div>
+      <p v-if="manifest(selected)?.description" class="muted">{{ manifest(selected).description }}</p>
+      <div v-if="manifest(selected)?.source?.candidate" class="inline">
+        <v-btn color="primary" :loading="save.busy.value" :disabled="pluginDirty(selected)" @click="manage(selected, 'apply')">{{ manifest(selected).source.application === 'host' ? '应用并等待重启' : '应用候选版本' }}</v-btn>
+        <v-btn variant="text" :disabled="save.busy.value" @click="manage(selected, 'cancel')">取消候选</v-btn>
+      </div>
+      <div v-if="manifest(selected)?.source?.previous && !manifest(selected)?.source?.candidate" class="inline">
+        <v-btn variant="text" :disabled="save.busy.value" @click="manage(selected, 'rollback')">回到上一版本 v{{ manifest(selected).source.previous.version }}</v-btn>
+      </div>
+      <ErrorNote v-if="manifest(selected)?.source?.error" title="版本应用失败" :error="manifest(selected).source.error" />
+      <ErrorNote v-if="errorOf(selected)" title="操作没有完成" :error="errorOf(selected)" />
+      <ErrorNote v-if="errorOf('scene')" title="群的启用设置没有保存" :error="errorOf('scene')" />
+      <ErrorNote v-if="running[selected]?.error" title="插件没有启动成功" :error="running[selected].error" @retry="manage(selected, 'reload')" />
+      <ErrorNote v-for="entry in (snapshot.available[selected] || []).filter(item => item.error)" :key="entry.directory"
+        title="插件说明文件读不了" :error="entry.error" />
+      <v-alert v-if="(snapshot.available[selected] || []).length > 1" type="warning">有多个目录提供了同名插件，需要删掉多余的一份才能加载。</v-alert>
+      <div v-if="loaded.includes(selected)" class="scene-picks">
+        <h3>在哪些群使用</h3>
+        <div class="inline">
+          <v-chip v-for="item in sceneList" :key="item" :disabled="save.busy.value || snapshot.scenes[item].saved === null"
+            :color="sceneSaved(item).includes(selected) ? 'primary' : undefined" :variant="sceneSaved(item).includes(selected) ? 'tonal' : 'outlined'"
+            :prepend-icon="sceneSaved(item).includes(selected) ? mdiCheck : undefined" :aria-pressed="sceneSaved(item).includes(selected)"
+            @click="toggleScene(item, selected, !sceneSaved(item).includes(selected))">
+            <v-progress-circular v-if="switching === item" indeterminate size="14" width="2" class="mr-1" />{{ sceneName(item) }}
+          </v-chip>
+          <span v-if="!sceneList.length" class="muted small">还没有配置群。</span>
+        </div>
+      </div>
+
+      <SettingSection v-if="manifest(selected) && drafts[selected]" title="参数" :restart="false" save-label="保存并应用"
+        :dirty="pluginDirty(selected)" :saving="save.busy.value && active === selected"
+        :error="errorOf(selected)" @save="savePlugin(selected)">
+        <v-switch v-model="drafts[selected].enabled" label="启用这个插件" />
+        <template v-if="drafts[selected].enabled">
+          <SchemaForm v-model="drafts[selected].values" :fields="manifest(selected).fields" :scene-choices="snapshot.scene_choices"
+            :configured="Object.fromEntries(Object.entries(snapshot.saved.plugins[selected] || {}).map(([key, item]) => [key, Boolean(item.configured)]))" />
+        </template>
+      </SettingSection>
+
+      <Fold label="版本与来源"><FactList :items="facts(selected)" /></Fold>
+      <template v-if="running[selected]">
+        <div v-if="running[selected].commands.length || running[selected].rules.length" class="stack">
+          <h3>命令与规则</h3>
+          <ul class="plain-list commands">
+            <li v-for="item in running[selected].commands" :key="item.name"><code>/{{ item.name }}</code> {{ item.description }}</li>
+            <li v-for="item in running[selected].rules" :key="`${item.kind}:${item.pattern}`">
+              {{ item.kind === 'fullmatch' ? '全文' : '正则' }} <code>{{ item.pattern }}</code> {{ item.description }}</li>
+          </ul>
+        </div>
+        <p v-if="running[selected].tools.length" class="small">模型工具：{{ running[selected].tools.map(item => item.name).join('、') }}</p>
+        <p v-if="running[selected].skills.length" class="small">附带技能：{{ running[selected].skills.join('、') }}</p>
+        <Fold v-if="running[selected].crons.length" :label="`定点播报 ${running[selected].crons.length} 项`">
+          <div v-for="job in running[selected].crons" :key="`${job.scene}:${job.name}`" class="entry">
+            <strong>{{ job.name }} · {{ sceneName(job.scene) }}</strong>
+            <span class="muted small">{{ job.expression }} · {{ job.timezone }} · 下次 {{ formatTime(job.next_run) }}</span>
+            <ErrorNote v-if="job.last_error" title="上次播报失败" :error="job.last_error" />
+          </div>
+        </Fold>
+        <Fold v-if="running[selected].errors.length" :label="`最近报错 ${running[selected].errors.length} 次`">
+          <div v-for="(item, index) in running[selected].errors" :key="index" class="entry">
+            <span class="muted small">{{ formatTime(item.at) }}</span><ErrorNote title="插件报错" :error="item.error" /></div>
+        </Fold>
+        <Fold v-if="running[selected].model_calls.length" :label="`最近单次生成 ${running[selected].model_calls.length} 次`">
+          <div v-for="call in running[selected].model_calls" :key="call.id" class="entry">
+            <span class="small">{{ formatTime(call.started) }} · {{ sceneName(call.scene) }} · {{ call.role }} · {{ call.ended === null ? '进行中' : call.error ? '失败' : '已返回' }}</span>
+            <ErrorNote v-if="call.error" title="生成失败" :error="call.error" />
+            <DevOnly label="用量与 token" :json="{ usage: call.usage, tokens: call.tokens }" />
+          </div>
+        </Fold>
+      </template>
+      <DevOnly label="插件详情" :json="{ available: snapshot.available[selected], running: running[selected] }" />
+    </template>
+  </FormDialog>
+
   <FormDialog v-model="installing" title="从 Git 安装插件" :busy="save.busy.value && active === 'install'">
-    <p class="muted">先准备源码并检查兼容范围，再配置和应用。应用后插件和 LenBot 共用 Python 环境。</p>
     <v-text-field v-model="repository" label="插件仓库 URL" placeholder="https://example.com/author/plugin.git" />
-    <v-text-field v-model="repositoryRef" label="版本（可选）" hint="标签、分支或提交；留空跟随仓库默认分支" persistent-hint />
+    <v-text-field v-model="repositoryRef" label="版本（可选）" placeholder="标签、分支或提交" />
     <v-switch v-model="switchSource" label="替换同名插件的安装来源" />
     <ErrorNote v-if="errorOf('install')" title="插件准备没有完成" :error="errorOf('install')" />
     <template #actions><v-btn color="primary" :loading="save.busy.value && active === 'install'" :disabled="!repository.trim()" @click="install">准备候选</v-btn></template>
   </FormDialog>
   <FormDialog v-model="zipImport" title="导入插件 ZIP" :busy="save.busy.value && active === 'install'">
     <v-file-input v-model="zipFile" accept=".zip,application/zip" label="插件 ZIP" />
-    <p class="muted">ZIP 根目录或唯一顶层目录包含 plugin.toml 和 __init__.py。先准备候选，再配置和应用。</p>
+    <p class="muted">ZIP 根目录或唯一顶层目录须包含 plugin.toml 和 __init__.py。</p>
     <v-switch v-model="switchSource" label="替换同名插件的安装来源" />
     <ErrorNote v-if="errorOf('install')" title="ZIP 准备没有完成" :error="errorOf('install')" />
     <template #actions><v-btn color="primary" :loading="save.busy.value" :disabled="!zipFile" @click="importZip">准备候选</v-btn></template>
   </FormDialog>
   <FormDialog :model-value="updating !== null" :title="`更新 ${updating || ''}`" :busy="save.busy.value" @update:model-value="value => { if (!value) updating = null }">
-    <v-text-field v-model="updateRef" label="标签、分支或提交" hint="留空沿用安装时的版本；没选过版本时更新到当前分支最新" persistent-hint />
-    <p class="muted">先准备候选，当前版本继续运行。依赖变化或插件声明需要时，通过宿主重启应用。</p>
+    <v-text-field v-model="updateRef" label="标签、分支或提交" />
     <v-alert v-if="updating && pluginDirty(updating)" type="warning">这个插件的参数还没保存，请先保存或放弃修改。</v-alert>
     <ErrorNote v-if="updating && errorOf(updating)" title="更新没有完成" :error="errorOf(updating)" />
     <template #actions><v-btn color="primary" :loading="save.busy.value" :disabled="!updating || pluginDirty(updating)" @click="update">准备候选</v-btn></template>
@@ -361,7 +354,14 @@ const facts = name => {
 .plugin-icon.failed{background:var(--error-bg);color:var(--error)}
 .plugin-icon.unloaded,.plugin-icon.neutral{background:var(--hover);color:var(--muted)}
 .list{padding:0 var(--sp-2) var(--sp-2)}
-.empty{padding:var(--sp-3)}
+.toolbar{align-items:center}
+.plugin-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:var(--sp-3)}
+.plugin-card{display:grid;gap:var(--sp-2);align-content:start;text-align:left;padding:var(--sp-4);border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);color:inherit;font:inherit;cursor:pointer;transition:border-color .15s,box-shadow .15s}
+.plugin-card:hover,.plugin-card:focus-visible{border-color:var(--primary);box-shadow:var(--shadow-hover);outline:none}
+.card-head{display:flex;align-items:center;gap:var(--sp-2)}
+.card-title{display:grid;flex:1;min-width:0}
+.card-title strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card-description{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.6em}
 .justify-self-start{justify-self:start}
 .commands li{margin:var(--sp-1) 0;overflow-wrap:anywhere}
 .entry{display:grid;gap:var(--sp-1)}

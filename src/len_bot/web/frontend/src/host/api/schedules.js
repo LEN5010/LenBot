@@ -1,7 +1,7 @@
 import { api, queryString } from '../../api.js'
 
 /**
- * @typedef {{requester:string, when:string, note:string, for:string}} ScheduleInput
+ * @typedef {{when:string, note:string, for:string}} ScheduleInput
  * @typedef {{id:number, scene:string, created:number, due_at:number, timezone:string, note:string, target:string, requester:string|null, status:string, delivered_at:number|null, reason:string|null, interval_seconds:number|null, cron:string|null, legacy_source:Object|null}} Schedule
  */
 export const schedulesApi = {
@@ -13,8 +13,8 @@ export const schedulesApi = {
   /** @param {string} scene @param {ScheduleInput} body @returns {Promise<Schedule>} */
   create: (scene, body) => api(`/api/host/schedules?${queryString({ scene })}`, { method: 'POST', body: JSON.stringify(body) }),
 
-  /** @param {string} scene @param {number} id @param {string} requester @returns {Promise<Schedule>} */
-  cancel: (scene, id, requester) => api(`/api/host/schedules/${id}/cancel?${queryString({ scene })}`, { method: 'POST', body: JSON.stringify({ requester }) }),
+  /** @param {string} scene @param {number} id @returns {Promise<Schedule>} */
+  cancel: (scene, id) => api(`/api/host/schedules/${id}/cancel?${queryString({ scene })}`, { method: 'POST' }),
 
   /** @param {string} scene @param {number} offset */
   proactive: (scene, offset) => api(`/api/host/schedules/proactive?${queryString({ scene, offset })}`),

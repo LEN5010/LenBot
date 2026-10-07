@@ -14,6 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response, WebSocket
 
 from len_bot.web.shell import mount_panel
 from ..config import HostConfig
+from ..configuration.editing import _read_saved
 from ..models.usage import instance_calls
 from .routes.capabilities import register_host_capabilities
 from .routes.persona import register_host_persona
@@ -157,7 +158,11 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
 
     @app.get("/api/host/scene-titles")
     async def scene_titles(_: str = Depends(user)):
-        titles, errors = await runtime.scene_titles.read()
+        try:
+            saved = list((await asyncio.to_thread(_read_saved, root)).scenes)
+        except (OSError, ValueError):
+            saved = []
+        titles, errors = await runtime.scene_titles.read(saved)
         return {"titles": titles, "errors": errors,
                 "members": {scene: runtime.scene_titles.members[scene] for scene in titles
                             if scene in runtime.scene_titles.members}}

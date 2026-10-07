@@ -47,7 +47,7 @@ async function operate(kind) {
 <template>
   <ErrorNote v-if="action.error.value" title="操作没有完成" :error="action.error.value" />
   <ResourceState :resource="page" error-title="读取会话失败" v-slot="{ data }">
-    <Panel title="回想" description="Bot 对较早对话的概括，会和最近的对话一起交给聊天模型。">
+    <Panel title="回想">
       <template #actions><v-btn variant="outlined" :loading="action.busy.value" @click="operate('compact')">整理回想</v-btn></template>
       <p v-if="data.recap !== null" class="readable-copy recap">{{ data.recap }}</p>
       <p v-else class="muted recap">还没有回想。</p>

@@ -17,9 +17,9 @@ function up(index) {
 </script>
 
 <template>
-  <Panel title="样例" description="写具体的情境和它在那时说的话，可以从聊天记录里挑原句。">
+  <Panel title="样例">
     <v-select v-if="available.length" v-model="tags" :items="available" label="只给它看带这些标签的样例" multiple chips closable-chips
-      hint="不选就用前 8 条；选了就用带这些标签的，最多 8 条" persistent-hint />
+      />
     <p v-if="!examples.length" class="muted">还没有样例。</p>
     <ol class="plain-list list">
       <li v-for="(example, index) in examples" :key="index">

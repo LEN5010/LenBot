@@ -18,7 +18,7 @@ const tags = list => list.length ? list.join('、') : '无'
 </script>
 
 <template>
-  <HostPage title="场景与角色" description="这个测试实例正在用的场景和角色。场景补充可以在这里改，保存后重启生效。">
+  <HostPage title="场景与角色">
     <template #actions><v-btn variant="outlined" :loading="snapshot.loading.value" @click="snapshot.reload()">重新读取</v-btn></template>
     <ScenePersonaEditor />
     <ResourceState :resource="snapshot" error-title="读取场景与角色失败" v-slot="{ data }">
@@ -27,7 +27,7 @@ const tags = list => list.length ? list.join('、') : '无'
           ['发送方式', data.delivery === 'simulated' ? '模拟发送，不发到 QQ' : data.delivery]]" />
       </Panel>
 
-      <Panel title="正在运行的场景补充" description="重启后才会换成上面保存的内容。">
+      <Panel title="正在运行的场景补充">
         <div class="block">
           <h3>补充称呼</h3>
           <div v-if="data.scene_persona.persona_aliases.length" class="chips">
@@ -88,7 +88,7 @@ const tags = list => list.length ? list.join('、') : '无'
         </Fold>
       </Panel>
 
-      <Panel title="角色资料" description="只列出文件名和大小。" flush>
+      <Panel title="角色资料" flush>
         <ObjectList v-if="data.knowledge.length" divided class="files">
           <ObjectRow v-for="document in data.knowledge" :key="document.filename" :title="document.filename" :subtitle="`标签：${tags(document.tags)}`">
             <template #meta>{{ document.characters }} 字</template>
@@ -97,7 +97,7 @@ const tags = list => list.length ? list.join('、') : '无'
         <p v-else class="muted files-empty">这个角色没有资料文件</p>
       </Panel>
 
-      <Panel title="工具与技能" description="按需工具要在对话里先找到才能用；隔离测试里用不了技能。">
+      <Panel title="工具与技能">
         <div class="pair-grid">
           <div class="block"><h3>常驻工具</h3>
             <div v-if="data.tools.core.length" class="chips"><v-chip v-for="name in data.tools.core" :key="name">{{ name }}</v-chip></div>

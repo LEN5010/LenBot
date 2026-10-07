@@ -61,15 +61,15 @@ async function saveRaw() {
 </script>
 
 <template>
-  <Panel title="导出" description="把这个角色的设定、资料、表情和头像打包成一个 ZIP，可以在别的 LenBot 上导入。">
+  <Panel title="导出">
     <template #actions><v-btn variant="outlined" :loading="download.busy.value" @click="exportPackage">下载 ZIP</v-btn></template>
     <ErrorNote v-if="download.error.value" title="没有导出成功" :error="download.error.value" />
   </Panel>
 
-  <Panel tag="form" title="导入" description="导入的角色放进新文件夹，不会替换现在的角色。导入后到群聊设置里选用它。" @submit.prevent="importPackage">
+  <Panel tag="form" title="导入" @submit.prevent="importPackage">
     <div class="form-grid">
       <v-text-field v-model="name" label="文件夹名" :error-messages="name && !nameOk ? '只能用英文字母、数字、- 和 _' : ''"
-        hint="英文字母、数字、- 或 _，比如 my-role" persistent-hint />
+        placeholder="my-role" />
       <v-file-input v-model="zip" label="角色 ZIP" accept=".zip,application/zip" prepend-icon="" />
     </div>
     <ErrorNote v-if="upload.error.value" title="没有导入成功" :error="upload.error.value" />
@@ -86,7 +86,6 @@ async function saveRaw() {
       <ErrorNote v-if="raw.error.value" title="读取角色文件失败" :error="raw.error.value" @retry="raw.reload()" />
       <v-btn v-if="!raw.data.value && !raw.error.value" variant="outlined" class="start" :loading="raw.loading.value" @click="raw.reload()">读取角色文件</v-btn>
       <form v-if="raw.data.value" class="stack" @submit.prevent="saveRaw">
-        <p class="muted small">设定页改不到的内容可以在这里改。保存前会检查格式，格式不对不会保存。</p>
         <v-select :model-value="file" :items="files.map(([value, title]) => ({ value, title }))" label="文件" @update:model-value="pick" />
         <v-textarea v-model="text" rows="18" auto-grow spellcheck="false" class="mono" />
         <ErrorNote v-if="save.error.value" title="没有保存成功" :error="save.error.value" />
