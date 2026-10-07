@@ -41,7 +41,7 @@ features:
 </div>
 
 <div class="shots">
-  <figure class="wide"><img src="/screenshots/home.png" alt="面板首页：连接状态和各群概况"><figcaption>首页：连接状态、各群今天的情况和最近的错误。</figcaption></figure>
+  <figure class="wide"><img src="/screenshots/home.png" alt="面板首页：连接状态、今天的统计和群列表"><figcaption>首页：连接状态、今天的消息和用量、需要处理的事。</figcaption></figure>
   <figure><img src="/screenshots/persona.png" alt="角色编辑页"><figcaption>角色：设定、说话方式和样例，改完先试聊。</figcaption></figure>
-  <figure><img src="/screenshots/plugins.png" alt="插件页"><figcaption>插件：安装、配置，在详情里直接选在哪些群用。</figcaption></figure>
+  <figure><img src="/screenshots/plugins.png" alt="插件页的发现插件列表"><figcaption>插件：从目录里挑插件安装，装好后选在哪些群用。</figcaption></figure>
 </div>
