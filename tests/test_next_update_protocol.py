@@ -51,6 +51,41 @@ def test_snapshot_restores_root_and_external_data_without_snapshotting_lock(tmp_
     assert not (root / 'new.json').exists()
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='emulates the Windows rule on POSIX; Windows CI runs it for real in the update smoke')
+def test_snapshot_syncs_through_the_writing_handle_and_keeps_read_only_files(tmp_path, monkeypatch):
+    """Windows rejects fsync on a read-only handle (EBADF); the backup must not rely on it."""
+    import fcntl
+    import os
+    import stat
+    from len_bot.next.maintenance import snapshot as snapshots
+    sync = os.fsync
+
+    def windows_fsync(descriptor):
+        # Directory syncs only happen on POSIX, where O_RDONLY is the only way to open them.
+        regular = stat.S_ISREG(os.fstat(descriptor).st_mode)
+        if regular and fcntl.fcntl(descriptor, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY:
+            raise OSError(errno.EBADF, 'Bad file descriptor')
+        sync(descriptor)
+
+    monkeypatch.setattr(snapshots.os, 'fsync', windows_fsync)
+    root = tmp_path / 'instance'
+    pack = root / 'plugins/demo/.git/objects/pack/pack-1.pack'
+    pack.parent.mkdir(parents=True)
+    pack.write_bytes(b'pack-fixture')
+    pack.chmod(0o444)
+    (root / 'lenbot.config.json').write_text('{"config_version":3}')
+    snapshot = tmp_path / 'backup'
+    create([str(root)], snapshot)
+    saved = snapshot / '0/plugins/demo/.git/objects/pack/pack-1.pack'
+    assert saved.read_bytes() == b'pack-fixture'
+    assert stat.S_IMODE(saved.stat().st_mode) == 0o444
+    assert saved.stat().st_mtime == pack.stat().st_mtime
+    (root / 'lenbot.config.json').write_text('{"config_version":4}')
+    restore(root, snapshot)
+    assert (root / 'lenbot.config.json').read_text() == '{"config_version":3}'
+    assert pack.read_bytes() == b'pack-fixture'
+
+
 @pytest.mark.parametrize('failure', [errno.EBUSY, errno.EACCES])
 def test_restore_preserves_bind_mount_directory_but_reports_other_removal_errors(tmp_path, monkeypatch, failure):
     root = tmp_path / 'instance'
