@@ -1,5 +1,4 @@
 <script setup>
-// Sticky save bar for a page-sized form that is saved in one go.
 import { nextTick } from 'vue'
 import { openRestart } from '../restart.js'
 import ErrorNote from './ErrorNote.vue'
@@ -31,7 +30,7 @@ async function saveRestart() {
   </div>
 </template>
 <style scoped>
-.save-bar{position:sticky;bottom:var(--sp-4);z-index:3;display:none;gap:var(--sp-2);background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);padding:var(--sp-3) var(--sp-4);box-shadow:var(--shadow-float)}
+.save-bar{position:sticky;bottom:var(--sp-4);z-index:3;display:none;gap:var(--sp-2);background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--radius-lg);padding:var(--sp-3) var(--sp-4);box-shadow:var(--shadow-float)}
 .save-bar.show{display:grid;animation:rise var(--dur-2) var(--ease-out)}
 .save-row{display:flex;align-items:center;justify-content:flex-end;gap:var(--sp-2);flex-wrap:wrap}
 .hint{margin-right:auto;color:var(--muted);font-size:var(--fs-sm)}

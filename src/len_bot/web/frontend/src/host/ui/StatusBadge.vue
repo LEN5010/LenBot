@@ -1,15 +1,12 @@
 <script setup>
-// One status, as a small chip or (with `dot`) a colored dot and text.
 import { computed } from 'vue'
 import { statusOf, toneColor } from '../status.js'
 const props = defineProps({
   kind: { type: String, default: '' },
   value: { type: String, default: '' },
-  // Direct form, for states that are not in status.js.
   text: { type: String, default: '' },
   tone: { type: String, default: '' },
   dot: Boolean,
-  // A soft ring around the dot, for live states such as online.
   pulse: Boolean,
 })
 const shown = computed(() => {

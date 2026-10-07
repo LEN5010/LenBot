@@ -80,7 +80,6 @@ async function submit() {
   const path = `/api/host/settings/scenes/${encodeURIComponent(props.scene)}`
   const sceneValue = sceneDirty.value ? sceneBody(draft.value, relationships.value) : null
   const tasksValue = tasksDirty.value ? { tasks: taskBody(draft.value) } : null
-  // Two endpoints: whatever was saved stays saved, and an unsaved part keeps its draft.
   const done = await save.run(async () => {
     if (sceneValue) settings.data.value = await api(path, { method: 'PUT', body: JSON.stringify(sceneValue) })
     if (tasksValue) settings.data.value = await api(`${path}/tasks`, { method: 'PUT', body: JSON.stringify(tasksValue) })
@@ -173,7 +172,7 @@ async function removeScene() {
             @update:model-value="value => draft.scene_persona.behavior_addendum = value || null" />
         </Panel>
 
-        <Panel title="提醒与任务" description="谁可以用这些功能在设置页的权限里修改。">
+        <Panel title="提醒与任务" description="谁能用这些功能，在本群的「权限」标签页里设置。">
           <div class="form-grid">
             <v-switch v-model="draft.schedules.enabled" label="允许定提醒" />
             <v-switch v-model="draft.schedules.autonomous" label="允许 Bot 自己定提醒" :disabled="!draft.schedules.enabled" />

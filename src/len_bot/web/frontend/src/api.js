@@ -1,4 +1,3 @@
-// Shared API client: cookie session (same-origin), no retries or optimistic writes.
 import { reactive } from 'vue'
 
 let onUnauthorized = () => {}
@@ -46,8 +45,6 @@ export function queryString(values) {
   return new URLSearchParams(Object.entries(values).filter(([, value]) => value !== '' && value !== null && value !== undefined)).toString()
 }
 
-// Group names and private nicknames read from QQ; until one arrives the
-// scene shows by its number.
 export const sceneTitles = reactive({})
 
 export function sceneNumber(id) {

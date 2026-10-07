@@ -22,46 +22,42 @@ code { font-family:var(--mono);font-size:.92em }
 .plain-list { list-style:none;margin:0;padding:0 }
 .v-application { font-family:inherit;background:var(--page) }
 
-/* Buttons come in four tiers (see the panel section of developer/architecture.md):
-   main      color="primary"                 solid, at most one per block
-   secondary variant="outlined" or "tonal"   white with a gray border
-   text      variant="text"                  links and low-weight actions
-   danger    color="error"                   only to confirm destructive actions
-   Tonal buttons are drawn as secondary ones so older pages fall into the same tiers. */
 .v-btn { letter-spacing:0;text-transform:none;font-weight:600;transition:background-color var(--dur-1),border-color var(--dur-1),color var(--dur-1) }
 .v-btn--variant-outlined, .v-btn--variant-tonal { background:var(--surface);border:1px solid var(--line-strong) }
 .v-btn--variant-outlined:not(.text-error), .v-btn--variant-tonal:not(.text-error) { color:var(--ink) }
 .v-btn--variant-tonal > .v-btn__underlay { opacity:0 }
 .v-btn--variant-outlined:not(.v-btn--disabled):hover, .v-btn--variant-tonal:not(.v-btn--disabled):hover { border-color:var(--muted) }
-/* Segmented choices look like the page tabs: a gray track and a white pill for the selected one. */
 .v-btn-toggle.v-btn-group { background:var(--track);padding:3px;gap:2px;border:0;height:auto;border-radius:var(--radius) }
 .v-btn-toggle .v-btn { height:30px;border-radius:var(--radius-sm) !important;color:var(--muted);background:transparent }
-/* Vuetify tints the active button with an overlay at higher specificity; the pill replaces it. */
 .v-btn-toggle .v-btn.v-btn--active { background:var(--surface) !important;color:var(--ink);box-shadow:var(--shadow-card) }
 .v-btn-toggle .v-btn > .v-btn__overlay { opacity:0 !important }
 .v-card { border-radius:var(--radius-lg) }
 .v-card--variant-outlined, .v-card.v-card--border { border-color:var(--line) }
-.v-field--variant-outlined { background:var(--surface) }
-.v-field--variant-outlined .v-field__outline { --v-field-border-opacity:1;color:var(--line-strong) }
-.v-field--focused .v-field__outline { color:var(--primary) }
-/* The floating label sits inside the outline; keep it readable rather than border-gray. */
-.v-field--variant-outlined .v-field__outline .v-label { color:var(--muted);opacity:1 }
-.v-field--focused .v-field__outline .v-label { color:var(--primary) }
+.v-field--variant-filled { border-radius:var(--radius) !important;background:var(--fill);transition:background-color var(--dur-1),box-shadow var(--dur-2) var(--ease-out) }
+.v-field--variant-filled > .v-field__overlay, .v-field--variant-filled > .v-field__outline { display:none }
+.v-field--variant-filled:hover { background:var(--hover) }
+.v-field--variant-filled.v-field--focused { background:var(--surface);box-shadow:0 0 0 1.5px var(--primary),0 0 0 5px rgb(180 71 106 / 12%) }
+.v-field--variant-filled.v-field--error { box-shadow:0 0 0 1.5px var(--error) }
+.v-field--variant-filled.v-field--disabled { background:var(--fill) }
+.v-field--variant-filled .v-label.v-field-label { color:var(--muted);opacity:1 }
+.v-field--variant-filled.v-field--focused .v-label.v-field-label { color:var(--primary) }
+.v-input__details { padding-inline:var(--sp-3) }
 .v-alert-title { font-size:var(--fs-md);font-weight:650;line-height:1.5 }
 .v-overlay__content > .v-list, .v-menu > .v-overlay__content > .v-card { border-radius:var(--radius);box-shadow:var(--shadow-float) }
 
-/* Motion is a short fade only. `.rise` is kept as a class name for older pages. */
-@keyframes rise { from { opacity:0 } to { opacity:1 } }
+@keyframes rise { from { opacity:0;transform:translateY(6px) } to { opacity:1;transform:none } }
 @keyframes pulse { 0% { box-shadow:0 0 0 0 currentColor } 70% { box-shadow:0 0 0 5px transparent } 100% { box-shadow:0 0 0 0 transparent } }
 .rise { animation:rise var(--dur-2) var(--ease-out) both }
-.page-enter-active { transition:opacity var(--dur-2) var(--ease-out) }
+.page-enter-active { transition:opacity var(--dur-3) var(--ease-out),transform var(--dur-3) var(--ease-out) }
 .page-leave-active { transition:opacity var(--dur-1) ease-in }
-.page-enter-from, .page-leave-to { opacity:0 }
+.page-enter-from { opacity:0;transform:translateY(8px) }
+.page-leave-to { opacity:0 }
 
 * { scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent }
 @media(max-width:600px){
   .v-btn{min-height:44px}
 }
 @media(prefers-reduced-motion:reduce){
-  *,*::before,*::after{animation-duration:.01ms;animation-delay:0ms;transition-duration:.01ms;scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.01ms !important;animation-delay:0ms !important;animation-iteration-count:1 !important;
+    transition-duration:.01ms !important;scroll-behavior:auto !important}
 }

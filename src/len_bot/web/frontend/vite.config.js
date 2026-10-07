@@ -5,8 +5,6 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
-// Keep original npm notices next to every built panel, including wheels and
-// custom outDir builds. The inventory includes build-only dependencies.
 function frontendNotices() {
   let config
   return {
@@ -20,8 +18,6 @@ function frontendNotices() {
   }
 }
 
-// Build output is served by FastAPI (see next/host_panel.py). Dev mode proxies /api
-// (cookies included) to the running len-bot control plane.
 export default defineConfig({
   plugins: [vue(), vuetify({ autoImport: true }), frontendNotices()],
   build: {

@@ -60,7 +60,6 @@ export async function confirmRestart() {
   try {
     restartFlow.preview = await restartApi.request()
     restartFlow.waiting = true
-    // Retire requests and pages from the old process; readiness does not use its login session.
     resetApiSession()
     if (panelChanged()) restartFlow.phase = 'address-changed'
     else await waitForRestart()

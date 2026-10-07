@@ -39,7 +39,7 @@ watch(active, value => { if (value) newOne.value = false })
 </script>
 
 <template>
-  <HostPage title="对话测试" description="用和群里一样的角色和模型试着聊几句。回复不会发到 QQ，但模型调用会消耗 token。" wide>
+  <HostPage title="对话测试" description="用和群里一样的角色和模型试着聊几句，回复只在这里显示。" wide>
     <template #actions>
       <v-select v-if="past.length" :model-value="selected?.id" :items="past" label="测试记录" density="compact" hide-details class="past" @update:model-value="pick" />
       <v-btn v-if="active" variant="outlined" :loading="stop.busy.value" @click="stopTrial">结束测试</v-btn>

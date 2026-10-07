@@ -36,7 +36,6 @@ const validIdentity = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.
 const append = ref(''), followUp = ref(''), answer = ref(''), choice = ref(null), resourceDirty = ref(false)
 const dirty = computed(() => Boolean(append.value || followUp.value || answer.value || choice.value !== null || resourceDirty.value))
 watch(dirty, value => emit('dirty', value), { immediate: true })
-// An answer typed for one question must not be sent to the next one.
 watch(() => task.value?.question?.id, (now, before) => { if (before !== undefined && now !== before) { answer.value = ''; choice.value = null } })
 
 const canAppend = computed(() => props.service.accepting && ['running', 'waiting_input'].includes(task.value?.status))
@@ -67,7 +66,6 @@ function submitAnswer(confirmed) {
   return send('answer', { question_id: question.id, text: question.method === 'select' ? choice.value : answer.value })
 }
 
-// The running assistant text, pushed over a WebSocket while the page is open.
 const live = ref(null), liveState = ref('idle'), liveError = ref('')
 let socket = null
 function connectLive() {
@@ -83,7 +81,6 @@ function connectLive() {
 }
 function closeLive() { const connection = socket; socket = null; connection?.close() }
 const running = computed(() => ['running', 'waiting_input'].includes(task.value?.status))
-// Only a running task has text to stream, and only when the task service runs in this host.
 watch(() => running.value && props.service.configured, on => { if (on && !socket) connectLive(); else if (!on) closeLive() }, { immediate: true })
 onBeforeUnmount(closeLive)
 

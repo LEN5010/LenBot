@@ -39,7 +39,6 @@ watch(filter, () => { wanted.value = 20; rows.value = []; list.reload() })
 function loadMore() { wanted.value += 20; list.reload() }
 const selected = computed(() => /^[1-9][0-9]*$/.test(route.query.id ?? '') ? Number(route.query.id) : null)
 
-// Change notices re-read the list and the open task; drafts in the detail stay as typed.
 const version = ref(0)
 const events = useHostEvents(async () => {
   version.value++
@@ -70,12 +69,12 @@ const accepting = computed(() => state.data.value?.configured && state.data.valu
     <v-alert v-if="!data.configured" type="info">还没有启用独立任务，可以在
       <RouterLink :to="{ name: 'host-capabilities', query: { tab: 'tasks' } }">能力 › 独立任务</RouterLink> 里设置。</v-alert>
     <ErrorNote v-if="data.error" title="任务执行环境出错了" :error="data.error" />
-    <MasterDetail :selected="selected !== null" list-width="340px" @back="open(null)">
+    <MasterDetail :selected="selected !== null" :empty="!rows.length" list-width="340px" @back="open(null)">
       <template #list>
         <Panel title="任务" flush>
           <template #actions>
             <LiveStatus :status="events.status.value" @reconnect="events.reconnect" />
-            <v-btn variant="outlined" size="small" :disabled="!accepting" @click="creating = true">新建</v-btn>
+            <v-btn v-if="accepting" variant="outlined" size="small" @click="creating = true">新建</v-btn>
           </template>
           <div class="list">
             <v-select v-model="filter" :items="filters" aria-label="筛选" />

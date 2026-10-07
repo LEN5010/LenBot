@@ -1,6 +1,4 @@
 <script setup>
-// Sub-sections of a page. By default each tab is a link that sets `?tab=`
-// and drops the object selected inside the old tab; `local` tabs only emit.
 import { useRoute } from 'vue-router'
 const props = defineProps({
   tabs: { type: Array, required: true },
@@ -32,11 +30,14 @@ function target(value) {
   </nav>
 </template>
 <style scoped>
-.page-tabs{display:inline-flex;gap:2px;max-width:100%;overflow-x:auto;padding:4px;border-radius:var(--radius);background:var(--track);scrollbar-width:none;justify-self:start}
-.page-tab{flex:none;display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 var(--sp-4);border:0;border-radius:var(--radius-sm);background:none;
-  color:var(--muted);font:inherit;font-size:var(--fs-md);cursor:pointer;white-space:nowrap;transition:background-color var(--dur-2) var(--ease-out),color var(--dur-1),box-shadow var(--dur-2) var(--ease-out)}
-.page-tab:hover{color:var(--ink);text-decoration:none;background:rgb(255 255 255 / 55%)}
-.page-tab.active{background:var(--surface);color:var(--ink);font-weight:600;box-shadow:var(--shadow-card)}
-.count{min-width:18px;padding:0 5px;border-radius:9px;background:var(--track);color:var(--ink);font-size:var(--fs-xs);line-height:18px;text-align:center}
-@media(max-width:600px){.page-tab{height:40px}}
+.page-tabs{display:flex;gap:var(--sp-5);max-width:100%;overflow-x:auto;border-bottom:1px solid var(--line);scrollbar-width:none}
+.page-tab{position:relative;flex:none;display:inline-flex;align-items:center;gap:6px;height:40px;padding:0 2px;border:0;background:none;
+  color:var(--muted);font:inherit;font-size:var(--fs-md);cursor:pointer;white-space:nowrap;transition:color var(--dur-2) var(--ease-out)}
+.page-tab::after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:2px;border-radius:2px 2px 0 0;background:var(--brand);transform:scaleX(0);transition:transform var(--dur-3) var(--ease-out)}
+.page-tab:hover{color:var(--ink);text-decoration:none}
+.page-tab:focus-visible{outline-offset:-2px;border-radius:var(--radius-sm)}
+.page-tab.active{color:var(--ink);font-weight:600}
+.page-tab.active::after{transform:scaleX(1)}
+.count{min-width:18px;padding:0 5px;border-radius:9px;background:var(--fill);color:var(--ink);font-size:var(--fs-xs);line-height:18px;text-align:center}
+@media(max-width:600px){.page-tab{height:44px}}
 </style>

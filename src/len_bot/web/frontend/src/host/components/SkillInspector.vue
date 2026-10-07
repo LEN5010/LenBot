@@ -1,5 +1,4 @@
 <script setup>
-// Files of one skill, with moving it between task, group and shared, or deleting it.
 import { computed, ref, watch } from 'vue'
 import { api, queryString, sceneName } from '../../api.js'
 import { useAction, useResource } from '../../composables/useResource.js'

@@ -1,5 +1,4 @@
 <script setup>
-// Shown only in developer mode. With `label` it is folded; `json` dumps a value.
 import { developerDetails } from '../../composables/useDeveloperMode.js'
 import Fold from './Fold.vue'
 defineProps({ label: { type: String, default: '' }, json: { default: undefined } })

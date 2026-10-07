@@ -21,7 +21,6 @@ function addRow() {
   model.value = [...model.value, Object.fromEntries(props.field.fields.map(child => [child.key, initialField(child)]))]
 }
 const removeRow = index => { model.value = model.value.filter((_, i) => i !== index) }
-// A row's heading shows its first filled values so collapsed lists stay readable.
 function summary(row) {
   const parts = props.field.fields.map(child => {
     const value = row[child.key]

@@ -1,5 +1,4 @@
 <script setup>
-// Plugin parameters rendered from the manifest's declared fields, split into the declared groups.
 import { computed } from 'vue'
 import SchemaField from './SchemaField.vue'
 
@@ -16,7 +15,6 @@ const groups = computed(() => {
     if (!result.has(name)) result.set(name, [])
     result.get(name).push(field)
   }
-  // Ungrouped fields first, then groups in declaration order.
   return [...result].sort(([a], [b]) => (a !== '') - (b !== ''))
 })
 const undeclared = computed(() => props.fields.filter(field => field.type === 'object_list' && !field.fields.length))

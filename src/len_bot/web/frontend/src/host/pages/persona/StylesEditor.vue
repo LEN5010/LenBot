@@ -1,5 +1,4 @@
 <script setup>
-// Per-reply styles: one is drawn for each reply by its share; the shares add up to 100%.
 import { computed } from 'vue'
 import RowEditor from '../../ui/RowEditor.vue'
 

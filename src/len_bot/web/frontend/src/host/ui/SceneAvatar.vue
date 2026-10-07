@@ -1,5 +1,4 @@
 <script setup>
-// A round badge with the first character of a scene's name, tinted per scene.
 import { computed } from 'vue'
 import { sceneName } from '../../api.js'
 import { avatarTints } from '../../styles/theme.js'

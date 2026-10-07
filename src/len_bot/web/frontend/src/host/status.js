@@ -1,5 +1,3 @@
-// Every status the panel shows, as [text, tone]. Tone picks the color:
-// success, warning, error, info (in progress) or neutral.
 const tables = {
   runtime: {
     created: ['准备中', 'info'], starting: ['启动中', 'info'], waiting_connection: ['等待 QQ 连接', 'warning'],
@@ -45,7 +43,6 @@ const tables = {
   live: { connected: ['实时更新中', 'success'], connecting: ['正在连接…', 'info'], closed: ['实时更新已断开', 'warning'] },
 }
 
-// Unknown values show the raw value so a new backend state stays visible.
 export function statusOf(kind, value) {
   const [text, tone] = tables[kind]?.[value] || [value, 'neutral']
   return { text, tone }

@@ -1,6 +1,4 @@
 <script setup>
-// The one dialog layout: title, body, then right-aligned cancel and the
-// primary action (slot `actions`); a destructive action goes left (`danger`).
 const sizes = { sm: 520, md: 720, lg: 960 }
 defineProps({
   modelValue: Boolean,

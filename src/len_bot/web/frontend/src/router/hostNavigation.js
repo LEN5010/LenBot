@@ -1,5 +1,3 @@
-// User-facing areas, grouped in the side navigation. `pages` are the route
-// names that belong to an area.
 export const hostGroups = [
   { title: '运行', areas: [
     { id: 'home', title: '首页', name: 'host-overview', pages: ['host-overview'] },

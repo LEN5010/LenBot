@@ -18,7 +18,6 @@ const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
 const root = `/api/host/scenes/${encodeURIComponent(props.scene)}`
 
-// Learning switches (saved to the root config, restart to apply).
 const config = useResource(() => api(`/api/host/settings/scenes/${encodeURIComponent(props.scene)}/learning`))
 const draft = ref(null)
 const saveConfig = useAction()
@@ -37,7 +36,6 @@ async function submitConfig() {
   if (result) { config.data.value = result; readPendingRestart(); notify('已保存') }
 }
 
-// Review lists.
 const filter = ref('pending')
 const jargonFilter = ref('pending')
 const selectedFilter = kind => kind === 'jargon' ? jargonFilter.value : filter.value
@@ -97,7 +95,6 @@ async function decide(kind, item, decision) {
   }
 }
 
-// Turning an adopted expression into a persona example.
 const example = ref(null)
 watch(() => configDirty.value || Object.keys(kinds).some(reviewDirty) || example.value !== null,
   value => emit('dirty', value), { immediate: true })
@@ -113,7 +110,6 @@ async function submitExample() {
   if (result) { example.value = null; readPendingRestart(); notify('已加到角色样例') }
 }
 
-// Reply effects over the last 7 days.
 const effects = useResource(() => api(`${root}/reply-effects?days=7`))
 const effectLabels = [['agree', '认同'], ['continue', '接着聊'], ['correct', '纠正'], ['negative', '反感'], ['unrelated', '没接话'], ['uncertain', '看不出来']]
 const effectStats = value => effectLabels.map(([key, label]) => ({ label, value: value.distribution.states[key] }))

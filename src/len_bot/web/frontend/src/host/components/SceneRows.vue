@@ -1,5 +1,4 @@
 <script setup>
-// Per-scene overrides edited as rows instead of a JSON object.
 import { computed } from 'vue'
 import { mdiClose, mdiPlus } from '@mdi/js'
 import { sceneName } from '../../api.js'

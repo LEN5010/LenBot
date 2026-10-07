@@ -56,7 +56,6 @@ async function cancel() {
   editing.value = false
 }
 
-// Delete keeps history; forget also removes reachable history and stops chosen messages from being learned again.
 const removing = ref(false), forget = ref(false), removeReason = ref(''), sources = ref([])
 const remove = useAction()
 async function confirmRemove() {

@@ -1,5 +1,4 @@
 <script setup>
-// Operator-managed scenario/line references: the first eight, or up to eight with selected tags.
 import { computed, watch } from 'vue'
 import { mdiArrowUp, mdiClose, mdiPlus } from '@mdi/js'
 import Panel from '../../ui/Panel.vue'
