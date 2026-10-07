@@ -6,7 +6,7 @@ permissions:
   contents: read
 jobs:
   catalog:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       plugins: ${{ steps.read.outputs.plugins }}
     steps:
@@ -29,7 +29,7 @@ jobs:
   official-plugins:
     # Every host commit must still run the plugin versions the catalog installs.
     needs: catalog
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:

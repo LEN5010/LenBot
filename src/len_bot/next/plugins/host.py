@@ -48,7 +48,22 @@ logger = logging.getLogger(__name__)
 PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
 STRICT = ConfigDict(extra="forbid", strict=True)
 ERROR_LIMIT = 20
+# A plugin's own start() or stop() that never returns would hold the host start (and with it every
+# scene) or the shutdown. Data migration before start() has no limit: it may legitimately be long.
+PLUGIN_START_SECONDS = 60.0
+PLUGIN_STOP_SECONDS = 30.0
 JSON_RESULT = TypeAdapter(JsonValue, config=ConfigDict(strict=True, allow_inf_nan=False))
+
+
+async def _limited(call: Coroutine, seconds: float, what: str) -> None:
+    limit = asyncio.timeout(seconds)
+    try:
+        async with limit:
+            await call
+    except TimeoutError as error:
+        if not limit.expired():
+            raise
+        raise TimeoutError(f"插件 {what} 超过 {seconds:g} 秒没有返回，已取消") from error
 
 
 @dataclass
@@ -678,7 +693,7 @@ class PluginHost:
                                           data_dir.parent / '.backups', record.instance.migrate_data)
             if migrated is not None:
                 log_event(logger, 'plugin_data_migrated', **migrated)
-            await record.instance.start()
+            await _limited(record.instance.start(), PLUGIN_START_SECONDS, 'start()')
             if record.status != "loaded":
                 return
             record.status = "running"
@@ -742,7 +757,7 @@ class PluginHost:
             record.crons.clear()
             try:
                 if record.instance is not None:
-                    await record.instance.stop()
+                    await _limited(record.instance.stop(), PLUGIN_STOP_SECONDS, 'stop()')
             except Exception as error:
                 record.status, record.error = "failed", self._record(record, "停止", error)
                 raise

@@ -1,15 +1,20 @@
 """Authenticated handoff to the installation's independent update controller."""
 
 from collections.abc import Callable
-from importlib.metadata import version
 import json
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 import httpx
 
+from ...runtime.releases import CHECK_TIMEOUT_SECONDS, GITHUB_RELEASES, ReleaseCheck, current_version, github_releases
 
-def register_host_updates(app: FastAPI, *, root: Path, user: Callable[[Request], str]) -> None:
+ERRORS = (OSError, ValueError, KeyError, TimeoutError, httpx.HTTPError)
+
+
+def register_host_updates(app: FastAPI, *, root: Path, user: Callable[[Request], str],
+                          check_enabled: bool = True) -> ReleaseCheck:
+    """Register the update routes; the returned check is started by the panel's lifespan when enabled."""
     def control() -> dict | None:
         file = root / '.runtime/update-control.json'
         if not file.exists():
@@ -30,31 +35,43 @@ def register_host_updates(app: FastAPI, *, root: Path, user: Callable[[Request],
                 raise HTTPException(502, f'更新控制器 HTTP {response.status_code}: {response.text[:2000]}')
             return response.json()
 
+    async def load_releases() -> list[dict]:
+        # A managed installation asks its own controller, which reads the release source it was installed from.
+        if control() is not None:
+            return await request_control('releases')
+        async with httpx.AsyncClient(timeout=CHECK_TIMEOUT_SECONDS, headers={
+                'Accept': 'application/vnd.github+json', 'User-Agent': 'LenBot/' + current_version()}) as client:
+            response = await client.get(GITHUB_RELEASES)
+            if response.is_error:
+                # GitHub explains rate limits and outages in the body; keep it instead of a bare status.
+                raise ValueError(f'GitHub HTTP {response.status_code}: {response.text[:500]}')
+            return github_releases(response.json())
+
+    releases = ReleaseCheck(load_releases, enabled=check_enabled)
+
     @app.get('/api/host/updates')
     async def current(_: str = Depends(user)):
         try:
             reference = control()
-            return {'version': version('len-bot'), 'managed': reference is not None,
-                    'status': None if reference is None else await request_control('status')}
-        except (OSError, ValueError, httpx.HTTPError) as error:
+            return {'version': releases.current, 'managed': reference is not None,
+                    'status': None if reference is None else await request_control('status'),
+                    'check': releases.state()}
+        except ERRORS as error:
             raise HTTPException(422, str(error)) from error
 
     @app.get('/api/host/updates/releases')
-    async def releases(_: str = Depends(user)):
+    async def published(_: str = Depends(user)):
+        # An explicit check works even with the background check turned off.
         try:
-            if control() is not None:
-                return await request_control('releases')
-            async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.get('https://api.github.com/repos/lendevs/LenBot/releases?per_page=100')
-                response.raise_for_status()
-                return [{'tag': item['tag_name'], 'prerelease': item['prerelease'], 'notes': item['body']}
-                        for item in response.json() if not item['draft']]
-        except (OSError, ValueError, httpx.HTTPError) as error:
-            raise HTTPException(422, str(error)) from error
+            return await releases.refresh()
+        except ERRORS as error:
+            raise HTTPException(422, f'{type(error).__name__}: {error}') from error
 
     @app.post('/api/host/updates/session')
     async def session(_: str = Depends(user)):
         try:
             return await request_control('session')
-        except (OSError, ValueError, httpx.HTTPError) as error:
+        except ERRORS as error:
             raise HTTPException(422, str(error)) from error
+
+    return releases
