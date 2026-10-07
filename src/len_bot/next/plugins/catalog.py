@@ -5,6 +5,7 @@ import time
 from typing import Literal
 
 import httpx
+from packaging.specifiers import SpecifierSet
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ..configuration.plugin import PLUGIN_NAME, PLUGIN_RESERVED, PluginCatalogSettings, catalog_url
@@ -22,6 +23,7 @@ class CatalogEntry(BaseModel):
     license: str = Field(min_length=1)
     version: str = Field(min_length=1)
     interface: int = Field(gt=0)
+    requires_lenbot: str | None = None
     category: str = Field(min_length=1)
     capabilities: list[str] = Field(default_factory=list)
     usage: list[str] = Field(default_factory=list)
@@ -36,6 +38,11 @@ class CatalogEntry(BaseModel):
         if PLUGIN_NAME.fullmatch(value) is None or value in PLUGIN_RESERVED:
             raise ValueError('目录条目使用插件清单的有效名称')
         return value
+
+    @field_validator('requires_lenbot')
+    @classmethod
+    def host_range(cls, value: str | None) -> str | None:
+        return None if value is None else str(SpecifierSet(value))
 
     @field_validator('repository')
     @classmethod

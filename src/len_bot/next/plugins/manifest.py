@@ -157,6 +157,19 @@ def config_model(name: str, fields: Mapping[str, ConfigItem], scenes: Collection
     })
 
 
+class ModelInstructions(BaseModel):
+    model_config = STRICT
+    instructions: str = Field(min_length=1)
+
+    @field_validator("instructions")
+    @classmethod
+    def relative_file(cls, value: str) -> str:
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("model.instructions 必须是插件目录内的相对文件路径")
+        return value
+
+
 class Manifest(BaseModel):
     model_config = STRICT
     name: str
@@ -171,6 +184,7 @@ class Manifest(BaseModel):
     description: str = Field(min_length=1)
     repository: HttpUrl | None = None
     homepage: HttpUrl | None = None
+    model: ModelInstructions | None = None
     dependencies: list[str] = Field(default_factory=list)
     config: dict[str, ConfigField] = Field(default_factory=dict)
 

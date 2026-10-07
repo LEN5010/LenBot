@@ -78,6 +78,7 @@ function update(entry) { selected.value = null; emit('update', entry) }
       <ol class="usage"><li v-for="item in selected.usage" :key="item">{{ item }}</li></ol>
       <p>{{ selected.capabilities.join(' · ') }}</p>
       <p class="muted small">{{ selected.name }} · v{{ selected.version }} · 接口 {{ selected.interface }} · {{ selected.license }}<template v-if="selected.ref"> · 版本 {{ selected.ref }}</template></p>
+      <p v-if="selected.requires_lenbot">宿主兼容范围：{{ selected.requires_lenbot }}</p>
       <p>安装后填写参数，再选择在哪些群使用。</p>
       <div class="inline"><a v-if="selected.repository" :href="selected.repository" target="_blank" rel="noopener noreferrer">源码仓库</a><a v-if="selected.homepage" :href="selected.homepage" target="_blank" rel="noopener noreferrer">项目说明</a></div>
     </template>

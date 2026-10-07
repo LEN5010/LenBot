@@ -8,7 +8,6 @@ import { clone, same } from '../../forms.js'
 import SettingSection from '../../ui/SettingSection.vue'
 import ResourceState from '../../ui/ResourceState.vue'
 import AllowList from '../../components/AllowList.vue'
-import DevOnly from '../../ui/DevOnly.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
@@ -59,9 +58,30 @@ async function submit() {
     :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
     <AllowList :model-value="draft" @update:model-value="update" :items="items" all-label="全部可用的工具">
       <template #item="{ item }">
-        <DevOnly label="详情" :json="item.tool" />
+        <div class="tool-preview">
+          <p>{{ item.tool.summary }}</p>
+          <span>{{ item.tool.registered ? (item.tool.discovered ? '已加载到模型' : '可按需发现') : '当前不可用' }}</span>
+          <details>
+            <summary>模型调用说明</summary>
+            <p>{{ item.tool.description }}</p>
+            <pre>{{ JSON.stringify(item.tool.parameters, null, 2) }}</pre>
+            <template v-if="item.tool.instructions">
+              <strong>插件共享指南（发现工具后加载）</strong>
+              <pre>{{ item.tool.instructions }}</pre>
+            </template>
+          </details>
+        </div>
       </template>
     </AllowList>
   </SettingSection>
   </ResourceState>
 </template>
+
+<style scoped>
+.tool-preview { min-width: 0; font-size: 0.85rem; }
+.tool-preview p { margin: 0.4rem 0; white-space: pre-wrap; }
+.tool-preview span { color: var(--text-muted, #777); }
+.tool-preview details { margin-top: 0.5rem; }
+.tool-preview summary { cursor: pointer; }
+.tool-preview pre { overflow: auto; max-height: 24rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+</style>

@@ -27,7 +27,9 @@
         "增量默认关闭，按群开启后每小时整理；自然语言可指定 hours 或 start_at、end_at。"
       ],
       "install": "git",
-      "repository": "https://github.com/lendevs/lenbot-plugin-group-digest"
+      "repository": "https://github.com/lendevs/lenbot-plugin-group-digest",
+      "ref": "b956bf9945742e2fd8c7f9f2375193a93624954c",
+      "requires_lenbot": ">=0.2,<1"
     },
     {
       "name": "gscore_adapter",
@@ -51,7 +53,9 @@
         "gscore_status 提供实际连接状态，是否给模型使用由角色工具许可决定。"
       ],
       "install": "git",
-      "repository": "https://github.com/lendevs/lenbot-plugin-gscore-adapter"
+      "repository": "https://github.com/lendevs/lenbot-plugin-gscore-adapter",
+      "ref": "e766fb639bfb4561e31b40e194fa9d53ef97c1b0",
+      "requires_lenbot": ">=0.2,<1"
     }
   ]
 }

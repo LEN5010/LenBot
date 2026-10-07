@@ -19,7 +19,7 @@ description = "A separate counter for each scene"
 
 All fields above are required. The installed directory must match `name`. Versions use Python packaging's version rules; compatibility ranges are explicit specifiers checked against the actual host and Python versions. Platform names are Python's `sys.platform` values; host packages exist for Linux (`linux`), macOS (`darwin`) and Windows (`win32`). `reload` is `plugin` or `host`. Optional fields are `repository`, `homepage`, `dependencies`, and `config`.
 
-Interface 1 is the supported generation. Additions within it preserve existing signatures and behavior; breaking changes require a new generation. Public imports are `len_bot.next.plugin`, the message types it exposes from `len_bot.next.platform.messages`, and `len_bot.next.plugin_testing`. Internal host modules are not library APIs.
+Interface 1 is the supported generation. Additions within it preserve existing signatures and behavior; breaking changes require a new generation. Public imports are `len_bot.next.plugin`, the message types it exposes from `len_bot.next.platform.messages`, `len_bot.next.plugin_testing`, plus `image_assets` and `text_cards` helpers documented below. Internal host modules are not library APIs.
 
 ## Handlers and lifecycle
 
@@ -38,7 +38,7 @@ class Example(Plugin):
 | `fullmatch(text, description)` | `ctx: Invocation` | Exact plain text after trimming |
 | `regex(pattern, description, priority=0)` | `ctx: Invocation, match` | Full regular expression match |
 | `on_notice(type)` | `ctx: Invocation, notice` | Platform notice type or type.sub_type |
-| `tool(name, description)` | `ctx: Invocation`, typed named arguments | Model-discovered tool; must return a string |
+| `tool(name, description, summary=..., needs_source=False)` | `ctx: Invocation`, typed named arguments | Model-discovered tool; text or native JSON result |
 | `background(every="5m")` | `ctx: PluginContext` | Wait after completion; minimum interval 10 seconds |
 
 Methods are async and use one decorator each. Command, exact-text, then regex matching takes precedence; regex priority sorts descending. At most one handler consumes a message, without waking the chat model. Returning text records a result; sending requires `ctx.reply`. A model selecting a plugin tool and the tool itself calling a model are separate actions.
@@ -68,7 +68,7 @@ Scene IDs are qualified, for example `onebot:group:80001`; accounts use `onebot:
 | One model request | `await ctx.generate(prompt, role="mind", system=None)` |
 | Work | `await ctx.delegate(goal, deliverable, context="", materials=())` |
 | Time | `ctx.now()`, `ctx.timezone()` |
-| Owner permission | `ctx.plugin.require_owner(ctx.scene, ctx.message.sender.uid)` |
+| Owner permission | `ctx.require_owner()` |
 
 `generate` uses an explicitly configured mind or learner binding, without tools, history injection, automatic sending or changing providers on error. `delegate` requires an actual non-self triggering message; the host uses its sender's task permissions. A returned task record confirms submission, not delivery.
 
@@ -107,8 +107,26 @@ async def check():
 
 PluginTest runs real lifecycle, matching, tool validation, scene permissions and on-disk KV in a temporary installation. Specify scenes and owners in the constructor; message accepts scene and sender. Deliveries contain captured parts, reply_to and simulated status. events() exposes actual stored plugin events. Handler/start failures fail the call. Context exit stops the plugin and deletes its temporary installation.
 
-The local harness provides no model, memory service or worker and raises an explicit error for those capabilities. A plugin's own external network calls still execute. Use an explicit test instance for service integration.
+The local harness disables model calls by default; explicitly pass models for protocol tests through the host request and usage path. Memory and worker calls raise an explicit error. A plugin's own external network calls still execute.
 
 Publish a standalone repository containing source, manifest, documentation and a license. Release ZIPs contain the same root package. Set your own name and authors, update version and compatibility ranges, document configuration/data changes, and test the published package. The [plugin template](https://github.com/lendevs/lenbot-plugin-template) already includes a test workflow and a tag workflow that attaches an importable ZIP to each GitHub Release.
 
 **License**: the LenBot host is AGPL-3.0-only; the plugin template and the counter example are GPL-3.0-only. Plugins run in the host process, so GPL-3.0 is the recommended plugin license; section 13 of GPLv3 permits combining GPLv3 works with AGPLv3 works. If you choose another license, check its compatibility with GPLv3 and AGPLv3 yourself.
+
+## Model-facing tool contract (unreleased 0.2.0 development)
+
+Use `@tool(name, description, summary="...", needs_source=False)`. The explicit summary appears in discovery and search, while the full description and `Annotated[..., Field(description=..., examples=...)]` schema accompany the callable tool. Without a summary the full description remains unchanged. README and docstrings are not loaded automatically.
+
+An optional `[model] instructions = "prompts/tools.md"` names a package-relative shared guide. It is loaded once after an allowed tool is discovered, refreshed on plugin reload and withdrawn on disable, removal or discovery reset after compaction.
+
+Tools return text or native JSON values; the host serializes non-string results. Tuples, arbitrary objects, non-string dictionary keys and non-finite floats are invalid. Explain whether a result is data, an actual delivery receipt or background work started. Only a `sent` receipt confirms platform delivery.
+
+`needs_source=True` adds a host-owned required `source_message_id`. Select the actual request message from this scene's records; the host populates `Invocation.message` from that message. Do not declare this parameter in the handler or provide an arbitrary owner account. Use `ctx.require_owner()` and `ctx.delegate()` with that actual sender.
+
+Override synchronous `Plugin.unavailable_tools(scene)` to return tool names and configuration reasons. Unavailable tools remain visible in the panel preview but are excluded from discovery and execution. Keep the actual caller checks in the handler; never include credentials in reasons or guides.
+
+Use `await ctx.fetch_image(url, timeout_seconds=15)` for verified public image bytes under host network/image limits. `image_assets` validation, limits and OriginalImage, plus `text_cards` CardSection, CardPage and TextCards are public helpers. Render expensive images with `asyncio.to_thread`.
+
+`PluginTest.preview_tools()` shows the model-facing summaries, schemas, shared guides and availability. Inject a clock with `now=...`, save a source with `add_message(...)`, and explicitly configure `models=...` only for model protocol tests. Sending stays simulated. The template includes native JSON lookup and background generation/delivery examples. See the [Chinese guide](plugins-v1.md) for full examples and compatibility details.
+
+Group related search/detail operations into a single capability using strict discriminated request models; keep data queries separate from sending and account writes. Model schemas omit generated titles while preserving property names, descriptions, examples and constraints. Check context size as well as tool count. Development continues without a version tag or Release.

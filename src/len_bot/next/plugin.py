@@ -1,4 +1,4 @@
-"""Plugin authoring interface (M14, interface version 1).
+"""Plugin authoring interface (version 1).
 
 A plugin package defines exactly one ``Plugin`` subclass and marks its entry
 points with the decorators below. The host loads it, gives it a ``PluginContext``
@@ -49,11 +49,15 @@ def on_notice(notice: str):
     return _mark(("notice", notice))
 
 
-def tool(name: str, description: str):
-    """Low-frequency tool; parameters come from the handler signature after ``ctx``."""
+def tool(name: str, description: str, *, summary: str | None = None, needs_source: bool = False):
+    """Low-frequency tool with explicit discovery text and optional real message source.
+
+    The host owns ``source_message_id`` when needs_source is set; do not declare
+    it in the handler. Return str or a JSON value.
+    """
     if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name):
         raise ValueError(f"工具名只能使用字母、数字、下划线和连字符，最长 64：{name!r}")
-    return _mark(("tool", name, description))
+    return _mark(("tool", name, description, summary, needs_source))
 
 
 def background(every: str):
@@ -111,6 +115,7 @@ class HostPort(Protocol):
     def bot_id(self) -> str: ...
     def scene_timezone(self, scene: str) -> str: ...
     def now(self) -> float: ...
+    async def fetch_image(self, plugin: str, url: str, timeout_seconds: float) -> bytes: ...
     async def send_text(self, plugin: str, scene: str, text: str, reply_to: str | None) -> Sent: ...
     async def send_parts(self, plugin: str, scene: str, parts: Sequence[Content], reply_to: str | None) -> Sent: ...
     def emit_event(self, plugin: str, scene: str, text: str) -> None: ...
@@ -164,6 +169,10 @@ class PluginContext:
                        system: str | None = None) -> str:
         """One explicit model call, without tools, chat wake or automatic sending."""
         return await self.host.generate(self.name, self._scene(scene), prompt, role, system)
+
+    async def fetch_image(self, url: str, *, timeout_seconds: float = 15) -> bytes:
+        """Fetch and verify original public image bytes under host network and size limits."""
+        return await self.host.fetch_image(self.name, url, timeout_seconds)
 
     def report_error(self, where: str, error: Exception) -> str:
         return self.host.report_error(self.name, where, error)
@@ -271,9 +280,18 @@ class Invocation:
     async def generate(self, prompt: str, *, role: GenerationRole = "mind", system: str | None = None) -> str:
         return await self.plugin.generate(self.scene, prompt, role=role, system=system)
 
+    def require_owner(self) -> None:
+        """Check the actual source sender, never a model-supplied account ID."""
+        if self.message is None or self.message.is_self:
+            raise PermissionError("此操作需要真实请求消息")
+        self.plugin.require_owner(self.scene, self.message.sender.uid)
+
+    async def fetch_image(self, url: str, *, timeout_seconds: float = 15) -> bytes:
+        return await self.plugin.fetch_image(url, timeout_seconds=timeout_seconds)
+
     async def delegate(self, goal: str, deliverable: str, *, context: str = "",
                        materials: Sequence[str] = ()) -> dict:
-        """Queue work for this command's actual sender; no synthetic background requester."""
+        """Queue work for this invocation's actual sender; no synthetic background requester."""
         if self.message is None or self.message.is_self:
             raise ValueError("插件委派需要真实触发消息；后台和无发送者的工具调用不能伪造请求人")
         return await self.plugin.host.delegate(self.plugin.name, self.scene, self.message.sender.uid,
@@ -304,6 +322,10 @@ class Plugin:
 
     def __init__(self, ctx: PluginContext) -> None:
         self.ctx = ctx
+
+    def unavailable_tools(self, scene: str) -> Mapping[str, str]:
+        """Tool names and configuration reasons; excludes these tools from discovery."""
+        return {}
 
     async def start(self) -> None:
         """Called once after the platform connection is ready."""

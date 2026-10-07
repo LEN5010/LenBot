@@ -101,7 +101,9 @@ class Chat:
         """Refresh both the available schemas and their system-prompt descriptions."""
         allowed = self.toolset.set_external_tools(external_tools)
         self.context.configure_tools(allowed, [tool.definition for tool in self.toolset.external.values()],
-                                     skills=self.skills)
+                                     skills=self.skills, external_info=[
+                                         {"discovery": tool.discovery, "instructions": tool.instructions}
+                                         for tool in self.toolset.external.values()])
 
     def notify(self) -> None:
         if self.on_update is not None:
