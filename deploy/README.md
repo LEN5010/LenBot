@@ -10,14 +10,16 @@ LenBot 有三种运行方式，跑的是同一个程序，读的也是同一种�
 | Docker | 服务器、NAS，或需要后台任务的 Windows | Docker | [Docker 部署](current/docker.md) |
 | 源码 | 开发、跟着主线走 | uv、Node.js 22 | 下文 |
 
-不管用哪种方式，第一次启动都会打印一个本机网页向导的链接：
+不管用哪种方式，第一次启动都会打印一个本机网页向导的链接。向导分六步：
 
-1. 连接 OneBot，从平台读出 Bot 自己的账号；
-2. 填主人的 QQ；
-3. 填模型服务商并测试一次调用；
-4. 建一个角色和第一个群，设面板账号。
+1. 面板账号和端口；
+2. 连接 OneBot，从平台读出 Bot 自己的账号（必须先连通）；
+3. 主人的 QQ；
+4. 模型服务商，并通过一次测试调用；
+5. 角色（默认小然）和第一个群或私聊；
+6. 官方插件，可以跳过。
 
-保存后进入面板。建议先选模拟发送，在面板的对话测试里聊几句，确认没问题再改成真实发送。
+保存后进入面板。建议先选模拟发送，在面板的对话测试里聊几句，确认没问题再改成真实发送。每一步的说明见文档站的[首次配置](https://lendevs.github.io/LenBot/guide/first-setup)。
 
 ## 实例目录
 
@@ -52,10 +54,11 @@ uv run --no-sync python -m len_bot.next.maintenance.migrate
 uv run --no-sync python -m len_bot.next.maintenance.migrate_memory_jobs
 uv run --no-sync python -m len_bot.next.maintenance.migrate_local_memory
 uv run --no-sync python -m len_bot.next.maintenance.plugin_dependencies
+uv run --no-sync python -m len_bot.next.maintenance.doctor
 uv run --no-sync len-bot
 ```
 
-五条维护命令依次是：升级根配置，升级业务数据库，升级记忆处理库，升级本地记忆索引，恢复已安装插件的依赖。已经是最新格式时什么也不做。本地索引从格式 2 升到 3 会清除旧派生摘要，正文和修改历史保留；之后明确整理时重新生成。升级前先备份实例。
+维护命令依次是：升级根配置，升级业务数据库，升级记忆处理库，升级本地记忆索引，恢复已安装插件的依赖，最后用 `doctor` 检查一遍，每项都是 `ok` 或 `disabled` 再启动。已经是最新格式的步骤什么也不做。本地索引从格式 2 升到 3 会清除旧派生摘要，正文和修改历史保留；之后明确整理时重新生成。升级前先备份实例。
 
 在 macOS 上可以双击 [`current/start.command`](current/start.command) 启动。要做成系统服务，见[可选服务](current/README.md#作为系统服务运行)。
 
