@@ -8,7 +8,7 @@
         "LEN5010"
       ],
       "license": "AGPL-3.0-only",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "interface": 1,
       "title": "群聊总结与群工作",
       "category": "工作工具",
@@ -24,11 +24,13 @@
         "/群日报 或 /群日报 6 生成总结卡片；也可以允许工具 group_summary_card。",
         "每日总结默认 22:00，只有选入 daily_scenes 的群才自动发送。",
         "/群总结 生成文字总结；/群工作 委派长工作，需要任务能力和权限。",
-        "增量默认关闭，按群开启后每小时整理；自然语言可指定 hours 或 start_at、end_at。"
+        "增量默认关闭，按群开启后每小时整理；自然语言可指定 hours 或 start_at、end_at。",
+        "当前为未发行开发源码，安装锁定已核对的开发提交；没有对应版本标签或 Release。",
+        "自然语言群工作使用 group_work 和真实 source_message_id；报告工具返回后台状态并自行交付。"
       ],
       "install": "git",
       "repository": "https://github.com/lendevs/lenbot-plugin-group-digest",
-      "ref": "b956bf9945742e2fd8c7f9f2375193a93624954c",
+      "ref": "44386cc32d06d605be316ad3cb18d38c2d98b035",
       "requires_lenbot": ">=0.2,<1"
     },
     {
@@ -38,7 +40,7 @@
         "LEN5010"
       ],
       "license": "AGPL-3.0-or-later",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "interface": 1,
       "title": "GSUID Core 桥接",
       "category": "外部服务",
@@ -50,11 +52,12 @@
       "usage": [
         "填写独立 Core 的 ws_url 与所需令牌，再为目标群启用。",
         "发送 /gs 命令；断线后发送 /gs连接 明确连接。",
-        "gscore_status 提供实际连接状态，是否给模型使用由角色工具许可决定。"
+        "gscore_status 提供实际连接状态，是否给模型使用由角色工具许可决定。",
+        "当前为未发行开发源码，安装锁定已核对的开发提交；没有对应版本标签或 Release。"
       ],
       "install": "git",
       "repository": "https://github.com/lendevs/lenbot-plugin-gscore-adapter",
-      "ref": "e766fb639bfb4561e31b40e194fa9d53ef97c1b0",
+      "ref": "9ca7deff45dbc45055da6822afe4f5d6754a3425",
       "requires_lenbot": ">=0.2,<1"
     }
   ]
