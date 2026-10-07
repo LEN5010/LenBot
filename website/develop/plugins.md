@@ -1,8 +1,14 @@
 # 写插件
 
-插件是一个 Python 包：一个 `plugin.toml` 清单，一个 `__init__.py`，里面恰好定义一个 `Plugin` 子类。插件和 LenBot 在同一个进程里运行，只从 `len_bot.plugin` 导入接口。
+插件是一个 Python 包：一份 `plugin.toml` 清单，加一个 `__init__.py`，里面恰好定义一个 `Plugin` 子类。插件和 LenBot 跑在同一个进程里，只从 `len_bot.plugin` 导入接口。
 
-最快的开始方式是在 GitHub 上用[插件模板](https://github.com/lendevs/lenbot-plugin-template)生成仓库。
+下面用一个「每群独立计数」的插件走一遍。想直接开工，在 GitHub 上用[插件模板](https://github.com/lendevs/lenbot-plugin-template)生成仓库，模板里就是这个插件的完整版，CI 和发布也配好了。
+
+```text
+counter/
+  plugin.toml
+  __init__.py
+```
 
 ## 清单
 
@@ -17,6 +23,17 @@ reload = "plugin"
 authors = ["插件维护者"]
 license = "GPL-3.0-only"
 description = "每群独立计数"
+
+[config.label]
+type = "string"
+description = "计数的显示名称"
+default = "本群计数"
+
+[config.step]
+type = "integer"
+description = "发送「计数加一」时增加的数值"
+minimum = 1
+default = 1
 ```
 
 - `interface` 是插件接口的代次，现在是 1。同一代里只做兼容扩展。
@@ -24,6 +41,7 @@ description = "每群独立计数"
 - `reload = "plugin"` 表示可以单独重载；需要整个程序重启才能换版时写 `"host"`。
 - `dependencies = ["包名>=版本"]` 声明 Python 依赖。
 - `data_version` 是插件数据的格式编号，默认 1。改了数据的存法时提高它，并实现 `migrate_data`，见下面的[数据版本](#数据版本)。
+- `[config.*]` 声明插件参数，见[配置表单](#配置表单)。
 
 ## 入口
 
@@ -52,11 +70,15 @@ class Counter(Plugin):
 | `@tool` | 注册成 Bot 可以调用的工具 |
 | `@background` | 周期性后台工作 |
 
-命令、全文和正则匹配到时由插件直接处理，不唤醒聊天模型。`@tool` 由模型在聊天中决定调用。
+装好、在某个群启用后，群里发 `/计数` 或 `计数加一` 就会直接得到回复。命令、全文和正则匹配到时由插件直接处理，不唤醒聊天模型；`@tool` 则由模型在聊天中决定要不要调用。
 
 ## 配置表单
 
-在清单里用 `[config.<字段名>]` 声明参数，面板会生成表单，插件里从 `ctx.config` 读到已经校验过的值。支持文字、密钥、数字、开关、列表、群选择、路径、网址和对象列表。
+在清单里用 `[config.<字段名>]` 声明参数，面板据此生成表单，插件里从 `ctx.config` 读到已经校验过的值。每个字段必须写 `type` 和 `description`；写了 `default` 就是选填，否则必填。支持文字、密钥、数字、开关、列表、群选择、路径、网址和对象列表。
+
+## 启动和停止
+
+需要准备资源时重写 `async def start(self)`，收尾放在 `async def stop(self)`。`start()` 限时 60 秒，超时会被取消、插件标为失败，LenBot 其余部分照常启动；`stop()` 限时 30 秒，超时同样被取消，不会卡住关闭。等网络、预热缓存这类慢活用 `self.ctx.start_task(name, coroutine)` 放到后台。
 
 ## 日志
 
@@ -83,7 +105,24 @@ class Notes(Plugin):
 
 ## 测试与发布
 
-`len_bot.plugin_testing` 的 `PluginTest` 不启动 LenBot 就能模拟消息、配置和工具调用；传入 `data=` 和 `data_version=` 可以测数据迁移。
+`len_bot.plugin_testing` 的 `PluginTest` 不启动 LenBot 就能模拟消息、配置和工具调用，发出的消息记在 `deliveries` 里：
+
+```python
+from pathlib import Path
+
+import pytest
+
+from len_bot.plugin_testing import PluginTest
+
+
+@pytest.mark.asyncio
+async def test_increment():
+    async with PluginTest(Path(__file__).parents[1], config={'step': 2}) as bot:
+        await bot.message('计数加一')
+        assert bot.deliveries[-1].text == '本群计数：2'
+```
+
+传入 `data=` 和 `data_version=` 可以测数据迁移。
 
 [插件模板](https://github.com/lendevs/lenbot-plugin-template)的 CI 和发行直接调用 LenBot 提供的可复用工作流：
 

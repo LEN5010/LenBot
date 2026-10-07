@@ -2,88 +2,86 @@
 
 # LenBot
 
-[中文](README.md)
+[中文](README.md) · [Documentation (zh)](https://lendevs.github.io/LenBot/) · [Quick start (zh)](https://lendevs.github.io/LenBot/guide/quick-start)
 
-LenBot is a chat agent that lives in your group chats. It connects to QQ through OneBot v11, is written in Python with asyncio and SQLite, and ships with a web control panel.
+LenBot is a chat bot that stays in your QQ groups for the long run. It sends and receives QQ messages through OneBot v11 and thinks and talks with a language model of your choice.
 
-Installation and usage guides are on the **[documentation site (zh)](https://lendevs.github.io/LenBot/)**.
+You don't talk to it through commands. When people chat, it decides for itself whether to join in, whom to answer and whether a sticker says it better. When someone asks for a report or some research, it hands the job to a background task and posts the result when it is done. Personas, memory, plugins, models and permissions are all managed in a web panel.
 
 <img src="website/public/screenshots/home.png" alt="Panel home" width="860">
 
-## How it is designed
+## What it does
 
-LenBot is organized around the chat scene. Every group (or private chat) has one long-lived agent session:
+- **Chats like a group member.** Each group has one continuing conversation; older parts are condensed into a recap as it grows. It quotes, mentions people and sends stickers, and can be set to chime in without being called.
+- **Has a persona.** Profile, voice, boundaries, examples, background notes and stickers live in one persona package. The default persona, Xiaoran (小然), works out of the box, or you can write your own. Try changes in a test chat before saving them.
+- **Remembers the group.** Memory is plain Markdown on your disk, kept separately per group. You can read and edit it in the panel, or make it forget something completely.
+- **Takes on longer jobs.** Reports and research run as background tasks in a Docker container, so the chat doesn't wait. You can ask about progress, add instructions or cancel.
+- **Uses tools.** Web search and reading, images, voice transcription, forwarded messages, member info, and MCP servers.
+- **Runs plugins.** Plugins are Python and can add commands, scheduled jobs and tools for the model. Official plugins: group summaries, a GSUID Core bridge, A-SOUL and Bilibili.
+- **Learns from the group.** It picks up common phrasing, slang and stickers; everything it learns can be reviewed, edited or turned off in the panel.
 
-- Messages from members, notifications from plugins and progress from background tasks all arrive as input to the same runtime and are handled by that session.
-- The agent decides when to speak, what to say, whether to send a sticker, and whether to hand a long job to a background task.
-- The host keeps track of what actually happened: how far a task has got, whether a reply was really sent, whether a file really arrived.
+## What it doesn't do
 
-Event routing is still there. Exact commands and keyword rules are handled directly by plugins without going through the model. But the agent is what coordinates the group's conversation, rather than one feature that a command happens to call.
+- QQ is the only platform for now.
+- It doesn't log in to QQ itself. Run a OneBot implementation such as [NapCat](https://github.com/NapNeko/NapCatQQ) alongside it.
+- It doesn't ship a model. Bring your own provider and API key: OpenAI-compatible, OpenAI Responses, Anthropic and Gemini are supported.
+- It understands voice messages but only replies in text.
+- Prompts and the panel are Chinese only.
 
-## Features
+## Quick start
 
-| Area | What you get |
-|---|---|
-| Chat | One persistent session per scene; the agent decides whether and to whom to reply; stickers, quotes and mentions; long conversations are compacted into a recap |
-| Personas | Persona packages with identity, voice, boundaries, examples, knowledge and stickers; import, export and trial-chat before adopting changes |
-| Memory | Local Markdown memory isolated per scene; full-text and optional vector search; background curation, editing, deletion and full forgetting |
-| Background tasks | Long jobs run in an isolated Docker container with Pi; follow-up questions, cancellation and resumption; registered outputs can be sent to the chat |
-| Tools | Web search and reading, image viewing, voice transcription, forwarded messages, member info, MCP and browser tasks |
-| Plugins | In-process Python plugins with commands, rules, schedules, tools and skills; install from Git or ZIP with version checks and per-plugin reload |
-| Learning | Learns phrasing, slang and stickers from the group and watches how people react to replies; everything can be adopted, edited or disabled in the panel |
-| Management | The panel manages models, budgets, permissions, reminders and logs; owners can also change settings by asking in chat |
+The first public version, 0.2.0, is still being prepared. Until packages and images are published, run from source. You need:
 
-Group summaries and the GSUID Core bridge are [standalone plugins (zh)](developer/plugin-examples.md), installed and updated separately.
-
-## Ways to run it
-
-All three run the same program. On first start without a configuration it prints a link to a web setup wizard: connect OneBot, read the bot account, enter the owner and a model, then continue to the panel.
-
-The wizard defaults to Xiaoran (小然), including her existing profile, voice, boundaries, knowledge and stickers. You can also create a custom persona. The copied persona package can be edited independently in your instance.
-
-| Option | Good for | Notes |
-|---|---|---|
-| Release package | Day-to-day use on Linux, macOS or Windows | Only needs [uv](https://docs.astral.sh/uv/); includes service control; upgrade from the panel and restore if it fails, see [package (zh)](https://lendevs.github.io/LenBot/guide/install-package) |
-| Docker | Servers, NAS, or Windows when background tasks are needed | Instance data lives in named volumes; upgrades also run from the panel, see [Docker (zh)](https://lendevs.github.io/LenBot/guide/install-docker) |
-| Source | Development, tracking the main branch | Start directly from the checkout with `uv`, see below and [CONTRIBUTING](CONTRIBUTING.en.md) |
-
-Downloads:
-
-- Packages: [GitHub Releases](https://github.com/lendevs/LenBot/releases), `lenbot-<version>-linux.tar.gz`, `-macos.tar.gz`, `-windows.zip`.
-- Images: `ghcr.io/lendevs/lenbot`, `lenbot-updater`, `lenbot-worker`, mirrored as `docker.io/lendevs/...` on Docker Hub, for amd64 and arm64.
-
-Running from source needs uv and Node.js 22 (to build the panel):
+- [uv](https://docs.astral.sh/uv/) and Node.js 22
+- a OneBot implementation that is logged in to QQ
+- the base URL and API key of a model provider
 
 ```sh
 git clone https://github.com/lendevs/LenBot.git
 cd LenBot
-./scripts/install.sh      # install dependencies and build the panel; does not start
-uv run --no-sync len-bot  # prints the setup wizard link on first run
+./scripts/install.sh
+uv run --no-sync len-bot
 ```
 
-The checkout itself is the instance directory: configuration, database, personas and runtime data live in the repository root and are excluded by `.gitignore`.
+On first start the terminal prints a link:
 
-Start with **simulated delivery**: the bot receives messages and decides what to say, but nothing is sent to QQ, so you can trial-chat in the panel first. For real conversations you also need a OneBot v11 implementation logged in to QQ. Model calls are billed either way.
+```text
+尚无根配置。请打开 http://127.0.0.1:52811/#token=...
+```
 
-`lenbot.config.json` is the only runtime configuration. It contains secrets and must not be committed. Change settings in the panel while running; it tells you when a restart is needed. Stop the bot before editing the file by hand.
+Open it and go through the six steps of the setup wizard: admin account, QQ connection, owner, model, persona and first group, official plugins. After you save, LenBot starts and the page moves on to the panel by itself.
+
+For the first run, set replies to simulated delivery: replies only show up in the panel. Chat with it on the test page, and when you are happy, switch delivery to QQ under Settings → Connection.
+
+The full walkthrough is in the [quick start (zh)](https://lendevs.github.io/LenBot/guide/quick-start).
+
+## Ways to install
+
+All three run the same program:
+
+| Option | Good for |
+|---|---|
+| [Release package (zh)](https://lendevs.github.io/LenBot/guide/install-package) | Running on your own computer or a Linux server. Needs only uv, comes with service scripts, upgrades from the panel and can roll back a failed upgrade |
+| [Docker (zh)](https://lendevs.github.io/LenBot/guide/install-docker) | Servers and NAS boxes; also the way to get background tasks on Windows |
+| [Source (zh)](https://lendevs.github.io/LenBot/guide/install-source) | Changing the code or following development |
+
+Once 0.2.0 is out, packages will be on [GitHub Releases](https://github.com/lendevs/LenBot/releases) and images at `ghcr.io/lendevs/lenbot`, mirrored on Docker Hub.
 
 ## Documentation
 
 Most documentation is in Chinese. English versions exist for this README, [CONTRIBUTING](CONTRIBUTING.en.md), the [deployment overview](deploy/README.en.md), the [plugin guide](developer/plugins-v1.en.md) and the [plugin template](https://github.com/lendevs/lenbot-plugin-template).
 
-| Task | Where |
+| To | See |
 |---|---|
-| Install, first setup, daily use | [Documentation site (zh)](https://lendevs.github.io/LenBot/) |
-| Choose a deployment, optional services | [Deployment](deploy/README.en.md) |
-| Daily use, personas, plugins, tasks | [Operations (zh)](deploy/current/operations.md) |
-| Internal structure | [Architecture (zh)](developer/architecture.md) |
+| Install, set up, use day to day | [Documentation site (zh)](https://lendevs.github.io/LenBot/) |
+| Pick a deployment, add optional services | [Deployment](deploy/README.en.md) |
+| Maintain personas, plugins and tasks | [Operations (zh)](deploy/current/operations.md) |
 | Write a plugin | [Plugin guide](developer/plugins-v1.en.md), [template](https://github.com/lendevs/lenbot-plugin-template) |
-| Contribute, build releases | [CONTRIBUTING](CONTRIBUTING.en.md) |
-| Write a persona | [Personas (zh)](developer/personas.md), [example persona](examples/personas/companion/) |
+| Write a persona | [Personas (zh)](developer/personas.md), [Xiaoran's package](examples/personas/companion/) |
+| Understand the internals | [Architecture (zh)](developer/architecture.md) |
+| Contribute | [CONTRIBUTING](CONTRIBUTING.en.md) |
 
-## Status
-
-The first public version is 0.2.0. Changes, compatibility requirements and known issues of each version are in [changelogs](changelogs/). OneBot (QQ) is the only platform adapter, prompts and the panel are Chinese only, and there is no text-to-speech.
+Draft release notes are in [changelogs](changelogs/).
 
 ## License
 

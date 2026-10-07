@@ -5,7 +5,7 @@ const repo = 'https://github.com/lendevs/LenBot'
 export default defineConfig({
   lang: 'zh-CN',
   title: 'LenBot',
-  description: '长期待在 QQ 群里的聊天 Agent，自带网页管理面板',
+  description: '住在 QQ 群里的聊天 Agent，自带网页管理面板',
   base: '/LenBot/',
   cleanUrls: true,
   lastUpdated: true,
@@ -17,22 +17,29 @@ export default defineConfig({
     logo: '/lenbot-mark.svg',
     nav: [
       { text: '快速开始', link: '/guide/quick-start' },
-      { text: '安装', link: '/guide/install-package' },
-      { text: '使用', link: '/guide/panel' },
-      { text: '插件开发', link: '/develop/plugins' },
+      { text: '安装', items: [
+        { text: '部署包', link: '/guide/install-package' },
+        { text: 'Docker', link: '/guide/install-docker' },
+        { text: '从源码运行', link: '/guide/install-source' },
+      ] },
+      { text: '使用', link: '/guide/panel', activeMatch: '^/guide/(?!quick-start|install-)' },
+      { text: '开发', link: '/develop/plugins', activeMatch: '^/develop/' },
       { text: '发行说明', link: `${repo}/tree/master/changelogs` },
     ],
     sidebar: {
       '/guide/': [
         { text: '开始', items: [
           { text: '快速开始', link: '/guide/quick-start' },
-          { text: '接入 QQ（OneBot）', link: '/guide/onebot' },
-          { text: '首次配置', link: '/guide/first-setup' },
         ] },
         { text: '安装', items: [
           { text: '部署包（Linux／macOS／Windows）', link: '/guide/install-package' },
           { text: 'Docker', link: '/guide/install-docker' },
           { text: '从源码运行', link: '/guide/install-source' },
+        ] },
+        { text: '配置', items: [
+          { text: '接入 QQ（OneBot）', link: '/guide/onebot' },
+          { text: '首次配置', link: '/guide/first-setup' },
+          { text: '可选服务', link: '/guide/optional-services' },
         ] },
         { text: '日常使用', items: [
           { text: '面板一览', link: '/guide/panel' },
@@ -40,7 +47,6 @@ export default defineConfig({
           { text: '插件', link: '/guide/plugins' },
           { text: '记忆', link: '/guide/memory' },
           { text: '后台任务', link: '/guide/tasks' },
-          { text: '可选服务', link: '/guide/optional-services' },
         ] },
         { text: '维护', items: [
           { text: '更新与恢复', link: '/guide/update' },

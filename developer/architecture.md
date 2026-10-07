@@ -30,6 +30,7 @@ OneBot ──> 平台适配器 ──> 消息入库 ──┬─> 插件规则�
 - 场景写成 `平台:group:群号` 或 `平台:private:账号`。
 - 提及统一为 `mention`，语音统一为 `audio`。
 - 原始事件单独保存；通知的规范字段存在 `notices.body`，业务代码不再解析 OneBot 原始字段。
+- 正向连接运行中断开后自己重连，间隔 1 秒起翻倍、最长 30 秒，稳定 30 秒后重置，重连后重新核对账号；反向连接等对端连回来。只有启动时的第一次连接失败需要面板上的手动连接。
 
 ## 聊天
 
@@ -164,3 +165,8 @@ MCP 服务的工具和插件工具走同一套发现和许可。技能是 `SKILL
 ## 发行
 
 `scripts/build_release.py` 从同一次提交构建 wheel、源码包和 Linux／macOS 部署包，Docker 宿主镜像安装同一个 wheel。部署包里 `releases/<版本>` 放程序和依赖环境，`instance/` 放数据，升级时先装新版本、停机迁移、恢复插件依赖，再切换 `current`。
+
+新版本检查在 `runtime/releases.py`，只查询，不下载也不安装。托管安装（有 `.runtime/update-control.json`）问更新控制器，源码运行直接查 GitHub Releases。面板启动 60 秒后查一次，之后每 24 小时一次，失败记一条 WARNING `release_check`；根配置 `panel.update_check` 设为 `false` 关掉后台检查。
+
+- `GET /api/host/updates`：`version`、`managed`、`status` 之外有 `check`，形如 `{"enabled": true, "current": "0.2.0", "checked_at": 1791370000.0, "error": null, "latest": "0.2.1", "update_available": true, "latest_prerelease": null}`。`checked_at` 是 Unix 秒，没查过为 `null`；`error` 是上次失败原因，成功后清空；没成功查过时 `latest`、`update_available`、`latest_prerelease` 为 `null`。`latest` 是最新正式版，`latest_prerelease` 只在有比当前版本和最新正式版都新的预发布时才有值。
+- `GET /api/host/updates/releases`：返回数组，按版本从新到旧排，每项带 `newer`（是否比当前版本新）。源码运行时过滤掉草稿和不是 `v<版本号>` 的标签，每项是 `{tag, version, prerelease, notes, newer}`，`notes` 为空时是 `""`；托管安装用更新器给的列表（另有 `assets`、`installable`），同样加上 `newer`。每次调用都刷新 `check`，后台检查关掉时也能用。查询失败返回 422，正文是错误原因，超时 15 秒。

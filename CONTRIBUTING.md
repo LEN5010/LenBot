@@ -82,7 +82,7 @@ cd /tmp/lenbot-test && uv run --project /path/to/LenBot --no-sync len-bot
 ```sh
 uv run --no-sync pytest -q
 uv run --no-sync python -m compileall -q src/len_bot
-uv run --no-sync ruff check src/len_bot scripts deploy/updater deploy/package
+uv run --no-sync ruff check src/len_bot scripts deploy/updater deploy/package tests
 ```
 
 测试只覆盖外部协议边界（OneBot、Pi RPC、模型与记忆服务的响应解析）、数据迁移、权限和配置校验，样本用脱敏后的真实数据。不 mock 调用过程，不测私有函数，不给提示词做快照。
@@ -107,14 +107,14 @@ uv run --no-sync python scripts/build_release.py /tmp/lenbot-release
 
 这条命令在副本里重建面板，生成源码包、wheel、Linux／macOS／Windows 部署包和发行清单，不启动、不上传。正式发布走 [Release 工作流](.github/workflows/release.yml)，步骤见[发行指南](deploy/releasing.md)。
 
-[CI](.github/workflows/ci.yml) 会编译、跑测试、构建面板并打包。CI 通过不代表页面交互和真实聊天也没问题。
+[CI](.github/workflows/ci.yml) 会编译、跑测试、构建面板并打包。测试在 Python 3.13 和 3.14 上各跑一遍（[check.yml](.github/workflows/check.yml)），3.13 是 `pyproject.toml` 里的最低版本，3.14 用来提前发现新解释器上的问题；同一个工作流还用 actionlint 检查所有 workflow 文件。单元测试只在 Linux 上跑，Windows 和 macOS 只有安装冒烟测试覆盖。CI 通过不代表页面交互和真实聊天也没问题。
 
 ## 提交
 
 - 问题和改动分别用[缺陷模板](.github/ISSUE_TEMPLATE/bug.md)和 [PR 模板](.github/PULL_REQUEST_TEMPLATE.md)。
 - 提交前跑 `git diff --check`。真实配置、数据库、凭据、个人角色和构建产物都不要提交。
 - 提交说明写清行为变化、核对了什么、还有什么没确认。
-- 行为或接口有变化时，同步更新 README、`developer/` 或 `deploy/` 里对应的说明。
+- 行为或接口有变化时，同步更新 README、文档站 `website/`、`developer/` 或 `deploy/` 里对应的说明。中文是主版本，有英文版的文件（README、CONTRIBUTING、部署概览、插件接口）一起改。改了 `website/` 就在那里跑一次 `npm run build`，死链会让构建失败。
 - 作者只写人。提交信息和 PR 里不加工具或模型的署名，例如指向机器身份的 `Co-Authored-By:`、`Generated with …`。
 
 ## 许可证
