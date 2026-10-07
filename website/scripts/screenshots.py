@@ -5,26 +5,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-PAGES = {'home': '/#/host/overview', 'persona': '/#/host/persona', 'plugins': '/#/host/plugins',
-         'scenes': '/#/host/scenes', 'update': '/#/host/system'}
-
-
-def prepare_plugins(page) -> None:
-    """Open the clock plugin, enable it once and pick two groups, the way an owner would."""
-    page.get_by_text('clock', exact=True).click()
-    page.wait_for_timeout(500)
-    switch = page.get_by_label('启用这个插件')
-    if not switch.is_checked():
-        switch.check()
-        page.get_by_role('button', name='保存并应用').click()
-        page.wait_for_timeout(2500)
-    for group in ('周末桌游局', '读书会'):
-        chip = page.locator('.scene-picks .v-chip', has_text=group)
-        if chip.get_attribute('aria-pressed') != 'true':
-            chip.click()
-            page.wait_for_timeout(2500)
-    page.mouse.move(0, 0)
-    page.wait_for_timeout(5000)
+PAGES = {'home': '/#/host/overview', 'persona': '/#/host/persona', 'plugins': '/#/host/plugins?view=discover',
+         'scenes': '/#/host/scenes', 'connection': '/#/host/system?tab=connection'}
 
 
 def main() -> None:
@@ -36,14 +18,17 @@ def main() -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         page = browser.new_page(viewport={'width': 1440, 'height': 900}, device_scale_factor=2, locale='zh-CN')
-        response = page.request.post(args.panel + '/api/auth/login', data={'username': 'demo', 'password': 'demo-password'})
-        assert response.ok, response.text()
+        page.goto(args.panel + '/#/login')
+        page.get_by_label('用户名').fill('demo')
+        page.get_by_label('密码').fill('demo-password')
+        page.get_by_role('button', name='登录').click()
+        page.wait_for_url('**/#/host/**')
         for name, path in PAGES.items():
             page.goto(args.panel + path)
             page.wait_for_load_state('networkidle')
-            page.wait_for_timeout(800)
-            if name == 'plugins':
-                prepare_plugins(page)
+            page.mouse.move(0, 0)
+            # Entrance animations and the live-status dot settle within a second.
+            page.wait_for_timeout(1500)
             page.screenshot(path=args.output / f'{name}.png')
             print(args.output / f'{name}.png')
         browser.close()
