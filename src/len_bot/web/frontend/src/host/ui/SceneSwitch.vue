@@ -40,9 +40,9 @@ function pickRole(role) {
 </template>
 <style scoped>
 .scene-switch{display:flex;gap:var(--sp-2);overflow-x:auto;padding:2px 2px 6px;margin-top:calc(-1 * var(--sp-2));scrollbar-width:thin}
-.switch-chip{display:inline-flex;align-items:center;gap:var(--sp-2);flex:none;max-width:260px;padding:6px 12px 6px 8px;border:1px solid var(--line);
-  border-radius:999px;background:var(--surface);color:inherit;font:inherit;cursor:pointer;transition:border-color var(--dur-1),background var(--dur-1)}
-.switch-chip:hover{border-color:var(--line-strong)}
+.switch-chip{display:inline-flex;align-items:center;gap:var(--sp-2);flex:none;max-width:260px;padding:6px 12px 6px 8px;border:1px solid transparent;
+  border-radius:999px;background:var(--fill);color:inherit;font:inherit;cursor:pointer;transition:border-color var(--dur-1),background var(--dur-1)}
+.switch-chip:hover{background:var(--track)}
 .switch-chip.active{border-color:var(--brand);background:var(--selected);color:var(--primary)}
 .switch-chip strong{font-weight:600;font-size:var(--fs-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .switch-chip span{font-size:var(--fs-xs);color:var(--muted)}

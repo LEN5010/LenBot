@@ -41,12 +41,13 @@ code { font-family:var(--mono);font-size:.92em }
 .v-alert-title { font-size:var(--fs-md);font-weight:650;line-height:1.5 }
 .v-overlay__content > .v-list, .v-menu > .v-overlay__content > .v-card { border-radius:var(--radius);box-shadow:var(--shadow-float) }
 
-@keyframes rise { from { opacity:0 } to { opacity:1 } }
+@keyframes rise { from { opacity:0;transform:translateY(6px) } to { opacity:1;transform:none } }
 @keyframes pulse { 0% { box-shadow:0 0 0 0 currentColor } 70% { box-shadow:0 0 0 5px transparent } 100% { box-shadow:0 0 0 0 transparent } }
 .rise { animation:rise var(--dur-2) var(--ease-out) both }
-.page-enter-active { transition:opacity var(--dur-2) var(--ease-out) }
+.page-enter-active { transition:opacity var(--dur-3) var(--ease-out),transform var(--dur-3) var(--ease-out) }
 .page-leave-active { transition:opacity var(--dur-1) ease-in }
-.page-enter-from, .page-leave-to { opacity:0 }
+.page-enter-from { opacity:0;transform:translateY(8px) }
+.page-leave-to { opacity:0 }
 
 * { scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent }
 @media(max-width:600px){

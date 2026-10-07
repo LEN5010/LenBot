@@ -14,15 +14,15 @@ defineEmits(['back'])
   </div>
 </template>
 <style scoped>
-.master-detail{display:grid;grid-template-columns:minmax(220px,var(--list-width)) minmax(0,1fr);gap:var(--sp-4);align-items:start;min-width:0}
-.md-list{position:sticky;top:84px;max-height:calc(100vh - 108px);overflow:auto;min-width:0;border-radius:var(--radius-lg)}
-.md-detail{display:grid;gap:var(--sp-4);min-width:0}
+.master-detail{display:grid;grid-template-columns:minmax(220px,var(--list-width)) minmax(0,1fr);gap:var(--sp-6);align-items:start;min-width:0}
+.md-list{position:sticky;top:88px;max-height:calc(100vh - 112px);overflow:auto;min-width:0;margin-left:calc(-1 * var(--sp-2));padding-right:var(--sp-4);border-right:1px solid var(--line)}
+.md-detail{display:grid;gap:var(--sp-4);min-width:0;animation:rise var(--dur-3) var(--ease-out)}
 .md-back{display:none;justify-self:start}
-.md-placeholder{border:1.5px dashed var(--line-strong);border-radius:var(--radius-lg);padding:var(--sp-6) var(--sp-4);text-align:center;color:var(--muted);background:var(--surface)}
+.md-placeholder{padding:72px var(--sp-4);text-align:center;color:var(--muted)}
 .md-placeholder:empty{display:none}
 @media(max-width:900px){
   .master-detail{grid-template-columns:minmax(0,1fr)}
-  .md-list{position:static;max-height:none}
+  .md-list{position:static;max-height:none;margin-left:0;padding-right:0;border-right:0}
   .selected .md-list{display:none}
   .master-detail:not(.selected) .md-detail{display:none}
   .md-back{display:inline-flex}

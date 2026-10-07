@@ -14,13 +14,14 @@ defineProps({ items: { type: Array, required: true } })
   </div>
 </template>
 <style scoped>
-.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:var(--sp-3)}
-.stat{border:1px solid var(--line);border-radius:var(--radius-lg);padding:var(--sp-4);display:grid;gap:2px;min-width:0;background:var(--surface);color:inherit;
-  align-content:start;transition:border-color var(--dur-1),box-shadow var(--dur-1)}
-.stat.link:hover{border-color:var(--line-strong);box-shadow:var(--shadow-hover);text-decoration:none}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:var(--sp-3)}
+.stat{border-radius:var(--radius-lg);padding:var(--sp-4) var(--sp-4) var(--sp-3);display:grid;gap:2px;min-width:0;background:var(--fill);color:inherit;
+  align-content:start;transition:background-color var(--dur-2) var(--ease-out),transform var(--dur-2) var(--ease-out);animation:rise var(--dur-4) var(--ease-out) both}
+.stat:nth-child(2){animation-delay:40ms}.stat:nth-child(3){animation-delay:80ms}.stat:nth-child(4){animation-delay:120ms}.stat:nth-child(5){animation-delay:160ms}
+.stat.link:hover{background:var(--track);text-decoration:none;transform:translateY(-1px)}
 .stat-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2)}
 .stat-icon{color:var(--muted)}
 .label,.hint{font-size:var(--fs-sm);color:var(--muted)}
-strong{font-size:var(--fs-2xl);font-weight:650;line-height:1.3;overflow-wrap:anywhere;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+strong{font-size:28px;font-weight:650;line-height:1.25;overflow-wrap:anywhere;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .trend{margin-top:var(--sp-2)}
 </style>
