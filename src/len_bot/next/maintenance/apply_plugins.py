@@ -13,6 +13,7 @@ from ..runtime.logs import run_maintenance
 
 async def apply(root: Path) -> None:
     installer = PluginInstaller(root)
+    installer.publish_applied_values()
     records = [item for item in installer.pending() if item.requested]
     if not records:
         return
@@ -20,7 +21,9 @@ async def apply(root: Path) -> None:
     manifests = {}
     for record in records:
         try:
-            manifests[record.name] = await installer.check_apply(record.name, config.plugins.configured[record.name], config.scenes)
+            staged = installer.candidate_values(record.name)
+            values = config.plugins.configured[record.name] if staged is None else staged.values
+            manifests[record.name] = await installer.check_apply(record.name, values, config.scenes)
         except Exception as error:
             installer.failed(record.name, error)
             raise

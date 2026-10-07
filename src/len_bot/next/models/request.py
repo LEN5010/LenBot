@@ -10,7 +10,7 @@ from ..chat.recap import CompactionPlan, ContextBudgetError, estimate_text_reque
 from .client import ChatModel, ModelProtocolError, ModelReply, parse_token_usage
 from .slots import ModelSlots
 from .projection import project_messages
-from urllib.parse import quote
+from hashlib import sha256
 from .tokens import token_record
 from ..storage.store import Store
 from ..plugins.store import PluginStore
@@ -74,7 +74,7 @@ async def request_model(config: SharedConfig, store: Store, model: ChatModel,
     tokens = binding.max_output_tokens if output_tokens is None else output_tokens
     session_id = None
     if binding.history_policy == "omit-reasoning":
-        session_id = quote(f"{config.database.resolve()}:{scene}:{role}", safe="")
+        session_id = sha256(f"{config.database.resolve()}:{scene}:{role}".encode()).hexdigest()
     if input_estimate is None:
         estimated, method = request_estimate(config, store, model, scene=scene, role=role,
                                              messages=messages, tools=tools, output_tokens=tokens)

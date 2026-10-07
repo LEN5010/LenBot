@@ -1,7 +1,7 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { tasksApi } from '../../api/tasks.js'
-import { useAction } from '../../../composables/useResource.js'
+import { useAction, useResource } from '../../../composables/useResource.js'
 import { developerDetails } from '../../../composables/useDeveloperMode.js'
 import { formatTime } from '../../time.js'
 import Panel from '../../ui/Panel.vue'
@@ -14,14 +14,24 @@ const props = defineProps({
   scene: { type: String, required: true }, taskId: { type: Number, required: true },
   first: { type: Array, required: true }, firstNext: { type: Number, default: null }, timezone: { type: String, default: null },
 })
-const rows = ref([]), next = ref(null), full = ref({})
-watch(() => props.first, value => { rows.value = value; next.value = value.length === 100 ? props.firstNext : null }, { immediate: true })
-const more = useAction(), reading = useAction()
+const rows = ref([]), next = ref(null), full = ref({}), wanted = ref(100)
+const more = useResource(async () => {
+  const events = [...props.first]
+  let cursor = events.at(-1)?.id ?? 0, count = events.length
+  while (count === 100 && events.length < wanted.value) {
+    const page = await tasksApi.detail(props.scene, props.taskId, { after: cursor, limit: 100 })
+    events.push(...page.events)
+    count = page.events.length
+    cursor = page.next_after
+  }
+  return { events, next: count === 100 ? cursor : null }
+}, { immediate: false })
+watch(() => props.first, () => more.reload(), { immediate: true })
+watch(() => more.data.value, value => { if (value) { rows.value = value.events; next.value = value.next } })
+const reading = useAction()
 async function loadMore() {
-  const page = await more.run(() => tasksApi.detail(props.scene, props.taskId, { after: next.value, limit: 100 }))
-  if (!page) return
-  rows.value = [...rows.value, ...page.events]
-  next.value = page.events.length === 100 ? page.next_after : null
+  wanted.value += 100
+  await more.reload()
 }
 async function open(event) {
   if (full.value[event.id]) { const { [event.id]: _, ...rest } = full.value; full.value = rest; return }
@@ -61,7 +71,7 @@ function parts(record) {
         </div>
       </li>
     </ol>
-    <LoadMore v-if="next !== null" :loading="more.busy.value" @more="loadMore" />
+    <LoadMore v-if="next !== null" :loading="more.loading.value" @more="loadMore" />
     <ErrorNote v-if="more.error.value" title="读取更多记录失败" :error="more.error.value" />
   </Panel>
 </template>

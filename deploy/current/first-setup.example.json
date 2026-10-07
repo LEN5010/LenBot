@@ -4,7 +4,8 @@
   "onebot": {
     "mode": "reverse_ws",
     "listen_host": "0.0.0.0",
-    "listen_port": 8080
+    "listen_port": 8080,
+    "access_token": "与 OneBot 配置相同的访问令牌"
   },
   "provider": {
     "api": "openai-chat",
@@ -25,10 +26,6 @@
   },
   "scene": "onebot:group:80001",
   "persona_id": "companion",
-  "persona_name": "小然",
-  "brief": "群里的老朋友，自由画家，爱到处找好吃的，不吃辣。",
-  "voice_text": "像在手机上随手回消息：句子短，少用感叹号，说完就停；情绪交给表情。",
-  "boundaries": "不知道的事不编；不替别人做医疗、法律或投资决定；不传播别人的隐私。",
   "panel_host": "0.0.0.0",
   "panel_port": 11307,
   "username": "owner",

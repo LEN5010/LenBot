@@ -14,6 +14,7 @@ from .cases import InitialMemory
 from ..next.config import LabConfig
 from ..next.memory.service import LocalMemoryConfig
 from ..next.memory.jobs import FORMAT_VERSION
+from ..next.memory.local import FORMAT_VERSION as INDEX_FORMAT_VERSION
 
 
 def offline_database(path: Path, application: int, version: int) -> sqlite3.Connection:
@@ -58,7 +59,7 @@ def check_memory(source: InitialMemory, config: LabConfig, history: Path) -> Non
         parts = Path(name).parts
         if parts[0] in {'groups', 'private'} and (len(parts) < 3 or parts[:2] != (category, qq)):
             raise ValueError(f"Memory snapshot contains a different scene's files: {name}")
-    with closing(offline_database(source.directory / '.memory-index.sqlite3', 0x4C424D31, 2)) as db:
+    with closing(offline_database(source.directory / '.memory-index.sqlite3', 0x4C424D31, INDEX_FORMAT_VERSION)) as db:
         scopes = {row[0] for row in db.execute(
             'SELECT scope FROM memory_files UNION SELECT scope FROM memory_changes')}
         if scopes - allowed:

@@ -15,6 +15,7 @@ from len_bot.next.config import load_host_config
 from len_bot.next.plugins.data import MARKER, prepare_data, recorded_version
 from len_bot.next.plugins.install import Installation, PluginInstaller, Source
 from len_bot.next.plugins.manager import PluginManager
+from len_bot.next.panel.setup import FirstSetup, initialize
 from len_bot.plugin_testing import PluginTest
 
 MANIFEST = '''name = "{name}"
@@ -119,6 +120,18 @@ async def test_older_plugin_refuses_newer_data(tmp_path):
 
 
 def test_apply_keeps_the_replaced_source_for_one_rollback(tmp_path):
+    initialize(tmp_path, FirstSetup.model_validate_json(json.dumps({
+        'bot_id': 'onebot:90001', 'owners': ['onebot:70001'], 'timezone': 'UTC', 'delivery': 'simulated',
+        'onebot': {'mode': 'forward_ws', 'ws_url': 'ws://127.0.0.1:9'},
+        'provider': {'api': 'openai-chat', 'base_url': 'http://127.0.0.1:9/v1', 'api_key': 'synthetic-unused'},
+        'compaction': {'input_tokens': 2000},
+        'mind': {'provider': 'primary', 'model': 'fixture', 'context_window_tokens': 16000},
+        'scene': 'onebot:group:80001', 'panel_port': 8088, 'username': 'fixture', 'password': 'synthetic-password',
+    })))
+    path = tmp_path / 'lenbot.config.json'
+    config = json.loads(path.read_text())
+    config['plugins']['notes'] = {}
+    path.write_text(json.dumps(config))
     installer = PluginInstaller(tmp_path)
     installer.records.mkdir(parents=True)
     old = _package(installer.directory, data_version=1, version='1.0.0')

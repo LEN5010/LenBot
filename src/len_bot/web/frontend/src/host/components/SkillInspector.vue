@@ -3,6 +3,7 @@
 import { computed, ref, watch } from 'vue'
 import { api, queryString, sceneName } from '../../api.js'
 import { useAction, useResource } from '../../composables/useResource.js'
+import { useRequestGuard } from '../../composables/useRequestGuard.js'
 import { confirm } from '../../composables/useConfirm.js'
 import { notify } from '../store.js'
 import ErrorNote from '../ui/ErrorNote.vue'
@@ -19,8 +20,10 @@ const where = () => ({ scene: props.scene, source: props.source, name: props.nam
 const listing = useResource(() => api('/api/host/skills/files?' + queryString(where())))
 const path = ref(null), text = ref(''), next = ref(null)
 const reading = useAction(), act = useAction()
+const beginRead = useRequestGuard(() => JSON.stringify(where()))
 async function read(file, more = false) {
-  const page = await reading.run(() => api('/api/host/skills/text?' + queryString({ ...where(), path: file, offset: more ? String(next.value) : '0' })))
+  const current = beginRead()
+  const page = await reading.run(() => api('/api/host/skills/text?' + queryString({ ...where(), path: file, offset: more ? String(next.value) : '0' })), current)
   if (!page) return
   path.value = file
   text.value = more ? text.value + page.content : page.content

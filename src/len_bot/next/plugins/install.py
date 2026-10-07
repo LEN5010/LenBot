@@ -10,7 +10,7 @@ import stat
 import zipfile
 from io import BytesIO
 from typing import Literal
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import shutil
 import sys
 import tempfile
@@ -19,6 +19,10 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .manifest import Manifest, discover, parse_manifest, read_manifest
+from ..work.materials import finish_file_operation
+
+MAX_ZIP_BYTES = 200 * 1024 * 1024
+MAX_ZIP_FILES = 4096
 
 
 async def run_command(*args: str, cwd: Path | None = None) -> str:
@@ -42,8 +46,8 @@ async def run_command(*args: str, cwd: Path | None = None) -> str:
 
 def repository_url(value: str) -> str:
     url = urlsplit(value)
-    if url.scheme not in {'http', 'https', 'ssh'} or not url.hostname or not url.path:
-        raise ValueError('使用完整的 HTTP(S) 或 ssh:// 仓库 URL；不支持 ZIP、本地路径或快捷 SSH 写法')
+    if url.scheme not in {'https', 'ssh'} or not url.hostname or not url.path:
+        raise ValueError('使用完整的 https:// 或 ssh:// 仓库 URL；不使用明文 HTTP、本地路径或快捷 SSH 写法')
     if url.password is not None or url.query or url.fragment or (url.scheme != 'ssh' and url.username is not None):
         raise ValueError('仓库 URL 不包含密码、查询串或片段；认证使用本机 Git 凭据配置')
     return value
@@ -89,6 +93,13 @@ class Installation(BaseModel):
     previous: Source | None = None
 
 
+class CandidateValues(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    revision: str
+    values: dict[str, object]
+    enabled: bool
+
+
 class PluginInstaller:
     def __init__(self, root: Path):
         self.root = root
@@ -97,6 +108,46 @@ class PluginInstaller:
         self.directory = root / 'plugins'
         self.records = self.directory / '.installations'
         self.candidates = self.directory / '.candidates'
+
+    def candidate_values(self, name: str) -> CandidateValues | None:
+        path = self.records / '.candidate-values' / (name + '.json')
+        return CandidateValues.model_validate_json(path.read_bytes()) if path.exists() else None
+
+    def _write_values(self, name: str, values: CandidateValues, *, previous: bool = False) -> None:
+        directory = self.records / ('.previous-values' if previous else '.candidate-values')
+        directory.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(dir=directory, prefix='.values-')
+        try:
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as output:
+                output.write(values.model_dump_json(indent=2) + '\n')
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, directory / (name + '.json'))
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    def save_candidate_values(self, name: str, values: dict, enabled: bool) -> None:
+        record = self.read(name)
+        if record.candidate is None:
+            raise ValueError(f'{name} has no prepared candidate')
+        self._write_values(name, CandidateValues(revision=record.candidate.revision, values=values, enabled=enabled))
+
+    def _publish_values(self, name: str, values: CandidateValues) -> None:
+        from ..configuration.editing import _read_saved, save_config
+        def edit(source, saved):
+            plugins = source['plugins']
+            plugins[name] = values.values
+            disabled = [item for item in plugins.get('disabled', []) if item != name]
+            plugins['disabled'] = disabled if values.enabled else [*disabled, name]
+        save_config(self.root, _read_saved(self.root), edit)
+
+    def publish_applied_values(self) -> None:
+        for path in (self.records / '.candidate-values').glob('*.json'):
+            values = CandidateValues.model_validate_json(path.read_bytes())
+            record = self.read(path.stem)
+            if record.candidate is None and record.installed is not None and record.installed.revision == values.revision:
+                self._publish_values(record.name, values)
+                path.unlink()
 
     def read(self, name: str) -> Installation:
         path = self.records / (name + '.json')
@@ -147,6 +198,10 @@ class PluginInstaller:
         return output.strip()
 
     async def candidate(self, checkout: Path, source: Source, paths: list[Path], *, switch_source: bool) -> tuple[Manifest, Installation]:
+        bytecode = await finish_file_operation(lambda: next((path for path in checkout.rglob('*')
+            if path.name.casefold() == '__pycache__' or path.suffix.lower() == '.pyc'), None))
+        if bytecode is not None:
+            raise ValueError(f'Plugin candidate must contain source rather than Python bytecode: {bytecode}')
         manifest = parse_manifest(checkout / 'plugin.toml')
         manifest.require_compatible()
         if not (checkout / '__init__.py').is_file():
@@ -173,9 +228,10 @@ class PluginInstaller:
         self.candidates.mkdir(parents=True, exist_ok=True)
         target = self.candidates / name
         if target.exists():
-            shutil.rmtree(target)
+            await finish_file_operation(shutil.rmtree, target)
         checkout.rename(target)
         record.candidate, record.requested, record.error = source, False, None
+        (self.records / '.candidate-values' / (name + '.json')).unlink(missing_ok=True)
         self.write(record)
         return manifest, record
 
@@ -194,45 +250,58 @@ class PluginInstaller:
             manifest, record = await self.candidate(checkout, source, paths, switch_source=switch_source)
         return manifest, record, output
 
+    @staticmethod
+    def _unpack(data: bytes, checkout: Path) -> Path:
+        checkout.mkdir()
+        try:
+            archive = zipfile.ZipFile(BytesIO(data))
+        except zipfile.BadZipFile as error:
+            raise ValueError(f'{error}; ZIP raw={data[:80]!r}') from error
+        with archive:
+            entries = archive.infolist()
+            if len(data) > MAX_ZIP_BYTES or sum(item.file_size for item in entries) > MAX_ZIP_BYTES:
+                raise ValueError('Plugin ZIP exceeds 200 MiB uploaded or extracted content')
+            if len(entries) > MAX_ZIP_FILES:
+                raise ValueError(f'Plugin ZIP exceeds {MAX_ZIP_FILES} entries')
+            seen = set()
+            for item in entries:
+                relative = PurePosixPath(item.filename)
+                if (relative.is_absolute() or PureWindowsPath(item.filename).drive or '..' in relative.parts
+                        or any(':' in part for part in relative.parts) or '\\' in item.filename
+                        or item.filename in seen or stat.S_ISLNK(item.external_attr >> 16)):
+                    raise ValueError(f'Invalid plugin ZIP member: {item.filename!r}')
+                if any(part.casefold() == '__pycache__' for part in relative.parts) or relative.suffix.lower() == '.pyc':
+                    raise ValueError(f'Plugin ZIP must contain source rather than Python bytecode: {item.filename!r}')
+                if '__MACOSX' in relative.parts or any(part.startswith('._') for part in relative.parts):
+                    continue
+                seen.add(item.filename)
+                target = checkout.joinpath(*relative.parts)
+                if item.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with target.open('xb') as stream:
+                        try:
+                            stream.write(archive.read(item))
+                        except zipfile.BadZipFile as error:
+                            raise ValueError(f'{error}; member={item.filename!r}; ZIP raw={data[:80]!r}') from error
+                    if item.create_system == 3:
+                        target.chmod(stat.S_IMODE(item.external_attr >> 16))
+        children = list(checkout.iterdir())
+        return checkout if (checkout / 'plugin.toml').is_file() else (
+            children[0] if len(children) == 1 and children[0].is_dir() else checkout)
+
     async def prepare_zip(self, data: bytes, filename: str, paths: list[Path], *,
                           switch_source: bool = False) -> tuple[Manifest, Installation, str]:
         self.candidates.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix='.zip-', dir=self.candidates) as temporary:
-            checkout = Path(temporary) / 'checkout'
-            checkout.mkdir()
-            try:
-                archive = zipfile.ZipFile(BytesIO(data))
-            except zipfile.BadZipFile as error:
-                raise ValueError(f'{error}; ZIP raw={data[:80]!r}') from error
-            with archive:
-                entries = archive.infolist()
-                if sum(item.file_size for item in entries) > 200 * 1024 * 1024:
-                    raise ValueError('Plugin ZIP exceeds 200 MiB extracted content')
-                seen = set()
-                for item in entries:
-                    relative = PurePosixPath(item.filename)
-                    if (relative.is_absolute() or '..' in relative.parts or '\\' in item.filename
-                            or item.filename in seen or stat.S_ISLNK(item.external_attr >> 16)):
-                        raise ValueError(f'Invalid plugin ZIP member: {item.filename!r}')
-                    seen.add(item.filename)
-                    target = checkout.joinpath(*relative.parts)
-                    if item.is_dir():
-                        target.mkdir(parents=True, exist_ok=True)
-                    else:
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        with target.open('xb') as stream:
-                            try:
-                                stream.write(archive.read(item))
-                            except zipfile.BadZipFile as error:
-                                raise ValueError(f'{error}; member={item.filename!r}; ZIP raw={data[:80]!r}') from error
-                        if item.create_system == 3:
-                            target.chmod(stat.S_IMODE(item.external_attr >> 16))
-            children = list(checkout.iterdir())
-            package = checkout if (checkout / 'plugin.toml').is_file() else (
-                children[0] if len(children) == 1 and children[0].is_dir() else checkout)
+        temporary = Path(tempfile.mkdtemp(prefix='.zip-', dir=self.candidates))
+        try:
+            package = await finish_file_operation(self._unpack, data, temporary / 'checkout')
             source = Source(kind='zip', location=filename, ref=None, branch=None,
-                            revision=hashlib.sha256(data).hexdigest(), version='')
+                            revision=await finish_file_operation(lambda: hashlib.sha256(data).hexdigest()), version='')
             manifest, record = await self.candidate(package, source, paths, switch_source=switch_source)
+        finally:
+            await finish_file_operation(shutil.rmtree, temporary)
         return manifest, record, ''
 
     async def prepare_update(self, name: str, paths: list[Path], *, ref: str | None = None) -> tuple[Manifest, Installation, str]:
@@ -260,9 +329,14 @@ class PluginInstaller:
     def apply_files(self, name: str) -> None:
         """Install the candidate; the replaced source moves to plugins/.previous/<name> for one rollback."""
         record = self.read(name)
+        values = self.candidate_values(name)
         destination = self.directory / name
         self.directory.mkdir(exist_ok=True)
         if destination.exists():
+            from ..configuration.editing import _read_saved
+            saved = _read_saved(self.root)
+            self._write_values(name, CandidateValues(revision=record.installed.revision,
+                values=saved.plugins.configured[name], enabled=name not in saved.plugins.disabled), previous=True)
             previous = self.directory / '.previous' / name
             if previous.exists():
                 shutil.rmtree(previous)
@@ -272,6 +346,9 @@ class PluginInstaller:
         (self.candidates / name).rename(destination)
         record.installed, record.candidate, record.requested, record.error = record.candidate, None, False, None
         self.write(record)
+        if values is not None:
+            self._publish_values(name, values)
+            (self.records / '.candidate-values' / (name + '.json')).unlink()
 
     def rollback_files(self, name: str) -> None:
         """Put the source replaced by the last apply back; the plugin's data is not changed."""
@@ -285,6 +362,11 @@ class PluginInstaller:
         previous.rename(destination)
         record.installed, record.previous, record.error = record.previous, None, None
         self.write(record)
+        (self.records / '.candidate-values' / (name + '.json')).unlink(missing_ok=True)
+        values = self.records / '.previous-values' / (name + '.json')
+        if values.exists():
+            self._publish_values(name, CandidateValues.model_validate_json(values.read_bytes()))
+            values.unlink()
 
     def failed(self, name: str, error: Exception) -> None:
         record = self.read(name)
@@ -296,6 +378,7 @@ class PluginInstaller:
         if record.candidate is None:
             raise ValueError(f'{name} has no prepared candidate')
         await asyncio.to_thread(shutil.rmtree, self.candidates / name)
+        (self.records / '.candidate-values' / (name + '.json')).unlink(missing_ok=True)
         record.candidate, record.requested, record.error = None, False, None
         self.write(record)
 
@@ -308,3 +391,5 @@ class PluginInstaller:
         if record.candidate is not None:
             await asyncio.to_thread(shutil.rmtree, self.candidates / name)
         (self.records / (name + '.json')).unlink()
+        for directory in ('.candidate-values', '.previous-values'):
+            (self.records / directory / (name + '.json')).unlink(missing_ok=True)

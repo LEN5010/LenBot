@@ -16,8 +16,9 @@ import sys
 from urllib.parse import quote, unquote
 import tempfile
 import time
+import threading
 from collections.abc import Callable
-from contextlib import AsyncExitStack, closing, contextmanager
+from contextlib import AsyncExitStack, closing, contextmanager, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Literal, TypeVar
@@ -47,6 +48,60 @@ CREATE TABLE memory_summaries (
 );
 """
 _Result = TypeVar("_Result")
+_FILE_LOCK = threading.RLock()
+_PENDING_FILE = '.memory-pending.json'
+
+
+class _FileMutation(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    scope: str
+    path: str
+    action: Literal['write', 'delete', 'forget', 'summary', 'clear-summary']
+    changed_at: float
+    files: dict[str, str | None]
+
+
+def _sync_directory(path: Path) -> None:
+    if os.name == 'posix':
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def _recover_files(root: Path, base: Path) -> None:
+    """Roll back only file replacements whose SQLite transaction did not commit."""
+    with _FILE_LOCK:
+        pending = base / _PENDING_FILE
+        if not pending.exists():
+            return
+        change = _FileMutation.model_validate_json(pending.read_bytes())
+        with closing(connect(root / _INDEX_NAME, readonly=True)) as db:
+            if change.action in {'write', 'delete'}:
+                committed = db.execute('SELECT 1 FROM memory_changes WHERE scope=? AND path=? '
+                                       'AND changed_at=? AND action=?',
+                                       (change.scope, change.path, change.changed_at, change.action)).fetchone() is not None
+            elif change.action == 'forget':
+                committed = db.execute('SELECT 1 FROM memory_files WHERE scope=? AND path=?',
+                                       (change.scope, change.path)).fetchone() is None
+            else:
+                row = db.execute('SELECT generated_at FROM memory_summaries WHERE scope=? AND path=?',
+                                 (change.scope, change.path)).fetchone()
+                committed = row is None if change.action == 'clear-summary' else row is not None and row[0] == change.changed_at
+        if not committed:
+            for relative, content in change.files.items():
+                target = base / relative
+                if not target.resolve().is_relative_to(base.resolve()):
+                    raise ValueError(f'Memory replacement escapes its partition: {relative!r}')
+                if content is None:
+                    target.unlink(missing_ok=True)
+                    if target.parent.exists():
+                        _sync_directory(target.parent)
+                else:
+                    _atomic_replace(target, content)
+        pending.unlink()
+        _sync_directory(base)
 
 
 async def _finish_write_thread(operation: Callable[..., _Result], *args: object) -> _Result:
@@ -164,6 +219,7 @@ def _atomic_replace(path: Path, content: str, *, create_only: bool = False) -> N
             os.link(temporary, path)
         else:
             os.replace(temporary, path)
+        _sync_directory(path.parent)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -180,6 +236,12 @@ def _summary_times(db: sqlite3.Connection, scope: str, path: str) -> tuple[float
 
 
 def scene_overview(root: Path, scene: str) -> str | None:
+    with _FILE_LOCK:
+        _recover_files(root, root / 'scenes' / scope_directory(scene))
+        return _scene_overview(root, scene)
+
+
+def _scene_overview(root: Path, scene: str) -> str | None:
     """Read a scene root overview only when the recorded source changes have not invalidated it."""
     _scene_scope(scene)
     base = root.expanduser().resolve() / "scenes" / scope_directory(scene)
@@ -226,9 +288,34 @@ class LocalMemory:
             raise ValueError(f"memory index must not be a symlink: {self.index}")
         self._locks: dict[str, asyncio.Lock] = {}
         self._initialize()
+        for base in (self.root / 'public', *(self.root / 'scenes').glob('*')):
+            _recover_files(self.root, base)
 
-    def _lock(self, scope: str) -> asyncio.Lock:
-        return self._locks.setdefault(scope, asyncio.Lock())
+    @asynccontextmanager
+    async def _lock(self, scope: str):
+        async with self._locks.setdefault(scope, asyncio.Lock()):
+            await asyncio.to_thread(_recover_files, self.root, self._base(scope))
+            yield
+
+    @contextmanager
+    def _file_mutation(self, scope: str, path: str, action: str, changed_at: float, targets: list[Path]):
+        base = self._base(scope)
+        base.mkdir(parents=True, exist_ok=True)
+        pending = base / _PENDING_FILE
+        with _FILE_LOCK:
+            _recover_files(self.root, base)
+            change = _FileMutation(scope=scope, path=path, action=action, changed_at=changed_at,
+                                   files={str(target.relative_to(base)): _source_text(target) if target.exists() else None
+                                          for target in targets})
+            with self._db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                _atomic_replace(pending, change.model_dump_json())
+                yield db
+                for target in targets:
+                    if target.parent.exists():
+                        _sync_directory(target.parent)
+            pending.unlink()
+            _sync_directory(base)
 
     def _connect(self) -> sqlite3.Connection:
         db = connect(self.index)
@@ -328,7 +415,15 @@ class LocalMemory:
     def _target(self, scope: str, path: str, *, file: bool) -> Path:
         parts = _parts(path, file=file)
         base = self._base(scope)
-        target = base.joinpath(*parts)
+        target = base.joinpath(*(quote(part, safe='') for part in parts)) if sys.platform == 'win32' else base.joinpath(*parts)
+        parent = base
+        for part in target.relative_to(base).parts:
+            if parent.exists() and (parent / part).exists():
+                differently_cased = next((child.name for child in parent.iterdir()
+                                         if child.name != part and child.name.casefold() == part.casefold()), None)
+                if differently_cased is not None:
+                    raise ValueError(f'Memory path casing differs from existing {differently_cased!r}: {path!r}')
+            parent /= part
         for ancestor in (base, *target.parents):
             if ancestor == self.root:
                 break
@@ -355,13 +450,15 @@ class LocalMemory:
                     continue
                 if category == "public":
                     scope, relative = "public", path.relative_to(directory).as_posix()
+                    if sys.platform == 'win32':
+                        relative = '/'.join(unquote(part) for part in path.relative_to(directory).parts)
                 else:
                     position = path.relative_to(directory).parts
                     disk_scope = unquote(position[0]) if sys.platform == 'win32' else position[0]
                     if len(position) < 2 or _SCENE.fullmatch(disk_scope) is None:
                         raise ValueError(f"unexpected memory source path: {path}")
                     scope = disk_scope
-                    relative = Path(*position[1:]).as_posix()
+                    relative = '/'.join(unquote(part) for part in position[1:]) if sys.platform == 'win32' else Path(*position[1:]).as_posix()
                 actual = self._target(scope, relative, file=True)
                 files[(scope, relative)] = _source_text(actual)
         return files, summaries
@@ -482,14 +579,16 @@ class LocalMemory:
         vectors: dict[tuple[str, str], tuple[float, ...]] = {}
         dimensions: int | None = None
         for scope, entries in partitions.items():
-            batch = await self._embedding(scope, [content for _, content in entries], "reindex")
-            if dimensions is None:
-                dimensions = batch.dimensions
-            elif dimensions != batch.dimensions:
-                raise ValueError(f'Memory reindex partitions have different embedding dimensions: '
-                                 f'expected={dimensions}, scope={scope!r}, actual={batch.dimensions}; index not replaced')
-            for index, (path, _) in enumerate(entries):
-                vectors[scope, path] = batch.vectors[index]
+            for offset in range(0, len(entries), 100):
+                selected = entries[offset:offset + 100]
+                batch = await self._embedding(scope, [content for _, content in selected], "reindex")
+                if dimensions is None:
+                    dimensions = batch.dimensions
+                elif dimensions != batch.dimensions:
+                    raise ValueError(f'Memory reindex partitions have different embedding dimensions: '
+                                     f'expected={dimensions}, scope={scope!r}, actual={batch.dimensions}; index not replaced')
+                for index, (path, _) in enumerate(selected):
+                    vectors[scope, path] = batch.vectors[index]
         with self._db() as db:
             db.execute("BEGIN EXCLUSIVE")
             for summary in summaries:
@@ -594,8 +693,8 @@ class LocalMemory:
         if create_only and target.exists():
             raise FileExistsError(f'New formal memory never overwrites an existing file: {target}')
         before = _source_text(target) if target.exists() else None
-        with self._db() as db:
-            db.execute("BEGIN IMMEDIATE")
+        changed_at = time.time()
+        with self._file_mutation(scope, path, 'write', changed_at, [target]) as db:
             self._mutation_preflight(db)
             dimensions = self._vector_binding(db)
             if vector is not None:
@@ -609,7 +708,6 @@ class LocalMemory:
             rowid = old["id"] if old is not None else db.execute(
                 "SELECT id FROM memory_files WHERE scope=? AND path=?", (scope, path)).fetchone()[0]
             self._put_vector(db, rowid, scope, vector, remove_existing=old is not None)
-            changed_at = time.time()
             db.execute("INSERT INTO memory_changes(scope,path,changed_at,action,reason,before,after) "
                        "VALUES(?,?,?,?,?,?,?)", (scope, path, changed_at, "write", reason, before, content))
         return LocalMemoryChange("write", path, changed_at, reason, before, content)
@@ -790,14 +888,13 @@ class LocalMemory:
     def _delete_sync(self, scope: str, path: str, reason: str) -> LocalMemoryChange:
         target = self._target(scope, path, file=True)
         before = _source_text(target)
-        with self._db() as db:
-            db.execute("BEGIN IMMEDIATE")
+        changed_at = time.time()
+        with self._file_mutation(scope, path, 'delete', changed_at, [target]) as db:
             self._mutation_preflight(db)
             old = self._indexed(db, scope, path, before)
             target.unlink()
             self._put_vector(db, old["id"], scope, None, remove_existing=True)
             self._remove_index(db, old)
-            changed_at = time.time()
             db.execute("INSERT INTO memory_changes(scope,path,changed_at,action,reason,before,after) "
                        "VALUES(?,?,?,?,?,?,NULL)", (scope, path, changed_at, "delete", reason, before))
         return LocalMemoryChange("delete", path, changed_at, reason, before, None)
@@ -814,8 +911,7 @@ class LocalMemory:
         before = _source_text(target) if target.exists() else None
         # Any ancestor summary may repeat the forgotten text; remove it before the file.
         removed_summaries = self._drop_summaries(scope, path)
-        with self._db() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self._file_mutation(scope, path, 'forget', time.time(), [target]) as db:
             self._mutation_preflight(db)
             old = self._indexed(db, scope, path, before)
             if before is not None:
@@ -895,12 +991,14 @@ class LocalMemory:
 
     def _write_summary_sync(self, scope: str, path: str, abstract: str, overview: str) -> LocalMemorySummary:
         directory = self._summary_directory(scope, path)
-        _atomic_replace(directory / ".abstract.md", abstract)
-        _atomic_replace(directory / ".overview.md", overview)
-        with self._db() as db:
+        generated_at = time.time()
+        with self._file_mutation(scope, path, 'summary', generated_at,
+                                 [directory / name for name in SUMMARY_FILES]) as db:
+            _atomic_replace(directory / ".abstract.md", abstract)
+            _atomic_replace(directory / ".overview.md", overview)
             db.execute("INSERT INTO memory_summaries(scope,path,generated_at) VALUES(?,?,?) "
                        "ON CONFLICT(scope,path) DO UPDATE SET generated_at=excluded.generated_at",
-                       (scope, path, time.time()))
+                       (scope, path, generated_at))
         return self._summary_sync(scope, path)
 
     async def write_summary(self, scene: str, path: str, abstract: str, overview: str, *,
@@ -920,9 +1018,10 @@ class LocalMemory:
         source = self._source(scene, scope)
         def remove() -> None:
             directory = self._summary_directory(source, path)
-            for name in SUMMARY_FILES:
-                (directory / name).unlink(missing_ok=True)
-            with self._db() as db:
+            with self._file_mutation(source, path, 'clear-summary', time.time(),
+                                     [directory / name for name in SUMMARY_FILES]) as db:
+                for name in SUMMARY_FILES:
+                    (directory / name).unlink(missing_ok=True)
                 db.execute("DELETE FROM memory_summaries WHERE scope=? AND path=?", (source, path))
         async with self._lock(source):
             await _finish_write_thread(remove)
@@ -930,14 +1029,14 @@ class LocalMemory:
     def _drop_summaries(self, scope: str, path: str) -> tuple[str, ...]:
         parts = _parts(path, file=True)[:-1]
         removed = []
-        with self._db() as db:
-            for depth in range(len(parts), -1, -1):
-                relative = "/".join(parts[:depth])
-                directory = self._target(scope, relative, file=False)
-                files = [directory / name for name in SUMMARY_FILES if (directory / name).exists()]
+        for depth in range(len(parts), -1, -1):
+            relative = "/".join(parts[:depth])
+            directory = self._target(scope, relative, file=False)
+            files = [directory / name for name in SUMMARY_FILES if (directory / name).exists()]
+            with self._file_mutation(scope, relative, 'clear-summary', time.time(), files) as db:
                 for file in files:
                     file.unlink()
                 db.execute("DELETE FROM memory_summaries WHERE scope=? AND path=?", (scope, relative))
-                if files:
-                    removed.append(relative)
+            if files:
+                removed.append(relative)
         return tuple(removed)

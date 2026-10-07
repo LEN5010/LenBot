@@ -1,5 +1,6 @@
 """Local memory interface: pending material is visible manually, not selected automatically."""
 import asyncio
+import sqlite3
 
 import pytest
 
@@ -8,6 +9,23 @@ from len_bot.next.memory.jobs import MemoryJobs
 from len_bot.next.memory.service import LocalMemoryConfig, MemoryService
 from len_bot.next.platform.onebot_messages import parse_message
 from len_bot.next.storage.store import Store
+
+
+def test_failed_index_transaction_restores_the_previous_complete_markdown(tmp_path):
+    async def run():
+        settings = LocalMemorySettings(directory=tmp_path / 'memory')
+        memory = LocalMemory(settings)
+        scene = 'onebot:group:80001'
+        await memory.write(scene, 'topics/week.md', '周五交报告。', '已确认')
+        with sqlite3.connect(memory.index) as database:
+            database.execute("CREATE TRIGGER fail_index BEFORE UPDATE ON memory_files "
+                             "BEGIN SELECT RAISE(ABORT, 'synthetic disk transaction failure'); END")
+        with pytest.raises(sqlite3.IntegrityError, match='transaction failure'):
+            await memory.write(scene, 'topics/week.md', '改成周六。', '更正')
+        restored = LocalMemory(settings)
+        assert (await restored.read(scene, 'topics/week.md')).content == '周五交报告。'
+        assert len(await restored.history(scene, 'topics/week.md')) == 1
+    asyncio.run(run())
 
 
 def test_pending_files_do_not_take_automatic_search_slots(tmp_path):

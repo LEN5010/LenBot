@@ -60,10 +60,6 @@ def main() -> None:
     previous = set_version(args.version)
     subprocess.run(['uv', 'lock'], cwd=ROOT, check=True)
     print(f'版本 {previous} → {args.version}，已更新 pyproject.toml 和 uv.lock。')
-    global NOTES
-    version_notes = ROOT / 'changelogs' / f'v{args.version}.md'
-    if version_notes.exists():
-        NOTES = version_notes
     problems = notes_problems(args.version)
     if problems:
         print(f'changelogs/v{args.version}.md 还不能作为 Release 正文：')

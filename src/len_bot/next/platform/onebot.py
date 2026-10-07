@@ -1,6 +1,7 @@
 """OneBot Universal WebSocket and explicitly selected HTTP action transport."""
 
 from __future__ import annotations
+import hmac
 
 import asyncio
 import base64
@@ -157,7 +158,8 @@ class OneBot:
     def _handshake(self, connection: ServerConnection, request: Request) -> Response | None:
         if not self._running:
             return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "OneBot transport is stopping\n")
-        if self.settings.access_token and request.headers.get("Authorization") != f"Bearer {self.settings.access_token}":
+        if self.settings.access_token and not hmac.compare_digest(
+                request.headers.get("Authorization", '').encode(), f"Bearer {self.settings.access_token}".encode()):
             return connection.respond(HTTPStatus.FORBIDDEN, "OneBot authorization failed\n")
         if request.headers.get("X-Client-Role") != "Universal":
             return connection.respond(HTTPStatus.BAD_REQUEST, "OneBot Universal role is required\n")

@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from len_bot.next.work.egress_policy import NetworkSettings, blocked_resolved_reason
+from len_bot.next.work.egress_policy import NetworkSettings, EgressBlocked, blocked_resolved_reason, parse_public_dns
 
 
 def test_fake_ip_range_admits_only_addresses_resolved_inside_it():
@@ -18,3 +18,14 @@ def test_fake_ip_range_admits_only_addresses_resolved_inside_it():
 def test_fake_ip_range_must_be_a_reserved_stand_in_range(value):
     with pytest.raises(ValidationError):
         NetworkSettings(fake_ip_networks=value)
+
+
+@pytest.mark.parametrize('address', ['127.0.0.1', '10.0.0.5', '169.254.169.254', '198.18.0.26'])
+def test_real_dns_response_cannot_turn_a_fake_address_into_private_egress(address):
+    with pytest.raises(EgressBlocked, match=address):
+        parse_public_dns({'Status': 0, 'Answer': [{'type': 1, 'data': address}]}, 1)
+
+
+def test_public_dns_keeps_only_numeric_answers_for_the_requested_type():
+    body = {'Status': 0, 'Answer': [{'type': 5, 'data': 'public.example.'}, {'type': 1, 'data': '93.184.216.34'}]}
+    assert parse_public_dns(body, 1) == ['93.184.216.34']

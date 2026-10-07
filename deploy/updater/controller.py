@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import secrets
@@ -53,8 +54,9 @@ class Controller:
         self.operation = threading.Lock()
         token_file = root / 'updates/control-token'
         if not token_file.exists():
-            token_file.write_text(secrets.token_urlsafe(32), encoding='utf-8')
-            token_file.chmod(0o600)
+            descriptor = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as output:
+                output.write(secrets.token_urlsafe(32))
             owned_like_parent(token_file)
         self.token = token_file.read_text(encoding='utf-8')
         self.recovery_token = secrets.token_urlsafe(32)
@@ -115,7 +117,10 @@ class Controller:
             tag = release['tag_name']
             if not tag.startswith('v'):
                 continue
-            version_key(tag[1:])
+            try:
+                version_key(tag[1:])
+            except ValueError:
+                continue
             assets = {item['name']: item['browser_download_url'] for item in release['assets']}
             result.append({'tag': tag, 'version': tag[1:], 'prerelease': release['prerelease'],
                            'notes': release['body'] or '', 'assets': assets,
@@ -139,7 +144,7 @@ class Controller:
                 version_key(tag.removeprefix('v'))
                 if not tag.startswith('v'):
                     raise ValueError('更新目标必须是发行标签')
-                previous = self.state.get('target') if self.state['status'] == 'prepared' else None
+                previous = self.state.get('target') if self.state['status'] in ('prepared', 'failed') else None
                 self.stage('download', status='preparing', error=None, stopped=False, snapshot_complete=False)
                 operation = lambda: self.prepare(tag, previous)
             elif action == 'apply':
@@ -223,6 +228,8 @@ class Controller:
         if check['blocked_plugins']:
             raise ValueError('配置或插件已改变，请先处理：\n' + '\n'.join(check['blocked_plugins']))
         old = self.backend.metadata()
+        if self.deployment['mode'] == 'docker':
+            old = {**old, 'container': self.backend.info(old['container'])['Id']}
         self.state['old'] = old
         self.stage('stop', stopped=True)
         self.backend.stop()
@@ -251,7 +258,7 @@ class Controller:
     def start(self) -> None:
         self.backend.start()
         self.backend.ready(self.backend.metadata())
-        self.stage('complete', status='complete', stopped=False)
+        self.stage('complete', status='complete', stopped=False, snapshot_complete=False)
 
     def publish_reference(self) -> None:
         if self.reference is not None:

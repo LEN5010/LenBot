@@ -8,6 +8,7 @@ from pathlib import Path
 import secrets
 import socket
 import tempfile
+import shutil
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -29,6 +30,8 @@ from .setup_plugins import official_plugins, plugin_choices, install_official
 from ..persona.profile import Persona, load_persona
 from len_bot.web.auth import hash_password
 
+DEFAULT_PERSONA_DIRECTORY = Path(__file__).resolve().parents[2] / 'default_personas' / 'companion'
+
 
 class FirstSetup(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid', hide_input_in_errors=True)
@@ -42,11 +45,11 @@ class FirstSetup(BaseModel):
     voice_mode: Literal['direct'] = 'direct'
     compaction: Compaction = Field(default_factory=Compaction)
     scene: str
-    persona_id: str = Field(pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$', max_length=64)
-    persona_name: str = Field(min_length=1)
-    brief: str = Field(min_length=1)
-    voice_text: str = Field(min_length=1)
-    boundaries: str
+    persona_id: str = Field(default='companion', pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$', max_length=64)
+    persona_name: str | None = Field(default=None, min_length=1)
+    brief: str | None = Field(default=None, min_length=1)
+    voice_text: str | None = Field(default=None, min_length=1)
+    boundaries: str = ''
     panel_host: str = "127.0.0.1"
     panel_port: int = Field(ge=1, le=65535)
     username: str = Field(min_length=1, max_length=64)
@@ -63,11 +66,17 @@ class FirstSetup(BaseModel):
 
     @model_validator(mode='after')
     def matching_password(self):
+        if not self.default_persona and any(value is None for value in (self.persona_name, self.brief, self.voice_text)):
+            raise ValueError('自定义角色需要填写名字、人物设定和说话方式')
         if not self.password.strip():
             raise ValueError('密码不能全部是空白')
         if self.password_confirmation is not None and self.password != self.password_confirmation:
             raise ValueError('两次密码不一致')
         return self
+
+    @property
+    def default_persona(self) -> bool:
+        return self.persona_id == 'companion' and all(value is None for value in (self.persona_name, self.brief, self.voice_text))
 
     @field_validator('username')
     @classmethod
@@ -122,21 +131,25 @@ def initialize(root: Path, item: FirstSetup) -> dict:
     installed = {p['name'] for p in plugin_choices(root) if p['installed']}
     if set(item.install_plugins) - installed:
         raise ValueError('所选官方插件尚未安装完成，请完成安装或取消选择后继续')
-    persona = Persona(id=item.persona_id, name=item.persona_name, brief=item.brief,
-                      behavior=item.brief, self_reference=['我'], aliases=[], tools='all', skills=[],
-                      styles=[], voice=item.voice_text, boundaries=item.boundaries, examples=[])
+    persona = (load_persona(DEFAULT_PERSONA_DIRECTORY) if item.default_persona else
+               Persona(id=item.persona_id, name=item.persona_name, brief=item.brief,
+                       behavior=item.brief, self_reference=['我'], aliases=[], tools='all', skills=[],
+                       styles=[], voice=item.voice_text, boundaries=item.boundaries, examples=[]))
     source = setup_source(item)
     prepared = [p['name'] for p in plugin_choices(root) if p['installed'] or p['prepared']]
     source['plugins'].update(disabled=prepared, **{name: {} for name in prepared})
     # Validate all cross-field requirements before creating any role/config files.
     HostConfig.model_validate_json(json.dumps(source))
     role_path.parent.mkdir(parents=True, exist_ok=True)
-    role_path.mkdir(mode=0o700)
-    metadata = persona.model_dump(exclude={'voice', 'boundaries', 'examples'})
-    (role_path / 'persona.yaml').write_text(yaml.safe_dump(metadata, allow_unicode=True), encoding='utf-8')
-    (role_path / 'voice.md').write_text(persona.voice, encoding='utf-8')
-    (role_path / 'boundaries.md').write_text(persona.boundaries, encoding='utf-8')
-    (role_path / 'examples.yaml').write_text('[]\n', encoding='utf-8')
+    if item.default_persona:
+        shutil.copytree(DEFAULT_PERSONA_DIRECTORY, role_path)
+    else:
+        role_path.mkdir(mode=0o700)
+        metadata = persona.model_dump(exclude={'voice', 'boundaries', 'examples'})
+        (role_path / 'persona.yaml').write_text(yaml.safe_dump(metadata, allow_unicode=True), encoding='utf-8')
+        (role_path / 'voice.md').write_text(persona.voice, encoding='utf-8')
+        (role_path / 'boundaries.md').write_text(persona.boundaries, encoding='utf-8')
+        (role_path / 'examples.yaml').write_text('[]\n', encoding='utf-8')
     load_persona(role_path)
     # Plugins are installed into, or dropped by hand into, the instance's plugins/.
     (root / 'plugins').mkdir(exist_ok=True)

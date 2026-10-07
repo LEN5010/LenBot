@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import asyncio
 import json
+import math
 from dataclasses import dataclass
 from typing import Any, Literal
 from .providers import ChatAPI, http_client, valid_url
@@ -103,6 +105,13 @@ class ModelHTTPError(RuntimeError):
 
 def _reject_non_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant in tool arguments: {value}")
+
+
+def _finite_json_number(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f'non-finite JSON number: {value[:100]}')
+    return number
 
 
 def parse_token_usage(usage: dict[str, Any] | None) -> TokenUsage | None:
@@ -223,15 +232,17 @@ class ChatModel:
                        max_output_tokens: int | None = None, session_id: str | None = None) -> ModelReply:
         from .protocols import build_request, parse_reply
         path, payload = build_request(self.settings, messages, tools, max_output_tokens=max_output_tokens)
-        response = await self._client.post(path, json=payload,
-                                           headers={} if session_id is None else {"Session-Id": session_id})
+        async with asyncio.timeout(self.settings.timeout_seconds):
+            response = await self._client.post(path, json=payload,
+                                               headers={} if session_id is None else {"Session-Id": session_id})
         if not response.is_success:
-            raise ModelHTTPError(f"Model HTTP {response.status_code}: {response.text}")
+            fragment = response.text.replace(self.settings.api_key, '[hidden]')[:2000]
+            raise ModelHTTPError(f"Model HTTP {response.status_code}: {fragment}")
         try:
-            body = response.json()
-        except json.JSONDecodeError as error:
+            body = json.loads(response.text, parse_constant=_reject_non_json_constant, parse_float=_finite_json_number)
+        except ValueError as error:
             raise ModelProtocolError(
                 f"Invalid chat completion JSON: {error}; response fragment: {response.text[:500]}",
-                response=response.text,
+                response=response.text[:2000],
             ) from error
         return parse_reply(self.settings, body)

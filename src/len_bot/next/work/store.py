@@ -12,6 +12,7 @@ from ..platform.messages import UploadResult
 from ..storage.codec import encode
 from .materials import MATERIALS
 from ..memory.embeddings import _reject_constant
+from .worker_model import REJECTED_HTTP_STATUSES
 
 if TYPE_CHECKING:
     from ..storage.store import Store
@@ -361,13 +362,20 @@ class TaskStore:
             body["ended"] = self.now()
             self.db.execute("UPDATE task_events SET body=? WHERE id=?", (encode(body), eventid))
 
-    def call_tokens(self, scene: str, id: int) -> list[dict | None]:
+    def call_tokens(self, scene: str, id: int, *, for_budget: bool = False) -> list[dict | None]:
         self.get(scene, id)
         rows = self.db.execute(
-            "SELECT json_extract(body,'$.response.tokens') FROM task_events WHERE scene=? AND task_id=? "
+            "SELECT json_extract(body,'$.response') FROM task_events WHERE scene=? AND task_id=? "
             "AND kind='model_call' ORDER BY id", (scene, id),
         ).fetchall()
-        return [None if row[0] is None else json.loads(row[0]) for row in rows]
+        records = []
+        for row in rows:
+            response = None if row[0] is None else json.loads(row[0])
+            if (for_budget and response is not None and response.get('tokens') is None
+                    and response.get('http_status') in REJECTED_HTTP_STATUSES and response.get('error') is not None):
+                continue
+            records.append(None if response is None else response.get('tokens'))
+        return records
 
     def add_file(self, scene: str, id: int, *, name: str, path: str,
                  size: int, note: str | None) -> TaskFile:

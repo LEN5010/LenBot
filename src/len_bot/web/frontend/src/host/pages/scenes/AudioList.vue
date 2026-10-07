@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { api } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { confirm } from '../../../composables/useConfirm.js'
@@ -18,8 +18,10 @@ const rowPath = row => `${root}/${encodeURIComponent(row.platform_id)}/${row.aud
 const rows = ref([])
 const list = useResource(async (offset = 0) => {
   const value = await api(`${root}?offset=${offset}`)
-  rows.value = offset ? [...rows.value, ...value.items] : value.items
-  return value
+  return { ...value, offset }
+})
+watch(() => list.data.value, value => {
+  if (value) rows.value = value.offset ? [...rows.value, ...value.items] : value.items
 })
 const action = useAction(), callRead = useAction()
 const calls = ref({})

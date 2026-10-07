@@ -26,6 +26,8 @@ from ..models.providers import http_client, auth_headers
 from urllib.parse import quote
 from ..runtime.logs import redact, redact_record
 
+REJECTED_HTTP_STATUSES = frozenset({400, 401, 403, 404, 405, 409, 413, 415, 422, 429})
+
 
 class WorkerModelError(RuntimeError):
     """One worker model call was refused or did not complete."""
@@ -119,7 +121,7 @@ class WorkerModelProxy:
             raise WorkerModelError('worker model does not match the configured binding')
         if api != 'gemini' and inbound.get('stream') is not True:
             raise WorkerModelError('worker native request must use stream=true')
-        allowed = ({'model', 'input', 'instructions', 'tools', 'tool_choice', 'parallel_tool_calls', 'stream', 'store', 'include', 'max_output_tokens', 'temperature', 'reasoning', 'prompt_cache_key', 'service_tier'} if api == 'openai-responses' else
+        allowed = ({'model', 'input', 'instructions', 'tools', 'tool_choice', 'parallel_tool_calls', 'stream', 'store', 'include', 'max_output_tokens', 'temperature', 'reasoning', 'prompt_cache_key'} if api == 'openai-responses' else
                    {'model', 'messages', 'system', 'tools', 'tool_choice', 'stream', 'max_tokens', 'temperature', 'thinking', 'output_config', 'metadata', 'cache_control'} if api == 'anthropic' else
                    {'contents', 'systemInstruction', 'tools', 'toolConfig', 'generationConfig', 'safetySettings'})
         unknown = inbound.keys() - allowed
@@ -129,6 +131,15 @@ class WorkerModelProxy:
         if not isinstance(inbound.get(key), list):
             raise WorkerModelError(f'worker {key} must be an array')
         outgoing = inbound.copy()
+        for tool in outgoing.get('tools', []):
+            if api == 'openai-responses':
+                valid = isinstance(tool, dict) and tool.get('type') == 'function'
+            elif api == 'anthropic':
+                valid = isinstance(tool, dict) and tool.get('type', 'custom') == 'custom' and 'input_schema' in tool
+            else:
+                valid = isinstance(tool, dict) and set(tool) == {'functionDeclarations'}
+            if not valid:
+                raise WorkerModelError('worker tools must be local function declarations; provider network tools are unavailable')
         options = dict(inbound.get('generationConfig', {})) if api == 'gemini' else outgoing
         output_field = 'max_output_tokens' if api == 'openai-responses' else 'max_tokens' if api == 'anthropic' else 'maxOutputTokens'
         output_tokens = options.get(output_field, self.settings.max_output_tokens)
@@ -409,7 +420,8 @@ class WorkerModelProxy:
                             except BaseException:
                                 self._closed = True
                                 raise
-                            self._add_tokens(tokens)
+                            if tokens is not None or status not in REJECTED_HTTP_STATUSES:
+                                self._add_tokens(tokens)
 
                         async def body() -> AsyncIterator[bytes]:
                             nonlocal response_bytes
@@ -473,7 +485,8 @@ class WorkerModelProxy:
                 except BaseException as finish_error:
                     self._closed = True
                     error.add_note(f"model-call recording also failed: {finish_error}")
-                self._add_tokens(tokens)
+                if tokens is not None or status not in REJECTED_HTTP_STATUSES:
+                    self._add_tokens(tokens)
             if error is not original_error:
                 raise error from original_error
             raise

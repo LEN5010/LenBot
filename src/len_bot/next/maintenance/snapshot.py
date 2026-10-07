@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import shutil
 import os
+import errno
+from ..storage.files import sync_directory
 
 LOCK = '.lenbot-instance.lock'
 STAGING = '.lenbot-restoring'
@@ -28,6 +30,15 @@ def copy_path(source: Path, target: Path) -> None:
         for original, copied in pairs:
             info = original.lstat()
             os.chown(copied, info.st_uid, info.st_gid, follow_symlinks=False)
+    paths = [target, *target.rglob('*')] if target.is_dir() else [target]
+    for path in paths:
+        if path.is_file() and not path.is_symlink():
+            with path.open('rb') as copied:
+                os.fsync(copied.fileno())
+    for path in reversed(paths):
+        if path.is_dir() and not path.is_symlink():
+            sync_directory(path)
+    sync_directory(target.parent)
 
 
 def _item(path: Path) -> dict:
@@ -102,14 +113,37 @@ def create(paths: list[str], destination: Path) -> None:
             copy_path(source, destination / str(index))
             entry['files'] = manifest(destination / str(index))
         entries.append(entry)
-    (destination / 'snapshot.json').write_text(json.dumps(entries, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    with (destination / 'snapshot.json').open('w', encoding='utf-8') as output:
+        output.write(json.dumps(entries, ensure_ascii=False, indent=2) + '\n')
+        output.flush()
+        os.fsync(output.fileno())
+    sync_directory(destination)
+    sync_directory(destination.parent)
 
 
 def _remove(path: Path) -> None:
     if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
+        for child in path.iterdir():
+            _remove(child)
+        if not path.is_mount() and not any(path.iterdir()):
+            try:
+                path.rmdir()
+            except OSError as error:
+                # Same-filesystem Linux bind mounts can report is_mount=False;
+                # the kernel still requires retaining their mount directory.
+                if error.errno != errno.EBUSY:
+                    raise
     else:
         path.unlink(missing_ok=True)
+
+
+def _publish(staging: Path, target: Path) -> None:
+    if staging.is_dir() and target.is_dir():
+        for child in staging.iterdir():
+            _publish(child, target / child.name)
+        staging.rmdir()
+    else:
+        staging.rename(target)
 
 
 def restore(root: Path, snapshot: Path) -> None:
@@ -143,9 +177,9 @@ def restore(root: Path, snapshot: Path) -> None:
                 if child.name not in (LOCK, STAGING):
                     _remove(child)
             for child in staging.iterdir():
-                child.rename(root / child.name)
+                _publish(child, root / child.name)
             staging.rmdir()
         else:
             _remove(target)
             if entry['present']:
-                staging.rename(target)
+                _publish(staging, target)

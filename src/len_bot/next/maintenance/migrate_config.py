@@ -5,6 +5,7 @@ Money limits cannot be turned into token counts, so a configured one stops the
 upgrade with its value and the file is left unchanged.
 Format 2 removes settings whose old-core import and media archive commands retired,
 and turns an explicitly disabled log into the default always-on log.
+Format 3 adds cumulative delivery capacity and real DNS resolution for fake-ip networks.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import tempfile
 from ..instance_lock import instance_lock
 from ..config import CONFIG_VERSION
 from ..runtime.logs import run_maintenance
+from ..storage.files import sync_directory
 
 
 def _without_prices(source: dict, path: Path) -> dict:
@@ -50,7 +52,7 @@ def migrate_config(path: Path) -> bool:
     """Rewrite one configuration file atomically; keep the original beside it. Returns whether it changed."""
     source = json.loads(path.read_text(encoding="utf-8"))
     format_version = source.get('config_version', 0)
-    if format_version not in (0, 1, CONFIG_VERSION):
+    if format_version not in (0, 1, 2, CONFIG_VERSION):
         raise ValueError(f'{path}: unsupported configuration format {format_version}; target={CONFIG_VERSION}')
     if format_version == CONFIG_VERSION:
         return False
@@ -62,16 +64,26 @@ def migrate_config(path: Path) -> bool:
     if 'logging' in upgraded and upgraded['logging'] is None:
         del upgraded['logging']
     upgraded['config_version'] = CONFIG_VERSION
+    if upgraded.get('worker') is not None:
+        upgraded['worker']['max_delivery_bytes'] = 500 * 1024 * 1024
+    if upgraded.get('network') is not None:
+        upgraded['network']['public_dns_url'] = 'https://dns.google/resolve'
     backup = path.with_name(path.name + ('.pre-tokens.bak' if tokens_changed else f'.pre-config-v{format_version}.bak'))
     with backup.open("x", encoding="utf-8") as copy:
         copy.write(path.read_text(encoding="utf-8"))
+        copy.flush()
+        os.fsync(copy.fileno())
+    sync_directory(backup.parent)
     handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as output:
             json.dump(upgraded, output, ensure_ascii=False, indent=2)
             output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
         os.chmod(temporary, path.stat().st_mode & 0o777)
         os.replace(temporary, path)
+        sync_directory(path.parent)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise

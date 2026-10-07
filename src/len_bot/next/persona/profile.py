@@ -7,6 +7,8 @@ from itertools import accumulate
 from math import fsum, isclose
 from pathlib import Path
 from random import random
+import json
+import threading
 from typing import Literal
 
 import yaml
@@ -16,6 +18,7 @@ from .knowledge import PersonaDocument, load_knowledge
 from .stickers import PersonaSticker, load_stickers
 from ...image_assets import OriginalImage
 from .avatar import load_avatar
+from ..storage.files import atomic_text, sync_directory
 
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
@@ -132,10 +135,32 @@ def select_style(persona: Persona) -> Style | None:
 
 
 PERSONA_FILES = ("persona.yaml", "voice.md", "boundaries.md", "examples.yaml")
+_PROFILE_LOCK = threading.RLock()
+_PENDING_PROFILE = '.persona-pending.json'
 
 
 def read_persona_files(path: Path) -> dict[str, str]:
-    return {name: (path / name).read_text(encoding="utf-8") for name in PERSONA_FILES}
+    with _PROFILE_LOCK:
+        pending = path / _PENDING_PROFILE
+        if pending.exists():
+            previous = json.loads(pending.read_text(encoding='utf-8'))
+            for name in PERSONA_FILES:
+                atomic_text(path / name, previous[name])
+            pending.unlink()
+            sync_directory(path)
+        return {name: (path / name).read_text(encoding="utf-8") for name in PERSONA_FILES}
+
+
+def save_persona_files(path: Path, files: dict[str, str]) -> None:
+    """Publish one profile edit; an interrupted edit restores the previous complete profile."""
+    with _PROFILE_LOCK:
+        previous = read_persona_files(path)
+        pending = path / _PENDING_PROFILE
+        atomic_text(pending, json.dumps(previous, ensure_ascii=False))
+        for name in PERSONA_FILES:
+            atomic_text(path / name, files[name])
+        pending.unlink()
+        sync_directory(path)
 
 
 def _parse_yaml(path: Path, content: str) -> object:

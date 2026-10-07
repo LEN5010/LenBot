@@ -3,6 +3,7 @@
 import { computed, ref, watch } from 'vue'
 import { api, sceneName } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
+import { useRequestGuard } from '../../../composables/useRequestGuard.js'
 import { notify, readPendingRestart } from '../../store.js'
 import { confirm } from '../../../composables/useConfirm.js'
 import ResourceState from '../../ui/ResourceState.vue'
@@ -26,14 +27,18 @@ watch(dirty, value => emit('dirty', value), { immediate: true })
 const confirmDiscard = async () => !dirty.value || confirm({ title: '这份资料还没保存，放弃修改？', confirmLabel: '放弃', danger: true })
 
 const reading = useAction()
+const beginRead = useRequestGuard(() => props.scene)
 async function pick(filename) {
+  const current = beginRead()
   if (open.value?.filename === filename || !await confirmDiscard()) return
-  const result = await reading.run(() => api(`${base.value}/document?filename=${encodeURIComponent(filename)}&directory=${encodeURIComponent(listing.data.value.saved_path)}`))
+  if (!current()) return
+  const result = await reading.run(() => api(`${base.value}/document?filename=${encodeURIComponent(filename)}&directory=${encodeURIComponent(listing.data.value.saved_path)}`), current)
   if (!result) return
   open.value = { filename, content: result.content }
   text.value = result.content
 }
 async function create() {
+  beginRead()
   if (!await confirmDiscard()) return
   open.value = { creating: true }
   name.value = ''
