@@ -59,6 +59,62 @@
       "repository": "https://github.com/lendevs/lenbot-plugin-gscore-adapter",
       "ref": "9ca7deff45dbc45055da6822afe4f5d6754a3425",
       "requires_lenbot": ">=0.2,<1"
+    },
+    {
+      "name": "asoul",
+      "title": "A-SOUL 日程与动态",
+      "description": "A-SOUL 合集：读取 ICS 日历，/日程 发日程卡片、/日程高亮 标记特别关注、live_schedule 工具按日期查询、开播前发场景事件；动态站成员/动态/历史同日/二创查询，并通过本群出口发送正文卡片和来源原图。",
+      "authors": [
+        "LEN5010"
+      ],
+      "license": "AGPL-3.0-or-later",
+      "version": "1.2.0",
+      "interface": 1,
+      "requires_lenbot": ">=0.2,<1",
+      "category": "内容查询",
+      "capabilities": [
+        "日历",
+        "动态与二创",
+        "卡片发送"
+      ],
+      "usage": [
+        "配置后选择启用的群；模型工具需要当前角色许可。",
+        "参数、共享指南与实际发送语义可在群聊工具页预览。",
+        "最低宿主基线和来源参数变更见 CHANGELOG.md。",
+        "旧成员／最近／搜索／详情／往年今日工具统一为 asoul_dynamics；旧二创搜索／随机工具统一为 asoul_fanart；两个发送工具统一为 asoul_send_card。live_schedule 保留。角色 tools 若为明确名称列表，需要改成这四个新名称并保留 tool_search；all 无需更改。",
+        "当前为未发行开发源码，安装锁定已核对的开发提交；没有对应版本标签或 Release。"
+      ],
+      "install": "git",
+      "repository": "https://github.com/lendevs/lenbot-plugin-asoul",
+      "ref": "790e0c065aa2705ea351c9af86dbc89520c6926a"
+    },
+    {
+      "name": "bilibili",
+      "title": "哔哩哔哩",
+      "description": "哔哩哔哩合集：公开视频/分P/WBI搜索/评论，主人明确授权的字幕、动态和固定点赞收藏动作；每30秒观察订阅直播间，开播推送卡片，开播/下播变化进入场景事件；关注UP主的新动态、新视频和本人评论推送卡片。",
+      "authors": [
+        "LEN5010"
+      ],
+      "license": "AGPL-3.0-or-later",
+      "version": "1.1.0",
+      "interface": 1,
+      "requires_lenbot": ">=0.2,<1",
+      "category": "内容查询",
+      "capabilities": [
+        "公开视频",
+        "账号读取与动作",
+        "直播与关注推送"
+      ],
+      "usage": [
+        "配置后选择启用的群；模型工具需要当前角色许可。",
+        "参数、共享指南与实际发送语义可在群聊工具页预览。",
+        "最低宿主基线和来源参数变更见 CHANGELOG.md。",
+        "旧视频信息／分P／匿名评论工具统一为 bilibili_video；旧直播状态／直播订阅／关注设置工具统一为 bilibili_monitor；账号读取统一为 bilibili_account_read，点赞和收藏统一为 bilibili_account_write，search_bilibili 保留。明确角色 tools 名单需更换为这五个名称并保留 tool_search；all 无需更改。",
+        "当前为未发行开发源码，安装锁定已核对的开发提交；没有对应版本标签或 Release。"
+      ],
+      "install": "git",
+      "repository": "https://github.com/lendevs/lenbot-plugin-bilibili",
+      "ref": "303a2ff28ce636fbad97c3979a98c958242b3cb9"
     }
   ]
 }
