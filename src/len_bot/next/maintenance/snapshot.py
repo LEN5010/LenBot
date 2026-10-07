@@ -7,6 +7,9 @@ import shutil
 import os
 
 LOCK = '.lenbot-instance.lock'
+STAGING = '.lenbot-restoring'
+# Room left after the copy for migrations' journals and the new version's first writes.
+HEADROOM = 256 * 1024 * 1024
 
 
 def copy_path(source: Path, target: Path) -> None:
@@ -67,7 +70,26 @@ def verify(snapshot: Path) -> list[dict]:
     return entries
 
 
+def _size(path: Path) -> int:
+    if path.is_symlink() or not path.exists():
+        return 0
+    if path.is_file():
+        return path.stat().st_size
+    return sum(item.lstat().st_size for item in path.rglob('*') if item.is_file() and not item.is_symlink())
+
+
+def check_space(paths: list[str], destination: Path) -> None:
+    """Stop before copying anything when the snapshot and some working room do not fit."""
+    needed = sum(_size(Path(name)) for name in paths) + HEADROOM
+    existing = next(parent for parent in (destination, *destination.parents) if parent.exists())
+    free = shutil.disk_usage(existing).free
+    if free < needed:
+        raise OSError(f'快照需要约 {needed / 2**30:.2f} GiB（含 {HEADROOM // 2**20} MiB 余量），'
+                      f'{existing} 所在磁盘只剩 {free / 2**30:.2f} GiB；清理空间后再升级')
+
+
 def create(paths: list[str], destination: Path) -> None:
+    check_space(paths, destination)
     destination.mkdir(mode=0o700, parents=True, exist_ok=False)
     entries = []
     for index, name in enumerate(paths):
@@ -83,24 +105,47 @@ def create(paths: list[str], destination: Path) -> None:
     (destination / 'snapshot.json').write_text(json.dumps(entries, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
 
+def _remove(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
 def restore(root: Path, snapshot: Path) -> None:
+    """Verify, copy everything beside its target, then swap item by item.
+
+    A full disk or unreadable snapshot stops during the copy, before the instance changes;
+    the swap afterwards only removes and renames within the same directories.
+    """
     entries = verify(snapshot)
-    for entry in entries:
+    staged: list[tuple[dict, Path]] = []
+    try:
+        for entry in entries:
+            target = Path(entry['source'])
+            staging = root / STAGING if target == root else target.with_name(f'.{target.name}{STAGING}')
+            _remove(staging)
+            staged.append((entry, staging))
+            if target == root:
+                staging.mkdir()
+                for child in (snapshot / entry['saved']).iterdir():
+                    copy_path(child, staging / child.name)
+            elif entry['present']:
+                copy_path(snapshot / entry['saved'], staging)
+    except BaseException:
+        for _, staging in staged:
+            _remove(staging)
+        raise
+    for entry, staging in staged:
         target = Path(entry['source'])
         if target == root:
             for child in root.iterdir():
-                if child.name == LOCK:
-                    continue
-                if child.is_dir() and not child.is_symlink():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
-            for child in (snapshot / entry['saved']).iterdir():
-                copy_path(child, root / child.name)
+                if child.name not in (LOCK, STAGING):
+                    _remove(child)
+            for child in staging.iterdir():
+                child.rename(root / child.name)
+            staging.rmdir()
         else:
-            if target.is_dir() and not target.is_symlink():
-                shutil.rmtree(target)
-            else:
-                target.unlink(missing_ok=True)
+            _remove(target)
             if entry['present']:
-                copy_path(snapshot / entry['saved'], target)
+                staging.rename(target)

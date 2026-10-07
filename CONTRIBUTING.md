@@ -91,7 +91,13 @@ uv run --no-sync ruff check src/len_bot scripts deploy/updater deploy/package
 
 ## 数据格式
 
-业务数据库从公开基线 v1 开始。改表结构时，在 `storage/schema.py` 直接建新结构，同时在 `maintenance/migrate.py` 的 `UPGRADES` 里加一步从上一版升级，并提高 `storage/store.py` 的 `FORMAT_VERSION`。记忆处理库、本地记忆索引和根配置同理，各自的编号见[发行指南](deploy/releasing.md#兼容编号)。升级只在停机时由维护命令执行，运行时不写新旧兼容分支。
+业务数据库从公开基线 v1 开始。改表结构时，在 `storage/schema.py` 直接建新结构，同时在 `maintenance/migrate.py` 的 `BUSINESS` 里加一步从上一版升级，并提高 `storage/store.py` 的 `FORMAT_VERSION`。记忆处理库（`migrate_memory_jobs.py`）、本地记忆索引（`migrate_local_memory.py`）和根配置同理，各自的编号见[发行指南](deploy/releasing.md#兼容编号)。升级只在停机时由维护命令执行，运行时不写新旧兼容分支。
+
+三个数据库的升级都由 `maintenance/migrations.py` 执行：前后各做一次完整性检查，每一步一个事务并在同一事务里改 `user_version`；删文件之类的数据库以外的操作由步骤返回，等这一步提交后再做。单独运行迁移命令时在数据库旁保留一份输入格式的副本 `<文件>.v<格式>.bak`；`upgrade apply` 已经有整份快照，不再另存。
+
+存进数据库的 JSON 正文按 dataclass 严格解码（`ChatMessage`、`Sender`、`Segment`、`Task`、`TaskFile`、`Schedule` 以及模型调用和记忆任务里的记录）。给这些类型加、删、改字段，等于改了数据格式：同时提高格式编号，在升级步骤里改写已有正文。
+
+`tests/fixtures/history/` 存放旧格式代码写出的小实例，`tests/test_history_migrations.py` 把它们升级到当前格式，要求表结构和全新建库一致、所有正文都能解码。提高任何一个格式编号之前，在 `scripts/build_history_fixtures.py` 里登记改动前最后一个提交，再运行它生成新样本（`uv run --no-sync python scripts/build_history_fixtures.py`）；同一输入重新生成的文件逐字节相同。
 
 ## 构建与发布
 

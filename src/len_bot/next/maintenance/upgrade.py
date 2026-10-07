@@ -5,7 +5,6 @@ import asyncio
 from contextlib import ExitStack
 import json
 from pathlib import Path
-import sqlite3
 import tomllib
 
 from ..config import load_instance_config
@@ -14,8 +13,9 @@ from ..memory.service import LocalMemoryConfig
 from ..plugins.manifest import INTERFACE, Manifest, discover
 from .migrate import migrate
 from .migrate_config import migrate_config
-from .migrate_memory_jobs import APPLICATION_ID, FORMAT_VERSION, migrate_memory_jobs
+from .migrate_memory_jobs import migrate_memory_jobs
 from .migrate_local_memory import migrate as migrate_local_memory
+from .doctor import check
 from .plugin_dependencies import install
 from .snapshot import create, restore
 from ..runtime.logs import run_maintenance
@@ -77,17 +77,19 @@ def migrate_instance(root: Path) -> None:
         for directory in (root, *(path.parent for path in trials)):
             migrate_config(directory / 'lenbot.config.json')
             config = load_instance_config(directory)
+            # The caller took a full snapshot first, so no per-file copies.
             if config.database.exists():
-                migrate(config.database)
+                migrate(config.database, backup=False)
             jobs = config.database.with_name(config.database.name + '.memory.sqlite3')
             if jobs.exists():
-                with sqlite3.connect(jobs) as db:
-                    actual = (db.execute('PRAGMA application_id').fetchone()[0], db.execute('PRAGMA user_version').fetchone()[0])
-                if actual != (APPLICATION_ID, FORMAT_VERSION):
-                    migrate_memory_jobs(jobs)
+                migrate_memory_jobs(jobs, backup=False)
             if isinstance(config.memory, LocalMemoryConfig):
-                migrate_local_memory(config.memory.local.directory)
+                migrate_local_memory(config.memory.local.directory, backup=False)
         asyncio.run(install(root))
+    failed = [item for item in check(root) if item['status'] == 'error']
+    if failed:
+        raise ValueError('升级后的实例检查未通过，可从升级前快照恢复：\n'
+                         + '\n'.join(f"{item['check']}: {item['detail']}" for item in failed))
 
 
 def main() -> None:

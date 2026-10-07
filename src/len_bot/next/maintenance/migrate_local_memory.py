@@ -1,6 +1,6 @@
 """Offline local index upgrade; discard summaries whose generation clock is unknown."""
 
-from contextlib import ExitStack, closing
+from contextlib import ExitStack
 from pathlib import Path
 import sqlite3
 import sys
@@ -9,31 +9,33 @@ from ..config import load_instance_config
 from ..instance_lock import instance_lock
 from ..memory.local import FORMAT_VERSION, SUMMARY_FILES, SUMMARY_SCHEMA, _APPLICATION_ID, _INDEX_NAME
 from ..memory.service import LocalMemoryConfig
+from .migrations import Format, upgrade
 from ..runtime.logs import run_maintenance
 
 
-def migrate(directory: Path) -> None:
-    index = directory / _INDEX_NAME
-    if not index.exists():
-        print(f'{directory}: no local memory index to migrate')
-        return
-    with closing(sqlite3.connect(index.as_uri() + '?mode=rw', uri=True)) as db:
-        actual = (db.execute('PRAGMA application_id').fetchone()[0],
-                  db.execute('PRAGMA user_version').fetchone()[0])
-        if actual == (_APPLICATION_ID, FORMAT_VERSION):
-            print(f'{index}: local memory format {FORMAT_VERSION}')
-            return
-        if actual != (_APPLICATION_ID, 2):
-            raise ValueError(f'Unsupported local memory index format: {actual!r}; path={index}')
-        with db:
-            db.execute('BEGIN EXCLUSIVE')
-            db.execute(SUMMARY_SCHEMA)
+def _summary_clock(directory: Path):
+    def step(db: sqlite3.Connection):
+        db.execute(SUMMARY_SCHEMA)
+
+        def clear() -> None:
             for category in ('public', 'scenes'):
                 for name in SUMMARY_FILES:
                     for summary in (directory / category).rglob(name):
                         summary.unlink()
-            db.execute(f'PRAGMA user_version={FORMAT_VERSION}')
-    print(f'{index}: local memory format {FORMAT_VERSION}; old derived summaries cleared; content and history retained')
+        return clear
+    return step
+
+
+def migrate(directory: Path, *, backup: bool = True) -> Path | None:
+    index = directory / _INDEX_NAME
+    if not index.exists():
+        print(f'{directory}: no local memory index to migrate')
+        return None
+    copy = upgrade(index, Format('本地记忆索引', _APPLICATION_ID, FORMAT_VERSION, 2, {2: _summary_clock(directory)}),
+                   backup=backup)
+    print(f'{index}: local memory format {FORMAT_VERSION}'
+          + ('' if copy is None else f'; old derived summaries cleared; input-format copy: {copy}'))
+    return copy
 
 
 def main() -> None:

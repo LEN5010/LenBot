@@ -6,12 +6,12 @@ import asyncio
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
-import sqlite3
 import sys
 
 from ..config import SharedConfig, load_instance_config
 from ..instance_lock import instance_lock
 from ..memory.service import LocalMemoryConfig, open_memory
+from ..storage.sqlite import connect
 from ..storage.store import Store, encode
 from ..models.slots import ModelSlots
 from ..models.limits import ModelBudget
@@ -26,8 +26,8 @@ def _backup(index: Path) -> Path | None:
     with backup.open("xb"):
         pass
     try:
-        with closing(sqlite3.connect(index.as_uri() + "?mode=ro", uri=True)) as source:
-            with closing(sqlite3.connect(backup)) as target:
+        with closing(connect(index, readonly=True)) as source:
+            with closing(connect(backup)) as target:
                 source.backup(target)
     except BaseException as error:
         try:

@@ -143,11 +143,11 @@ python -m len_bot.next.maintenance.memory_reindex
 
 ## 检查实例
 
-在实例目录执行 `python -m len_bot.next.maintenance.doctor`，逐项输出配置、业务数据库、记忆处理库、本地记忆索引和插件的检查结果（JSON，一行一项）。数据库都以只读方式打开，Bot 运行中也可以执行；有任一项失败时退出码为 1。未配置的组件显示 `disabled`。
+在实例目录执行 `python -m len_bot.next.maintenance.doctor`，逐项输出配置、业务数据库、记忆处理库、本地记忆索引和插件（含插件数据版本和 KV 文件格式）的检查结果（JSON，一行一项）。数据库都以只读方式打开，Bot 运行中也可以执行；有任一项失败时退出码为 1。未配置的组件显示 `disabled`。
 
 ## 升级与备份
 
-部署包和 Docker 安装在面板 → 设置 → 版本与更新里升级：更新器停机、做完整快照、执行下面第 4 步的迁移、切换版本并启动，失败时可以在更新页恢复快照（快照记录每个文件的长度和 SHA-256，恢复前整份核对，有缺失或损坏就停下，不动当前实例），见文档站的[更新与恢复](https://lendevs.github.io/LenBot/guide/update)。部署包也可以离线执行 `install.sh upgrade`，见[部署包](../package/README.md#升级)。
+部署包和 Docker 安装在面板 → 设置 → 版本与更新里升级：更新器停机、做完整快照、执行下面第 4 步的迁移和 `doctor` 检查、切换版本并启动。做快照前先估算大小，磁盘放不下快照外加 256 MiB 余量就停下，什么都不改。迁移后的 `doctor` 检查不通过算作升级失败。失败时可以在更新页恢复快照：快照记录每个文件的长度和 SHA-256，恢复前整份核对，有缺失或损坏就停下；核对通过后先把全部内容复制到各目标旁边的临时位置，复制中途出错（例如磁盘满）同样不动当前实例，全部复制完才逐项替换。见文档站的[更新与恢复](https://lendevs.github.io/LenBot/guide/update)。部署包也可以离线执行 `install.sh upgrade`，见[部署包](../package/README.md#升级)。
 
 源码运行手动升级，升级前：
 
@@ -164,7 +164,9 @@ python -m len_bot.next.maintenance.memory_reindex
    python -m len_bot.next.maintenance.plugin_dependencies
    ```
 
-5. 再启动 Bot。
+5. 执行 `python -m len_bot.next.maintenance.doctor` 检查，全部为 `ok` 或 `disabled` 再启动 Bot。
+
+单独运行的数据库迁移命令会在数据库旁保留一份升级前的副本，例如 `state.db.v2.bak`，确认新版本正常后可以删除；已有同名副本时命令拒绝执行，不会覆盖。每一步升级在一个事务里完成，中途失败停在上一个完整格式。
 
 启动时不会自动升级数据；数据格式不对会直接报错。所有命令和运行共用实例锁 `.lenbot-instance.lock`，有别的命令占着就会拒绝执行。不要手动删除锁文件。
 

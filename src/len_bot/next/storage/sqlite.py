@@ -14,11 +14,19 @@ import sqlite3
 BUSY_TIMEOUT_SECONDS = 5.0
 
 
-def connect(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
-    """Read-write connections set the journal and durability; read-only ones only read."""
-    if readonly:
-        return sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=BUSY_TIMEOUT_SECONDS)
-    db = sqlite3.connect(path, timeout=BUSY_TIMEOUT_SECONDS)
+def connect(path: Path, *, readonly: bool = False, immutable: bool = False, create: bool = True) -> sqlite3.Connection:
+    """Read-write connections set the journal and durability; read-only ones only read.
+
+    ``immutable`` reads a file nothing else writes (a stopped instance or a snapshot) without
+    taking locks; ``create=False`` refuses to make a new empty file, for upgrades of existing data.
+    """
+    if readonly or immutable:
+        query = '?mode=ro&immutable=1' if immutable else '?mode=ro'
+        return sqlite3.connect(path.resolve().as_uri() + query, uri=True, timeout=BUSY_TIMEOUT_SECONDS)
+    if create:
+        db = sqlite3.connect(path, timeout=BUSY_TIMEOUT_SECONDS)
+    else:
+        db = sqlite3.connect(path.resolve().as_uri() + '?mode=rw', uri=True, timeout=BUSY_TIMEOUT_SECONDS)
     try:
         db.execute('PRAGMA journal_mode=DELETE')
         db.execute('PRAGMA synchronous=FULL')

@@ -15,6 +15,8 @@ import sys
 from ..config import HostConfig, load_host_config
 from ..memory.jobs import FORMAT_VERSION as MEMORY_JOBS_FORMAT
 from ..memory.local import FORMAT_VERSION as LOCAL_INDEX_FORMAT, _APPLICATION_ID as LOCAL_INDEX_APPLICATION, _INDEX_NAME
+from ..plugins.data import recorded_version
+from ..plugins.kv import APPLICATION_ID as KV_APPLICATION, FORMAT_VERSION as KV_FORMAT
 from ..plugins.manifest import discover, read_manifest
 from ..storage.sqlite import connect
 from ..storage.store import FORMAT_VERSION as BUSINESS_FORMAT
@@ -50,6 +52,28 @@ BUSINESS_RELATIONS = (
 )
 
 
+def _plugin_data(data_dir: Path, declared: int) -> list[str]:
+    """Data newer than the installed plugin, or a KV file of another format, stops that plugin's start."""
+    if not data_dir.is_dir():
+        return []
+    problems = []
+    try:
+        recorded = recorded_version(data_dir)
+    except ValueError as error:
+        problems.append(str(error))
+    else:
+        if recorded is not None and recorded > declared:
+            problems.append(f'数据版本 {recorded} 比已安装插件的 data_version {declared} 新；'
+                            f'恢复 .backups 里的旧数据或安装新版本插件')
+    kv = data_dir / 'kv.sqlite3'
+    if kv.exists():
+        with closing(connect(kv, readonly=True)) as db:
+            identity = (db.execute('PRAGMA application_id').fetchone()[0], db.execute('PRAGMA user_version').fetchone()[0])
+        if identity not in {(0, 0), (KV_APPLICATION, KV_FORMAT)}:
+            problems.append(f'{kv} 不是插件 KV 格式 {KV_FORMAT}：{identity!r}')
+    return problems
+
+
 def _plugins(config: HostConfig) -> dict:
     if config.plugins is None:
         return {'status': 'disabled', 'detail': '未配置插件'}
@@ -60,9 +84,12 @@ def _plugins(config: HostConfig) -> dict:
             problems.append(f'{name}: 找到 {len(directories)} 个安装目录')
             continue
         try:
-            read_manifest(directories[0])
+            manifest = read_manifest(directories[0])
         except ValueError as error:
             problems.append(f'{name}: {error}')
+            continue
+        problems.extend(f'{name}: {problem}' for problem in _plugin_data(
+            config.plugins.data_directory / name, manifest.data_version))
     for scene, settings in config.scenes.items():
         missing = sorted(set(settings.plugins) - set(config.plugins.configured))
         if missing:

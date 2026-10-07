@@ -1145,7 +1145,7 @@ def test_offline_version_upgrade_cli_selects_explicit_multiscene_root(tmp_path):
         [sys.executable, "-m", "len_bot.next.maintenance.migrate"], cwd=root,
         text=True, capture_output=True, check=False,
     )
-    assert rejected.returncode != 0 and "Unsupported business database format" in rejected.stderr
+    assert rejected.returncode != 0 and "不是可升级的业务数据库" in rejected.stderr
 
 
 @pytest.mark.parametrize("port", [0, 65535])

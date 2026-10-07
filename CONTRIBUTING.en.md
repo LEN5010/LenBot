@@ -91,7 +91,13 @@ When changing prompts or persona expression, compare replies before and after wi
 
 ## Data format
 
-The business database starts from public baseline v1. To change the schema, create the new structure directly in `storage/schema.py`, add an upgrade step from the previous version to `UPGRADES` in `maintenance/migrate.py`, and bump `FORMAT_VERSION` in `storage/store.py`. The memory job database, local memory index and root configuration work the same way; their numbers are listed in the [release guide (zh)](deploy/releasing.md#兼容编号). Upgrades run only from the maintenance command while stopped; the runtime has no old/new compatibility branches.
+The business database starts from public baseline v1. To change the schema, create the new structure directly in `storage/schema.py`, add an upgrade step from the previous version to `BUSINESS` in `maintenance/migrate.py`, and bump `FORMAT_VERSION` in `storage/store.py`. The memory job database, local memory index and root configuration work the same way; their numbers are listed in the [release guide (zh)](deploy/releasing.md#兼容编号). Upgrades run only from the maintenance command while stopped; the runtime has no old/new compatibility branches.
+
+All three databases upgrade through `maintenance/migrations.py`: an integrity check before and after, one transaction per step that also sets `user_version`, and work outside the database (such as deleting files) returned by the step and run after it commits. A standalone migration command keeps one copy of the input format beside the file, `<file>.v<format>.bak`; `upgrade apply` already holds a full snapshot and skips it.
+
+JSON bodies stored in the databases decode strictly into dataclasses (`ChatMessage`, `Sender`, `Segment`, `Task`, `TaskFile`, `Schedule`, and the records inside model calls and memory jobs). Adding, removing or changing a field there changes the data format: bump the format number and rewrite existing bodies in the upgrade step.
+
+`tests/fixtures/history/` holds small instances written by older formats' own code; `tests/test_history_migrations.py` upgrades them and requires the same schema as a fresh instance and that every body decodes. Before bumping any format number, register the last commit before the change in `scripts/build_history_fixtures.py` and run it (`uv run --no-sync python scripts/build_history_fixtures.py`); rebuilding the same input gives byte-identical files.
 
 ## Build and release
 

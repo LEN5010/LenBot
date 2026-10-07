@@ -178,3 +178,20 @@ async def test_failed_apply_returns_to_the_previous_source_and_its_data(tmp_path
         assert (data_dir / 'notes.txt').read_text(encoding='utf-8') == '第一条\n'
     finally:
         await runtime.plugins.close()
+
+
+def test_doctor_reports_data_newer_than_the_plugin_and_foreign_kv_files(tmp_path):
+    import sqlite3
+    from len_bot.next.maintenance.doctor import _plugin_data
+    from len_bot.next.plugins.data import write_version
+    from len_bot.next.plugins.kv import PluginKV
+
+    data_dir = tmp_path / 'notes'
+    data_dir.mkdir()
+    PluginKV(data_dir).set('notes', ['第一条'])
+    write_version(data_dir, 2)
+    assert _plugin_data(data_dir, 2) == [] and _plugin_data(tmp_path / 'missing', 1) == []
+    assert '数据版本 2 比已安装插件的 data_version 1 新' in _plugin_data(data_dir, 1)[0]
+    with sqlite3.connect(data_dir / 'kv.sqlite3') as db:
+        db.execute('PRAGMA user_version=7')
+    assert 'kv.sqlite3 不是插件 KV 格式 1' in _plugin_data(data_dir, 2)[0]

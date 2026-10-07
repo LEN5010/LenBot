@@ -104,3 +104,47 @@ def test_backup_paths_cover_every_external_directory_once(tmp_path):
     _write_config(root, source)
     assert data_paths(root) == [str(root), *sorted(str(path.resolve()) for path in (
         tmp_path / 'private-persona', tmp_path / 'shared'))]
+
+
+def _instance_with_outside_data(tmp_path):
+    root, outside = tmp_path / 'instance', tmp_path / 'external'
+    root.mkdir()
+    outside.mkdir()
+    (root / 'lenbot.config.json').write_text('{"config_version":1}')
+    (outside / 'memory.md').write_text('升级前正文')
+    return root, outside
+
+
+def test_snapshot_stops_before_copying_when_the_disk_is_short(tmp_path, monkeypatch):
+    from len_bot.next.maintenance import snapshot as snapshots
+    root, outside = _instance_with_outside_data(tmp_path)
+    monkeypatch.setattr(snapshots.shutil, 'disk_usage', lambda path: type('Usage', (), {'free': 1024})())
+    with pytest.raises(OSError, match='只剩'):
+        create([str(root), str(outside)], tmp_path / 'backup')
+    assert not (tmp_path / 'backup').exists()
+
+
+def test_restore_that_fails_while_copying_leaves_the_instance_unchanged(tmp_path, monkeypatch):
+    from len_bot.next.maintenance import snapshot as snapshots
+    root, outside = _instance_with_outside_data(tmp_path)
+    create([str(root), str(outside)], tmp_path / 'backup')
+    (root / 'lenbot.config.json').write_text('{"config_version":2}')
+    (outside / 'memory.md').write_text('升级后正文')
+    copy = snapshots.copy_path
+
+    def full_disk(source, target):
+        if target.name.startswith('.external'):
+            raise OSError(28, 'No space left on device')
+        copy(source, target)
+    monkeypatch.setattr(snapshots, 'copy_path', full_disk)
+    with pytest.raises(OSError, match='No space left'):
+        restore(root, tmp_path / 'backup')
+    assert json.loads((root / 'lenbot.config.json').read_text()) == {'config_version': 2}
+    assert (outside / 'memory.md').read_text() == '升级后正文'
+    assert sorted(path.name for path in root.iterdir()) == ['lenbot.config.json']
+    assert sorted(path.name for path in tmp_path.iterdir()) == ['backup', 'external', 'instance']
+
+    monkeypatch.setattr(snapshots, 'copy_path', copy)
+    restore(root, tmp_path / 'backup')
+    assert json.loads((root / 'lenbot.config.json').read_text()) == {'config_version': 1}
+    assert (outside / 'memory.md').read_text() == '升级前正文'

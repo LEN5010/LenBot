@@ -1,7 +1,6 @@
 """Explicit offline upgrades from the public business format baseline."""
 
-from collections.abc import Callable
-from contextlib import ExitStack, closing
+from contextlib import ExitStack
 from pathlib import Path
 import sqlite3
 import sys
@@ -9,6 +8,7 @@ import sys
 from ..config import load_instance_config
 from ..instance_lock import instance_lock
 from ..storage.store import FORMAT_VERSION
+from .migrations import Format, upgrade
 from .token_backfill import rename_and_backfill, upgrade_task_events
 from ..runtime.logs import run_maintenance
 
@@ -31,24 +31,16 @@ def _qualified_schedule_targets(db: sqlite3.Connection) -> None:
                "WHERE target!='self' AND instr(target,':')=0")
 
 
-UPGRADES: dict[int, Callable[[sqlite3.Connection], None]] = {
+BUSINESS = Format('业务数据库', APPLICATION_ID, FORMAT_VERSION, 1, {
     1: _tokens_instead_of_prices,
     2: _qualified_schedule_targets,
-}
+})
 
 
-def migrate(path: Path) -> None:
-    with closing(sqlite3.connect(path.as_uri() + '?mode=rw', uri=True)) as db:
-        actual = (db.execute('PRAGMA application_id').fetchone()[0],
-                  db.execute('PRAGMA user_version').fetchone()[0])
-        if actual[0] != APPLICATION_ID or not 1 <= actual[1] <= FORMAT_VERSION:
-            raise ValueError(f'Unsupported business database format: {actual!r}; path={path}')
-        for version in range(actual[1], FORMAT_VERSION):
-            with db:
-                db.execute('BEGIN EXCLUSIVE')
-                UPGRADES[version](db)
-                db.execute(f'PRAGMA user_version={version + 1}')
-    print(f'{path}: business format {FORMAT_VERSION}')
+def migrate(path: Path, *, backup: bool = True) -> Path | None:
+    copy = upgrade(path, BUSINESS, backup=backup)
+    print(f'{path}: business format {FORMAT_VERSION}' + ('' if copy is None else f'; input-format copy: {copy}'))
+    return copy
 
 
 def main() -> None:
