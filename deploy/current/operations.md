@@ -152,6 +152,8 @@ python -m len_bot.next.maintenance.memory_reindex
 
 部署包和 Docker 安装在面板 → 设置 → 版本与更新里升级：更新器停机、做完整快照、执行下面第 4 步的迁移和 `doctor` 检查、切换版本并启动。做快照前先估算大小，磁盘放不下快照外加 256 MiB 余量就停下，什么都不改。迁移后的 `doctor` 检查不通过算作升级失败。失败时可以在更新页恢复快照：快照记录每个文件的长度和 SHA-256，恢复前整份核对，有缺失或损坏就停下；核对通过后先把全部内容复制到各目标旁边的临时位置，复制中途出错（例如磁盘满）同样不动当前实例，全部复制完才逐项替换。见文档站的[更新与恢复](https://lendevs.github.io/LenBot/guide/update)。部署包也可以离线执行 `install.sh upgrade`，见[部署包](../package/README.md#升级)。
 
+面板在启动 1 分钟后、之后每天一次查询是否有新的发行版本（部署包和 Docker 问自己的更新器，源码运行直接问 GitHub），结果在 `GET /api/host/updates` 的 `check` 里；只查询，不下载、不安装。根配置里 `panel.update_check` 设为 `false` 关闭后台查询，设置页的“检查发行版本”照常可用。
+
 源码运行手动升级，升级前：
 
 1. 停掉 Bot、试聊和其他会写数据的程序。
