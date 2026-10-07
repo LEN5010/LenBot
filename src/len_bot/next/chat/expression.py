@@ -12,7 +12,7 @@ from typing import Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from .context import ChatContext, PROMPTS
+from .context import ChatContext
 from .tools import ReactArguments, SayArguments
 from ..config import LabConfig
 from ..platform.delivery import Expression, part_length, report_parts, split_expression
@@ -28,6 +28,7 @@ from ..learning.sticker_store import StickerStore
 from ..storage.store import Store, encode
 from ..plugins.store import PluginStore
 from ..runtime.logs import log_event
+from ..prompt_files import read_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +267,7 @@ class ChatExpression:
                         report += "\n" + interruption
                     moment = datetime.fromtimestamp(self.now(), ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
                     PluginStore(self.store).add_plugin_event(self.config.scene, plugin, "reply", Template(
-                        (PROMPTS / "next_plugin_reply.md").read_text()).substitute(
+                        read_prompt("next_plugin_reply.md")).substitute(
                         plugin=plugin, time=moment,
                         report=("模拟表达（未发送到平台）：" if self.send_message is None else "") + report).strip())
                     self.notify()

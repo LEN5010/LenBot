@@ -12,7 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from len_bot.media.images import image_block
 
 from ..media.audio import TRANSCRIBE_TOOL, AudioService, TranscribeArguments
-from .context import PROMPTS
 from ..config import LabConfig
 from ..tools.discovery import DISCOVERY_REQUIRED_NAMES, DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, discovery_view, model_schema, search_tools
 from ..platform.delivery import Expression
@@ -40,6 +39,7 @@ from ..work.store import TaskStore
 from ..work.tools import DELEGATE_TOOL, TASK_TOOL, execute_tasks
 from ..tools.web_read import WEB_READ_TOOL, WebReadArguments, execute_web_read
 from ..tools.web_search import WEB_SEARCH_TOOL, WebSearchArguments, execute_web_search
+from ..prompt_files import read_prompt
 
 if TYPE_CHECKING:
     from .expression import ChatExpression
@@ -186,7 +186,7 @@ def build_tools(config: LabConfig, persona: Persona, *, platform: bool, host_man
         if function["name"] == "say":
             parameters = SayArguments.model_json_schema()
             mode = "next_direct.md"
-            parameters["properties"]["content"]["description"] = (PROMPTS / mode).read_text().strip()
+            parameters["properties"]["content"]["description"] = read_prompt(mode).strip()
             allowed[index] = {**tool, "function": {**function, "parameters": parameters}}
         elif function["name"] == "react":
             parameters = ReactArguments.model_json_schema()
@@ -273,7 +273,7 @@ class SceneTools:
 
     async def describe_image(self, turn_id: str, asset: ImageAsset) -> str:
         messages = [
-            {"role": "system", "content": (PROMPTS / "next_vision.md").read_text()},
+            {"role": "system", "content": read_prompt("next_vision.md")},
             {"role": "user", "content": [
                 {"type": "text", "text": encode({"width": asset.width, "height": asset.height,
                                                 "animated_first_frame_only": asset.animated})},

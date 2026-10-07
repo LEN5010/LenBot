@@ -24,6 +24,7 @@ from ..config import LabConfig, load_config, read_scene_persona, save_scene_pers
 from ..configuration.chat import ScenePersona
 from ..configuration.types import STRICT
 from ..instance_lock import instance_lock
+from ..prompt_files import activate as activate_prompts
 from ..models.client import ChatModel
 from ..memory.service import MemoryService, open_memory
 from ..memory.ingest import MemoryIngestor, open_memory_ingestor
@@ -261,6 +262,7 @@ def main() -> None:
     root = Path.cwd().resolve()
     with instance_lock(root):
         config = load_config(root)
+        activate_prompts(root)
         app = create_app(config, root=root)
         uvicorn.run(app, host=config.panel.host, port=config.panel.port)
 

@@ -12,6 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import yaml
+from ..prompt_files import read_prompt
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +139,6 @@ PERSONA_KNOWLEDGE_TOOL = {"type": "function", "function": {
                    "按next_offset续页；搜索preview不是全文，content_offset是原文命中位置。",
     "parameters": PersonaKnowledgeArguments.model_json_schema(),
 }}
-PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "next_persona_knowledge.md"
 
 
 def _page(items: list[dict], offset: int) -> tuple[list[dict], int | None]:
@@ -187,7 +187,7 @@ def persona_knowledge(persona_id: str, persona_name: str,
                   "offset": arguments.offset, "total_chars": len(document.content),
                   "next_offset": end if end < len(document.content) else None,
                   "text": document.content[arguments.offset:end]}
-    return Template(PROMPT.read_text(encoding="utf-8")).substitute(
+    return Template(read_prompt("next_persona_knowledge.md")).substitute(
         persona_id=persona_id, persona_name=persona_name,
         result=json.dumps(result, ensure_ascii=False, allow_nan=False),
     )

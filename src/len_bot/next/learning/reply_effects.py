@@ -8,7 +8,6 @@ import logging
 from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from ..config import HostConfig
@@ -20,10 +19,10 @@ from ..models.tokens import token_record
 from .reply_effect_store import REACTIONS, ReplyEffectStore
 from ..storage.store import Store, encode
 from ..runtime.logs import log_context
+from ..prompt_files import read_prompt
 
 
 LOG = logging.getLogger(__name__)
-PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "next_reply_effects.md"
 WAKE_INTERVAL_SECONDS = 30
 BATCH_LIMIT = 10
 
@@ -90,7 +89,7 @@ class ReplyEffectTracker:
         self._retry: dict[str, int] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
         self.errors: dict[str, BaseException] = {}
-        self._prompt = PROMPT.read_text(encoding="utf-8")
+        self._prompt = read_prompt("next_reply_effects.md")
         for scene in self.scenes:
             self.records.recover(scene)
 

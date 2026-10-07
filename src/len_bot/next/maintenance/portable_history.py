@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from string import Template
 
-from ..chat.context import PROMPTS, build_system, turn_state
+from ..chat.context import build_system, turn_state
 from ..chat.tools import build_tools
 from ..config import HostConfig, load_host_config
 from ..instance_lock import instance_lock
@@ -19,6 +19,7 @@ from ..memory.local import scene_overview
 from ..persona.profile import Persona, load_persona
 from ..storage.sqlite import connect
 from ..storage.store import FORMAT_VERSION, Store, encode
+from ..prompt_files import read_prompt
 
 
 def _binding(config: HostConfig) -> tuple[str, str, str]:
@@ -47,7 +48,7 @@ def _state(store: Store, config: HostConfig, scene: str, persona: Persona) -> di
     expression = None
     variants = [style for style in persona.styles if style.weight > 0]
     if variants:
-        template = Template((PROMPTS / "next_style.md").read_text())
+        template = Template(read_prompt("next_style.md"))
         expression = max(
             (template.substitute(name=style.name, note="" if style.note is None else style.note)
              for style in variants), key=lambda text: len(text.encode("utf-8")),
@@ -67,7 +68,7 @@ def _check_budget(store: Store, config: HostConfig, scene: str, persona: Persona
     trigger = config.compaction.input_tokens
     state = _state(store, config, scene, persona)
     if profile is not None:
-        state["content"] += "\n" + Template((PROMPTS / "next_group_profile.md").read_text()).substitute(profile=profile)
+        state["content"] += "\n" + Template(read_prompt("next_group_profile.md")).substitute(profile=profile)
     messages = ([{"role": "system", "content": system}]
                 + project_history(recap, entries) + [state])
     estimated = estimate_request(messages, tools, 0)

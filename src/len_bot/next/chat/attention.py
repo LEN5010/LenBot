@@ -9,7 +9,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from string import Template
-from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -21,12 +20,13 @@ from ..configuration.chat import Attention
 from ..platform.delivery import report_parts, split_expression
 from ..platform.messages import ChatMessage, Segment, plain_text
 from ..platform.onebot_messages import parse_message
-from .proactive import PROMPT as PROACTIVE_PROMPT, ProactiveStore, idle_text
+from .proactive import ProactiveStore, idle_text
 from .quiet import next_quiet_start, quiet_period
 from .schedule import effective_settings, check_creation, platform_role, wake_text
 from ..plugins.store import PluginStore
 from ..runtime.logs import log_context
 from .schedule_store import ScheduleStore
+from ..prompt_files import read_prompt
 
 
 Channel = Literal["direct", "named", "focus", "ambient"]
@@ -212,7 +212,7 @@ class SceneRunner:
                 'paused': self.state.paused,
                 'quiet_until': None if period is None or self.state.paused else period[1],
                 'direct': self.quiet_direct(now),
-                'scope': Template((Path(__file__).resolve().parents[2] / 'prompts' / 'next_scene_control.md').read_text()).substitute(scene=self.config.scene).strip()}
+                'scope': Template(read_prompt('next_scene_control.md')).substitute(scene=self.config.scene).strip()}
 
     def set_temporary_quiet(self, seconds: int | None, direct: Literal["allow", "defer"], requester: str | None) -> dict:
         now = self.now()
@@ -771,7 +771,7 @@ class SceneRunner:
                              self.proactive.last_activity(self.config.scene, tuple(self.settings.other_bot_ids)))
             zone = ZoneInfo(self.config.timezone)
             local = datetime.fromtimestamp(now, zone)
-            text = Template(PROACTIVE_PROMPT.read_text(encoding="utf-8")).substitute(
+            text = Template(read_prompt("next_proactive.md")).substitute(
                 idle=idle_text(now - idle_since), timezone=self.config.timezone,
                 since=datetime.fromtimestamp(idle_since, zone).isoformat(timespec="minutes"),
                 now=local.isoformat(timespec="minutes"),

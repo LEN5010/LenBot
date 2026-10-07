@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from string import Template
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -18,9 +17,9 @@ from ..models.client import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from ..models.slots import ModelSlots
 from ..models.tokens import token_record
 from ..storage.store import encode
+from ..prompt_files import read_prompt
 
 
-PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "next_memory_extract.md"
 STRICT = ConfigDict(extra="forbid", strict=True)
 
 
@@ -159,7 +158,7 @@ async def extract_local(
     source = _source_messages(scene, messages, timezone, persona_ids)
     files = await backend.tree(scene)
     conversation = [
-        {"role": "system", "content": Template(PROMPT.read_text()).substitute(scene=scene, max_steps=max_steps)},
+        {"role": "system", "content": Template(read_prompt("next_memory_extract.md")).substitute(scene=scene, max_steps=max_steps)},
         {"role": "user", "content": encode({"scene": scene, "memory_files": files, "messages": source})},
     ]
     written = 0

@@ -14,6 +14,7 @@ from ..chat.session import Chat
 from ..chat.attention import SceneRunner
 from ..config import load_config
 from ..instance_lock import instance_lock
+from ..prompt_files import activate as activate_prompts
 from ..models.client import ChatModel
 from ..models.slots import ModelSlots
 from ..models.limits import ModelBudget
@@ -76,6 +77,7 @@ async def run() -> None:
 
 def main() -> None:
     with instance_lock(Path.cwd()):
+        activate_prompts(Path.cwd())
         asyncio.run(run())
 
 

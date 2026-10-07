@@ -8,7 +8,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import datetime
 import json
-from pathlib import Path
 from string import Template
 import traceback
 from typing import BinaryIO, Literal, TYPE_CHECKING
@@ -37,6 +36,7 @@ from ..storage.pool import worker_pool_usage
 from .inputs import ResourceInput, copy_inputs, create_stage, publish_inputs, remove_stage
 from ..runtime.logs import credentials, log_context, log_event, redact, redact_record
 from ..runtime.operations import diagnostic_value
+from ..prompt_files import read_prompt
 
 if TYPE_CHECKING:
     from ..tools.mcp_host import MCPHost
@@ -44,7 +44,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
 
 
 class WorkTasks:
@@ -247,7 +246,7 @@ class WorkTasks:
             return result
 
     def _event_result(self, item: Task, value: dict) -> dict:
-        content = Template((PROMPTS / 'next_task_history.md').read_text()).substitute(
+        content = Template(read_prompt('next_task_history.md')).substitute(
             scene=item.scene, task=item.id, result=json.dumps(value, ensure_ascii=False, allow_nan=False))
         return {'content': content}
 
@@ -345,11 +344,11 @@ class WorkTasks:
                            account_browser: bool, materials: tuple[str, ...]) -> Task:
         timezone = self.config.scene_timezone(scene)
         local = datetime.fromtimestamp(self.store.now(), ZoneInfo(timezone))
-        prompt = Template((PROMPTS / "next_worker.md").read_text()).substitute(
+        prompt = Template(read_prompt("next_worker.md")).substitute(
             scene=scene, requester=requester, goal=goal, deliverable=deliverable, context=context,
             timezone=timezone, created_at=local.isoformat())
         if account_browser:
-            prompt += '\n\n' + (PROMPTS / 'next_worker_account_browser.md').read_text()
+            prompt += '\n\n' + read_prompt('next_worker_account_browser.md')
         return self.records.create(scene, requester, goal, deliverable, context, prompt,
                                    account_browser=account_browser, materials=materials)
 

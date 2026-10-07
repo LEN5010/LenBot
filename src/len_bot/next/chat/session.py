@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from ..media.audio import AudioService
 from ..media.audio_store import AudioStore
-from .context import ChatContext, PROMPTS, turn_state
+from .context import ChatContext, turn_state
 from .expression import ChatExpression, MessageSender
 from .tools import SceneTools
 from ..config import LabConfig
@@ -32,6 +32,7 @@ from ..platform.platform_tools import PlatformCall
 from ..storage.store import Store, encode
 from ..work.service import WorkTasks
 from ..runtime.logs import add_context, log_event
+from ..prompt_files import read_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +178,7 @@ class Chat:
                     trigger_tokens=self.config.compaction.input_tokens,
                     keep_recent_tokens=self.config.compaction.keep_recent_tokens,
                     summary_output_tokens=self.config.compaction.max_output_tokens, recap=recap,
-                    summary_template=(PROMPTS / "next_recap.md").read_text(),
+                    summary_template=read_prompt("next_recap.md"),
                     window_tokens=binding.context_window_tokens, source_entries=entries, token_scale=scale,
                 )
                 reply = await self.request(turn_id, "recap", plan.request_messages, [], recap_target=plan)
@@ -221,7 +222,7 @@ class Chat:
                 output_tokens=binding.max_output_tokens, trigger_tokens=trigger,
                 keep_recent_tokens=self.config.compaction.keep_recent_tokens,
                 summary_output_tokens=self.config.compaction.max_output_tokens,
-                recap=recap, summary_template=(PROMPTS / "next_recap.md").read_text(),
+                recap=recap, summary_template=read_prompt("next_recap.md"),
                 window_tokens=binding.context_window_tokens, source_entries=entries, token_scale=scale,
             )
             await self.request(turn_id, "recap", plan.request_messages, [], recap_target=plan)
@@ -282,12 +283,12 @@ class Chat:
                             exclude_uids=(self.config.bot_id, *self.config.attention.other_bot_ids))
                         if selected:
                             self.expression_ids = [item["id"] for item in selected]
-                            learned = Template((PROMPTS / "next_learned_expressions.md").read_text()).substitute(
+                            learned = Template(read_prompt("next_learned_expressions.md")).substitute(
                                 expressions=encode([{ "情境": item["situation"], "说法": item["style"] } for item in selected]))
                 style = select_style(self.persona)
                 expression_style = None
                 if style is not None:
-                    expression_style = Template((PROMPTS / "next_style.md").read_text()).substitute(
+                    expression_style = Template(read_prompt("next_style.md")).substitute(
                         name=style.name, note="" if style.note is None else style.note,
                     )
                 if learned is not None:
