@@ -9,7 +9,7 @@
 | [A-SOUL 日程与动态](https://github.com/lendevs/lenbot-plugin-asoul) | `/日程` 发日程卡片，也能查动态和二创并发卡片 |
 | [哔哩哔哩](https://github.com/lendevs/lenbot-plugin-bilibili) | 查视频、搜索，推送直播和关注的更新；配置主人账号后可以读取、点赞和收藏 |
 
-这几个插件还没有打版本标签。插件目录里记的是各仓库核对过的提交，LenBot 每次提交都会用这些提交跑一遍插件自己的测试。
+这几个插件还没有正式版本，安装的是和当前 LenBot 一起测试过的提交。
 
 ## 安装
 

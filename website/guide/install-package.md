@@ -78,7 +78,7 @@ powershell -ExecutionPolicy Bypass -File "$HOME\lenbot\service.ps1" stop
 :::
 
 - **Linux** 注册为当前用户的 systemd 服务 `lenbot.service`。日志用 `journalctl --user -u lenbot.service` 看。没有图形会话的服务器，需要先 `loginctl enable-linger` 让用户服务在登出后继续运行。
-- **macOS** 注册为当前用户的 launchd 服务 `local.lenbot`，服务自身的输出在 `logs/service.stdout.log`，宿主运行日志在实例目录的 `logs/lenbot.jsonl`，面板日志页可以直接查看。还可以双击 `start.command`、`stop.command`、`restart.command`。
+- **macOS** 注册为当前用户的 launchd 服务 `local.lenbot`，服务自身的输出在 `logs/service.stdout.log`，LenBot 自己的运行日志在实例目录的 `logs/lenbot.jsonl`，面板日志页可以直接查看。还可以双击 `start.command`、`stop.command`、`restart.command`。
 - **Windows** 注册为登录时启动的计划任务 `LenBot`，在后台运行；`stop` 会让程序正常关闭。
 
 服务崩溃后不会自动拉起，异常退出时先看日志。升级后不用重新注册服务。

@@ -68,7 +68,7 @@ from len_bot.plugin import Plugin, Invocation, command, fullmatch, regex, tool, 
 
 每个方法只用一个入口装饰器。匹配优先级为命令、全文、正则；正则按 priority 降序。同一消息最多一个处理器接管，不唤醒聊天模型。匹配只接受纯文本，开头的回复段和 @自己可去掉。
 
-处理结果记录到后续对话上下文，但不会因此启动模型。处理器返回字符串不自动发消息；调用 `await ctx.reply("文字")` 才发送。大脑选择 tool 属于模型聊天轮，插件 tool 本身是否调用模型是另一回事，插件说明必须写清楚。
+处理结果记录到后续对话上下文，但不会因此启动模型。处理器返回字符串不自动发消息；调用 `await ctx.reply("文字")` 才发送。聊天模型选择调用 tool 属于一轮聊天，插件 tool 本身是否调用模型是另一回事，插件说明必须写清楚。
 
 ## 配置表单
 
@@ -250,7 +250,7 @@ def unavailable_tools(self, scene: str) -> dict[str, str]:
 | 原消息 | `ctx.recent_messages(limit=20)`，只读当前场景，最多 100 条 |
 | 时间段消息 | `ctx.messages_between(after, before, offset=0, limit=200)`，Unix 时间 `after <= time < before`，按时间从早到晚，每页最多 500 条，用 offset 翻页 |
 | 记忆 | `await ctx.memory(arguments)`，当前场景记忆服务，不直连后端数据库 |
-| 主动交给大脑 | `await ctx.emit_event(text)`，与直接发送相反，它会唤醒大脑 |
+| 主动交给聊天模型 | `await ctx.emit_event(text)`，与直接发送相反，它会唤醒聊天模型 |
 | 时间 | `ctx.now()` 和 `ctx.timezone()`，明确场景时区 |
 | 主人权限 | `ctx.require_owner()`，使用真实来源发送者 |
 | 公网原图 | `await ctx.fetch_image(url, timeout_seconds=15)`，返回已校验原件 bytes |

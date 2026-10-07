@@ -14,12 +14,12 @@ Whichever you choose, the first start prints a link to a local web wizard. It ha
 
 1. Panel account and port.
 2. Connect OneBot and read the bot's own account from the platform (the connection must work first).
-3. The owner's QQ number.
-4. A model provider, which must pass one test call.
+3. The owner's QQ number and the time zone.
+4. The chat model, which must pass a test call.
 5. A persona (Xiaoran by default) and the first group or private chat.
 6. Official plugins, which you can skip.
 
-After saving you land in the panel. Start with simulated delivery, try a few messages in the panel's trial chat, then switch to real delivery. Each step is explained in [first setup (zh)](https://lendevs.github.io/LenBot/guide/first-setup) on the documentation site.
+After saving, LenBot starts and the page moves on to the panel. Start with simulated delivery, try a few messages in the panel's trial chat, then switch to real delivery. Each step is explained in [first setup (zh)](https://lendevs.github.io/LenBot/guide/first-setup) on the documentation site.
 
 ## The instance directory
 
