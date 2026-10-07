@@ -43,7 +43,7 @@ class Example(Plugin):
 
 Methods are async and use one decorator each. Command, exact-text, then regex matching takes precedence; regex priority sorts descending. At most one handler consumes a message, without waking the chat model. Returning text records a result; sending requires `ctx.reply`. A model selecting a plugin tool and the tool itself calling a model are separate actions.
 
-`start()` acquires resources; `stop()` releases them. The host cancels a `start()` that has not returned within 60 seconds, or a `stop()` within 30, and marks the plugin failed; move long preparation into `start_task`. Register background coroutines through `self.ctx.start_task(name, coroutine)`. The host cancels and waits for owned calls before stop. Keep blocking operations out of the event loop. A handler error ends that call; the host writes the original error to the run log (`plugin_error`) and does not retry. Use `self.ctx.log` (a standard `logging.Logger`) for the plugin's own records; they land in the host's `logs/lenbot.jsonl` with the plugin name and the current scene, turn and tool call IDs, and the panel log page filters by plugin.
+`start()` acquires resources; `stop()` releases them. Register background coroutines through `self.ctx.start_task(name, coroutine)`. The host cancels and waits for owned calls before stop. Keep blocking operations out of the event loop. A handler error ends that call; the host writes the original error to the run log (`plugin_error`) and does not retry. Use `self.ctx.log` (a standard `logging.Logger`) for the plugin's own records; they land in the host's `logs/lenbot.jsonl` with the plugin name and the current scene, turn and tool call IDs, and the panel log page filters by plugin.
 
 ## Configuration and data
 
