@@ -26,10 +26,15 @@ uv run --no-sync python -m len_bot.next.maintenance.migrate
 uv run --no-sync python -m len_bot.next.maintenance.migrate_memory_jobs
 uv run --no-sync python -m len_bot.next.maintenance.migrate_local_memory
 uv run --no-sync python -m len_bot.next.maintenance.plugin_dependencies
+uv run --no-sync python -m len_bot.next.maintenance.doctor
 uv run --no-sync len-bot
 ```
 
-五条维护命令依次升级根配置、业务数据库、记忆处理库、本地记忆索引，最后恢复插件依赖。已经是最新格式的什么也不做。升级前先[备份](./backup)。
+前五条维护命令依次升级根配置、业务数据库、记忆处理库、本地记忆索引，最后恢复插件依赖。已经是最新格式的什么也不做。升级前先[备份](./backup)。
+
+数据库迁移会在数据库旁留一份升级前的副本，比如 `state.db.v2.bak`，确认新版本正常后可以删掉；同名副本已经存在时命令拒绝执行，不会覆盖。每一步升级在一个事务里完成，中途失败就停在上一个完整格式。
+
+`doctor` 逐项检查配置、数据库和插件，每项输出一行 JSON，全部是 `ok` 或 `disabled` 再启动。它只读数据，Bot 运行时也能执行。
 
 ## 作为系统服务
 
