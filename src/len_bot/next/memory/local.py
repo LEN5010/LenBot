@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .embeddings import EmbeddingBinding, EmbeddingClient
 from .types import MemoryDocument, MemoryNode, MemoryPage
+from ..storage.sqlite import connect
 
 
 _SCENE = re.compile(r"[a-z][a-z0-9_-]*:(group|private):[^:\s/\\]+\Z")
@@ -192,7 +193,7 @@ def scene_overview(root: Path, scene: str) -> str | None:
     if not all(present):
         raise ValueError(f"incomplete memory summary files in {base}: {dict(zip(SUMMARY_FILES, present))}")
     index = root.expanduser().resolve() / _INDEX_NAME
-    with closing(sqlite3.connect(index.as_uri() + "?mode=ro", uri=True)) as db:
+    with closing(connect(index, readonly=True)) as db:
         version = db.execute("PRAGMA user_version").fetchone()[0]
         if version != FORMAT_VERSION:
             raise ValueError(f"local memory index format {version} requires offline migration: {index}; "
@@ -230,10 +231,9 @@ class LocalMemory:
         return self._locks.setdefault(scope, asyncio.Lock())
 
     def _connect(self) -> sqlite3.Connection:
-        db = sqlite3.connect(self.index)
+        db = connect(self.index)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA secure_delete=ON")
-        db.execute("PRAGMA foreign_keys=ON")
         if self.embedding is not None:
             self._load_vec(db)
         return db
@@ -259,16 +259,19 @@ class LocalMemory:
 
     def _initialize(self) -> None:
         with self._db() as db:
-            application_id = db.execute("PRAGMA application_id").fetchone()[0]
-            version = db.execute("PRAGMA user_version").fetchone()[0]
-            if application_id == _APPLICATION_ID and version == 2:
+            identity = (db.execute("PRAGMA application_id").fetchone()[0],
+                        db.execute("PRAGMA user_version").fetchone()[0])
+            if identity == (_APPLICATION_ID, FORMAT_VERSION):
+                return
+            if identity == (_APPLICATION_ID, 2):
                 raise ValueError(f"local memory index format 2 requires offline migration: {self.index}; "
                                  "run python -m len_bot.next.maintenance.migrate_local_memory")
-            if application_id not in {0, _APPLICATION_ID} or version not in {0, FORMAT_VERSION}:
+            if identity != (0, 0) or db.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone() is not None:
                 raise ValueError(f"unsupported local memory index format at {self.index}: "
-                                 f"application_id={application_id}, user_version={version}")
-            if version == 0:
-                db.executescript("""
+                                 f"application_id={identity[0]}, user_version={identity[1]}")
+            # One transaction: an interrupted first start leaves an empty file, not half a schema.
+            db.executescript(f"""
+                    BEGIN IMMEDIATE;
                     CREATE TABLE memory_files (
                         id INTEGER PRIMARY KEY,
                         scope TEXT NOT NULL,
@@ -299,10 +302,11 @@ class LocalMemory:
                         model TEXT NOT NULL,
                         dimensions INTEGER NOT NULL CHECK(dimensions > 0)
                     );
+                    {SUMMARY_SCHEMA}
+                    PRAGMA application_id={_APPLICATION_ID};
+                    PRAGMA user_version={FORMAT_VERSION};
+                    COMMIT;
                 """)
-                db.execute(f"PRAGMA application_id={_APPLICATION_ID}")
-                db.executescript(SUMMARY_SCHEMA)
-                db.execute(f"PRAGMA user_version={FORMAT_VERSION}")
 
     def _base(self, scope: str) -> Path:
         if scope == "public":

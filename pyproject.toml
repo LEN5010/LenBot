@@ -54,7 +54,16 @@ wheel-exclude = [
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.10",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 140
+
+[tool.ruff.lint]
+# Actual errors only: syntax, undefined names, unused imports and variables. No formatting rules.
+select = ["E9", "F"]

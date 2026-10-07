@@ -1,7 +1,6 @@
 """Install two real wheel versions and exercise the native update HTTP protocol and snapshot restore."""
 
 import argparse
-import hashlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -16,7 +15,7 @@ import zipfile
 
 from build_deployment import build_deployments
 from release_metadata import write_manifest
-from smoke_install import PLATFORM, check_panel, free_port, request, smoke_package, wait_until_served
+from smoke_install import check_panel, request, smoke_package
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -114,7 +113,8 @@ def run(artifacts: Path, work: Path) -> dict:
                     if value['status'] == expected:
                         return value
                     if value['status'] == 'failed' and expected != 'failed':
-                        raise RuntimeError(value['error'] + '\n' + (root / 'updates/updater.log').read_text(encoding='utf-8')[-4000:])
+                        raise RuntimeError(value['error'] + '\n' + (root / 'updates/updater.jsonl').read_text(encoding='utf-8')[-4000:]
+                                           + '\n' + (root / 'updates/updater.log').read_text(encoding='utf-8')[-4000:])
                     if expected == 'failed' and value['status'] == 'complete':
                         raise AssertionError('The synthetic broken release unexpectedly started successfully')
                     time.sleep(0.25)

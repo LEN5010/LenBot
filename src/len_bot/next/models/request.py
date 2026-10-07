@@ -1,6 +1,7 @@
 """One model request, shared by chat turns and explicit plugin generation."""
 
 from collections.abc import Awaitable, Callable
+import logging
 from contextlib import nullcontext
 from typing import Literal, Protocol
 
@@ -13,6 +14,9 @@ from urllib.parse import quote
 from .tokens import token_record
 from ..storage.store import Store
 from ..plugins.store import PluginStore
+from ..runtime.logs import log_event
+
+logger = logging.getLogger(__name__)
 
 
 class ChatRequest(Protocol):
@@ -107,12 +111,17 @@ async def request_model(config: SharedConfig, store: Store, model: ChatModel,
                 response, usage, token_usage = error.response, error.usage, error.token_usage
             store.end_call(call_id, response, usage, f"{type(error).__name__}: {error}",
                            tokens=token_record(token_usage))
+            log_event(logger, 'model_call', level=logging.WARNING, call_id=call_id, role=role, model=binding.model,
+                      provider=binding.provider, **({'plugin': plugin} if plugin else {}), status='failed', tokens=token_record(token_usage),
+                      error=error if isinstance(error, Exception) else None)
             if notify is not None:
                 notify()
             raise
         store.end_call(call_id, {"message": reply.message, "finish_reason": reply.finish_reason, "raw": reply.response}, reply.usage,
                        tokens=token_record(reply.token_usage),
                        append_to_scene=scene if append_to_scene else None, recap_for=recap_for)
+        log_event(logger, 'model_call', call_id=call_id, role=role, model=binding.model, provider=binding.provider,
+                  **({'plugin': plugin} if plugin else {}), status='ok', finish_reason=reply.finish_reason, tokens=token_record(reply.token_usage))
         if notify is not None:
             notify()
         return reply

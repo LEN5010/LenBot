@@ -39,12 +39,33 @@ const turns = computed(() => [...(sceneState.data.value?.turns || [])].sort((a, 
 const timezone = computed(() => sceneState.data.value?.timezone || host.state?.timezone)
 const open = turn => router.replace({ query: { ...route.query, turn: turn ? turn.id : undefined } })
 
-const filter = ref('all')
-const system = useResource(() => Promise.all([api('/api/host/logs'), api('/api/host/log-files')]), { immediate: false })
-watch(tab, value => { if (value === 'system' && !system.data.value) system.reload() }, { immediate: true })
-const logLabels = { runtime: '运行状态', receipt: '收到消息', turn: '回复结束', platform_error: 'QQ 连接出错', platform_event: '平台事件' }
-const logItems = computed(() => (system.data.value?.[0].items || [])
-  .filter(item => filter.value === 'all' || item.record.error))
+const level = ref('all')
+const onlyScene = ref(false)
+const traceTurn = computed(() => typeof route.query.trace === 'string' ? route.query.trace : '')
+const plugin = ref(''), task = ref('')
+function logQuery() {
+  const query = new URLSearchParams({ limit: '300' })
+  if (level.value !== 'all') query.set('level', level.value)
+  if (onlyScene.value && scene.value) query.set('scene', scene.value)
+  if (traceTurn.value) query.set('turn_id', traceTurn.value)
+  if (plugin.value.trim()) query.set('plugin', plugin.value.trim())
+  if (task.value.trim()) query.set('task_id', task.value.trim())
+  return query.toString()
+}
+const system = useResource(() => Promise.all([api(`/api/host/logs?${logQuery()}`), api('/api/host/log-files')]), { immediate: false })
+watch([tab, level, onlyScene, traceTurn], ([value]) => { if (value === 'system') system.reload() }, { immediate: true })
+const trace = turn => router.replace({ query: { ...route.query, tab: 'system', trace: turn || undefined } })
+const logLabels = {
+  runtime: '运行状态', receipt: '收到消息', turn_start: '开始一轮', turn: '一轮结束', tool_call: '调用工具',
+  tool_failed: '工具出错', model_call: '模型调用', message_sent: '发出消息', platform_error: 'QQ 连接出错',
+  platform_event: '平台事件', schedule: '定时安排', notice: '提醒', limit_notice: '额度提醒', retention: '数据清理',
+  plugin_error: '插件出错', mcp_error: 'MCP 出错', task_created: '登记任务', task_started: '任务开始',
+  task_input: '任务补充', task_finished: '任务结束', task_service_failed: '任务执行器出错',
+}
+const idFields = [['turn_id', '轮'], ['tool', '工具'], ['plugin', '插件'], ['task_id', '任务'], ['message_seq', '消息'], ['job', '后台']]
+const logItems = computed(() => system.data.value?.[0].items || [])
+const errorText = error => error.type ? `${error.type}: ${error.message}` : error.message
+const seconds = ts => Date.parse(ts) / 1000
 </script>
 
 <template>
@@ -70,6 +91,7 @@ const logItems = computed(() => (system.data.value?.[0].items || [])
       <template #placeholder>从左边选一次回复，看看 Bot 当时怎么想的。</template>
       <Panel title="经过">
         <template #actions>
+          <v-btn size="small" variant="text" @click="trace(selected)">这一轮的运行日志</v-btn>
           <DevOnly><v-btn size="small" variant="text" :href="`${base()}/turns/${encodeURIComponent(selected)}/export`">下载诊断包</v-btn></DevOnly>
         </template>
         <ResourceState :resource="detail" error-title="读取这次回复失败" v-slot="{ data }">
@@ -79,23 +101,37 @@ const logItems = computed(() => (system.data.value?.[0].items || [])
     </MasterDetail>
 
     <template v-else>
-      <Panel title="本次启动以来">
+      <Panel title="运行日志" :description="traceTurn ? `只看一轮：${traceTurn}` : '最近 300 条，按时间倒序'">
         <template #actions>
-          <v-btn-toggle v-model="filter" mandatory><v-btn value="all">全部</v-btn><v-btn value="errors">只看错误</v-btn></v-btn-toggle>
+          <v-btn-toggle v-model="level" mandatory density="compact">
+            <v-btn value="all">全部</v-btn><v-btn value="WARNING">警告以上</v-btn><v-btn value="ERROR">只看错误</v-btn>
+          </v-btn-toggle>
+          <v-btn v-if="traceTurn" variant="text" size="small" @click="trace(null)">取消只看这一轮</v-btn>
           <v-btn variant="text" size="small" :loading="system.loading.value" @click="system.reload()">刷新</v-btn>
         </template>
-        <ResourceState :resource="system" error-title="读取系统日志失败" :empty="!logItems.length" empty-text="没有记录" compact>
+        <div class="filters">
+          <v-switch v-model="onlyScene" density="compact" hide-details :label="scene ? `只看${sceneName(scene)}` : '只看当前群'" />
+          <v-text-field v-model="plugin" density="compact" hide-details label="插件名" @keyup.enter="system.reload()" />
+          <v-text-field v-model="task" density="compact" hide-details label="任务编号" @keyup.enter="system.reload()" />
+        </div>
+        <ResourceState :resource="system" error-title="读取运行日志失败" :empty="!logItems.length" empty-text="没有符合条件的记录" compact>
           <ObjectList divided>
             <li v-for="(item, index) in logItems" :key="index" class="log-row">
-              <div class="inline"><strong>{{ logLabels[item.record.type] || item.record.type }}</strong>
-                <span class="muted small">{{ formatTime(item.time, host.state?.timezone) }}<template v-if="item.record.scene"> · {{ sceneName(item.record.scene) }}</template></span></div>
-              <ErrorNote v-if="item.record.error || item.record.reason" title="错误" :error="item.record.error || item.record.reason" />
-              <DevOnly label="原始记录" :json="item.record" />
+              <div class="inline"><strong>{{ logLabels[item.event] || item.event || item.message }}</strong>
+                <span class="muted small">{{ formatTime(seconds(item.ts), host.state?.timezone) }} · {{ item.source }}<template v-if="item.scene"> · {{ sceneName(item.scene) }}</template></span></div>
+              <div class="ids small muted">
+                <template v-for="[key, label] in idFields" :key="key">
+                  <a v-if="key === 'turn_id' && item[key] && item[key] !== traceTurn" href="#" @click.prevent="trace(item[key])">{{ label }} {{ item[key].slice(0, 8) }}</a>
+                  <span v-else-if="item[key] !== undefined">{{ label }} {{ key === 'turn_id' ? item[key].slice(0, 8) : item[key] }}</span>
+                </template>
+              </div>
+              <ErrorNote v-if="item.error" title="错误" :error="errorText(item.error)" />
+              <DevOnly label="原始记录" :json="item" />
             </li>
           </ObjectList>
         </ResourceState>
       </Panel>
-      <Panel v-if="system.data.value" title="日志文件" :description="system.data.value[1].enabled ? '' : '没有开启日志文件，可以在设置的高级标签里打开。'">
+      <Panel v-if="system.data.value" title="日志文件" description="每天一个文件，下载时会隐去账号形状的数字">
         <ObjectList v-if="system.data.value[1].items.length" divided>
           <ObjectRow v-for="file in system.data.value[1].items" :key="file.name" :title="file.name" :subtitle="`${Math.ceil(file.bytes / 1024)} KB`">
             <template #actions><v-btn size="small" variant="text" :href="`/api/host/log-files/${encodeURIComponent(file.name)}`">下载</v-btn></template>
@@ -109,4 +145,6 @@ const logItems = computed(() => (system.data.value?.[0].items || [])
 <style scoped>
 .list{padding:0 var(--sp-2) var(--sp-2)}
 .log-row{padding:var(--sp-3) 0;display:grid;gap:var(--sp-2)}
+.filters{display:grid;grid-template-columns:auto 1fr 1fr;gap:var(--sp-3);align-items:center;margin-bottom:var(--sp-3)}
+.ids{display:flex;flex-wrap:wrap;gap:var(--sp-3)}
 </style>

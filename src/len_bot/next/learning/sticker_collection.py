@@ -22,9 +22,10 @@ from ..models.client import ChatModel, ModelProtocolError, ModelReply
 from ..models.slots import ModelSlots
 from ..trials.replay_images import RecordedImages
 from ..models.tokens import token_record
-from ..image_assets import MAX_IMAGE_BYTES, inspect_image
+from ...image_assets import MAX_IMAGE_BYTES, inspect_image
 from .sticker_store import StickerStore
 from ..storage.store import Store, encode
+from ..runtime.logs import log_context
 
 
 LOG = logging.getLogger(__name__)
@@ -93,7 +94,8 @@ class StickerCollector:
         if self._workers:
             raise RuntimeError("sticker collection workers already started")
         for scene in self.scenes:
-            self._workers[scene] = asyncio.create_task(self._worker(scene), name=f"sticker-collection:{scene}")
+            with log_context(scene=scene, job='sticker_collection'):
+                self._workers[scene] = asyncio.create_task(self._worker(scene), name=f"sticker-collection:{scene}")
 
     async def close(self) -> None:
         for worker in self._workers.values():

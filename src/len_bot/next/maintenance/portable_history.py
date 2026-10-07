@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 from contextlib import closing
 from datetime import UTC, datetime
@@ -18,6 +17,7 @@ from ..tools.discovery import DEFERRED_NAMES
 from ..memory.service import LocalMemoryConfig
 from ..memory.local import scene_overview
 from ..persona.profile import Persona, load_persona
+from ..storage.sqlite import connect
 from ..storage.store import FORMAT_VERSION, Store, encode
 
 
@@ -64,7 +64,6 @@ def _check_budget(store: Store, config: HostConfig, scene: str, persona: Persona
     system = build_system(local, persona, allowed, platform=config.delivery == "onebot")
     deferred = DEFERRED_NAMES if any(tool["function"]["name"] == "tool_search" for tool in allowed) else frozenset()
     tools = [tool for tool in allowed if tool["function"]["name"] not in deferred]
-    binding = config.models.roles.mind
     trigger = config.compaction.input_tokens
     state = _state(store, config, scene, persona)
     if profile is not None:
@@ -86,7 +85,7 @@ def _backup(store: Store, path: Path) -> Path:
     with backup_path.open("xb"):
         pass
     try:
-        with closing(sqlite3.connect(backup_path)) as backup:
+        with closing(connect(backup_path)) as backup:
             store.db.backup(backup)
     except BaseException:
         backup_path.unlink()
@@ -103,7 +102,7 @@ def convert(config: HostConfig) -> dict:
         sidecar = Path(str(path) + suffix)
         if sidecar.exists() and sidecar.stat().st_size:
             raise ValueError(f"Database has a nonempty {suffix} file; stop the host and use a complete snapshot: {path}")
-    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as check:
+    with closing(connect(path, readonly=True)) as check:
         if (check.execute("PRAGMA application_id").fetchone()[0] != 0x4C424E31
                 or check.execute("PRAGMA user_version").fetchone()[0] != FORMAT_VERSION):
             raise ValueError(f"Not a current next-core database: {path}")

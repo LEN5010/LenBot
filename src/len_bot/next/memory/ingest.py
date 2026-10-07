@@ -21,6 +21,7 @@ from ..models.client import ChatModel
 from ..models.slots import ModelSlots
 from ..platform.messages import ChatMessage
 from ..storage.store import Store
+from ..runtime.logs import log_context
 
 if TYPE_CHECKING:
     from ..config import SharedConfig
@@ -69,7 +70,8 @@ class MemoryIngestor:
         if self._workers:
             raise RuntimeError("memory workers already started")
         for scene in self.scenes:
-            self._workers[scene] = asyncio.create_task(self._worker(scene), name=f"memory-ingest:{scene}")
+            with log_context(scene=scene, job='memory_ingest'):
+                self._workers[scene] = asyncio.create_task(self._worker(scene), name=f"memory-ingest:{scene}")
 
     async def close(self) -> None:
         for worker in self._workers.values():

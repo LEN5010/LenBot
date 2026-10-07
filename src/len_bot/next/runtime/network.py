@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import signal
 from .signals import install_stop
 import logging
 import sqlite3
 from collections.abc import Callable
-from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,7 +18,7 @@ from ..chat.tools import tool_catalog
 from ..tools.skills import select_skills
 from ..config import LabConfig, SharedConfig
 from ..configuration.onebot import OneBotForward
-from .operations import credentials, redact, redact_record
+from .logs import credentials, log_context, log_event
 from .lifecycle import HostLifecycle
 from ..platform.messages import Notice
 from ..platform.onebot_messages import parse_event
@@ -39,11 +37,13 @@ from ..platform.onebot import OneBot, OneBotCallError
 from ..persona.profile import Persona
 from ..plugins.host import PluginHost
 from ..tools.mcp_host import MCPHost
-from ..storage.store import Store, encode
+from ..storage.store import Store
 from ..work.service import WorkTasks
 
 if TYPE_CHECKING:
     from .management import HostManagement
+
+logger = logging.getLogger(__name__)
 
 
 class NetworkRuntime:
@@ -65,7 +65,6 @@ class NetworkRuntime:
                  on_update: Callable[[], None] | None = None):
         self.config, self.store = config, store
         self.log_secrets = credentials(config)
-        self.logs: deque[dict] = deque(maxlen=500)
         self.memory = memory
         self.budget = ModelBudget(config, store, memory, root=config._instance_root) if budget is None else budget
         if slots is None and (config.limits.daily_tokens is not None or config.limits.scene_daily_tokens):
@@ -207,24 +206,16 @@ class NetworkRuntime:
             self.status = status
             self.notify()
 
-    def _emit(self, result: dict) -> None:
+    def _emit(self, result: dict, *, error: BaseException | None = None) -> None:
+        """One runtime event in the host log; the panel reads it back from the log file.
+
+        ``error`` text in the result and a passed exception both become the record's ``error`` object.
+        """
         if self.platform is None:
             result = {**result, 'input_source': 'stdin' if self.config.panel is None else 'panel'}
-        def clean_value(text):
-            if self.plugins is not None:
-                for name in self.plugins.plugins:
-                    text = self.plugins.redact(name, text)
-            return redact(text, self.log_secrets)
-        clean = redact_record(result, clean_value)
-        text = encode(clean)
-        self.logs.append({"time": self.store.now(), "record": clean})
-        summary = {key: clean[key] for key in (
-            "type", "status", "scene", "turn_id", "error", "reason", "post_type", "notice_type",
-            "plugin_handlers", "platform_message_id", "delivery", "quiet_until", "pending_wake",
-        ) if key in clean}
-        logging.getLogger(__name__).log(logging.ERROR if result.get("error") else logging.INFO,
-                                       "%s", encode(summary))
-        print(text, flush=True)
+        fields = {key: value for key, value in result.items() if key not in {'type', 'error'}}
+        failed = error if error is not None else result.get('error')
+        log_event(logger, result['type'], level=logging.ERROR if failed else logging.INFO, error=failed, **fields)
         self.notify()
 
     def _platform_error(self, error: str) -> None:
@@ -261,6 +252,10 @@ class NetworkRuntime:
             self._emit({"type": "platform_event", "notice_type": message.notice_type,
                         "plugin_handlers": handled})
             return
+        with log_context(scene=message.scene, platform_message_id=message.platform_message_id):
+            self._receive_message(message, raw)
+
+    def _receive_message(self, message, raw: dict) -> None:
         if not self.accepting:
             self._emit({"type": "receipt", "scene": message.scene,
                         "status": "not_accepted", "reason": self.status})
@@ -387,8 +382,6 @@ class NetworkRuntime:
             self._status("stopped")
             return
         self._status("starting")
-        loop = asyncio.get_running_loop()
-        installed: list[signal.Signals] = []
         try:
             if manage_signals:
                 remove_signals = install_stop(self.stop)

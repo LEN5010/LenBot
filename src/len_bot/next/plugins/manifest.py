@@ -17,10 +17,11 @@ from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, Jso
                       TypeAdapter, ValidationError, create_model, field_validator, model_validator)
 from ..configuration.plugin import PLUGIN_NAME, PLUGIN_RESERVED
 from ..config import HostConfig
-from ..plugin import INTERFACE
+from ...plugin import INTERFACE
 from ..platform.identity import validate_scene
 from ..tools.skills import Skill, load_catalog, load_plugin_skills
 from ..storage.store import encode
+from ..runtime.logs import REDACTED
 
 STRICT = ConfigDict(extra="forbid", strict=True)
 FIELD_TYPES = {"string": str, "secret": str, "integer": int, "number": float, "boolean": bool,
@@ -175,6 +176,8 @@ class Manifest(BaseModel):
     name: str
     version: str = Field(min_length=1)
     interface: int
+    # Shape of data_dir and KV; raised together with Plugin.migrate_data, never lowered.
+    data_version: int = Field(default=1, ge=1, strict=True)
     requires_lenbot: str
     requires_python: str
     platforms: list[Literal['linux', 'darwin', 'win32']] = Field(min_length=1)
@@ -228,18 +231,23 @@ class Manifest(BaseModel):
         return config_model(f"PluginConfig_{self.name}", self.config, scenes)
 
 
-def redact_values(text: str, manifest: Manifest | None, values: Mapping[str, object]) -> str:
+def secret_values(manifest: Manifest | None, values: Mapping[str, object]) -> set[str]:
+    """A plugin's configured secret values in the encodings they may appear in."""
+    secrets: set[str] = set()
     if manifest is None:
-        return text
-    secrets = set()
+        return secrets
     for key, item in manifest.config.items():
         if item.type != "secret":
             continue
         value = values.get(key, item.default)
         if isinstance(value, str) and value:
             secrets.update((value, encode(value)[1:-1], repr(value)[1:-1], quote(value, safe=""), quote_plus(value)))
-    for value in sorted(secrets, key=len, reverse=True):
-        text = text.replace(value, "[redacted]")
+    return secrets
+
+
+def redact_values(text: str, manifest: Manifest | None, values: Mapping[str, object]) -> str:
+    for value in sorted(secret_values(manifest, values), key=len, reverse=True):
+        text = text.replace(value, REDACTED)
     return text
 
 

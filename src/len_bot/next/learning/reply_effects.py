@@ -19,6 +19,7 @@ from ..models.slots import ModelSlots
 from ..models.tokens import token_record
 from .reply_effect_store import REACTIONS, ReplyEffectStore
 from ..storage.store import Store, encode
+from ..runtime.logs import log_context
 
 
 LOG = logging.getLogger(__name__)
@@ -97,7 +98,8 @@ class ReplyEffectTracker:
         if self._workers:
             raise RuntimeError("reply effect workers already started")
         for scene in self.scenes:
-            self._workers[scene] = asyncio.create_task(self._worker(scene), name=f"reply-effects:{scene}")
+            with log_context(scene=scene, job='reply_effects'):
+                self._workers[scene] = asyncio.create_task(self._worker(scene), name=f"reply-effects:{scene}")
 
     async def close(self) -> None:
         for worker in self._workers.values():

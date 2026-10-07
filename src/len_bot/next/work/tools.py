@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from .materials import MaterialSelection
 from .inputs import ResourceInput
+from ..chat.request_source import source_schema
 
 if TYPE_CHECKING:
     from .service import WorkTasks
@@ -92,7 +93,7 @@ class TaskArguments(BaseModel):
         if self.action != "list" and self.id is None:
             raise ValueError(f"task action {self.action!r} requires id")
         if self.action in {"outputs", "events", "read_event", "append", "continue", "answer", "cancel"} and self.requester is None:
-            raise ValueError(f"task action {self.action!r} requires requester")
+            raise ValueError(f"task action {self.action!r} requires source_message_id of the actual operator")
         if self.action == 'read_event' and self.event is None:
             raise ValueError('task read_event requires the actual event ID from events')
         if self.action == 'events' and self.offset > 0 and self.snapshot is None:
@@ -116,20 +117,20 @@ class TaskArguments(BaseModel):
 DELEGATE_TOOL = {"type": "function", "function": {
     "name": "delegate",
     "description": "为当前场景登记一项独立工作并排队。返回已创建只表示任务入队，"
-    "不表示已开始执行、已满足交付物或已向平台发送文件。requester 必须是实际人类账号。"
+    "不表示已开始执行、已满足交付物或已向平台发送文件。source_message_id 选实际请求消息，宿主读取其发送者作为请求人。"
     "account_browser=true仅在主人已明确同意此次专用账号浏览任务时使用；另建独立任务，不提升普通任务。",
-    "parameters": DelegateArguments.model_json_schema(),
+    "parameters": source_schema(DelegateArguments.model_json_schema()),
 }}
 
 TASK_TOOL = {"type": "function", "function": {
     "name": "task",
-    "description": "查询或管理当前场景的真实任务：list/status 查看状态（不填 requester），append 追加运行中要求，"
-    "outputs 按实际 requester 权限直接列出 out 中的文件和大小，同时列已登记交付；查产物状态优先用它，path为空列根目录。"
-    "events按真实requester权限读最近过程（每页5条、续页带snapshot），read_event按原event ID和字符offset读文本投影；"
+    "description": "查询或管理当前场景的真实任务：list/status 查看状态（不填 source_message_id），append 追加运行中要求，"
+    "outputs 按实际请求人权限直接列出 out 中的文件和大小，同时列已登记交付；查产物状态优先用它，path为空列根目录。"
+    "events按实际请求人权限读最近过程（每页5条、续页带snapshot），read_event按原event ID和字符offset读文本投影；"
     "continue 按请求人明确要求续接已结束任务；append/continue 必填非空 text。answer 回答待输入，cancel 取消。执行结束不等于目标完成；"
     "answer 的 question_id 使用当前 question.id，避免答复到已变化的另一个问题；"
-    "文件已复制到交付区也不等于已上传到平台。需要操作者的动作在 requester 填写操作者的实际账号。",
-    "parameters": TaskArguments.model_json_schema(),
+    "文件已复制到交付区也不等于已上传到平台。除 list/status 外，source_message_id 选操作者实际发出的消息，宿主读取其发送者判断权限。",
+    "parameters": source_schema(TaskArguments.model_json_schema()),
 }}
 
 

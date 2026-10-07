@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from ...configuration.types import STRICT
 from ...configuration.chat import (
@@ -24,9 +24,11 @@ from ...config import HostConfig
 from ...configuration.editing import _read_saved, restart_summary, save_config
 from ...configuration.learning import LearningSettings
 from ...configuration.models import Roles
+from ..model_access import ProviderDraft, ProviderCandidate, ModelCandidate, probe_model
+from ...models.providers import PROTOCOLS, list_models
 from ...persona.profile import Persona
 from ...models.asr import AudioSettings
-from ...runtime.operations import LoggingSettings
+from ...runtime.logs import LoggingSettings
 from ...models.limits import ResourceLimits
 from ...work.egress_policy import NetworkSettings
 from ...runtime.retention import RetentionSettings
@@ -46,16 +48,10 @@ class ProcessingChange(BaseModel):
     compaction: Compaction
     images: ImageSettings
     audio: AudioSettings
-    logging: LoggingSettings | None
+    logging: LoggingSettings
 
 
-class ProviderChange(BaseModel):
-    model_config = STRICT
-
-    api: Literal["openai-chat", "openai-audio", "openai-embeddings"]
-    base_url: str
-    api_key: str | None = Field(default=None, repr=False)
-
+ProviderChange = ProviderDraft
 
 class ModelsChange(BaseModel):
     model_config = STRICT
@@ -201,9 +197,16 @@ class PanelChange(BaseModel):
 
     host: str
     port: int
-    username: str
+    username: str = Field(min_length=1, max_length=64)
     cookie_secure: bool
     password: str | None = Field(default=None, repr=False)
+
+    @field_validator('username')
+    @classmethod
+    def username_without_outer_space(cls, value: str) -> str:
+        if value != value.strip() or not value.strip():
+            raise ValueError('用户名不能为空，首尾不能有空白')
+        return value
 
 
 def _project(config: HostConfig) -> dict:
@@ -237,7 +240,7 @@ def _project(config: HostConfig) -> dict:
         "models": {
             "providers": {
                 alias: {"api": provider.api, "base_url": provider.base_url,
-                        "api_key_configured": bool(provider.api_key)}
+                        "api_key_configured": bool(provider.api_key), "proxy": provider.proxy}
                 for alias, provider in models.providers.items()
             },
             "roles": models.roles.model_dump(mode="json"),
@@ -373,6 +376,31 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
             raise HTTPException(422, _validation_detail(error)) from error
         return await save(lambda source, saved: source.update(change.model_dump(mode="json")))
 
+    @app.get("/api/host/models/protocols")
+    async def protocols(_: str = Depends(user)):
+        return {'protocols': PROTOCOLS}
+
+    async def candidate_provider(item: ProviderCandidate):
+        async with write_lock:
+            saved = await asyncio.to_thread(_read_saved, root)
+        return item.provider.resolve(saved.models.providers.get(item.alias))
+
+    @app.post("/api/host/models/list")
+    async def models_list(request: Request, _: str = Depends(user)):
+        item = await _body(request, ProviderCandidate)
+        try:
+            return {'models': await list_models(await candidate_provider(item))}
+        except Exception as error:
+            raise HTTPException(422, f'{type(error).__name__}: {error}') from error
+
+    @app.post("/api/host/models/probe")
+    async def models_probe(request: Request, _: str = Depends(user)):
+        item = await _body(request, ModelCandidate)
+        try:
+            return await probe_model(await candidate_provider(item), item.binding, item.kind)
+        except Exception as error:
+            raise HTTPException(422, f'{type(error).__name__}: {error}') from error
+
     @app.put("/api/host/settings/models")
     async def put_models(request: Request, _: str = Depends(user)):
         change: ModelsChange = await _body(request, ModelsChange)
@@ -386,7 +414,7 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                     key = saved.models.providers[alias].api_key
                 else:
                     key = provider.api_key
-                providers[alias] = {"api": provider.api, "base_url": provider.base_url, "api_key": key}
+                providers[alias] = {"api": provider.api, "base_url": provider.base_url, "api_key": key, "proxy": provider.proxy}
             source["models"] = {
                 "providers": providers,
                 "roles": change.roles.model_dump(mode="json"),
@@ -552,6 +580,8 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                     raise ValueError("password is required when panel is not configured")
                 password_hash = saved.panel.password_hash
             else:
+                if len(change.password) < 8 or not change.password.strip():
+                    raise ValueError("面板密码至少 8 位")
                 password_hash = hash_password(change.password)
             panel = source.get("panel")
             if not isinstance(panel, dict):

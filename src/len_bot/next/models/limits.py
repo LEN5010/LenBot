@@ -3,10 +3,10 @@ from __future__ import annotations
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
-import sqlite3
 from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .usage import instance_calls, summarize_calls
+from ..storage.sqlite import connect
 
 
 class ResourceLimits(BaseModel):
@@ -84,7 +84,7 @@ class ModelBudget:
         from ..storage.store import FORMAT_VERSION as BUSINESS_FORMAT
         if self.trials_root is not None:
             for path in self.trials_root.glob('*/state.db'):
-                with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+                with closing(connect(path, readonly=True)) as db:
                     app = db.execute('PRAGMA application_id').fetchone()[0]
                     version = db.execute('PRAGMA user_version').fetchone()[0]
                     if app != 0x4C424E31 or version != BUSINESS_FORMAT:
@@ -93,7 +93,7 @@ class ModelBudget:
         outdated = []
         for path in paths:
             if path.exists():
-                with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+                with closing(connect(path, readonly=True)) as db:
                     app, version = db.execute('PRAGMA application_id').fetchone()[0], db.execute('PRAGMA user_version').fetchone()[0]
                     if app != 0x4C424D4A or version != MEMORY_FORMAT:
                         outdated.append(f'{path} (application={app}, format={version})')

@@ -17,6 +17,7 @@ from ...chat.tools import tool_catalog, tool_unavailable_reasons
 from ...config import HostConfig, LabConfig, load_host_config
 from .persona import finish_role_write
 from ...instance_lock import InstanceBusyError, instance_lock
+from ...runtime.logs import LoggingSettings
 from ...memory.service import LocalMemoryConfig, open_memory
 from ...models.client import ChatModel
 from ...runtime.identity import IdentitySettings
@@ -187,9 +188,9 @@ class HostTrials:
                     memory = source.memory.model_copy(update={
                         'local': source.memory.local.model_copy(update={'directory': root / 'memory'}),
                         'ingest': None, 'summaries': False})
-                # A trial runs inside the host and logs through it; its own file must not name the host's
+                # A trial runs inside the host and logs through it; its own setting must not name the host's
                 # log directory, which lies outside the trial root that offline migrations reload it from.
-                candidate = source.model_copy(update={'mode':'isolated', 'onebot':None, 'delivery':'simulated', 'logging':None,
+                candidate = source.model_copy(update={'mode':'isolated', 'onebot':None, 'delivery':'simulated', 'logging':LoggingSettings(directory=root / 'logs'),
                     'database':root / 'state.db', 'persona':root / 'persona-snapshot', 'owners':[],
                     'permissions': IdentitySettings(), 'panel':None, 'plugins':[], 'worker':None, 'tasks':source.tasks.model_copy(update={'enabled':False}),
                     'learning':None, 'proactive':None, 'transcribe_audio':False, 'memory':memory,

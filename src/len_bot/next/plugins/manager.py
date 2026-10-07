@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..runtime.network import NetworkRuntime
+from .data import restore_backup
 from .host import PluginHost
 from .install import PluginInstaller
 from .manifest import Manifest, discover, read_manifest
@@ -144,8 +145,10 @@ class PluginManager:
         return await self._register_candidate(manifest, output)
 
     async def apply_candidate(self, name: str) -> dict:
+        """Apply a prepared version; if it fails to load, start or migrate its data, the previous source returns."""
         saved = await asyncio.to_thread(_read_saved, self.root)
         record = self.installer.read(name)
+        applied = False
         try:
             await self.installer.check_apply(name, saved.plugins.configured[name], saved.scenes)
             if record.application == 'host':
@@ -158,14 +161,46 @@ class PluginManager:
                 finally:
                     self.runtime.refresh_external_tools()
             await asyncio.to_thread(self.installer.apply_files, name)
+            applied = True
             await self.apply(name, saved)
             loaded = self.runtime.plugins.plugins[name]
             if loaded.error is not None:
                 raise RuntimeError(loaded.error)
         except Exception as error:
+            if applied and self.installer.read(name).previous is not None:
+                try:
+                    result = await self.rollback(name, restore_data=True)
+                except Exception as rollback_error:
+                    error.add_note(f'回到上一版本也失败：{type(rollback_error).__name__}: {rollback_error}')
+                else:
+                    restored = result['restored_data']
+                    error.add_note('已回到上一版本源码' + (f'，插件数据已从 {restored} 恢复' if restored else ''))
             self.installer.failed(name, error)
             raise
         return {'name': name, 'restart_required': False}
+
+    async def rollback(self, name: str, *, restore_data: bool = False) -> dict:
+        """Return to the source replaced by the last apply.
+
+        By default data migrated by the newer version stays, and the older plugin refuses it until
+        its backup is restored by hand. ``restore_data`` puts that backup back; the automatic rollback
+        after a failed apply uses it, because the failed version never wrote anything worth keeping.
+        """
+        saved = await asyncio.to_thread(_read_saved, self.root)
+        if self.runtime.plugins is not None and name in self.runtime.plugins.plugins:
+            try:
+                await self.runtime.plugins.stop_plugin(name)
+            finally:
+                self.runtime.refresh_external_tools()
+        await asyncio.to_thread(self.installer.rollback_files, name)
+        restored = None
+        if restore_data and saved.plugins is not None:
+            data_dir = saved.plugins.data_directory / name
+            version = read_manifest(self.installer.directory / name).data_version
+            if data_dir.is_dir():
+                restored = await asyncio.to_thread(restore_backup, name, data_dir, data_dir.parent / '.backups', version)
+        await self.apply(name, saved)
+        return {'name': name, 'source': await self.installer.details(name), 'restored_data': restored and str(restored)}
 
     async def cancel(self, name: str) -> dict:
         if self.installer.read(name).installed is None:

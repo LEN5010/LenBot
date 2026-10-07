@@ -8,7 +8,7 @@
 |---|---|
 | 首页 | 连接状态、各群概况、最近错误 |
 | 对话测试 | 用当前角色和模型试聊，不发到 QQ |
-| 日志 | 每轮回复的经过、模型调用和宿主日志 |
+| 日志 | 每轮回复的经过，以及按群、一轮、插件、任务筛选的运行日志 |
 | 群聊 | 消息记录、参与节奏、学习、关系说明、本群权限 |
 | 角色 | 设定、说话方式、样例、知识、表情、头像，草稿试聊 |
 | 记忆 | 浏览、修改、删除和遗忘长期记忆 |
@@ -65,6 +65,8 @@
 ## 群里管理设置
 
 在角色的工具许可里打开 `host_manage` 和 `tool_search` 并重启后，主人和全局管理员可以在群里直接让 Bot 改设置，比如把本群改成只回应 @ 吧，或者改完以后重启一下。群管理员和本群管理员没有这个权限。
+
+权限按实际发出请求的那条消息判断：Bot 调用管理、安静、提醒、任务这类工具时要指明请求消息，宿主读取这条消息的发送者，不接受 Bot 自己填写的账号。
 
 可以改的有：各群的聊天开关（Bot 能看到群名，按群名说就行）、聊天、学习、提醒、任务、角色绑定、网页、记忆参数、模型的生成参数、预算、数据保留，以及已安装插件的启停、普通参数和选群。密钥、身份授权、连接方式和需要停机转换的设置不能在群里改。默认只保存，明确要求才重启。
 
@@ -127,9 +129,25 @@ python -m len_bot.next.maintenance.memory_reindex
 
 换了表达学习的向量模型时，停机执行 `python -m len_bot.next.maintenance.reindex_expressions`。
 
+## 运行日志
+
+宿主的所有组件写同一份日志：实例目录下的 `logs/lenbot.jsonl`（目录可在设置 → 上下文、媒体与日志里改），每天轮转一次，默认保留 14 天。每行是一条 JSON 记录：
+
+- `ts`（UTC 时间）、`level`、`source`（产生记录的模块）、`event`（事件名，如 `receipt`、`turn_start`、`tool_call`、`model_call`、`message_sent`、`plugin_error`、`task_finished`）、`message`；
+- 关联 ID：`scene`、`platform_message_id`、`message_seq`、`turn_id`、`tool_call_id`、`tool`、`plugin`、`task_id`、`job`，有就带上；
+- `error`：`type`、`message` 和完整 `traceback`。
+
+一条消息从收到、开始一轮、调用模型和工具、插件处理到发出回复，都能按 `turn_id` 串起来；任务按 `task_id`。面板日志页可以按级别、群、一轮、插件和任务筛选，回复记录里点“这一轮的运行日志”直接跳过去。配置里的密钥、插件的密钥字段会从日志里隐去；下载日志文件和诊断包时还会遮去 5 位以上的数字。
+
+终端只显示简短的一行；完整记录以日志文件为准。维护命令（迁移、升级、`doctor` 等）的开始、结束和失败也写进同一个文件；`upgrade inspect`、`upgrade paths` 只读实例，`upgrade restore` 会整体替换实例（包括日志），这三步不写实例日志，由更新器记在自己的日志里。部署包的更新器另有 `updates/updater.jsonl`（同样格式的更新记录）和 `updates/updater.log`（子进程原始输出），超过 5 MiB 在更新器启动时轮转。
+
+## 检查实例
+
+在实例目录执行 `python -m len_bot.next.maintenance.doctor`，逐项输出配置、业务数据库、记忆处理库、本地记忆索引和插件（含插件数据版本和 KV 文件格式）的检查结果（JSON，一行一项）。数据库都以只读方式打开，Bot 运行中也可以执行；有任一项失败时退出码为 1。未配置的组件显示 `disabled`。
+
 ## 升级与备份
 
-部署包和 Docker 安装在面板 → 设置 → 版本与更新里升级：更新器停机、做完整快照、执行下面第 4 步的迁移、切换版本并启动，失败时可以在更新页恢复快照，见文档站的[更新与恢复](https://lendevs.github.io/LenBot/guide/update)。部署包也可以离线执行 `install.sh upgrade`，见[部署包](../package/README.md#升级)。
+部署包和 Docker 安装在面板 → 设置 → 版本与更新里升级：更新器停机、做完整快照、执行下面第 4 步的迁移和 `doctor` 检查、切换版本并启动。做快照前先估算大小，磁盘放不下快照外加 256 MiB 余量就停下，什么都不改。迁移后的 `doctor` 检查不通过算作升级失败。失败时可以在更新页恢复快照：快照记录每个文件的长度和 SHA-256，恢复前整份核对，有缺失或损坏就停下；核对通过后先把全部内容复制到各目标旁边的临时位置，复制中途出错（例如磁盘满）同样不动当前实例，全部复制完才逐项替换。见文档站的[更新与恢复](https://lendevs.github.io/LenBot/guide/update)。部署包也可以离线执行 `install.sh upgrade`，见[部署包](../package/README.md#升级)。
 
 源码运行手动升级，升级前：
 
@@ -146,7 +164,9 @@ python -m len_bot.next.maintenance.memory_reindex
    python -m len_bot.next.maintenance.plugin_dependencies
    ```
 
-5. 再启动 Bot。
+5. 执行 `python -m len_bot.next.maintenance.doctor` 检查，全部为 `ok` 或 `disabled` 再启动 Bot。
+
+单独运行的数据库迁移命令会在数据库旁保留一份升级前的副本，例如 `state.db.v2.bak`，确认新版本正常后可以删除；已有同名副本时命令拒绝执行，不会覆盖。每一步升级在一个事务里完成，中途失败停在上一个完整格式。
 
 启动时不会自动升级数据；数据格式不对会直接报错。所有命令和运行共用实例锁 `.lenbot-instance.lock`，有别的命令占着就会拒绝执行。不要手动删除锁文件。
 
@@ -160,6 +180,8 @@ python -m len_bot.next.maintenance.memory_reindex
 `migrate_local_memory` 将本地索引从格式 2 升到 3，清除旧的 `.abstract.md`／`.overview.md` 派生摘要，保留正文、全文／向量索引和修改历史；迁移不调用模型。新摘要的生成时间写入索引，与记忆变更使用同一时钟。迁移后在记忆页明确整理，重新生成摘要。
 
 `migrate_config` 要在数据库升级之前执行，数据库升级会读取根配置。它删除旧版本的模型价格（`models.prices`、各用途的 `price`）和空的金额上限，原文件保存为 `lenbot.config.json.pre-tokens.bak`；对话测试实例的配置一并处理。金额上限（`limits.daily_model_cost`、`scene_daily_model_cost`、`worker.max_cost`）没法换算成 token，配置里填了这几项时命令直接报错并列出原值，文件不改；手动删掉它们、改填 `limits.daily_tokens`、`scene_daily_tokens`、`worker.max_tokens` 后再执行。
+
+根配置从格式 1 升到 2 时，移除已退役旧核心的 `history_import`、`reminder_import`、`media_import`、`media_archive` 字段，原配置保存为 `lenbot.config.json.pre-config-v1.bak`。这四项已没有执行入口，迁移仅清理配置，不读写它们引用的旧实例数据。仍在使用的 `task_archive` 保留。已有格式 1 实例更新源码后须先停机执行 `python -m len_bot.next.maintenance.migrate_config`，再启动；首次向导直接生成格式 2。
 
 业务数据库从格式 1 升到 2 时，各调用记录原来的估算金额被删除，改为从同一行保存的 usage 重新统计 token；usage 读不出 token 的行会让升级停下并报出行号。
 

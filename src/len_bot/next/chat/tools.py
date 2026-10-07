@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 import json
-from typing import TYPE_CHECKING, Literal
+import logging
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -31,6 +32,8 @@ from ..trials.replay_images import RecordedImages
 from ..trials.replay_web import RecordedWeb
 from .scene_control import SCENE_CONTROL_TOOL, SceneControlArguments
 from .host_manage import HOST_MANAGE_TOOL, HostManageArguments
+from .request_source import with_requester
+from ..runtime.logs import log_context, log_event
 from .schedule import SCHEDULE_TOOLS, execute_schedule
 from ..storage.store import ImageAsset, Store, encode
 from ..work.store import TaskStore
@@ -197,6 +200,10 @@ def build_tools(config: LabConfig, persona: Persona, *, platform: bool, host_man
     return allowed
 
 
+logger = logging.getLogger(__name__)
+SOURCED_TOOLS = frozenset({'host_manage', 'scene_control', 'schedule', 'schedule_cancel', 'delegate', 'task'})
+
+
 class SceneTools:
     """Actual scene capabilities and dispatch; domain services own tool behavior."""
 
@@ -279,6 +286,21 @@ class SceneTools:
                       wait_for_messages: Callable[[float], Awaitable[str]], *,
                       expression_style: str | None = None, direct: bool = False,
                       ) -> tuple[str, Expression | None, list[str] | None]:
+        """One tool call; records written below carry its turn, call ID and tool name."""
+        with log_context(turn_id=turn_id, tool_call_id=call.id, tool=call.name):
+            try:
+                result = await self._execute(turn_id, call, wait_for_messages,
+                                             expression_style=expression_style, direct=direct)
+            except Exception as error:
+                log_event(logger, 'tool_failed', level=logging.WARNING, error=error)
+                raise
+            log_event(logger, 'tool_call', result_chars=len(result[0]))
+            return result
+
+    async def _execute(self, turn_id: str, call: ToolCall,
+                       wait_for_messages: Callable[[float], Awaitable[str]], *,
+                       expression_style: str | None, direct: bool,
+                       ) -> tuple[str, Expression | None, list[str] | None]:
         if call.name not in self.tool_names:
             raise ValueError(f"当前请求未开放工具：{call.name}")
         if call.name == "tool_search":
@@ -290,6 +312,9 @@ class SceneTools:
         if call.name in self.external:
             tool = self.external[call.name]
             return await tool.call(self.config.scene, call.arguments), None, None
+        if call.name in SOURCED_TOOLS:
+            # Permission comes from the chosen message's actual sender, never from a model-typed account.
+            call = ToolCall(call.id, call.name, with_requester(self.store, self.config, call.arguments))
         if call.name == "say":
             arguments = SayArguments.model_validate(call.arguments)
             expression = await self.expression.express(turn_id, arguments,

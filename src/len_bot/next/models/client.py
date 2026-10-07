@@ -1,4 +1,4 @@
-"""Non-streaming Chat Completions boundary for one configured model binding."""
+"""One non-streaming request through the configured native chat protocol."""
 
 from __future__ import annotations
 
@@ -6,10 +6,9 @@ import copy
 import json
 from dataclasses import dataclass
 from typing import Any, Literal
-from urllib.parse import urlsplit
+from .providers import ChatAPI, http_client, valid_url
 
-import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from len_bot.next.models.tokens import TokenUsage
 
@@ -17,24 +16,27 @@ from len_bot.next.models.tokens import TokenUsage
 class ModelSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    api: Literal["openai-chat"]
+    api: ChatAPI
     base_url: str
     api_key: str = Field(repr=False)
     model: str
     reasoning_effort: str | None = None
-    temperature: float = Field(default=0.6, ge=0, le=2, allow_inf_nan=False)
+    thinking_budget_tokens: int | None = Field(default=None, ge=0)
+    output_token_field: Literal["max_completion_tokens", "max_tokens"] = "max_completion_tokens"
+    proxy: str | None = Field(default=None, repr=False)
+    temperature: float | None = Field(default=0.6, ge=0, le=2, allow_inf_nan=False)
     max_output_tokens: int = Field(default=1024, gt=0)
     timeout_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
+
+    @classmethod
+    def from_binding(cls, provider, binding) -> ModelSettings:
+        return cls(api=provider.api, base_url=provider.base_url, api_key=provider.api_key, proxy=provider.proxy,
+                   **binding.model_dump(exclude={'provider', 'context_window_tokens', 'history_policy'}))
 
     @field_validator("base_url")
     @classmethod
     def valid_base_url(cls, value: str) -> str:
-        parts = urlsplit(value)
-        if (parts.scheme not in {"http", "https"} or not parts.netloc
-                or parts.username is not None or parts.password is not None
-                or parts.query or parts.fragment):
-            raise ValueError("base_url must be an HTTP(S) URL without credentials, query or fragment")
-        return value
+        return valid_url(value)
 
     @field_validator("api_key", "model")
     @classmethod
@@ -49,6 +51,21 @@ class ModelSettings(BaseModel):
         if value is not None and not value.strip():
             raise ValueError("must not be blank")
         return value
+
+    @model_validator(mode="after")
+    def protocol_options(self):
+        if self.thinking_budget_tokens is not None and self.reasoning_effort is not None:
+            raise ValueError('思考额度与思考强度只能选一个')
+        if self.thinking_budget_tokens is not None and self.api not in {'anthropic', 'gemini'}:
+            raise ValueError('思考额度仅支持 Anthropic 和 Gemini')
+        if self.api == 'anthropic' and (self.reasoning_effort is not None or self.thinking_budget_tokens is not None):
+            if self.temperature is not None:
+                raise ValueError('Anthropic 思考模式需要将温度留空')
+            if self.thinking_budget_tokens is not None and not 1024 <= self.thinking_budget_tokens < self.max_output_tokens:
+                raise ValueError('Anthropic 思考额度至少 1024，且必须小于输出额度')
+        if self.api != 'openai-chat' and self.output_token_field != 'max_completion_tokens':
+            raise ValueError('输出字段选择仅适用于 OpenAI 兼容聊天接口')
+        return self
 
 
 @dataclass(frozen=True)
@@ -193,13 +210,8 @@ def parse_chat_completion(body: object) -> ModelReply:
 class ChatModel:
     def __init__(self, settings: ModelSettings):
         self.settings = settings
-        self._client = httpx.AsyncClient(
-            base_url=settings.base_url.rstrip("/") + "/",
-            timeout=settings.timeout_seconds,
-            trust_env=False,
-            transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False),
-            headers={"Authorization": f"Bearer {settings.api_key}"},
-        )
+        self._client = http_client(base_url=settings.base_url, api_key=settings.api_key, api=settings.api,
+                                   timeout_seconds=settings.timeout_seconds, proxy=settings.proxy)
 
     async def __aenter__(self) -> ChatModel:
         return self
@@ -209,20 +221,9 @@ class ChatModel:
 
     async def complete(self, messages: list[dict], tools: list[dict], *,
                        max_output_tokens: int | None = None, session_id: str | None = None) -> ModelReply:
-        payload: dict[str, Any] = {
-            "model": self.settings.model,
-            "messages": messages,
-            "temperature": self.settings.temperature,
-            "max_completion_tokens": (
-                self.settings.max_output_tokens if max_output_tokens is None else max_output_tokens
-            ),
-            "stream": False,
-        }
-        if tools:
-            payload["tools"] = tools
-        if self.settings.reasoning_effort is not None:
-            payload["reasoning_effort"] = self.settings.reasoning_effort
-        response = await self._client.post("chat/completions", json=payload,
+        from .protocols import build_request, parse_reply
+        path, payload = build_request(self.settings, messages, tools, max_output_tokens=max_output_tokens)
+        response = await self._client.post(path, json=payload,
                                            headers={} if session_id is None else {"Session-Id": session_id})
         if not response.is_success:
             raise ModelHTTPError(f"Model HTTP {response.status_code}: {response.text}")
@@ -233,4 +234,4 @@ class ChatModel:
                 f"Invalid chat completion JSON: {error}; response fragment: {response.text[:500]}",
                 response=response.text,
             ) from error
-        return parse_chat_completion(body)
+        return parse_reply(self.settings, body)

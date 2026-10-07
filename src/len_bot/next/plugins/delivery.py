@@ -7,9 +7,9 @@ from typing import assert_never
 
 import regex
 
-from ..image_assets import OriginalImage, inspect_image
+from ...image_assets import OriginalImage, inspect_image
 from ..platform.messages import Segment
-from ..plugin import Content, Image, Mention, Text
+from ...plugin import Content, Image, Mention, Text
 
 
 @dataclass(frozen=True)

@@ -21,7 +21,8 @@ def release_version(value: str) -> str:
 
 
 def constant(project: Path, module: str, name: str) -> int:
-    tree = ast.parse((project / 'src/len_bot/next' / module).read_text(encoding='utf-8'))
+    """A literal from a source file below src/len_bot."""
+    tree = ast.parse((project / 'src/len_bot' / module).read_text(encoding='utf-8'))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
             return ast.literal_eval(node.value)
@@ -47,10 +48,10 @@ def write_manifest(project: Path, artifacts: Path, *, revision: str, images: dic
         'prerelease': re.search(r'(a|b|rc)\d+$', version) is not None,
         'python': '3.13', 'updater_protocol': 1,
         'plugin_interface': constant(project, 'plugin.py', 'INTERFACE'),
-        'formats': {'config': constant(project, 'config.py', 'CONFIG_VERSION'),
-                    'business': constant(project, 'storage/store.py', 'FORMAT_VERSION'),
-                    'memory_jobs': constant(project, 'memory/jobs.py', 'FORMAT_VERSION'),
-                    'local_memory': constant(project, 'memory/local.py', 'FORMAT_VERSION')},
+        'formats': {'config': constant(project, 'next/config.py', 'CONFIG_VERSION'),
+                    'business': constant(project, 'next/storage/store.py', 'FORMAT_VERSION'),
+                    'memory_jobs': constant(project, 'next/memory/jobs.py', 'FORMAT_VERSION'),
+                    'local_memory': constant(project, 'next/memory/local.py', 'FORMAT_VERSION')},
         'bundles': {platform: f'lenbot-{version}-{platform}' + ('.zip' if platform == 'windows' else '.tar.gz')
                     for platform in ('linux', 'macos', 'windows')},
         'files': files, 'images': {} if images is None else images,

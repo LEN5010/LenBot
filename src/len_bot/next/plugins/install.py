@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Collection, Sequence
 from importlib.metadata import distributions
-import json
 import hashlib
 import os
 import stat
@@ -17,7 +16,7 @@ import sys
 import tempfile
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .manifest import Manifest, discover, parse_manifest, read_manifest
 
@@ -86,6 +85,8 @@ class Installation(BaseModel):
     application: Literal['plugin', 'host']
     requested: bool
     error: str | None
+    # The source replaced by the last apply, kept in plugins/.previous/<name> for one rollback.
+    previous: Source | None = None
 
 
 class PluginInstaller:
@@ -135,6 +136,7 @@ class PluginInstaller:
         return {**(source.model_dump() if source is not None else {}),
                 'installed': None if source is None else source.model_dump(),
                 'candidate': None if record.candidate is None else record.candidate.model_dump(),
+                'previous': None if record.previous is None else record.previous.model_dump(),
                 'application': record.application, 'requested': record.requested, 'error': record.error}
 
     async def checkout_ref(self, path: Path, ref: str) -> str:
@@ -256,13 +258,32 @@ class PluginInstaller:
         return manifest
 
     def apply_files(self, name: str) -> None:
+        """Install the candidate; the replaced source moves to plugins/.previous/<name> for one rollback."""
         record = self.read(name)
         destination = self.directory / name
         self.directory.mkdir(exist_ok=True)
         if destination.exists():
-            shutil.rmtree(destination)
+            previous = self.directory / '.previous' / name
+            if previous.exists():
+                shutil.rmtree(previous)
+            previous.parent.mkdir(exist_ok=True)
+            destination.rename(previous)
+            record.previous = record.installed
         (self.candidates / name).rename(destination)
         record.installed, record.candidate, record.requested, record.error = record.candidate, None, False, None
+        self.write(record)
+
+    def rollback_files(self, name: str) -> None:
+        """Put the source replaced by the last apply back; the plugin's data is not changed."""
+        record = self.read(name)
+        previous = self.directory / '.previous' / name
+        if record.previous is None or not previous.is_dir():
+            raise ValueError(f'{name} 没有保留上一版本源码')
+        destination = self.directory / name
+        if destination.exists():
+            shutil.rmtree(destination)
+        previous.rename(destination)
+        record.installed, record.previous, record.error = record.previous, None, None
         self.write(record)
 
     def failed(self, name: str, error: Exception) -> None:
@@ -282,6 +303,8 @@ class PluginInstaller:
         record = self.read(name)
         if record.installed is not None:
             await asyncio.to_thread(shutil.rmtree, self.managed_path(name))
+        if (self.directory / '.previous' / name).exists():
+            await asyncio.to_thread(shutil.rmtree, self.directory / '.previous' / name)
         if record.candidate is not None:
             await asyncio.to_thread(shutil.rmtree, self.candidates / name)
         (self.records / (name + '.json')).unlink()

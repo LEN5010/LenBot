@@ -1,6 +1,6 @@
 """Minimal external plugin for host configuration and permission tests."""
 
-from len_bot.next.plugin import Invocation, Plugin, command
+from len_bot.plugin import Invocation, Plugin, command
 
 
 class Sample(Plugin):

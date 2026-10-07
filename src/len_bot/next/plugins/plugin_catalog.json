@@ -3,6 +3,7 @@
   "entries": [
     {
       "name": "group_digest",
+      "title": "群聊总结与群工作",
       "description": "每天定时或按需生成群聊总结卡片；/群总结 文字总结，/群工作 委派长工作。",
       "authors": [
         "LEN5010"
@@ -10,7 +11,7 @@
       "license": "AGPL-3.0-only",
       "version": "1.3.0",
       "interface": 1,
-      "title": "群聊总结与群工作",
+      "requires_lenbot": ">=0.2,<1",
       "category": "工作工具",
       "capabilities": [
         "每日总结卡片",
@@ -25,16 +26,15 @@
         "每日总结默认 22:00，只有选入 daily_scenes 的群才自动发送。",
         "/群总结 生成文字总结；/群工作 委派长工作，需要任务能力和权限。",
         "增量默认关闭，按群开启后每小时整理；自然语言可指定 hours 或 start_at、end_at。",
-        "当前为未发行开发源码，安装锁定已核对的开发提交；没有对应版本标签或 Release。",
         "自然语言群工作使用 group_work 和真实 source_message_id；报告工具返回后台状态并自行交付。"
       ],
       "install": "git",
       "repository": "https://github.com/lendevs/lenbot-plugin-group-digest",
-      "ref": "44386cc32d06d605be316ad3cb18d38c2d98b035",
-      "requires_lenbot": ">=0.2,<1"
+      "ref": "0b2c3cf78677de77f5bc85b7d4675e852f0bcd59"
     },
     {
       "name": "gscore_adapter",
+      "title": "GSUID Core 桥接",
       "description": "/gs桥接独立GSUID Core；图文经宿主发送，/gs连接显式重连，gscore_status读取状态。",
       "authors": [
         "LEN5010"
@@ -42,7 +42,7 @@
       "license": "AGPL-3.0-or-later",
       "version": "1.1.0",
       "interface": 1,
-      "title": "GSUID Core 桥接",
+      "requires_lenbot": ">=0.2,<1",
       "category": "外部服务",
       "capabilities": [
         "独立 Core 服务",
@@ -52,13 +52,11 @@
       "usage": [
         "填写独立 Core 的 ws_url 与所需令牌，再为目标群启用。",
         "发送 /gs 命令；断线后发送 /gs连接 明确连接。",
-        "gscore_status 提供实际连接状态，是否给模型使用由角色工具许可决定。",
-        "当前为未发行开发源码，安装锁定已核对的开发提交；没有对应版本标签或 Release。"
+        "gscore_status 提供实际连接状态，是否给模型使用由角色工具许可决定。"
       ],
       "install": "git",
       "repository": "https://github.com/lendevs/lenbot-plugin-gscore-adapter",
-      "ref": "9ca7deff45dbc45055da6822afe4f5d6754a3425",
-      "requires_lenbot": ">=0.2,<1"
+      "ref": "d5c2a0268795d248a2304cd5629c31fce3dc0a92"
     },
     {
       "name": "asoul",
@@ -81,12 +79,11 @@
         "配置后选择启用的群；模型工具需要当前角色许可。",
         "参数、共享指南与实际发送语义可在群聊工具页预览。",
         "最低宿主基线和来源参数变更见 CHANGELOG.md。",
-        "旧成员／最近／搜索／详情／往年今日工具统一为 asoul_dynamics；旧二创搜索／随机工具统一为 asoul_fanart；两个发送工具统一为 asoul_send_card。live_schedule 保留。角色 tools 若为明确名称列表，需要改成这四个新名称并保留 tool_search；all 无需更改。",
-        "当前为未发行开发源码，安装锁定已核对的开发提交；没有对应版本标签或 Release。"
+        "旧成员／最近／搜索／详情／往年今日工具统一为 asoul_dynamics；旧二创搜索／随机工具统一为 asoul_fanart；两个发送工具统一为 asoul_send_card。live_schedule 保留。角色 tools 若为明确名称列表，需要改成这四个新名称并保留 tool_search；all 无需更改。"
       ],
       "install": "git",
       "repository": "https://github.com/lendevs/lenbot-plugin-asoul",
-      "ref": "790e0c065aa2705ea351c9af86dbc89520c6926a"
+      "ref": "b7e8bc6a0eb32669c03921ad9994be2599e109bf"
     },
     {
       "name": "bilibili",
@@ -109,12 +106,11 @@
         "配置后选择启用的群；模型工具需要当前角色许可。",
         "参数、共享指南与实际发送语义可在群聊工具页预览。",
         "最低宿主基线和来源参数变更见 CHANGELOG.md。",
-        "旧视频信息／分P／匿名评论工具统一为 bilibili_video；旧直播状态／直播订阅／关注设置工具统一为 bilibili_monitor；账号读取统一为 bilibili_account_read，点赞和收藏统一为 bilibili_account_write，search_bilibili 保留。明确角色 tools 名单需更换为这五个名称并保留 tool_search；all 无需更改。",
-        "当前为未发行开发源码，安装锁定已核对的开发提交；没有对应版本标签或 Release。"
+        "旧视频信息／分P／匿名评论工具统一为 bilibili_video；旧直播状态／直播订阅／关注设置工具统一为 bilibili_monitor；账号读取统一为 bilibili_account_read，点赞和收藏统一为 bilibili_account_write，search_bilibili 保留。明确角色 tools 名单需更换为这五个名称并保留 tool_search；all 无需更改。"
       ],
       "install": "git",
       "repository": "https://github.com/lendevs/lenbot-plugin-bilibili",
-      "ref": "303a2ff28ce636fbad97c3979a98c958242b3cb9"
+      "ref": "8f714dd5e58aff0e9cba96cb222aa02aac1804f6"
     }
   ]
 }

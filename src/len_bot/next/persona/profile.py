@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .knowledge import PersonaDocument, load_knowledge
 from .stickers import PersonaSticker, load_stickers
-from ..image_assets import OriginalImage
+from ...image_assets import OriginalImage
 from .avatar import load_avatar
 
 

@@ -17,6 +17,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from ..configuration.onebot import OneBotForward, OneBotReverse
+from ..runtime.logs import REDACTED
 from .messages import ChatMessage, SendResult, UploadResult
 from .onebot_messages import parse_send_result, parse_upload_result
 
@@ -52,11 +53,11 @@ class OneBot:
         self._identity_lock = asyncio.Lock()
 
     def _safe(self, text: str) -> str:
-        text = re.sub(r"base64://[A-Za-z0-9+/=]+", "base64://[redacted]", text)
+        text = re.sub(r"base64://[A-Za-z0-9+/=]+", "base64://[media omitted]", text)
         if self.settings.access_token:
-            text = text.replace(json.dumps(self.settings.access_token, ensure_ascii=False)[1:-1], "[redacted]")
-            text = text.replace(repr(self.settings.access_token)[1:-1], "[redacted]")
-            text = text.replace(self.settings.access_token, "[redacted]")
+            text = text.replace(json.dumps(self.settings.access_token, ensure_ascii=False)[1:-1], REDACTED)
+            text = text.replace(repr(self.settings.access_token)[1:-1], REDACTED)
+            text = text.replace(self.settings.access_token, REDACTED)
         return text[:2000]
 
     @property
