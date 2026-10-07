@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from len_bot.next.config import load_host_config
+from len_bot.next.config import load_host_config, load_instance_config
 from len_bot.next.panel.app import create_app
 from len_bot.next.platform.onebot_messages import parse_message
 from len_bot.next.models.client import ChatModel
@@ -33,7 +33,7 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path, o
     (role / "examples.yaml").write_text("[]\n", encoding="utf-8")
     source = {"compaction": {"input_tokens": 2000},
         "mode": "isolated-multi", "bot_id": 'onebot:90001', "timezone": "UTC",
-        "database": "host.sqlite3", "delivery": "simulated",
+        "database": "host.sqlite3", "delivery": "simulated", "logging": {"directory": "logs"},
         "onebot": onebot,
         "panel": {"host": "127.0.0.1", "port": 0, "username": "host-operator",
                   "password_hash": hash_password("synthetic-password", salt="synthetic-salt")},
@@ -182,6 +182,9 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path, o
                     })
                     assert trial.status_code == 200
                     assert len(trial.json()['context']) == 1
+                    # Offline migrations reload every kept trial as its own instance.
+                    trial_root, = (root / '.runtime' / 'chat-tests').iterdir()
+                    assert load_instance_config(trial_root).logging is None
                     assert '隔离测试原文' in trial.json()['context'][0]
                     prefix = f"/api/host/trials/{trial.json()['id']}"
                     try:

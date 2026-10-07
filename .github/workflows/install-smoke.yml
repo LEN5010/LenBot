@@ -1,0 +1,66 @@
+name: Install smoke
+
+# Called after release-packages is uploaded in the same run. Installs what a user would download,
+# walks first setup to a logged-in panel and stops it; simulated delivery, no OneBot or model.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-latest, windows-2022]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: '0.12.13'
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages
+          path: packages
+      - name: Install the deployment package and walk first setup to the panel
+        shell: bash
+        run: uv run --no-project --python 3.13 python scripts/smoke_install.py package packages "$RUNNER_TEMP/smoke"
+      - name: Upgrade and restore two real packaged versions
+        shell: bash
+        run: uv run --no-project --python 3.13 python scripts/smoke_update.py packages "$RUNNER_TEMP/update-smoke"
+
+  docker:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: '0.12.13'
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages
+          path: packages
+      - name: Build the host image from the same wheel
+        run: |
+          docker build --build-arg PACKAGE_SOURCE=wheel --build-context release=packages \
+            -f deploy/current/Dockerfile -t lenbot-current:smoke .
+      - name: Initialize new volumes with the packaged recipe and log in to the panel
+        run: python3 scripts/smoke_install.py docker packages "$RUNNER_TEMP/smoke" --image lenbot-current:smoke
+      - name: Build the independent updater and the synthetic baseline
+        run: |
+          docker build -f docker/updater/Dockerfile -t lenbot-updater:smoke .
+          uv run --no-project --python 3.13 python scripts/smoke_update.py packages "$RUNNER_TEMP/baseline" --baseline-only
+          docker build --build-arg PACKAGE_SOURCE=wheel --build-context "release=$RUNNER_TEMP/baseline/baseline-artifacts" \
+            -f deploy/current/Dockerfile -t lenbot-current:baseline .
+      - name: Replace the image and restore program, volume and instance data
+        run: |
+          python3 scripts/smoke_docker_update.py packages "$RUNNER_TEMP/docker-update" \
+            --baseline-image lenbot-current:baseline --host-image lenbot-current:smoke --updater-image lenbot-updater:smoke

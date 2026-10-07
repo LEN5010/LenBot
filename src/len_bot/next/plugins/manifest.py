@@ -22,7 +22,6 @@ from ..platform.identity import validate_scene
 from ..tools.skills import Skill, load_catalog, load_plugin_skills
 from ..storage.store import encode
 
-BUILTIN = Path(__file__).resolve().parents[1] / "builtin_plugins"
 STRICT = ConfigDict(extra="forbid", strict=True)
 FIELD_TYPES = {"string": str, "secret": str, "integer": int, "number": float, "boolean": bool,
                "string_list": list[str], "object_list": list[dict[str, JsonValue]],
@@ -158,6 +157,19 @@ def config_model(name: str, fields: Mapping[str, ConfigItem], scenes: Collection
     })
 
 
+class ModelInstructions(BaseModel):
+    model_config = STRICT
+    instructions: str = Field(min_length=1)
+
+    @field_validator("instructions")
+    @classmethod
+    def relative_file(cls, value: str) -> str:
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("model.instructions 必须是插件目录内的相对文件路径")
+        return value
+
+
 class Manifest(BaseModel):
     model_config = STRICT
     name: str
@@ -172,6 +184,7 @@ class Manifest(BaseModel):
     description: str = Field(min_length=1)
     repository: HttpUrl | None = None
     homepage: HttpUrl | None = None
+    model: ModelInstructions | None = None
     dependencies: list[str] = Field(default_factory=list)
     config: dict[str, ConfigField] = Field(default_factory=dict)
 
@@ -187,8 +200,9 @@ class Manifest(BaseModel):
             raise ValueError('Version range must be explicit')
         return str(SpecifierSet(value))
 
-    def require_compatible(self) -> None:
-        host, python = version('len-bot'), '.'.join(map(str, sys.version_info[:3]))
+    def require_compatible(self, host: str | None = None, python: str | None = None) -> None:
+        host = version('len-bot') if host is None else host
+        python = '.'.join(map(str, sys.version_info[:3])) if python is None else python
         if Version(host) not in SpecifierSet(self.requires_lenbot):
             raise ValueError(f'{self.name} requires host {self.requires_lenbot}; actual={host}')
         if Version(python) not in SpecifierSet(self.requires_python):
@@ -254,10 +268,10 @@ def read_manifest(directory: Path) -> Manifest:
 
 
 def discover(paths: list[Path]) -> tuple[dict[str, list[Path]], list[str]]:
-    """Plugin directories by name across the builtin directory and ``plugins.paths``."""
+    """Plugin directories by name across ``plugins.paths``."""
     found: dict[str, list[Path]] = {}
     errors = []
-    for base in (BUILTIN, *paths):
+    for base in paths:
         if not base.is_dir():
             errors.append(f"插件目录不存在或不是目录：{base}")
             continue
@@ -284,5 +298,3 @@ def scene_skill_catalog(config: HostConfig, scene: str) -> tuple[Skill, ...]:
             read_manifest(directories[0])
             skills.extend(load_plugin_skills(directories[0] / "skills", name))
     return tuple(skills)
-
-

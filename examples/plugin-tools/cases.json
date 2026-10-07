@@ -1,0 +1,203 @@
+{
+  "format": "plugin-tool-replay-v1",
+  "timezone": "Asia/Shanghai",
+  "now": "2026-10-06T18:00:00+08:00",
+  "cases": [
+    {
+      "id": "digest-twelve-hours",
+      "messages": [
+        {
+          "id": "request-1",
+          "sender": "onebot:70002",
+          "text": "总结一下过去12h的群聊"
+        }
+      ],
+      "expected_tools": [
+        {
+          "name": "group_summary_card",
+          "arguments": {
+            "hours": 12
+          }
+        }
+      ],
+      "expect": [
+        "按完整工具名发现，再调用；范围为今天06:00到18:00。",
+        "返回 started 后等待插件交付，不用 say 重复发送报告。"
+      ]
+    },
+    {
+      "id": "digest-afternoon",
+      "messages": [
+        {
+          "id": "request-2",
+          "sender": "onebot:70002",
+          "text": "帮我做一下今天下午的日报"
+        }
+      ],
+      "expected_tools": [
+        {
+          "name": "group_summary_card",
+          "arguments": {
+            "start_at": "2026-10-06T12:00:00+08:00",
+            "end_at": "2026-10-06T18:00:00+08:00"
+          }
+        }
+      ],
+      "expect": [
+        "本用例将下午定义为12:00到当前时间；共享指南和参数不自行解析自然语言。",
+        "不传 hours，不把未来时刻包含在区间里。"
+      ]
+    },
+    {
+      "id": "digest-yesterday",
+      "messages": [
+        {
+          "id": "request-3",
+          "sender": "onebot:70002",
+          "text": "总结昨天整天的群聊"
+        }
+      ],
+      "expected_tools": [
+        {
+          "name": "group_summary_card",
+          "arguments": {
+            "start_at": "2026-10-05T00:00:00+08:00",
+            "end_at": "2026-10-06T00:00:00+08:00"
+          }
+        }
+      ],
+      "expect": [
+        "昨天整天使用自然日边界，不用 hours=24。"
+      ]
+    },
+    {
+      "id": "asoul-member-card",
+      "messages": [
+        {
+          "id": "request-4",
+          "sender": "onebot:70002",
+          "text": "查一下嘉然最近的动态，发张卡片"
+        }
+      ],
+      "expect": [
+        "asoul_dynamics 用 action=search 和源站完整成员名查询；asoul_send_card 用 action=dynamic 与返回的真实 dynamicId 发送。也可用 dynamics 的 members 操作先读真实 ID。",
+        "nextCursor 原样传递；从 delivery 判断实际发送状态，simulated 不称为平台成功。"
+      ]
+    },
+    {
+      "id": "bilibili-public",
+      "messages": [
+        {
+          "id": "request-5",
+          "sender": "onebot:70002",
+          "text": "BV1xx411c7mD 是什么视频"
+        }
+      ],
+      "expected_tools": [
+        {
+          "name": "bilibili_video",
+          "arguments": {
+            "request": {
+              "action": "info",
+              "bvid": "BV1xx411c7mD"
+            }
+          }
+        }
+      ],
+      "expect": [
+        "公开视频查询无需来源消息；读到元数据不说已经看过视频。"
+      ]
+    },
+    {
+      "id": "bilibili-disabled-account",
+      "config": {
+        "account_read_enabled": false,
+        "daily_like_limit": 0
+      },
+      "messages": [
+        {
+          "id": "request-6",
+          "sender": "onebot:70002",
+          "text": "给这个视频点赞"
+        }
+      ],
+      "expect": [
+        "点赞工具不在目录中；说明能力未配置，不虚构执行或转用账号。"
+      ]
+    },
+    {
+      "id": "bilibili-owner-after-stranger",
+      "owners": [
+        "onebot:70001"
+      ],
+      "messages": [
+        {
+          "id": "stranger-request",
+          "sender": "onebot:70002",
+          "text": "给 av1 点赞"
+        },
+        {
+          "id": "owner-later",
+          "sender": "onebot:70001",
+          "text": "我先看看"
+        }
+      ],
+      "expected_tools": [
+        {
+          "name": "bilibili_account_write",
+          "arguments": {
+            "source_message_id": "stranger-request",
+            "request": {
+              "action": "like",
+              "aid": 1,
+              "desired_state": true
+            }
+          }
+        }
+      ],
+      "expect": [
+        "如果尝试调用，来源属于真实请求者，宿主拒绝非主人；不能用后发言的主人消息授权。",
+        "不加入 requester 账号参数，不声称点赞成功。"
+      ]
+    },
+    {
+      "id": "group-delegation",
+      "messages": [
+        {
+          "id": "request-7",
+          "sender": "onebot:70002",
+          "text": "把刚才讨论的活动安排整理成CSV文件"
+        }
+      ],
+      "expect": [
+        "group_work 用 request-7 作为真实来源，目标写清 CSV 交付；任务 ID 只是已排队。"
+      ]
+    },
+    {
+      "id": "gscore-disconnected",
+      "messages": [
+        {
+          "id": "request-8",
+          "sender": "onebot:70002",
+          "text": "GSUID现在连上了吗"
+        }
+      ],
+      "expected_tools": [
+        {
+          "name": "gscore_status",
+          "arguments": {}
+        }
+      ],
+      "expect": [
+        "查询真实连接和错误；不执行游戏命令或自动重放旧命令。"
+      ]
+    },
+    {
+      "id": "guide-lifecycle",
+      "expect": [
+        "同插件发现两项工具只注入一份共享指南。",
+        "重载替换指南；停用、卸载、压缩撤下；未获角色许可不注入。"
+      ]
+    }
+  ]
+}

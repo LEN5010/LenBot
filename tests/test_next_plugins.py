@@ -8,7 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 from len_bot.next.config import load_host_config
-from len_bot.next.plugins.host import BUILTIN, PluginHost, read_manifest
+from len_bot.next.plugins.host import PluginHost
+from len_bot.next.plugins.manifest import read_manifest
+
+SAMPLE = Path(__file__).parents[1] / "tests/fixtures/plugins/sample"
 from len_bot.next.platform.onebot_messages import parse_notice
 
 
@@ -134,14 +137,14 @@ default = []
 
 
 def test_plugin_owner_permission_uses_root_identity_and_enabled_scene(tmp_path):
-    root = _root(tmp_path, {"clock": {}}, ["clock"])
+    root = _root(tmp_path, {"sample": {}}, ["sample"])
     path = root / "lenbot.config.json"
     source = json.loads(path.read_text())
     source["owners"] = ['onebot:70001']
     source["scenes"]["onebot:group:80001"]["tasks"] = {"owner": 'onebot:70002'}
     path.write_text(json.dumps(source))
     host = PluginHost(load_host_config(root), core_tools=CORE)
-    ctx = host.plugins["clock"].context
+    ctx = host.plugins["sample"].context
     ctx.require_owner("onebot:group:80001", 'onebot:70001')
     for scene, requester in (("onebot:group:80001", 'onebot:70002'), ("onebot:group:80001", 'onebot:90001'),
                              ("onebot:private:80002", 'onebot:70001')):
@@ -151,7 +154,7 @@ def test_plugin_owner_permission_uses_root_identity_and_enabled_scene(tmp_path):
     path.write_text(json.dumps(source))
     host = PluginHost(load_host_config(root), core_tools=CORE)
     with pytest.raises(PermissionError):
-        host.plugins["clock"].context.require_owner("onebot:group:80001", 'onebot:70001')
+        host.plugins["sample"].context.require_owner("onebot:group:80001", 'onebot:70001')
     for invalid in ('onebot:90001', "nickname", 70001, "0", ""):
         source["owners"] = invalid
         path.write_text(json.dumps(source))
@@ -172,19 +175,23 @@ def _root(tmp_path: Path, plugins: dict | None, scene_plugins: list[str] | None 
                    "onebot:private:80002": {"persona": "role"}},
     }
     if plugins is not None:
-        source["plugins"] = plugins
+        source["plugins"] = {"paths": ["plugins"], **plugins}
+        if "sample" in plugins:
+            base = root / source["plugins"]["paths"][0]
+            if not (base / "sample").exists():
+                _copy_sample(base, "sample")
     (root / "lenbot.config.json").write_text(json.dumps(source, ensure_ascii=False), encoding="utf-8")
     return root
 
 
-def _copy_clock(target: Path, name: str, *, interface: int = 1) -> Path:
+def _copy_sample(target: Path, name: str, *, interface: int = 1) -> Path:
     directory = target / name
-    shutil.copytree(BUILTIN / "clock", directory, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(SAMPLE, directory, ignore=shutil.ignore_patterns("__pycache__"))
     manifest = (directory / "plugin.toml").read_text(encoding="utf-8")
-    manifest = manifest.replace('name = "clock"', f'name = "{name}"').replace("interface = 1", f"interface = {interface}")
+    manifest = manifest.replace('name = "sample"', f'name = "{name}"').replace("interface = 1", f"interface = {interface}")
     (directory / "plugin.toml").write_text(manifest, encoding="utf-8")
     source = (directory / "__init__.py").read_text(encoding="utf-8")
-    (directory / "__init__.py").write_text(source.replace('@command("时间"', f'@command("时间{name}"'),
+    (directory / "__init__.py").write_text(source if name == "sample" else source.replace('@command("示例"', f'@command("示例{name}"'),
                                            encoding="utf-8")
     return directory
 
@@ -197,7 +204,7 @@ async def test_dependency_restore_ignores_unapplied_first_install_candidate(tmp_
     from len_bot.next.maintenance.plugin_dependencies import install
     from len_bot.next.plugins.install import PluginInstaller
 
-    root = _root(tmp_path, {'paths': ['plugins'], 'clock': {}, 'counter': {}, 'disabled': ['counter']})
+    root = _root(tmp_path, {'paths': ['plugins'], 'sample': {}, 'counter': {}, 'disabled': ['counter']})
     package = Path(__file__).parents[1] / 'developer/examples/counter'
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, 'w') as archive:
@@ -210,53 +217,56 @@ async def test_dependency_restore_ignores_unapplied_first_install_candidate(tmp_
 
     await install(root)
 
-    assert '已配置插件：clock' in capsys.readouterr().out
+    assert '已配置插件：sample' in capsys.readouterr().out
     assert installer.read('counter') == record_before
     assert (root / 'lenbot.config.json').read_bytes() == config_before
     assert not (installer.directory / 'counter').exists()
 
 
-def test_builtin_clock_manifest_loads_with_checked_values(tmp_path):
-    manifest = read_manifest(BUILTIN / "clock")
-    assert manifest.config["show_seconds"].type == "boolean"
+def test_external_sample_manifest_loads_with_checked_values(tmp_path):
+    directory = _copy_sample(tmp_path, "sample")
+    manifest = read_manifest(directory)
+    assert manifest.config["show_details"].type == "boolean"
 
-    root = _root(tmp_path, {"clock": {"show_seconds": False}}, ["clock"])
+    root = _root(tmp_path, {"sample": {"show_details": False}}, ["sample"])
     host = PluginHost(load_host_config(root), core_tools=CORE)
-    record = host.plugins["clock"]
+    record = host.plugins["sample"]
     assert (record.status, record.error, record.scenes) == ("loaded", None, ("onebot:group:80001",))
-    assert record.context.config == {"show_seconds": False}
+    assert record.context.config == {"show_details": False}
 
 
 def test_interface_mismatch_and_bad_values_fail_only_that_plugin(tmp_path):
     extra = tmp_path / "personal"
     extra.mkdir()
-    _copy_clock(extra, "oldclock", interface=2)
-    _copy_clock(extra, "badclock")
-    root = _root(tmp_path, {"paths": [str(extra)], "clock": {},
-                            "oldclock": {}, "badclock": {"show_seconds": "yes"}}, ["clock", "badclock"])
+    _copy_sample(extra, "oldsample", interface=2)
+    _copy_sample(extra, "badsample")
+    root = _root(tmp_path, {"paths": [str(extra)], "sample": {},
+                            "oldsample": {}, "badsample": {"show_details": "yes"}}, ["sample", "badsample"])
     host = PluginHost(load_host_config(root), core_tools=CORE)
-    assert host.plugins["clock"].status == "loaded"
-    old = host.plugins["oldclock"]
+    assert host.plugins["sample"].status == "loaded"
+    old = host.plugins["oldsample"]
     assert old.status == "failed" and "插件接口版本 2 与宿主接口版本 1 不一致" in old.error
-    bad = host.plugins["badclock"]
-    assert bad.status == "failed" and "plugins.badclock 配置不合法" in bad.error
-    assert host.commands == {"时间": "clock"}
-    assert "时间badclock" not in host.commands
+    bad = host.plugins["badsample"]
+    assert bad.status == "failed" and "plugins.badsample 配置不合法" in bad.error
+    assert host.commands == {"示例": "sample"}
+    assert "示例badsample" not in host.commands
 
 
 def test_duplicate_or_missing_plugin_directories_are_reported(tmp_path):
     extra = tmp_path / "personal"
     extra.mkdir()
-    shutil.copytree(BUILTIN / "clock", extra / "clock", ignore=shutil.ignore_patterns("__pycache__"))
-    root = _root(tmp_path, {"paths": [str(extra), str(tmp_path / "missing")], "clock": {}, "absent": {}})
+    shutil.copytree(SAMPLE, extra / "sample", ignore=shutil.ignore_patterns("__pycache__"))
+    second = tmp_path / "second"
+    _copy_sample(second, "sample")
+    root = _root(tmp_path, {"paths": [str(extra), str(second), str(tmp_path / "missing")], "sample": {}, "absent": {}})
     host = PluginHost(load_host_config(root), core_tools=CORE)
-    assert host.plugins["clock"].status == "failed" and "多个目录提供同名插件" in host.plugins["clock"].error
-    assert "未在内置目录和 plugins.paths 中找到" in host.plugins["absent"].error
+    assert host.plugins["sample"].status == "failed" and "多个目录提供同名插件" in host.plugins["sample"].error
+    assert "未在 plugins.paths 中找到" in host.plugins["absent"].error
     assert host.discovery_errors == [f"插件目录不存在或不是目录：{tmp_path / 'missing'}"]
 
 
 def test_manifest_name_must_match_directory(tmp_path):
-    directory = _copy_clock(tmp_path, "renamed")
+    directory = _copy_sample(tmp_path, "renamed")
     (directory / "plugin.toml").write_text(
         (directory / "plugin.toml").read_text(encoding="utf-8").replace('name = "renamed"', 'name = "other"'),
         encoding="utf-8")
@@ -269,7 +279,7 @@ def test_duplicate_message_rules_fail_plugin_configuration(tmp_path, decorator):
     extra = tmp_path / "personal"
     extra.mkdir()
     for name in ("first", "duplicate"):
-        directory = _copy_clock(extra, name)
+        directory = _copy_sample(extra, name)
         (directory / "__init__.py").write_text(
             'from len_bot.next.plugin import Plugin, fullmatch, regex\n'
             f'class Rules(Plugin):\n    @{decorator}\n'
@@ -283,9 +293,9 @@ def test_duplicate_message_rules_fail_plugin_configuration(tmp_path, decorator):
 
 @pytest.mark.asyncio
 async def test_stopped_plugin_context_loses_host_capabilities(tmp_path):
-    root = _root(tmp_path, {"clock": {}}, ["clock"])
+    root = _root(tmp_path, {"sample": {}}, ["sample"])
     host = PluginHost(load_host_config(root), core_tools=CORE)
-    ctx = host.plugins["clock"].context
+    ctx = host.plugins["sample"].context
     await host.close()
     for call in (lambda: ctx.get_kv("counter"), lambda: ctx.set_kv("counter", 1),
                  lambda: ctx.delete_kv("counter"), lambda: ctx.send("onebot:group:80001", "text"),
@@ -301,7 +311,7 @@ async def test_stopped_plugin_context_loses_host_capabilities(tmp_path):
 async def test_tool_reference_cannot_execute_in_disabled_scene(tmp_path):
     extra = tmp_path / "personal"
     extra.mkdir()
-    directory = _copy_clock(extra, "scoped")
+    directory = _copy_sample(extra, "scoped")
     (directory / "__init__.py").write_text(
         'from len_bot.next.plugin import Plugin, tool\n'
         'class Scoped(Plugin):\n    @tool("scoped_read", "读取")\n'
@@ -317,11 +327,26 @@ async def test_tool_reference_cannot_execute_in_disabled_scene(tmp_path):
         await host.close()
 
 
+@pytest.mark.asyncio
+async def test_local_harness_reports_enabled_scenes(tmp_path):
+    from len_bot.next.plugin_testing import PluginTest
+
+    directory = _copy_sample(tmp_path, "scenes")
+    (directory / "__init__.py").write_text(
+        'from len_bot.next.plugin import Plugin, command\n'
+        'class Scenes(Plugin):\n    @command("场景", "列出")\n'
+        '    async def list(self, ctx, args):\n        await ctx.reply(",".join(self.ctx.scenes))\n',
+        encoding="utf-8")
+    async with PluginTest(directory, config={"show_details": True}) as bot:
+        assert await bot.message("/场景")
+        assert bot.deliveries[-1].text == "onebot:group:80001"
+
+
 @pytest.mark.parametrize(("plugins", "scene_plugins", "message"), [
-    (None, ["clock"], "not configured under root plugins"),
-    ({"clock": {}}, ["clock", "clock"], "must not repeat"),
-    ({"Clock": {}}, [], "lowercase letters"),
-    ({"clock": 1}, [], "must be an object"),
+    (None, ["sample"], "not configured under root plugins"),
+    ({"sample": {}}, ["sample", "sample"], "must not repeat"),
+    ({"Sample": {}}, [], "lowercase letters"),
+    ({"sample": 1}, [], "must be an object"),
 ])
 def test_plugin_configuration_is_checked(tmp_path, plugins, scene_plugins, message):
     root = _root(tmp_path, plugins, scene_plugins)
@@ -347,14 +372,20 @@ def test_onebot_notice_samples_route_to_scenes():
 
 
 @pytest.mark.asyncio
-async def test_rss_scene_disable_keeps_other_scene_cron(tmp_path):
-    root = _root(tmp_path, {"rss_broadcast": {"subscriptions": [{
-        "name": "fixture", "url": "https://example.invalid/feed.xml",
-        "scenes": ["onebot:group:80001", "onebot:private:80002"], "cron": "0 8 * * *", "timezone": "UTC",
-    }]}}, ["rss_broadcast"])
+async def test_scene_disable_keeps_other_scene_cron(tmp_path):
+    directory = _copy_sample(tmp_path / "plugins", "scheduled")
+    (directory / "__init__.py").write_text(
+        'from len_bot.next.plugin import Plugin\n'
+        'class Scheduled(Plugin):\n'
+        '    async def start(self):\n'
+        '        for scene in self.ctx.enabled_scenes:\n'
+        '            self.ctx.cron("fixture", "0 8 * * *", self.publish, scene=scene, timezone="UTC")\n'
+        '    async def publish(self, ctx):\n'
+        '        await ctx.reply("scheduled fixture")\n', encoding="utf-8")
+    root = _root(tmp_path, {"paths": [str(directory.parent)], "scheduled": {}}, ["scheduled"])
     path = root / "lenbot.config.json"
     source = json.loads(path.read_text())
-    source["scenes"]["onebot:private:80002"]["plugins"] = ["rss_broadcast"]
+    source["scenes"]["onebot:private:80002"]["plugins"] = ["scheduled"]
     path.write_text(json.dumps(source))
     host = PluginHost(load_host_config(root), core_tools=CORE)
     await host.start()
@@ -362,7 +393,7 @@ async def test_rss_scene_disable_keeps_other_scene_cron(tmp_path):
         assert len(host.state()["plugins"][0]["crons"]) == 2
         source["scenes"]["onebot:private:80002"]["plugins"] = []
         path.write_text(json.dumps(source))
-        await host.reload("rss_broadcast", load_host_config(root))
+        await host.reload("scheduled", load_host_config(root))
         state = host.state()["plugins"][0]
         assert state["status"] == "running"
         assert state["scenes"] == ["onebot:group:80001"]

@@ -5,7 +5,8 @@ import time
 from typing import Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from packaging.specifiers import SpecifierSet
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ..configuration.plugin import PLUGIN_NAME, PLUGIN_RESERVED, PluginCatalogSettings, catalog_url
 from .install import repository_url, revision_ref
@@ -22,11 +23,12 @@ class CatalogEntry(BaseModel):
     license: str = Field(min_length=1)
     version: str = Field(min_length=1)
     interface: int = Field(gt=0)
+    requires_lenbot: str | None = None
     category: str = Field(min_length=1)
     capabilities: list[str] = Field(default_factory=list)
     usage: list[str] = Field(default_factory=list)
-    install: Literal['builtin', 'git']
-    repository: str | None = None
+    install: Literal['git']
+    repository: str
     homepage: str | None = None
     ref: str | None = None
 
@@ -37,10 +39,15 @@ class CatalogEntry(BaseModel):
             raise ValueError('目录条目使用插件清单的有效名称')
         return value
 
+    @field_validator('requires_lenbot')
+    @classmethod
+    def host_range(cls, value: str | None) -> str | None:
+        return None if value is None else str(SpecifierSet(value))
+
     @field_validator('repository')
     @classmethod
-    def source(cls, value: str | None) -> str | None:
-        return None if value is None else repository_url(value)
+    def source(cls, value: str) -> str:
+        return repository_url(value)
 
     @field_validator('homepage')
     @classmethod
@@ -51,15 +58,6 @@ class CatalogEntry(BaseModel):
     @classmethod
     def selected_ref(cls, value: str | None) -> str | None:
         return None if value is None else revision_ref(value)
-
-    @model_validator(mode='after')
-    def installation(self):
-        if self.install == 'git' and self.repository is None:
-            raise ValueError('Git 目录条目需要 repository')
-        if self.install == 'builtin' and self.ref is not None:
-            raise ValueError('内置插件跟随宿主版本，不选择安装 ref')
-        return self
-
 
 class CatalogIndex(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)

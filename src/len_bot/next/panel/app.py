@@ -27,6 +27,7 @@ from .routes.permissions import register_host_permissions
 from .routes.settings import register_host_settings
 from ..runtime.lifecycle import HostLifecycle
 from .routes.restart import register_host_restart
+from .routes.updates import register_host_updates
 from .routes.operations import register_host_operations
 from .routes.memory import register_host_memory
 from .routes.tasks import register_host_tasks
@@ -82,6 +83,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
     register_host_browser(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_permissions(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_capabilities(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
+    register_host_updates(app, root=root, user=user)
     register_host_settings(app, root=root, running=config, user=user, write_lock=write_lock,
                            personas=lambda: {scene: chat.persona for scene, chat in runtime.chats.items()})
     register_host_persona(app, root=root, runtime=runtime, user=user, write_lock=write_lock)

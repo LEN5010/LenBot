@@ -42,3 +42,7 @@ jobs:
           name: release-packages
           path: ${{ runner.temp }}/release/artifacts/*
           if-no-files-found: error
+
+  install-smoke:
+    needs: build
+    uses: ./.github/workflows/install-smoke.yml

@@ -5,12 +5,13 @@ import os
 from pathlib import Path
 import stat
 import shutil
+import sys
 
 from ..configuration.tasks import WorkerSettings
 from .store import TERMINAL, Task
 
 
-DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+DIRECTORY_FLAGS = os.O_RDONLY if sys.platform == 'win32' else os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
 def continuation_state(item: Task, discarded: bool) -> str:

@@ -7,7 +7,7 @@ import { mdiViewDashboardOutline, mdiChatProcessingOutline, mdiForumOutline, mdi
   mdiPuzzleOutline, mdiBellOutline } from '@mdi/js'
 import { logout, useAuth } from '../composables/useAuth.js'
 import { confirm } from '../composables/useConfirm.js'
-import { sceneTarget, showsScene, useCurrentScene } from '../composables/useCurrentScene.js'
+import { useCurrentScene } from '../composables/useCurrentScene.js'
 import { host, readHostState, readOverview, readPendingRestart, readSceneTitles } from '../host/store.js'
 import { attentionItems } from '../host/attention.js'
 import { sectionLabel } from '../host/labels.js'
@@ -15,7 +15,6 @@ import { sceneName, sceneTitles } from '../api.js'
 import { hostAreas, hostGroups, hostTarget } from '../router/hostNavigation.js'
 import ErrorNote from '../host/ui/ErrorNote.vue'
 import StatusBadge from '../host/ui/StatusBadge.vue'
-import ScenePicker from '../host/ui/ScenePicker.vue'
 import ConfirmHost from '../host/ui/ConfirmHost.vue'
 import RestartDialog from '../host/components/RestartDialog.vue'
 import { restartFlow, openRestart } from '../host/restart.js'
@@ -29,7 +28,6 @@ const icons = { home: mdiViewDashboardOutline, trial: mdiChatProcessingOutline, 
 const area = computed(() => hostAreas.find(item => item.pages.includes(route.name)))
 const group = computed(() => hostGroups.find(item => item.areas.includes(area.value)))
 const { scene } = useCurrentScene()
-const scenePicker = computed(() => showsScene(route) && (host.state?.scenes.length || 0) > 0)
 const status = computed(() => {
   const state = host.state
   if (!state) return { text: host.stateError ? '状态读取失败' : '读取中', tone: host.stateError ? 'error' : 'neutral' }
@@ -93,7 +91,6 @@ async function exit() {
         <span v-if="group" class="muted">{{ group.title }}</span><span v-if="group" class="sep">/</span>
         <strong>{{ area?.title || route.meta.title }}</strong>
       </nav>
-      <ScenePicker v-if="scenePicker" :model-value="scene" @update:model-value="value => router.push(sceneTarget(route, value))" />
       <v-spacer />
       <span v-if="host.state?.delivery === 'simulated'" class="shell-pill muted">模拟发送</span>
       <span class="shell-pill"><StatusBadge dot :pulse="status.tone === 'success'" :kind="status.kind" :value="status.value" :text="status.text" :tone="status.tone" /></span>

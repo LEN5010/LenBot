@@ -25,4 +25,7 @@ src/len_bot/web/static/dist/
 !deploy/
 !deploy/current/
 !deploy/current/**
+!deploy/updater/
+!deploy/updater/**
+deploy/updater/__pycache__/
 **/.lenbot-instance.lock

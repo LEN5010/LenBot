@@ -12,7 +12,7 @@ from ..media.audio_store import AudioStore
 from ..config import LabConfig
 from .recap import project_history
 from ..models.projection import project_messages, project_old_results
-from ..tools.discovery import DEFERRED_NAMES
+from ..tools.discovery import DEFERRED_NAMES, discovery_view
 from ..learning.jargon_store import JargonStore
 from ..memory.service import MemoryService
 from ..platform.messages import ChatMessage, plain_text, render_batch, render_message, render_text
@@ -52,11 +52,13 @@ def expression_principles(persona: Persona) -> str:
 
 def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, platform: bool,
                  skills: tuple[Skill, ...] = (),
-                 external: list[dict] = (), discovered: Sequence[str] = ()) -> str:
+                 external: list[dict] = (), discovered: Sequence[str] = (),
+                 external_info: Sequence[dict] = ()) -> str:
     """Render the actual stable mind system text for this scene and outlet."""
     allowed_names = {tool["function"]["name"] for tool in allowed}
     deferred_names = DEFERRED_NAMES if "tool_search" in allowed_names else frozenset()
     names = (allowed_names - deferred_names) | (set(discovered) & allowed_names)
+    info_by_name = {info["discovery"]["name"]: info for info in external_info}
     deferred = [tool for tool in allowed if tool["function"]["name"] in deferred_names] + list(external)
     system = Template((PROMPTS / "next_mind.md").read_text()).substitute(
         name=persona.name, scene=config.scene, bot_id=config.bot_id,
@@ -97,8 +99,18 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
         )
     if "tool_search" in names:
         system += "\n" + Template((PROMPTS / "next_tools.md").read_text()).substitute(
-            catalog="\n".join(f"- {tool['function']['name']}：{tool['function']['description'].split('；')[0]}"
-                              for tool in deferred) or "（当前没有允许发现的低频工具）")
+            catalog="\n".join(f"- {item['name']} [{item['source']}]：{item['description']}"
+                for item in [info_by_name[tool["function"]["name"]]["discovery"]
+                             if tool["function"]["name"] in info_by_name else discovery_view(tool)
+                             for tool in deferred]) or "（当前没有允许发现的低频工具）")
+    guides = {}
+    discovered_names = set(discovered)
+    for info in external_info:
+        item = info["discovery"]
+        if item["name"] in discovered_names and info["instructions"]:
+            guides[item["source"]] = info["instructions"]
+    for source, guide in guides.items():
+        system += f"\n<{source}工具指南>\n{guide}\n</{source}工具指南>"
     return system
 
 
@@ -163,13 +175,15 @@ class ChatContext:
         self.platform, self.memory = platform, memory
         self.system: str
 
-    def configure_tools(self, allowed: list[dict], external: list[dict], *, skills: tuple[Skill, ...]) -> None:
+    def configure_tools(self, allowed: list[dict], external: list[dict], *, skills: tuple[Skill, ...],
+                        external_info: Sequence[dict] = ()) -> None:
         self.allowed, self.external, self.skills = allowed, external, skills
+        self.external_info = external_info
         self.refresh_tools()
 
     def refresh_tools(self) -> None:
         self.system = build_system(self.config, self.persona, self.allowed, platform=self.platform,
-                                   skills=self.skills, external=self.external,
+                                   skills=self.skills, external=self.external, external_info=self.external_info,
                                    discovered=self.store.load_discovered_tools(self.config.scene))
 
     def render(self, message: ChatMessage) -> str:

@@ -75,7 +75,7 @@ def initialize(root: Path, item: FirstSetup) -> dict:
                       behavior=item.brief, self_reference=['我'], aliases=[], tools='all', skills=[],
                       styles=[], voice=item.voice_text, boundaries=item.boundaries, examples=[])
     source = {
-        'mode': 'isolated-multi', 'bot_id': item.bot_id, 'owners': item.owners,
+        'config_version': 1, 'mode': 'isolated-multi', 'bot_id': item.bot_id, 'owners': item.owners,
         'timezone': item.timezone, 'delivery': item.delivery, 'database': 'state/lenbot.sqlite3',
         'onebot': item.onebot.model_dump(mode='json'),
         'compaction': item.compaction.model_dump(mode='json'),
@@ -116,9 +116,9 @@ def initialize(root: Path, item: FirstSetup) -> dict:
             'next': '配置已保存。首次配置向导将进入面板；离线初始化命令仍需显式启动。'}
 
 
-def create_setup_app(root: Path, token: str, completed: asyncio.Event) -> FastAPI:
+def create_setup_app(root: Path, token: str, completed: asyncio.Event, *, container: bool = False) -> FastAPI:
     app = FastAPI(title='LenBot 首次配置')
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=['127.0.0.1', 'localhost'])
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=['*'] if container else ['127.0.0.1', 'localhost'])
     lock = asyncio.Lock()
 
     @app.exception_handler(RequestValidationError)
@@ -163,8 +163,12 @@ def create_setup_app(root: Path, token: str, completed: asyncio.Event) -> FastAP
     @app.post('/api/setup', dependencies=[Depends(authorize)])
     async def save(item: FirstSetup):
         async with lock:
+            if container:
+                item = item.model_copy(update={'panel_host': '0.0.0.0'})
             try:
                 result = await asyncio.to_thread(initialize, root, item)
+                if container:
+                    result['panel_url'] = '/'
             except FileExistsError as error:
                 raise HTTPException(409, str(error)) from error
             except (ValueError, OSError) as error:
@@ -180,17 +184,18 @@ def create_setup_app(root: Path, token: str, completed: asyncio.Event) -> FastAP
     return app
 
 
-async def run_setup(root: Path) -> None:
+async def run_setup(root: Path, *, container: bool = False) -> None:
     token = secrets.token_urlsafe(32)
     completed = asyncio.Event()
     with socket.socket() as listener:
-        listener.bind(('127.0.0.1', 0))
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(('0.0.0.0', 11307) if container else ('127.0.0.1', 0))
         listener.listen()
         port = listener.getsockname()[1]
-        app = create_setup_app(root, token, completed)
+        app = create_setup_app(root, token, completed, container=container)
         server = uvicorn.Server(uvicorn.Config(app, log_level='warning', access_log=False))
         print(f'尚无根配置。请打开 http://127.0.0.1:{port}/#token={token}\n'
-              '这里只保存首次配置，不连接 OneBot、不调用模型；保存后从此实例目录重新执行刚才的启动命令。', flush=True)
+              '保存后直接启动，按新配置连接 OneBot 并打开面板。', flush=True)
         serving = asyncio.create_task(server.serve(sockets=[listener]))
         saving = asyncio.create_task(completed.wait())
         try:

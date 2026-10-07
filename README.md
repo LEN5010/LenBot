@@ -6,6 +6,10 @@
 
 LenBot 是一个长期待在群里的聊天 Agent。它通过 OneBot v11 接入 QQ，用 Python、asyncio 和 SQLite 写成，自带网页管理面板。
 
+安装和使用说明见**[文档站](https://lendevs.github.io/LenBot/)**。
+
+<img src="website/public/screenshots/home.png" alt="面板首页" width="860">
+
 ## 设计思路
 
 LenBot 的基本单位是群聊场景。每个群（或私聊）都有一个一直存在的 Agent 会话：
@@ -29,15 +33,22 @@ LenBot 的基本单位是群聊场景。每个群（或私聊）都有一个一�
 | 学习 | 从群聊里学说法、黑话和表情，观察群友对回复的反应；每一项都能在面板里采用、修改或停用 |
 | 管理 | 面板管理模型、预算、权限、提醒和日志；主人也可以在群里用一句话改设置 |
 
+群聊总结和 GSUID Core 桥接通过[独立插件](developer/plugin-examples.md)按需安装与更新。
+
 ## 运行方式
 
-三种方式运行的是同一个程序。`len-bot` 第一次启动时没有配置，会打开网页向导：连接 OneBot、读出 Bot 账号、填主人和模型，保存后进入面板。
+三种方式运行的是同一个程序。第一次启动时没有配置，会打印一个网页向导的链接：连接 OneBot、读出 Bot 账号、填主人和模型，保存后进入面板。
 
 | 方式 | 适合 | 说明 |
 |---|---|---|
-| 部署包 | Linux／macOS 日常使用 | 只需要 [uv](https://docs.astral.sh/uv/)，自带服务启停和停机升级，见[部署包](deploy/package/README.md) |
-| Docker | 服务器、NAS、Windows（WSL2） | 实例数据放在命名卷里，见 [Docker 部署](deploy/current/docker.md) |
+| 部署包 | Linux、macOS、Windows 日常使用 | 只需要 [uv](https://docs.astral.sh/uv/)，自带服务启停；在面板里升级，失败可以恢复。见[部署包](https://lendevs.github.io/LenBot/guide/install-package) |
+| Docker | 服务器、NAS，或需要后台任务的 Windows | 实例数据放在命名卷里，同样在面板里升级。见 [Docker](https://lendevs.github.io/LenBot/guide/install-docker) |
 | 源码 | 开发、想跟着主线走 | `uv` 直接从源码启动，见下文和[开发指南](CONTRIBUTING.md) |
+
+下载地址：
+
+- 部署包：[GitHub Releases](https://github.com/lendevs/LenBot/releases)，`lenbot-<版本>-linux.tar.gz`、`-macos.tar.gz`、`-windows.zip`。
+- 镜像：`ghcr.io/lendevs/lenbot`、`lenbot-updater`、`lenbot-worker`，Docker Hub 上是同名的 `docker.io/lendevs/...`，支持 amd64 和 arm64。
 
 从源码运行需要 uv 和 Node.js 22（用来构建面板）：
 
@@ -58,6 +69,7 @@ uv run --no-sync len-bot  # 第一次会打印向导链接
 
 | 想做什么 | 去哪看 |
 |---|---|
+| 安装、首次配置、日常使用 | [文档站](https://lendevs.github.io/LenBot/) |
 | 选择部署方式、可选服务 | [部署](deploy/README.md) |
 | 日常使用、角色、插件和任务维护 | [使用与维护](deploy/current/operations.md) |
 | 了解内部结构 | [架构](developer/architecture.md) |
@@ -67,7 +79,7 @@ uv run --no-sync len-bot  # 第一次会打印向导链接
 
 ## 现状
 
-LenBot 还没有发布正式版本。目前只有 OneBot（QQ）一个平台适配器，提示词和面板只有中文，不提供 TTS。已知问题和验证范围写在每个版本的发行说明里。
+首个公开版本是 0.2.0，各版本的变化、兼容要求和已知问题见 [changelogs](changelogs/)。目前只有 OneBot（QQ）一个平台适配器，提示词和面板只有中文，不提供语音合成（TTS）。
 
 ## 许可证
 

@@ -1,0 +1,15 @@
+name = "sample"
+version = "1.0.0"
+interface = 1
+requires_lenbot = ">=0.2,<1"
+requires_python = ">=3.13"
+platforms = ["linux", "darwin", "win32"]
+reload = "plugin"
+authors = ["LEN5010"]
+license = "AGPL-3.0-only"
+description = "插件配置与权限协议测试样本。"
+
+[config.show_details]
+type = "boolean"
+description = "是否显示详细回复"
+default = true

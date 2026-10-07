@@ -1,6 +1,6 @@
 [project]
 name = "len-bot"
-version = "0.1.0"
+version = "0.2.0"
 description = "QQ group-chat bot with tool calls, background work, and an operator dashboard"
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -32,6 +32,7 @@ dependencies = [
 
 [project.scripts]
 len-bot = "len_bot:main"
+lenbot-container = "len_bot.next.launcher:container_main"
 lenbot-eval = "len_bot.eval.replay:main"
 
 [build-system]
@@ -41,7 +42,7 @@ build-backend = "uv_build"
 # The source distribution includes panel sources and deployment recipes;
 # the wheel contains runtime code and the built panel, not its build tools.
 [tool.uv.build-backend]
-source-include = [".github/**", "uv.lock", ".dockerignore", "AGENTS.md", "CONTRIBUTING.md", "CONTRIBUTING.en.md", "README.en.md", "SECURITY.md", "scripts/**", "docker/**", "deploy/**", "developer/**", "examples/**"]
+source-include = [".github/**", "uv.lock", ".dockerignore", "AGENTS.md", "CONTRIBUTING.md", "CONTRIBUTING.en.md", "README.en.md", "SECURITY.md", "scripts/**", "docker/**", "deploy/**", "developer/**", "examples/**", "changelogs/**"]
 source-exclude = ["src/len_bot/web/frontend/node_modules", "**/__pycache__", "**/*.pyc", "**/.lenbot-instance.lock",
                   "examples/replay/lenbot.config.json", "examples/replay/chat.sqlite3*", "examples/replay/runs"]
 wheel-exclude = [

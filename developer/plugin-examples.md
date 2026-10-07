@@ -1,0 +1,15 @@
+# 独立插件与示例
+
+LenBot 提供插件接口、安装和运行能力，业务插件独立安装和更新，不随宿主打包。
+
+| 插件 | 群内入口 | 所需能力 | 仓库 |
+|---|---|---|---|
+| group_digest | `/群日报 [小时数]`、`/群总结 [要求]`、`/群工作 要求` | 总结使用已有模型绑定；群工作需要 worker 与发送者任务权限 | [群聊总结](https://github.com/lendevs/lenbot-plugin-group-digest) |
+| gscore_adapter | `/gs 命令`、`/gs连接` | 已运行的 GSUID Core；状态工具沿角色许可 | [GSUID Core 桥接](https://github.com/lendevs/lenbot-plugin-gscore-adapter) |
+| counter | `/计数`、`计数加一`、`/计数清零` | 无模型；每群独立 KV | [教学示例](examples/counter/)、[插件模板](https://github.com/lendevs/lenbot-plugin-template) |
+
+在「能力 → 插件 → 发现」选择插件并安装，或填写仓库地址、上传 ZIP。准备后填写参数并应用，再为目标群打开。详情显示目录介绍版本、已安装源码版本与实际加载版本。
+
+从旧内置版本迁移时，先更新宿主，再安装同名独立插件；原参数、选群和插件数据可以保留。时间查询与 RSS 播报已移除，旧实例需删除根配置和各群中的 `clock`、`rss_broadcast` 引用。宿主每轮仍向聊天模型提供按场景时区计算的当前时间。
+
+命令匹配和自动播报可直接发送，处理结果进入后续聊天上下文，不因此额外唤醒主脑。配置表单取自实际插件清单；发现目录格式见[静态目录](plugin-catalog.md)。

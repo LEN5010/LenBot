@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+from .signals import install_stop
 import logging
 import sqlite3
 from collections.abc import Callable
@@ -390,9 +391,7 @@ class NetworkRuntime:
         installed: list[signal.Signals] = []
         try:
             if manage_signals:
-                for sig in (signal.SIGINT, signal.SIGTERM):
-                    loop.add_signal_handler(sig, self.stop)
-                    installed.append(sig)
+                remove_signals = install_stop(self.stop)
             if self.tasks is not None:
                 await self.tasks.recover()
             if not await self._start_platform(manual_connection=manual_connection):
@@ -499,8 +498,8 @@ class NetworkRuntime:
                     self._status("stopped")
                     self._emit({"type": "runtime", "status": "stopped"})
             finally:
-                for sig in installed:
-                    loop.remove_signal_handler(sig)
+                if manage_signals:
+                    remove_signals()
             if self.storage_error is not None:
                 raise self.storage_error
 

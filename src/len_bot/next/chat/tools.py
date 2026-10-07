@@ -13,7 +13,7 @@ from len_bot.media.images import image_block
 from ..media.audio import TRANSCRIBE_TOOL, AudioService, TranscribeArguments
 from .context import PROMPTS
 from ..config import LabConfig
-from ..tools.discovery import DISCOVERY_REQUIRED_NAMES, DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, model_schema, search_tools
+from ..tools.discovery import DISCOVERY_REQUIRED_NAMES, DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, discovery_view, model_schema, search_tools
 from ..platform.delivery import Expression
 from ..tools.external_tools import ExternalTool
 from ..platform.file_delivery import SEND_FILE_TOOL, SendFileArguments, execute_send_file
@@ -246,6 +246,11 @@ class SceneTools:
         self.core_tools = [tool for tool in allowed if tool["function"]["name"] not in self.deferred_names]
         self.deferred_tools = ([tool for tool in allowed if tool["function"]["name"] in self.deferred_names]
                                + [tool.definition for tool in self.external.values()])
+        self.search_descriptions = {tool["function"]["name"]: tool["function"]["description"]
+                                    for tool in self.deferred_tools}
+        self.discovery_tools = [self.external[tool["function"]["name"]].discovery
+                                if tool["function"]["name"] in self.external else discovery_view(tool)
+                                for tool in self.deferred_tools]
         saved = self.store.load_discovered_tools(config.scene)
         self.discovered_tools = set(saved) & self.allowed_tool_names & self.deferred_names
         return allowed
@@ -278,13 +283,10 @@ class SceneTools:
             raise ValueError(f"当前请求未开放工具：{call.name}")
         if call.name == "tool_search":
             arguments = ToolSearchArguments.model_validate(call.arguments)
-            matched = search_tools(arguments.query, self.deferred_tools)
-            names = [tool["function"]["name"] for tool in matched]
+            matched = search_tools(arguments.query, self.discovery_tools, descriptions=self.search_descriptions)
+            names = [tool["name"] for tool in matched]
             discovered = sorted(set(self.store.load_discovered_tools(self.config.scene)) | set(names))
-            return tool_result({"available_from": "next_model_request", "tools": [
-                {"name": tool["function"]["name"],
-                 "description": tool["function"]["description"].split("。", 1)[0]}
-                for tool in matched]}), None, discovered
+            return tool_result({"available_from": "next_model_request", "tools": matched}), None, discovered
         if call.name in self.external:
             tool = self.external[call.name]
             return await tool.call(self.config.scene, call.arguments), None, None

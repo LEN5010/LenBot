@@ -14,14 +14,17 @@ import time
 import zipfile
 
 from build_deployment import build_deployments
+from release_metadata import source_revision, write_manifest
 
 
 REQUIRED_SOURCE = (
     'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md', 'uv.lock', '.dockerignore',
-    'scripts/install.sh', 'scripts/build_release.py', 'scripts/build_deployment.py',
+    'scripts/install.sh', 'scripts/build_release.py', 'scripts/build_deployment.py', 'scripts/release_metadata.py',
+    'deploy/updater/controller.py', 'deploy/updater/native.py', 'deploy/updater/common.py', 'deploy/updater/recovery.html',
+    'deploy/package/install.ps1',
     'deploy/package/install.sh', 'deploy/package/install.py', 'deploy/package/README.md',
-    'deploy/components.json', 'deploy/release-notes.md', 'deploy/releasing.md', 'deploy/browser/README.md',
-    '.github/workflows/release.yml', 'scripts/prepare_component.py', 'scripts/package_browser.py',
+    'deploy/components.json', 'deploy/releasing.md', 'scripts/prepare_release.py', 'deploy/updater/init.py', 'deploy/browser/README.md',
+    '.github/workflows/release.yml', '.github/workflows/install-smoke.yml', 'scripts/smoke_install.py', 'scripts/prepare_component.py', 'scripts/package_browser.py',
     'scripts/collect_python_licenses.py',
     'scripts/collect_frontend_licenses.cjs', 'deploy/current/README.md',
     'deploy/current/lenbot.service', 'deploy/current/Dockerfile',
@@ -185,7 +188,7 @@ def build(project: Path, output: Path, *, offline: bool, npm_cache: Path | None)
         record.update(finished=time.time(), returncode=process.returncode)
         if process.returncode:
             raise RuntimeError(f'{name} failed with exit {process.returncode}; raw output at {log}:\n'
-                               + log.read_text()[-4000:])
+                               + log.read_text(encoding='utf-8')[-4000:])
 
     try:
         raw = output / 'initial-source'
@@ -218,12 +221,13 @@ def build(project: Path, output: Path, *, offline: bool, npm_cache: Path | None)
         report['artifacts']['requirements'] = str(requirements)
         report['artifacts']['deployment_bundles'] = [str(path) for path in
             build_deployments(Path(report['artifacts']['wheel']), stage, artifacts, requirements)]
+        report['artifacts']['manifest'] = str(write_manifest(stage, artifacts, revision=source_revision(project)))
         report['finished'] = time.time()
     except BaseException as error:
         report['error'] = f'{type(error).__name__}: {error}'
         raise
     finally:
-        (output / 'result.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
+        (output / 'result.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     return report
 
 

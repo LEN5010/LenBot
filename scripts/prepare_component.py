@@ -10,7 +10,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 
 
 def prepare(name: str, destination: Path) -> dict:
-    component = json.loads((PROJECT / 'deploy/components.json').read_text())[name]
+    component = json.loads((PROJECT / 'deploy/components.json').read_text(encoding='utf-8'))[name]
     destination.mkdir(parents=True)
     def git(*arguments: str) -> None:
         subprocess.run(['git', '-C', str(destination), *arguments], check=True)
