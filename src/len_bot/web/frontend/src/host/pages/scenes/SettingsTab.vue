@@ -29,7 +29,7 @@ const timing = [
   ['direct_max_seconds', '被叫到后最多等几秒', ''],
   ['named_idle_seconds', '被提到名字后等几秒再回', ''],
   ['named_max_seconds', '被提到名字后最多等几秒', ''],
-  ['focus_seconds', '说完话后继续留意几秒', '这段时间里群友接话，Bot 更容易接着聊'],
+  ['focus_seconds', '说完话后继续留意几秒', '这段时间里群友接话，Bot 更容易接着聊；回复或 @ 别人的消息不算'],
   ['focus_idle_seconds', '留意期间等几秒再回', ''],
   ['focus_max_seconds', '留意期间最多等几秒', ''],
   ['keyword_cooldown_seconds', '关键词冷却（秒）', '同一个关键词两次叫醒 Bot 的最短间隔'],
