@@ -1,7 +1,5 @@
 import { reactive } from 'vue'
 
-// One confirmation at a time, shown by ConfirmHost in the shell. The title
-// names the object, the text says what will happen.
 export const confirmState = reactive({ open: false, title: '', text: '', confirmLabel: '确定', danger: false, resolve: null })
 
 export function confirm({ title, text = '', confirmLabel = '确定', danger = false }) {

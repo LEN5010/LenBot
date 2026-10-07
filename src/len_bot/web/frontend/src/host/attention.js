@@ -1,10 +1,7 @@
-// Things a person needs to act on, one line and one link each. Built from the
-// host state and today's overview; the home page lists them and the top bar counts them.
 import { sceneName } from '../api.js'
 import { runtimeLabel, turnFailed } from './labels.js'
 import { formatAgo } from './time.js'
 
-// The host can be running while QQ is not connected; say which one is wrong.
 export const connectionLabel = connection => connection.status === 'running' ? 'QQ 未连接' : runtimeLabel(connection.status)
 
 export function attentionItems(state, day) {
@@ -40,7 +37,6 @@ export function attentionItems(state, day) {
     items.push({ key: `task:${scene}`, text: `${sceneName(scene)} 今天有 ${total} 个任务失败`,
       to: { name: 'host-tasks', query: { scene } }, action: '查看' })
   }
-  // Stuck memory ingest is one line however many groups it affects; each group is retried on the memory page.
   if (day.memory_stuck.length) {
     const jobs = day.memory_stuck
     items.push({ key: 'memory', to: { name: 'host-memory', query: { scene: jobs[0].scene, tab: 'ingest' } }, action: '去重试',

@@ -1,6 +1,4 @@
 <script setup>
-// Collapsed extra text: error originals, raw records, long details.
-// `code` renders the slot as preformatted text.
 defineProps({ label: { type: String, required: true }, code: Boolean, open: Boolean })
 </script>
 <template>

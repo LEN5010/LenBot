@@ -7,7 +7,6 @@ import Panel from '../../ui/Panel.vue'
 import ResourceState from '../../ui/ResourceState.vue'
 import ErrorNote from '../../ui/ErrorNote.vue'
 
-// Takes effect immediately and survives restarts; not part of the saved config.
 const props = defineProps({ scene: { type: String, required: true } })
 const root = `/api/host/scenes/${encodeURIComponent(props.scene)}/control`
 const state = useResource(() => api(root))

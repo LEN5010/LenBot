@@ -1,4 +1,3 @@
-// Task requests and file URLs. Components own drafts and presentation.
 import { api, queryString } from '../../api.js'
 
 /**

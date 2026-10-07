@@ -2040,3 +2040,54 @@ def test_history_projection_policy_is_explicit_not_provider_inference(tmp_path, 
     _write_config(root, source)
     with pytest.raises(ValueError, match='history_policy'):
         load_config(root)
+
+
+@pytest.mark.parametrize("mode", ["isolated", "isolated-multi"])
+def test_old_configuration_format_names_the_offline_upgrade(tmp_path, mode):
+    root = tmp_path / "lab"
+    source = _config("personas/example") if mode == "isolated" else _host_config()
+    source["config_version"] = 2
+    source["models"]["roles"]["mind"]["price"] = {"input": 1, "output": 2}
+    _write_config(root, source)
+    with pytest.raises(ValueError) as failure:
+        load_instance_config(root)
+    message = str(failure.value)
+    assert "配置格式 2 早于当前程序使用的格式 3" in message
+    assert "python -m len_bot.next.maintenance.migrate_config" in message
+    assert "synthetic-secret-marker" not in message
+
+
+def test_unnumbered_configuration_with_removed_fields_points_to_the_upgrade(tmp_path):
+    # The shape that broke startup after model prices were removed: no config_version, a leftover price.
+    root = tmp_path / "lab"
+    source = _host_config()
+    source["models"]["roles"]["mind"]["price"] = {"input": 1, "output": 2}
+    _write_config(root, source)
+    with pytest.raises(ValueError) as failure:
+        load_host_config(root)
+    message = str(failure.value)
+    assert "models.roles.mind.price: Extra inputs are not permitted" in message
+    assert "没有 config_version" in message and "migrate_config" in message
+
+
+@pytest.mark.parametrize(("version", "expected"), [(4, "由更新的 LenBot 写入"), ("3", "must be an integer")])
+def test_newer_or_malformed_configuration_format_is_refused_plainly(tmp_path, version, expected):
+    root = tmp_path / "lab"
+    source = _host_config()
+    source["config_version"] = version
+    _write_config(root, source)
+    with pytest.raises(ValueError, match=expected):
+        load_host_config(root)
+
+
+def test_migrated_old_configuration_loads(tmp_path):
+    from len_bot.next.maintenance.migrate_config import migrate_config
+
+    root = tmp_path / "lab"
+    source = _host_config()
+    source["config_version"] = 2
+    source["models"]["roles"]["mind"]["price"] = {"input": 1, "output": 2}
+    _write_config(root, source)
+    assert migrate_config(root / "lenbot.config.json")
+    assert load_host_config(root).config_version == 3
+    assert (root / "lenbot.config.json.pre-tokens.bak").exists()

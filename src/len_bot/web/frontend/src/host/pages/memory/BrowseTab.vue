@@ -70,7 +70,6 @@ async function create() {
   creating.value = true
 }
 function changed(path) {
-  // A saved new file becomes the open file; a removed file closes the panel.
   file.value = path
   creating.value = false
   listing.reload()

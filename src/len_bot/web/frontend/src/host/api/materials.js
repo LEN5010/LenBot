@@ -1,4 +1,3 @@
-// Scene-shared materials, separate from private task input snapshots.
 import { api, queryString } from '../../api.js'
 
 /**

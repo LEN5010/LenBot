@@ -2,9 +2,6 @@ import { onMounted, onBeforeUnmount, unref } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { confirm } from './useConfirm.js'
 
-// Asks before a draft is lost: leaving the page, switching scene or tab, or
-// closing the browser tab. Query keys in `keep` (views of the same draft)
-// change freely. `confirmLeave()` is for in-page switches.
 export function useUnsavedChanges(dirty, { onDiscard, keep = [] } = {}) {
   const others = query => JSON.stringify(Object.entries(query).filter(([key]) => !keep.includes(key)).sort())
   async function confirmLeave() {

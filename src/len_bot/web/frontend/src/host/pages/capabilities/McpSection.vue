@@ -25,7 +25,6 @@ const route = useRoute(), router = useRouter()
 const mcp = useResource(() => api('/api/host/mcp'))
 const save = useAction(), act = useAction()
 const editing = ref(null), original = ref(null), actionError = ref(null)
-// The selected service is `?item=`; `?item=` with an empty value is a new one.
 const selected = computed(() => typeof route.query.item === 'string' ? route.query.item : null)
 const select = item => router.push({ query: { ...route.query, item } })
 const back = () => router.push({ query: { ...route.query, item: undefined } })
@@ -35,7 +34,6 @@ const names = computed(() => mcp.data.value
   ? [...new Set([...Object.keys(mcp.data.value.saved), ...Object.keys(running.value)])].sort() : [])
 const sceneOptions = computed(() => (mcp.data.value?.scenes || []).map(scene => ({ title: sceneName(scene), value: scene })))
 
-// Saved env and header values come back as null; a row left blank keeps the saved value.
 const rows = values => Object.entries(values || {}).map(([key, value]) => ({ key, value: value ?? '', saved: value === null }))
 function form(name, saved) {
   const transport = saved?.transport || { type: 'stdio', command: '', args: [], cwd: '.', env: {} }
@@ -106,7 +104,7 @@ const runtimeOf = name => running.value[name]
 
 <template>
   <ResourceState :resource="mcp" error-title="读取 MCP 服务失败">
-    <MasterDetail :selected="selected !== null" @back="back">
+    <MasterDetail :selected="selected !== null" :empty="!names.length" @back="back">
       <template #list>
         <Panel title="MCP 服务" flush>
           <template #actions><v-btn variant="outlined" size="small" :prepend-icon="mdiPlus" @click="select('')">添加</v-btn></template>
@@ -115,7 +113,7 @@ const runtimeOf = name => running.value[name]
               :subtitle="runtimeOf(name) ? `${runtimeOf(name).tools.length} 个工具 · ${runtimeOf(name).scenes.map(sceneName).join('、') || '没有群在用'}` : '重启后生效'">
               <template #meta><StatusBadge dot :kind="runtimeOf(name) ? 'mcp' : ''" :value="runtimeOf(name)?.status" :text="runtimeOf(name) ? '' : '待重启'" :tone="runtimeOf(name) ? '' : 'warning'" /></template>
             </ObjectRow>
-            <li v-if="!names.length" class="muted empty">还没有 MCP 服务</li>
+            <li v-if="!names.length" class="muted empty">还没有 MCP 服务。接入后，Bot 需要时会自己找到并使用它提供的工具。</li>
           </ObjectList>
         </Panel>
       </template>

@@ -62,7 +62,7 @@ async function submit(kind) {
       <v-textarea v-model="fakeIp" rows="2" auto-grow label="假 IP 网段" placeholder="198.18.0.0/15"
         hint="每行一个，以代理软件设置里的网段为准；没开 fake-ip 就留空。" persistent-hint />
       <v-text-field v-if="fakeIpList.length" v-model="publicDns" label="真实 DNS 查询地址"
-        hint="使用支持 DNS JSON 的解析服务；查询失败会返回错误，不改用其他服务。" persistent-hint />
+        hint="需要支持 DNS JSON 的解析服务。" persistent-hint />
     </SettingSection>
   </ResourceState>
 </template>

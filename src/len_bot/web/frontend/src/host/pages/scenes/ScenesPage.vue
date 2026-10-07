@@ -19,7 +19,7 @@ import PermissionsSection from '../settings/PermissionsSection.vue'
 import SceneAvatar from '../../ui/SceneAvatar.vue'
 
 const route = useRoute(), router = useRouter()
-const tabs = [['messages', '消息'], ['settings', '设置'], ['permissions', '权限'], ['brain', '大脑'], ['learning', '学习']]
+const tabs = [['messages', '消息'], ['settings', '设置'], ['permissions', '权限'], ['brain', '会话'], ['learning', '学习']]
 const { scene, current } = useCurrentScene()
 const tab = computed(() => tabs.some(([key]) => key === route.query.tab) ? route.query.tab : 'messages')
 const dirty = reactive({ settings: false, learning: false, permissions: false })
@@ -85,12 +85,12 @@ async function addScene() {
 </template>
 
 <style scoped>
-.scene-workbench{display:grid;grid-template-columns:280px minmax(0,1fr);gap:var(--sp-5);align-items:start}
+.scene-workbench{display:grid;grid-template-columns:280px minmax(0,1fr);gap:var(--sp-6);align-items:start}
 .scene-rail{display:grid;gap:2px;position:sticky;top:calc(var(--top-height, 64px) + var(--sp-4));max-height:calc(100vh - 140px);overflow-y:auto;
-  padding:var(--sp-2);border:1px solid var(--line);border-radius:var(--radius-lg, 14px);background:var(--surface)}
+  padding:0 var(--sp-4) 0 0;border-right:1px solid var(--line)}
 .rail-item{display:flex;align-items:center;gap:var(--sp-3);width:100%;padding:8px 10px;border:0;border-radius:var(--radius);background:none;
   color:inherit;font:inherit;text-align:left;cursor:pointer;transition:background var(--dur-1)}
-.rail-item:hover{background:var(--hover)}
+.rail-item:hover{background:var(--fill)}
 .rail-item.active{background:var(--selected)}
 .rail-item.active strong{color:var(--primary)}
 .rail-text{display:grid;min-width:0;line-height:1.35}

@@ -87,7 +87,7 @@ def save_config(root: Path, running: HostConfig, edit: Callable[[dict, HostConfi
     try:
         if _mind_binding(candidate) != _mind_binding(running):
             raise ValueError(
-                "运行中不能保存大脑协议、地址或模型变更；请先停机，再显式转换可移植历史。根配置未保存"
+                "运行中不能保存聊天模型的协议、地址或模型变更；请先停机，再显式转换可移植历史。根配置未保存"
             )
         if running.worker is not None and candidate.worker is not None:
             if any(getattr(running.worker, key) != getattr(candidate.worker, key)

@@ -28,8 +28,6 @@ const items = computed(() => {
   return [...messages.map(item => ({ key: `m${item.seq}`, message: item, time: item.time })), ...notes]
     .sort((a, b) => a.time - b.time)
 })
-// One scene runs one turn at a time, so a Bot message saved inside a turn's
-// time span belongs to that turn.
 function turnOf(message) {
   return (state.data.value?.turns || []).find(turn => turn.started <= message.time && (turn.ended ?? Infinity) >= message.time)
 }

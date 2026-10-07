@@ -1,5 +1,4 @@
 <script setup>
-// The role's picture in the panel. It is saved right away, apart from the form.
 import { computed, ref } from 'vue'
 import { api } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
