@@ -38,7 +38,7 @@ LenBot 自己不登录 QQ。它连接一个已经登录 QQ、打开了 OneBot v1
 - **模拟发送**：照常收消息、想回复，回复只记在面板里，不发到 QQ。刚装好时用它看效果。
 - **真实发送到 QQ**：角色和设置都调好后，在**设置 → 连接**里切换，重启后生效。
 
-![设置 → 连接：连接方式、OneBot 地址、访问令牌和发送方式](/screenshots/update.png)
+![设置 → 连接：连接方式、OneBot 地址、访问令牌和发送方式](/screenshots/connection.png)
 
 ## Docker 里的网络
 
