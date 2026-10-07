@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from starlette.background import BackgroundTask
@@ -16,14 +17,21 @@ from .trials import HostTrials
 from ...runtime.network import NetworkRuntime
 from ...work.store import TaskStore
 
+LOOPBACK = {'127.0.0.1', 'localhost', '::1'}
+
 
 def register_host_restart(app: FastAPI, *, root: Path, running: HostConfig,
                           runtime: NetworkRuntime, trials: HostTrials, lifecycle: HostLifecycle,
                           user: Callable[[Request], str], write_lock: asyncio.Lock) -> None:
     @app.get('/api/host/ready')
-    async def ready(response: Response):
+    async def ready(request: Request, response: Response):
         # Login sessions expire with a process, so reconnect only needs public process identity.
         response.headers['Cache-Control'] = 'no-store'
+        # The setup page listens on its own port and waits here for the new panel; only loopback pages may read it.
+        origin = request.headers.get('origin')
+        if origin and urlsplit(origin).hostname in LOOPBACK:
+            response.headers['Access-Control-Allow-Origin'] = origin
+            response.headers['Vary'] = 'Origin'
         return {**lifecycle.process(), 'version': version('len-bot'), 'status': runtime.status,
                 'ready': runtime.status not in ('starting', 'failed')}
 

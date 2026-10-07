@@ -1,119 +1,181 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LenBot · 首次配置</title>
 <style>
-:root{--brand:#e799b0;--brand-soft:#fbeff3;--primary:#b4476a;--primary-hover:#9e3c5c;--ink:#1d1b20;--muted:#6b6870;--line:#e9e9ec;--line-strong:#d9d8dd;--fill:#f6f6f8;--side:#f7f7f8;
+:root{--brand:#e2809f;--brand-soft:#fbeff3;--primary:#b4476a;--primary-hover:#9e3c5c;--ink:#1d1b20;--muted:#6b6870;--line:#e9e9ec;--line-strong:#d9d8dd;--fill:#f6f6f8;--side:#f7f7f8;
   --ok:#22875a;--ok-bg:#e6f4ec;--bad:#c4323f;--bad-bg:#fce9ea;--ease:cubic-bezier(.22,1,.36,1);
   font:15px/1.65 Inter,-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;color:var(--ink);background:#fff;-webkit-font-smoothing:antialiased}
 *{box-sizing:border-box}body{margin:0;min-height:100vh}[hidden]{display:none!important}
+
 .shell{display:grid;grid-template-columns:300px minmax(0,1fr);min-height:100vh;background:linear-gradient(90deg,var(--side) 300px,#fff 300px)}
 .rail{background:var(--side);border-right:1px solid var(--line);padding:32px 24px;display:flex;flex-direction:column;gap:32px;position:sticky;top:0;height:100vh}
 .brand{display:flex;align-items:center;gap:12px}.brand svg{width:40px;height:40px;flex:none;animation:arrive .7s var(--ease) both}
+.brand svg.hop{animation:hop .55s var(--ease)}
 .brand strong{display:block;font-size:17px;line-height:1.2}.brand span{font-size:13px;color:var(--muted)}
 .eye{transform-box:fill-box;transform-origin:center;animation:blink 4.8s infinite}
-#steps{list-style:none;margin:0;padding:0;display:grid;gap:4px;position:relative}
+.curl{transform-box:fill-box;transform-origin:15% 100%}
+#steps{list-style:none;margin:0;padding:0;display:grid;gap:4px}
 #steps li{position:relative;display:flex;align-items:center;gap:12px;padding:8px 10px;border-radius:10px;color:var(--muted);font-size:14px;transition:background-color .25s var(--ease),color .25s}
 #steps li:not(:last-child)::after{content:'';position:absolute;left:23px;top:38px;height:14px;width:2px;border-radius:1px;background:var(--line-strong);transition:background-color .4s var(--ease)}
 #steps li.done:not(:last-child)::after{background:var(--brand)}
 #steps .dot{flex:none;display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:#fff;border:1.5px solid var(--line-strong);font-size:12px;font-weight:650;transition:all .3s var(--ease)}
 #steps li.current{background:#fff;color:var(--ink);font-weight:600;box-shadow:0 1px 2px rgb(20 20 30/6%),0 0 0 1px rgb(20 20 30/4%)}
 #steps li.current .dot{border-color:var(--primary);background:var(--primary);color:#fff;box-shadow:0 0 0 4px var(--brand-soft)}
-#steps li.done{color:var(--ink)}#steps li.done .dot{border-color:var(--brand);background:var(--brand);color:#fff}
+#steps li.done{color:var(--ink)}#steps li.done .dot{border-color:var(--brand);background:var(--brand);color:#fff;animation:pop .35s var(--ease)}
 #steps li.done .num{display:none}#steps .tick{display:none;width:14px;height:14px}#steps li.done .tick{display:block}
-#steps .tick path{stroke-dasharray:20;stroke-dashoffset:0;animation:draw .35s var(--ease) both}
+#steps .tick path{stroke-dasharray:20;animation:draw .35s var(--ease) both}
 .rail-note{margin-top:auto;font-size:13px;color:var(--muted)}
-.stage{min-width:0;padding:56px 64px 80px;display:grid;align-content:start;justify-items:stretch}
-.stage>*{width:100%;max-width:680px}
+
+.stage{min-width:0;padding:56px 64px 80px;display:grid;align-content:start}
+.stage>*{width:100%;max-width:640px}
 .bar{height:3px;border-radius:2px;background:var(--line);overflow:hidden;margin-bottom:40px}
 #bar-fill{display:block;height:100%;width:0;background:var(--brand);border-radius:2px;transition:width .5s var(--ease)}
 h1{font-size:30px;line-height:1.3;margin:0 0 8px;letter-spacing:-.02em;font-weight:700}
-.intro{margin:0 0 8px;color:var(--muted);max-width:560px}
-#progress{margin:0 0 24px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.intro{margin:0 0 28px;color:var(--muted)}
+#progress{margin:0 0 4px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
 form{display:grid}fieldset{border:0;margin:0;padding:0;min-width:0}
 legend{float:left;width:100%;padding:0;margin:0 0 4px;font-size:22px;font-weight:650;letter-spacing:-.01em}
 legend+*{clear:both}
+.lead{margin:0 0 4px}
 fieldset.enter-next{animation:from-right .42s var(--ease) both}fieldset.enter-back{animation:from-left .42s var(--ease) both}
 label{display:block;margin:18px 0 6px;font-size:14px;font-weight:600}
 input:not([type=checkbox]),select,textarea{font:inherit;width:100%;min-height:44px;padding:10px 12px;border:1px solid var(--line-strong);border-radius:8px;background:#fff;color:inherit;
   transition:border-color .15s,box-shadow .2s var(--ease)}
-textarea{min-height:104px;resize:vertical}input[readonly]{background:var(--fill);color:var(--muted)}
-input:hover:not([readonly]),select:hover,textarea:hover{border-color:#bcbac2}
-input:focus,select:focus,textarea:focus{outline:0;border-color:var(--primary);box-shadow:0 0 0 3px var(--brand-soft)}
+textarea{min-height:104px;resize:vertical}
+input:not([type=checkbox]):hover,select:hover,textarea:hover{border-color:#bcbac2}
+input:not([type=checkbox]):focus,select:focus,textarea:focus{outline:0;border-color:var(--primary);box-shadow:0 0 0 3px rgb(180 71 106/18%)}
+input[type=checkbox]:focus-visible,summary:focus-visible,a:focus-visible,button:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 .shake{animation:shake .38s var(--ease)}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:0 20px}
 .hint{font-size:13px;color:var(--muted);margin:8px 0 0}
-details{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}summary{cursor:pointer;font-weight:600;color:var(--muted);font-size:14px;padding:4px 0}
-summary:hover{color:var(--ink)}details[open]>summary{margin-bottom:-4px}
+details{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}summary{cursor:pointer;font-weight:600;color:var(--muted);font-size:14px;padding:4px 0;width:fit-content}
+summary:hover{color:var(--ink)}
 button{font:inherit;font-weight:600;min-height:42px;padding:0 18px;border-radius:8px;cursor:pointer;border:1px solid var(--line-strong);background:#fff;color:var(--ink);
   display:inline-flex;align-items:center;justify-content:center;gap:8px;transition:background-color .15s,border-color .15s,transform .15s var(--ease)}
 button:hover:not(:disabled){border-color:var(--muted)}button:active:not(:disabled){transform:translateY(1px)}
-button:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 button.primary{background:var(--primary);border-color:var(--primary);color:#fff}button.primary:hover:not(:disabled){background:var(--primary-hover);border-color:var(--primary-hover)}
 button:disabled{opacity:.5;cursor:not-allowed}
 button.busy{opacity:.85;cursor:progress}button.busy::before{content:'';width:14px;height:14px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:spin .7s linear infinite}
-fieldset>button{margin-top:16px}
+fieldset>button{margin-top:20px}
 .actions{display:flex;align-items:center;gap:12px;margin-top:40px;padding-top:20px;border-top:1px solid var(--line)}
 .actions .spacer{flex:1}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;margin:12px 0 0;padding:12px 14px;border-radius:8px;background:var(--fill);color:var(--ink);
   animation:fade .3s var(--ease) both}
-pre[data-state=ok]{background:var(--ok-bg);color:#17603f}pre[data-state=error]{background:var(--bad-bg);color:#8f2230}
+pre[data-state=ok]{background:var(--ok-bg);color:#17603f;font:14px/1.6 inherit;font-family:inherit}pre[data-state=error]{background:var(--bad-bg);color:#8f2230}
 #error{background:var(--bad-bg);color:#8f2230}
 .plugin-option{display:grid;grid-template-columns:22px 1fr;gap:12px;align-items:start;padding:14px 0;border-bottom:1px solid var(--line)}
 .plugin-option input{width:18px;height:18px;margin:4px 0 0;accent-color:var(--primary)}.plugin-option label{margin:0}.plugin-option .hint{margin:2px 0 4px}
 a{color:var(--primary);text-decoration:none;font-size:13px}a:hover{text-decoration:underline}
-#done{text-align:left;animation:fade .4s var(--ease) both}
-.check{width:64px;height:64px;margin-bottom:20px}.check circle{fill:var(--ok-bg);transform-origin:center;animation:pop .5s var(--ease) both}
-.check path{fill:none;stroke:var(--ok);stroke-width:4;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:40;stroke-dashoffset:40;animation:draw .45s .25s var(--ease) forwards}
-#result{background:none;padding:0;font:inherit;color:var(--muted)}
+
+#done{animation:fade .4s var(--ease) both}
+.done-mark{display:block;width:88px;height:88px;margin-bottom:24px}
+#done[data-state=starting] .curl{animation:wiggle 1.2s ease-in-out infinite}
+#done[data-state=ready] .done-mark{animation:hop .6s var(--ease)}
+#done[data-state=failed] .done-mark{filter:grayscale(1);opacity:.6}
+#result{margin:0;color:var(--muted);white-space:pre-wrap}
+#done[data-state=failed] #result{color:#8f2230}
 .waiting{display:flex;gap:6px;margin:20px 0 0}.waiting i{width:7px;height:7px;border-radius:50%;background:var(--brand);animation:wave 1.1s var(--ease) infinite}
 .waiting i:nth-child(2){animation-delay:.15s}.waiting i:nth-child(3){animation-delay:.3s}
+#done:not([data-state=starting]) .waiting{display:none}
+#panel-entry{margin-top:32px;padding-top:8px;border-top:1px solid var(--line)}
 #panel-entry button{margin-top:16px}
+
 @keyframes from-right{from{opacity:0;transform:translateX(28px)}to{opacity:1;transform:none}}
 @keyframes from-left{from{opacity:0;transform:translateX(-28px)}to{opacity:1;transform:none}}
 @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @keyframes arrive{from{opacity:0;transform:translateY(10px) rotate(-10deg)}to{opacity:1;transform:none}}
+@keyframes hop{0%,100%{transform:none}35%{transform:translateY(-8px) rotate(-6deg)}65%{transform:translateY(0) scale(1.04,.96)}}
+@keyframes wiggle{0%,100%{transform:rotate(0)}30%{transform:rotate(-14deg)}60%{transform:rotate(10deg)}}
 @keyframes blink{0%,92%,100%{transform:scaleY(1)}95%{transform:scaleY(.12)}}
 @keyframes shake{20%{transform:translateX(-5px)}40%{transform:translateX(5px)}60%{transform:translateX(-3px)}80%{transform:translateX(2px)}}
 @keyframes spin{to{transform:rotate(360deg)}}
-@keyframes draw{from{stroke-dashoffset:40}to{stroke-dashoffset:0}}
-@keyframes pop{from{transform:scale(.6);opacity:0}to{transform:scale(1);opacity:1}}
+@keyframes draw{from{stroke-dashoffset:20}to{stroke-dashoffset:0}}
+@keyframes pop{0%{transform:scale(.7)}60%{transform:scale(1.12)}100%{transform:none}}
 @keyframes wave{0%,100%{opacity:.35;transform:translateY(0)}50%{opacity:1;transform:translateY(-4px)}}
 @media(max-width:900px){.shell{grid-template-columns:1fr;background:#fff}.rail{position:static;height:auto;padding:20px;gap:16px;border-right:0;border-bottom:1px solid var(--line)}
   #steps{grid-auto-flow:column;grid-auto-columns:1fr;gap:6px}#steps li{padding:0;background:none!important;box-shadow:none!important;justify-content:center}#steps li .label{display:none}
-  #steps li:not(:last-child)::after{display:none}.rail-note{display:none}.stage{padding:28px 20px 56px}.bar{margin-bottom:24px}}
+  #steps li:not(:last-child)::after{display:none}.rail-note{display:none}.stage{padding:28px 20px 56px}.bar{display:none}}
 @media(max-width:600px){.grid{grid-template-columns:1fr}h1{font-size:24px}legend{font-size:19px}.actions{flex-wrap:wrap}.actions button{flex:1}}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-delay:0ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 </style>
 <div class="shell">
 <aside class="rail">
-  <div class="brand"><svg viewBox="0 0 96 96" aria-hidden="true"><rect width="96" height="96" rx="24" fill="#E2809F"/><path d="M47 27C44 18 47 11 55 9C61 8 64 13 60 16C57 17.5 55.5 14.5 58.5 12.5" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M48 26C67 26 79 37 79 51S67 76 48 76C44.5 76 41 75.5 38 74.6L22 81L26 69C20 64.5 17 58 17 51C17 37 29 26 48 26Z" fill="#fff"/><rect class="eye" x="35" y="43" width="7" height="14" rx="3.5" fill="#2A2530"/><rect class="eye" x="54" y="43" width="7" height="14" rx="3.5" fill="#2A2530"/><path d="M42.5 62Q45.25 65 48 62Q50.75 65 53.5 62" fill="none" stroke="#2A2530" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  <div class="brand"><svg id="mark" viewBox="0 0 96 96" aria-hidden="true"><rect width="96" height="96" rx="24" fill="#E2809F"/><path class="curl" d="M47 27C44 18 47 11 55 9C61 8 64 13 60 16C57 17.5 55.5 14.5 58.5 12.5" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M48 26C67 26 79 37 79 51S67 76 48 76C44.5 76 41 75.5 38 74.6L22 81L26 69C20 64.5 17 58 17 51C17 37 29 26 48 26Z" fill="#fff"/><rect class="eye" x="35" y="43" width="7" height="14" rx="3.5" fill="#2A2530"/><rect class="eye" x="54" y="43" width="7" height="14" rx="3.5" fill="#2A2530"/><path d="M42.5 62Q45.25 65 48 62Q50.75 65 53.5 62" fill="none" stroke="#2A2530" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
     <div><strong>LenBot</strong><span>首次配置</span></div></div>
   <ol id="steps" aria-label="配置步骤"></ol>
-  <p class="rail-note">填过的内容会暂存在这个浏览器标签页里，刷新不会丢。密码和密钥不暂存。</p>
+  <p class="rail-note">填过的内容暂存在这个浏览器标签页里，刷新不会丢。密码和密钥不暂存，刷新后要重新填。</p>
 </aside>
 <main class="stage">
 <div class="bar" aria-hidden="true"><span id="bar-fill"></span></div>
 <h1 id="title">让 LenBot 开始工作</h1>
 <p class="intro" id="intro">建一个管理员账号，连上 QQ 和模型，再选好角色和第一个群。插件放在最后，可以跳过。</p>
 <p id="progress" role="status"></p>
-<form id="setup" novalidate><fieldset><legend>管理员账号</legend><label for="username">面板用户名</label><input id="username" maxlength="64" required autocomplete="username"><label for="password">面板密码（至少 8 位）</label><input id="password" type="password" minlength="8" required autocomplete="new-password"><label for="password-again">再输入一次密码</label><input id="password-again" type="password" minlength="8" required autocomplete="new-password"><label for="port">面板端口</label><input id="port" type="number" min="1" max="65535" value="8088" required><p class="hint">配置完用这个账号登录面板。面板默认只监听本机，在服务器上部署时可以用 SSH 端口转发访问。</p></fieldset>
-<fieldset><legend>连接 QQ</legend><label for="bot">Bot 账号</label><input id="bot" readonly required placeholder="测试连接后自动填写">
-<label for="zone">时区</label><input id="zone" required value="Asia/Shanghai"><label for="transport">OneBot 连接方式</label><select id="transport"><option value="forward_ws">LenBot 去连 OneBot（正向 WebSocket）</option><option value="reverse_ws">OneBot 来连 LenBot（反向 WebSocket）</option></select>
-<div id="forward"><label for="ws">OneBot WebSocket 地址</label><input id="ws" type="url" placeholder="ws://127.0.0.1:3001" required></div><div id="reverse" hidden><div class="grid"><div><label for="listen">监听地址</label><input id="listen" value="127.0.0.1"></div><div><label for="wsport">监听端口</label><input id="wsport" type="number" min="1" max="65535" value="8080"></div></div></div>
-<label for="access">访问令牌</label><input id="access" type="password" autocomplete="off" placeholder="和 OneBot 里填的一致；反向连接监听非本机地址时必填">
-<details><summary>更多连接选项</summary><label for="onebottimeout">连接和接口等待时间（秒）</label><input id="onebottimeout" type="number" min="1" value="30" required></details>
-<label for="delivery">回复怎么发</label><select id="delivery"><option value="simulated">模拟发送：照常收消息和想回复，回复只出现在面板里</option><option value="onebot">直接发到 QQ</option></select><p class="hint">第一次用建议先选模拟发送，看着没问题再到面板里改成直接发送。</p><button id="connect" type="button">测试连接并读取 Bot 账号</button><pre id="platform-result" role="status" hidden></pre>
+<form id="setup" novalidate>
+<fieldset><legend>管理员账号</legend>
+  <label for="username">面板用户名</label><input id="username" maxlength="64" required autocomplete="username">
+  <label for="password">面板密码（至少 8 位）</label><input id="password" type="password" minlength="8" required autocomplete="new-password">
+  <label for="password-again">再输入一次密码</label><input id="password-again" type="password" minlength="8" required autocomplete="new-password">
+  <label for="port">面板端口</label><input id="port" type="number" min="1" max="65535" value="8088" required>
+  <p class="hint">配置完用这个账号登录面板。面板默认只监听本机，装在服务器上时用 SSH 端口转发访问。</p>
 </fieldset>
-<fieldset><legend>主人</legend><label for="owner">主人 QQ</label><input id="owner" required pattern="[1-9][0-9]*" inputmode="numeric"><p class="hint">要加更多主人，之后在面板的设置里加。</p></fieldset>
-<fieldset><legend>选择模型</legend><label for="api">模型协议</label><select id="api"></select><p id="protocol-note" class="hint"></p><label for="base">接口地址（API Base URL）</label><input id="base" type="url" placeholder="https://your-provider.example/v1" required><label for="key">API Key</label><input id="key" type="password" autocomplete="off" required>
-<label for="proxy">网络代理（选填，HTTP 或 HTTPS）</label><input id="proxy" type="url" placeholder="http://127.0.0.1:7890"><button id="list-models" type="button">读取模型列表</button><pre id="list-result" role="status" hidden></pre><label for="mind">聊天模型</label><input id="mind" required list="model-options" placeholder="从列表里选，或者直接填模型名"><datalist id="model-options"></datalist><label for="mindwindow">上下文窗口（token）</label><input id="mindwindow" type="number" min="2048" required><p class="hint">照服务商文档填。之后在面板里还能给不同用途换模型。</p>
-<details><summary>更多模型选项</summary><div class="grid"><div><label for="inputbudget">输入压缩阈值（token）</label><input id="inputbudget" type="number" min="1" value="6000" required></div><div><label for="output">每次最多输出（token）</label><input id="output" type="number" min="1" value="1024" required></div></div><label for="temperature">温度（留空用服务商默认）</label><input id="temperature" type="number" min="0" max="2" step="0.1" placeholder="服务商默认"><label for="effort">思考强度（选填）</label><input id="effort" placeholder="按模型支持的值填写"><label for="thinkingbudget">思考额度（token，选填）</label><input id="thinkingbudget" type="number" min="0"><p class="hint">思考额度只用于 Anthropic 和 Gemini，和思考强度二选一。Anthropic 开思考时温度要留空。</p><label for="outputfield">OpenAI 兼容接口的输出字段</label><select id="outputfield"><option>max_completion_tokens</option><option>max_tokens</option></select></details><label for="probe-kind">测试内容</label><select id="probe-kind"><option value="text">只测文本，调用 1 次</option><option value="tools">测工具调用，调用 2 次</option></select><button id="test-model" type="button">测试模型</button><pre id="model-result" role="status" hidden></pre></fieldset>
-<fieldset><legend>角色和第一个群</legend><label for="role-template">用哪个角色</label><select id="role-template"><option value="companion">小然（默认角色）</option><option value="custom">自己写一个</option></select><p class="hint">小然是群里爱吃、爱画画的老朋友，设定、说话方式、资料和表情都配好了，之后在面板里随时能改。</p><div id="custom-role" hidden><div class="grid"><div><label for="roleid">角色文件夹名</label><input id="roleid" value="my-bot" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="小写英文、数字和 -"></div><div><label for="name">角色名字</label><input id="name" required></div></div><label for="brief">它是什么样的人</label><textarea id="brief" required placeholder="身份、性格、做事方式"></textarea><label for="voicetext">它怎么说话</label><textarea id="voicetext" required placeholder="语气、用词、回复长短"></textarea><label for="bounds">底线（选填）</label><textarea id="bounds" placeholder="它不会做、不会说的事"></textarea>
-</div><div class="grid"><div><label for="kind">先在哪里聊</label><select id="kind"><option value="group">群聊</option><option value="private">私聊</option></select></div><div><label for="scene">群号或对方 QQ</label><input id="scene" required pattern="[1-9][0-9]*" inputmode="numeric"></div></div><p class="hint">群里只回 @ 它或回复它的消息，私聊每条都回。更多群之后在面板里加。</p>
+<fieldset><legend>连接 QQ</legend>
+  <p class="hint lead">LenBot 通过 OneBot（比如 NapCat）收发 QQ 消息。先把 OneBot 跑起来并登录 QQ，再在这里连上它。</p>
+  <label for="transport">连接方式</label><select id="transport"><option value="forward_ws">LenBot 去连 OneBot（正向 WebSocket）</option><option value="reverse_ws">OneBot 来连 LenBot（反向 WebSocket）</option></select>
+  <div id="forward"><label for="ws">OneBot WebSocket 地址</label><input id="ws" type="url" placeholder="ws://127.0.0.1:3001" required></div>
+  <div id="reverse" hidden><div class="grid"><div><label for="listen">监听地址</label><input id="listen" value="127.0.0.1"></div><div><label for="wsport">监听端口</label><input id="wsport" type="number" min="1" max="65535" value="8080"></div></div></div>
+  <label for="access">访问令牌</label><input id="access" type="password" autocomplete="off" placeholder="和 OneBot 里填的一致，没设就留空">
+  <details><summary>更多连接选项</summary><label for="onebottimeout">连接和接口等待时间（秒）</label><input id="onebottimeout" type="number" min="1" value="30" required></details>
+  <button id="connect" type="button">测试连接并读取 Bot 账号</button><pre id="platform-result" role="status" hidden></pre><input id="bot" type="hidden">
+  <label for="delivery">回复怎么发</label><select id="delivery"><option value="simulated">模拟发送：照常收消息和想回复，回复只出现在面板里</option><option value="onebot">直接发到 QQ</option></select>
+  <p class="hint">第一次用建议先选模拟发送，看着没问题再到面板里改成直接发送。</p>
 </fieldset>
-<fieldset><legend>官方插件</legend><p class="hint">勾选的插件会在保存时联网下载安装，装好后到面板的插件页启用。用不上的话直接跳过，之后随时能装。</p><div id="official-plugins"></div><pre id="plugins-result" role="status" hidden></pre></fieldset>
-<div class="actions"><button id="previous" type="button">上一步</button><span class="spacer"></span><button id="skip-plugins" type="button" disabled hidden>跳过插件，直接保存</button><button id="next" class="primary" type="button">下一步</button><button id="save" class="primary" type="submit" disabled hidden>保存并进入面板</button></div></form>
+<fieldset><legend>主人</legend>
+  <label for="owner">主人 QQ</label><input id="owner" required pattern="[1-9][0-9]*" inputmode="numeric"><p class="hint">一般填你自己。主人能在群里直接让 Bot 改设置，更多主人之后在面板里加。</p>
+  <label for="zone">时区</label><input id="zone" required value="Asia/Shanghai"><p class="hint">提醒、安静时段和面板里的时间都按这个时区算。</p>
+</fieldset>
+<fieldset><legend>选择模型</legend>
+  <label for="api">模型协议</label><select id="api"></select><p id="protocol-note" class="hint"></p>
+  <label for="base">接口地址（API Base URL）</label><input id="base" type="url" placeholder="https://your-provider.example/v1" required>
+  <label for="key">API Key</label><input id="key" type="password" autocomplete="off" required>
+  <label for="proxy">网络代理（选填，HTTP 或 HTTPS）</label><input id="proxy" type="url" placeholder="http://127.0.0.1:7890">
+  <button id="list-models" type="button">读取模型列表</button><pre id="list-result" role="status" hidden></pre>
+  <label for="mind">聊天模型</label><input id="mind" required list="model-options" placeholder="从列表里选，或者直接填模型名"><datalist id="model-options"></datalist>
+  <label for="mindwindow">上下文窗口（token）</label><input id="mindwindow" type="number" min="2048" required><p class="hint">照服务商文档填。之后在面板里还能给看图、记忆整理这些用途换别的模型。</p>
+  <details><summary>更多模型选项</summary>
+    <div class="grid"><div><label for="inputbudget">输入压缩阈值（token）</label><input id="inputbudget" type="number" min="1" value="6000" required></div><div><label for="output">每次最多输出（token）</label><input id="output" type="number" min="1" value="1024" required></div></div>
+    <label for="temperature">温度（留空用服务商默认）</label><input id="temperature" type="number" min="0" max="2" step="0.1" placeholder="服务商默认">
+    <label for="effort">思考强度（选填）</label><input id="effort" placeholder="按模型支持的值填写">
+    <label for="thinkingbudget">思考额度（token，选填）</label><input id="thinkingbudget" type="number" min="0"><p class="hint">思考额度只用于 Anthropic 和 Gemini，和思考强度二选一。Anthropic 开思考时温度要留空。</p>
+    <label for="outputfield">OpenAI 兼容接口的输出字段</label><select id="outputfield"><option>max_completion_tokens</option><option>max_tokens</option></select>
+  </details>
+  <label for="probe-kind">测试内容</label><select id="probe-kind"><option value="text">只测文本，调用 1 次</option><option value="tools">测工具调用，调用 2 次</option></select>
+  <button id="test-model" type="button">测试模型</button><pre id="model-result" role="status" hidden></pre>
+</fieldset>
+<fieldset><legend>角色和第一个群</legend>
+  <label for="role-template">用哪个角色</label><select id="role-template"><option value="companion">小然（默认角色）</option><option value="custom">自己写一个</option></select>
+  <p class="hint">小然是群里爱吃、爱画画的老朋友，设定、说话方式、资料和表情都配好了，之后在面板里随时能改。</p>
+  <div id="custom-role" hidden>
+    <div class="grid"><div><label for="roleid">角色文件夹名</label><input id="roleid" value="my-bot" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="小写英文、数字和 -"></div><div><label for="name">角色名字</label><input id="name" required></div></div>
+    <label for="brief">它是什么样的人</label><textarea id="brief" required placeholder="身份、性格、做事方式"></textarea>
+    <label for="voicetext">它怎么说话</label><textarea id="voicetext" required placeholder="语气、用词、回复长短"></textarea>
+    <label for="bounds">底线（选填）</label><textarea id="bounds" placeholder="它不会做、不会说的事"></textarea>
+  </div>
+  <div class="grid"><div><label for="kind">先在哪里聊</label><select id="kind"><option value="group">群聊</option><option value="private">私聊</option></select></div><div><label for="scene">群号或对方 QQ</label><input id="scene" required pattern="[1-9][0-9]*" inputmode="numeric"></div></div>
+  <p class="hint">群里先只回 @ 它或回复它的消息，私聊每条都回。更多群之后在面板里加。</p>
+</fieldset>
+<fieldset><legend>官方插件</legend>
+  <p class="hint lead">勾选的插件会在保存时下载安装，装好后到面板的插件页启用。用不上就直接跳过，之后随时能装。</p>
+  <div id="official-plugins"></div><pre id="plugins-result" role="status" hidden></pre>
+</fieldset>
+<div class="actions"><button id="previous" type="button">上一步</button><span class="spacer"></span><button id="skip-plugins" type="button" disabled hidden>跳过插件，直接保存</button><button id="next" class="primary" type="button">下一步</button><button id="save" class="primary" type="submit" disabled hidden>保存并进入面板</button></div>
+</form>
 <pre id="error" role="alert" hidden></pre>
-<section id="done" hidden><svg class="check" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32"/><path d="M20 33l8 8 16-17"/></svg><h1>配置好了</h1><pre id="result" role="status" hidden></pre><div id="waiting" class="waiting" aria-hidden="true"><i></i><i></i><i></i></div>
-<div id="panel-entry" hidden><label for="panel-address">面板地址</label><input id="panel-address" type="url"><p class="hint">用了端口转发或反向代理的话，改成你实际访问的地址。启动出错去看终端日志，配置已经保存，不用重来。</p><button id="open-panel" class="primary" type="button">打开面板登录</button></div></section>
+<section id="done" hidden>
+  <svg class="done-mark" viewBox="0 0 96 96" aria-hidden="true"><rect width="96" height="96" rx="24" fill="#E2809F"/><path class="curl" d="M47 27C44 18 47 11 55 9C61 8 64 13 60 16C57 17.5 55.5 14.5 58.5 12.5" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M48 26C67 26 79 37 79 51S67 76 48 76C44.5 76 41 75.5 38 74.6L22 81L26 69C20 64.5 17 58 17 51C17 37 29 26 48 26Z" fill="#fff"/><rect class="eye" x="35" y="43" width="7" height="14" rx="3.5" fill="#2A2530"/><rect class="eye" x="54" y="43" width="7" height="14" rx="3.5" fill="#2A2530"/><path d="M42.5 62Q45.25 65 48 62Q50.75 65 53.5 62" fill="none" stroke="#2A2530" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  <h1 id="done-title"></h1>
+  <p id="result" role="status"></p>
+  <div class="waiting" aria-hidden="true"><i></i><i></i><i></i></div>
+  <div id="panel-entry"><label for="panel-address">面板地址</label><input id="panel-address" type="url">
+    <p class="hint">用了端口转发或反向代理的话，改成你实际访问的地址。</p><button id="open-panel" class="primary" type="button">打开面板</button></div>
+</section>
 </main>
 </div>
 <script>
@@ -125,24 +187,39 @@ history.replaceState(null,'',location.pathname);
 const fields=[...$('setup').querySelectorAll('fieldset')];let step=0,protocols=[];
 const secretFields=new Set(['key','access','password','password-again']);
 const stored=JSON.parse(sessionStorage.getItem('lenbot-setup-draft')||'{}');
-for(const [id,text] of Object.entries(stored))if($(id)&&!secretFields.has(id))$(id).value=text;
+for(const [id,text] of Object.entries(stored))if($(id)&&!secretFields.has(id)&&id!=='bot')$(id).value=text;
+let platformReady=false,modelReady=false;
+
 function note(id,text,state){const box=$(id);box.hidden=false;box.textContent=text;if(state)box.dataset.state=state;else delete box.dataset.state;box.style.animation='none';void box.offsetWidth;box.style.animation=''}
 function busy(id,on){$(id).disabled=on;$(id).classList.toggle('busy',on)}
+function replay(element,name){element.classList.remove(name);void element.getBoundingClientRect();element.classList.add(name)}
 function remember(){const draft={};for(const input of $('setup').querySelectorAll('input,select,textarea'))if(input.id&&!secretFields.has(input.id)&&input.id!=='bot'&&input.type!=='checkbox')draft[input.id]=input.value;draft.install_plugins=[...$('official-plugins').querySelectorAll('input:checked')].map(input=>input.value);sessionStorage.setItem('lenbot-setup-draft',JSON.stringify(draft))}
 function chooseRole(){const custom=value('role-template')==='custom';$('custom-role').hidden=!custom;for(const input of $('custom-role').querySelectorAll('input,textarea'))input.disabled=!custom}
 $('role-template').onchange=chooseRole;chooseRole();
 $('setup').addEventListener('input',remember);
+
 $('steps').replaceChildren(...fields.map((field,i)=>{const item=document.createElement('li'),dot=document.createElement('span'),num=document.createElement('span'),label=document.createElement('span');dot.className='dot';num.className='num';num.textContent=i+1;label.className='label';label.textContent=field.querySelector('legend').textContent;dot.append(num);dot.insertAdjacentHTML('beforeend','<svg class="tick" viewBox="0 0 14 14"><path d="M3 7.5l2.5 2.5L11 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>');item.append(dot,label);return item}));
-function showStep(index){const direction=index>=step?'enter-next':'enter-back';step=index;fields.forEach((field,i)=>{field.hidden=i!==step;field.classList.remove('enter-next','enter-back')});void fields[step].offsetWidth;fields[step].classList.add(direction);
-  [...$('steps').children].forEach((item,i)=>{item.classList.toggle('done',i<step);item.classList.toggle('current',i===step);if(i===step)item.setAttribute('aria-current','step');else item.removeAttribute('aria-current')});
-  $('bar-fill').style.width=`${(step/(fields.length-1))*100}%`;$('intro').hidden=step!==0;
-  $('previous').hidden=step===0;$('next').hidden=step===fields.length-1;$('save').hidden=step!==fields.length-1;$('skip-plugins').hidden=step!==fields.length-1;$('progress').textContent=`第 ${step+1} 步，共 ${fields.length} 步`}
-function invalid(input){input.reportValidity();input.classList.remove('shake');void input.offsetWidth;input.classList.add('shake');input.addEventListener('animationend',()=>input.classList.remove('shake'),{once:true})}
-function validateStep(){if(step===0){$('password-again').setCustomValidity(value('password')===value('password-again')?'':'两次密码不一致');$('username').setCustomValidity(value('username').trim()===value('username')&&value('username').trim()?'':'用户名不能为空，首尾不能有空格')}for(const input of fields[step].querySelectorAll('input,select,textarea'))if(!input.checkValidity()){const fold=input.closest('details');if(fold)fold.open=true;invalid(input);return false}return true}
+function markSteps(current){[...$('steps').children].forEach((item,i)=>{item.classList.toggle('done',i<current);item.classList.toggle('current',i===current);if(i===current)item.setAttribute('aria-current','step');else item.removeAttribute('aria-current')})}
+function showStep(index){
+  const forward=index>step,direction=index>=step?'enter-next':'enter-back';step=index;
+  fields.forEach((field,i)=>{field.hidden=i!==step;field.classList.remove('enter-next','enter-back')});replay(fields[step],direction);
+  markSteps(step);if(forward)replay($('mark'),'hop');
+  $('bar-fill').style.width=`${(step/(fields.length-1))*100}%`;$('title').hidden=step!==0;$('intro').hidden=step!==0;
+  $('previous').hidden=step===0;$('next').hidden=step===fields.length-1;$('save').hidden=step!==fields.length-1;$('skip-plugins').hidden=step!==fields.length-1;
+  $('progress').textContent=`第 ${step+1} 步，共 ${fields.length} 步`}
+function invalid(input){input.reportValidity();replay(input,'shake');input.addEventListener('animationend',()=>input.classList.remove('shake'),{once:true})}
+function firstInvalid(index){
+  if(index===0){$('password-again').setCustomValidity(value('password')===value('password-again')?'':'两次密码不一致');$('username').setCustomValidity(value('username').trim()===value('username')&&value('username').trim()?'':'用户名不能为空，首尾不能有空格')}
+  return [...fields[index].querySelectorAll('input,select,textarea')].find(input=>!input.checkValidity())}
+function report(input){const fold=input.closest('details');if(fold)fold.open=true;invalid(input)}
+function gate(index){
+  if(index===1&&!platformReady){note('platform-result','先测试一下 OneBot 连接，读到 Bot 账号再继续','error');return $('connect')}
+  if(index===3&&!modelReady){note('model-result','先测试一次模型，通过了再继续','error');return $('test-model')}
+  return null}
 $('previous').onclick=()=>showStep(step-1);
-$('next').onclick=()=>{if(!validateStep())return;if(step===1&&!platformReady){note('platform-result','先测试一下 OneBot 连接，读到 Bot 账号再继续','error');invalid($('connect'));return}if(step===3&&!modelReady){note('model-result','先测试一次模型，通过了再继续','error');invalid($('test-model'));return}showStep(step+1)};
+$('next').onclick=()=>{const input=firstInvalid(step);if(input)return report(input);const blocked=gate(step);if(blocked)return invalid(blocked);showStep(step+1)};
 showStep(0);
-let platformReady=false,modelReady=false;
+
 function ready(){$('save').disabled=!token||!platformReady||!modelReady;$('skip-plugins').disabled=$('save').disabled}
 function connection(){const onebot=value('transport')==='forward_ws'?{mode:'forward_ws',ws_url:value('ws')}:{mode:'reverse_ws',listen_host:value('listen'),listen_port:Number(value('wsport'))};onebot.access_token=value('access');onebot.request_timeout_seconds=Number(value('onebottimeout'));return onebot}
 function models(){return {provider:{api:value('api'),base_url:value('base'),api_key:value('key'),proxy:value('proxy')||null},mind:{provider:'primary',model:value('mind'),context_window_tokens:Number(value('mindwindow')),max_output_tokens:Number(value('output')),temperature:value('temperature')===''?null:Number(value('temperature')),reasoning_effort:value('effort')||null,thinking_budget_tokens:value('thinkingbudget')===''?null:Number(value('thinkingbudget')),output_token_field:value('api')==='openai-chat'?value('outputfield'):'max_completion_tokens'}}}
@@ -151,12 +228,41 @@ if(!token){$('error').hidden=false;$('error').textContent='链接不完整，请
 $('transport').onchange=()=>{const forward=value('transport')==='forward_ws';$('forward').hidden=!forward;$('reverse').hidden=forward;$('ws').required=forward;platformReady=false;ready()};
 for(const id of ['ws','listen','wsport','access','onebottimeout'])$(id).addEventListener('input',()=>{platformReady=false;ready()});
 for(const id of ['api','base','key','proxy','mind','mindwindow','output','temperature','effort','thinkingbudget','outputfield','probe-kind'])$(id).addEventListener('input',()=>{modelReady=false;ready()});
-$('connect').onclick=async()=>{busy('connect',true);note('platform-result','正在连接 OneBot…');try{const snapshot=JSON.stringify(connection());const result=await post('/api/setup/platform',{onebot:connection()});if(snapshot!==JSON.stringify(connection()))throw Error('连接设置改过了，请重新测试');$('bot').value=result.bot_id;note('platform-result','已连接，Bot 账号是 '+result.bot_id,'ok');platformReady=true}catch(error){platformReady=false;note('platform-result',error.message,'error')}finally{busy('connect',false);ready()}};
-$('test-model').onclick=async()=>{busy('test-model',true);note('model-result','正在调用模型…');try{const body={...models(),kind:value('probe-kind')},snapshot=JSON.stringify(body);const result=await post('/api/setup/model',body);if(snapshot!==JSON.stringify({...models(),kind:value('probe-kind')}))throw Error('模型设置改过了，请重新测试');note('model-result',result.model+'：'+result.text+'\n'+result.scope+'\n服务商报告的用量：'+JSON.stringify(result.usage),'ok');modelReady=true}catch(error){modelReady=false;note('model-result',error.message,'error')}finally{busy('test-model',false);ready()}};
-$('setup').onsubmit=async e=>{e.preventDefault();for(let i=0;i<fields.length;i++){showStep(i);if(!validateStep())return}if(!platformReady||!modelReady)return;$('save').disabled=true;$('skip-plugins').disabled=true;$('save').classList.add('busy');$('error').hidden=true;
-const body={bot_id:value('bot'),owners:['onebot:'+value('owner')],timezone:value('zone'),delivery:value('delivery'),onebot:connection(),...models(),voice_mode:'direct',compaction:{input_tokens:Number(value('inputbudget'))},scene:'onebot:'+value('kind')+':'+value('scene'),...(value('role-template')==='companion'?{persona_id:'companion'}:{persona_id:value('roleid'),persona_name:value('name'),brief:value('brief'),voice_text:value('voicetext'),boundaries:value('bounds')}),panel_port:Number(value('port')),username:value('username'),password:value('password'),password_confirmation:value('password-again'),install_plugins:[...$('official-plugins').querySelectorAll('input:checked')].map(input=>input.value)};
-try{if(body.install_plugins.length)note('plugins-result','正在安装插件和依赖，可能要一两分钟…');const result=await post('/api/setup',body);$('setup').hidden=true;$('title').hidden=true;$('progress').hidden=true;$('bar-fill').style.width='100%';[...$('steps').children].forEach(item=>{item.classList.add('done');item.classList.remove('current')});$('done').hidden=false;$('result').hidden=false;const panel=new URL(location.href);panel.hash='';panel.pathname='/';panel.search='';if(result.panel_url!=='/')panel.port=String(result.panel_port);$('panel-address').value=panel.href;$('result').textContent='配置和管理员账号都保存好了，LenBot 正在启动，好了会自动跳到面板。'+(result.plugins.length?'\n已安装插件：'+result.plugins.map(item=>item.name).join('、')+'，进面板后到插件页启用。':'');sessionStorage.removeItem('lenbot-setup-token');sessionStorage.removeItem('lenbot-setup-draft');for(const id of secretFields)$(id).value='';let started=false;for(let i=0;i<120;i++){try{const response=await fetch(new URL('/api/host/ready',panel));if(response.ok){const state=await response.json();if(state.ready){started=true;break}if(state.status==='failed')throw Error('运行初始化失败，请查看启动日志')}}catch(error){if(error.message.includes('初始化失败'))throw error}await new Promise(resolve=>setTimeout(resolve,500))}if(started)location.assign(panel.href);else{$('waiting').hidden=true;$('panel-entry').hidden=false;$('result').textContent='配置和账号已保存，但还没连上新面板。看一下启动日志，再用下面的地址打开面板。'}}catch(error){$('save').classList.remove('busy');$('waiting').hidden=true;$('error').hidden=false;$('error').textContent=($('setup').hidden?'配置已保存，启动失败：':'没有保存成功：')+error.message;if($('setup').hidden)$('panel-entry').hidden=false;else await loadPlugins();ready()}}
-$('open-panel').onclick=()=>{const panel=new URL(value('panel-address'));if(!['http:','https:'].includes(panel.protocol))return;location.assign(panel.href)};
+$('connect').onclick=async()=>{busy('connect',true);note('platform-result','正在连接 OneBot…');try{const snapshot=JSON.stringify(connection());const result=await post('/api/setup/platform',{onebot:connection()});if(snapshot!==JSON.stringify(connection()))throw Error('连接设置改过了，请重新测试');$('bot').value=result.bot_id;note('platform-result','连上了，Bot 的 QQ 号是 '+result.bot_id.replace(/^onebot:/,''),'ok');platformReady=true}catch(error){platformReady=false;note('platform-result',error.message,'error')}finally{busy('connect',false);ready()}};
+$('test-model').onclick=async()=>{busy('test-model',true);note('model-result','正在调用模型…');try{const body={...models(),kind:value('probe-kind')},snapshot=JSON.stringify(body);const result=await post('/api/setup/model',body);if(snapshot!==JSON.stringify({...models(),kind:value('probe-kind')}))throw Error('模型设置改过了，请重新测试');note('model-result',`通过。${result.model} 回复：${result.text}`,'ok');modelReady=true}catch(error){modelReady=false;note('model-result',error.message,'error')}finally{busy('test-model',false);ready()}};
+
+const doneStates={
+  starting:['正在启动 LenBot','配置和管理员账号都保存好了。面板启动后会自动打开。'],
+  ready:['启动好了','正在打开面板…'],
+  slow:['配置已保存','面板还没有响应。看一下终端里的输出，或者直接用下面的地址打开面板。'],
+  failed:['启动失败','LenBot 没能启动，终端里有具体原因。配置已经保存，处理好后重新启动 LenBot 就行，不用重新配置。'],
+};
+let installed='';
+function finish(state){$('done').dataset.state=state;const [title,text]=doneStates[state];$('done-title').textContent=title;$('result').textContent=text+(installed&&state!=='failed'?installed:'')}
+async function waitForPanel(panel){
+  const begin=Date.now();
+  while(Date.now()-begin<300000){
+    try{const response=await fetch(new URL('/api/host/ready',panel),{cache:'no-store',signal:AbortSignal.timeout(3000)});
+      if(response.ok){const state=await response.json();
+        if(state.ready){finish('ready');setTimeout(()=>location.assign(panel.href),600);return}
+        if(state.status==='failed')return finish('failed')}}catch{}
+    if(Date.now()-begin>30000&&$('done').dataset.state==='starting')finish('slow');
+    await new Promise(resolve=>setTimeout(resolve,500))}
+  finish('slow')}
+$('setup').onsubmit=async e=>{e.preventDefault();
+  for(let i=0;i<fields.length;i++){const input=firstInvalid(i);if(input){showStep(i);return report(input)}if(gate(i)){showStep(i);return invalid(gate(i))}}
+  $('save').disabled=true;$('skip-plugins').disabled=true;$('save').classList.add('busy');$('error').hidden=true;
+  const body={bot_id:value('bot'),owners:['onebot:'+value('owner')],timezone:value('zone'),delivery:value('delivery'),onebot:connection(),...models(),voice_mode:'direct',compaction:{input_tokens:Number(value('inputbudget'))},scene:'onebot:'+value('kind')+':'+value('scene'),...(value('role-template')==='companion'?{persona_id:'companion'}:{persona_id:value('roleid'),persona_name:value('name'),brief:value('brief'),voice_text:value('voicetext'),boundaries:value('bounds')}),panel_port:Number(value('port')),username:value('username'),password:value('password'),password_confirmation:value('password-again'),install_plugins:[...$('official-plugins').querySelectorAll('input:checked')].map(input=>input.value)};
+  let result;
+  try{if(body.install_plugins.length)note('plugins-result','正在安装插件和依赖，可能要一两分钟…');result=await post('/api/setup',body)}
+  catch(error){$('save').classList.remove('busy');$('error').hidden=false;$('error').textContent='没有保存成功：'+error.message;await loadPlugins();ready();return}
+  sessionStorage.removeItem('lenbot-setup-token');sessionStorage.removeItem('lenbot-setup-draft');for(const id of secretFields)$(id).value='';
+  for(const id of ['setup','title','intro','progress'])$(id).hidden=true;$('bar-fill').style.width='100%';markSteps(fields.length);
+  const panel=new URL(location.href);panel.hash='';panel.pathname='/';panel.search='';if(result.panel_url!=='/')panel.port=String(result.panel_port);$('panel-address').value=panel.href;
+  installed=result.plugins.length?'\n装好了插件：'+result.plugins.map(item=>item.name).join('、')+'，进面板后到插件页启用。':'';
+  $('done').hidden=false;finish('starting');waitForPanel(panel)};
+$('open-panel').onclick=()=>{let panel;try{panel=new URL(value('panel-address'))}catch{return invalid($('panel-address'))}if(['http:','https:'].includes(panel.protocol))location.assign(panel.href)};
+
 function budget(){const window=Number(value('mindwindow')),output=Number(value('output'));if(window>output+1024)$('inputbudget').value=Math.floor((window-output)*0.75)}
 $('mindwindow').addEventListener('input',budget);$('output').addEventListener('input',budget);
 function protocolInfo(){const protocol=protocols.find(p=>p.api===value('api'));$('protocol-note').textContent=protocol?.description||'';$('outputfield').disabled=value('api')!=='openai-chat';remember()}

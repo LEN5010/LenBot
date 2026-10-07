@@ -86,6 +86,11 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path, o
                     for path in ("/api/auth/me", "/api/host/state", "/api/host/retention", "/api/host/limits", "/api/host/scenes/onebot:group:80001/control", "/api/host/scenes/onebot:group:80001",
                                  f"/api/host/scenes/onebot:group:80001/turns/{configured_turn}"):
                         assert (await client.get(path)).status_code == 401
+                    # The setup page on another loopback port may read readiness; other origins may not.
+                    ready = await client.get("/api/host/ready", headers={"Origin": "http://127.0.0.1:52811"})
+                    assert ready.status_code == 200 and ready.headers["access-control-allow-origin"] == "http://127.0.0.1:52811"
+                    remote = await client.get("/api/host/ready", headers={"Origin": "https://lenbot.example"})
+                    assert "access-control-allow-origin" not in remote.headers
 
                     assert (await client.post("/api/host/trials", json={
                         "scene": "onebot:group:80001", "acknowledge_model_cost": True,
