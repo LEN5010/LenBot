@@ -23,6 +23,7 @@ description = "每群独立计数"
 - `requires_lenbot` 写首个提供你所需能力的 LenBot 版本。`0.2.0` 是首个公开版本，写 `>=0.2,<1` 即可。
 - `reload = "plugin"` 表示可以单独重载；需要整个程序重启才能换版时写 `"host"`。
 - `dependencies = ["包名>=版本"]` 声明 Python 依赖。
+- `data_version` 是插件数据的格式编号，默认 1。改了数据的存法时提高它，并实现 `migrate_data`，见下面的[数据版本](#数据版本)。
 
 ## 入口
 
@@ -57,8 +58,41 @@ class Counter(Plugin):
 
 在清单里用 `[config.<字段名>]` 声明参数，面板会生成表单，插件里从 `ctx.config` 读到已经校验过的值。支持文字、密钥、数字、开关、列表、群选择、路径、网址和对象列表。
 
+## 日志
+
+`self.ctx.log` 是标准的 `logging.Logger`。写进去的记录进入 LenBot 的运行日志 `logs/lenbot.jsonl`，自动带上插件名和当前的群、一轮、工具调用 ID，面板日志页可以按插件筛选。处理器抛出的错误由 LenBot 记录，不需要自己再写一遍。
+
+## 数据版本
+
+插件数据放在 `ctx.data_dir`（KV 也在里面）。LenBot 在这个目录里记下数据是按哪个 `data_version` 写的。清单里的 `data_version` 比记录的高时，LenBot 在 `start()` 之前：
+
+1. 把整个数据目录复制到 `.backups/<插件名>-v<旧版本>-<时间>`；
+2. 调用 `await self.migrate_data(from_version)`，这时可以读写 `ctx.data_dir` 和 KV；
+3. 成功就记下新版本再启动；出错就把数据恢复成迁移前的样子，插件标为失败，原错写进日志。
+
+```python
+class Notes(Plugin):
+    async def migrate_data(self, from_version: int) -> None:
+        if from_version < 2:
+            old = self.ctx.data_dir / 'notes.txt'
+            await self.ctx.set_kv('notes', old.read_text(encoding='utf-8').splitlines())
+            old.unlink()
+```
+
+一次迁移要能从任何旧版本走到当前版本。清单的 `data_version` 比记录的低时 LenBot 拒绝启动：旧插件不读新数据。
+
 ## 测试与发布
 
-`len_bot.plugin_testing` 提供本地测试工具，模板仓库里带好了测试和发布工作流：打 `v*` 标签时把插件打成可导入的 ZIP 挂到 Release。
+`len_bot.plugin_testing` 的 `PluginTest` 不启动 LenBot 就能模拟消息、配置和工具调用；传入 `data=` 和 `data_version=` 可以测数据迁移。
+
+[插件模板](https://github.com/lendevs/lenbot-plugin-template)的 CI 和发行直接调用 LenBot 提供的可复用工作流：
+
+```yaml
+jobs:
+  test:
+    uses: lendevs/LenBot/.github/workflows/plugin-ci.yml@master
+```
+
+默认用 LenBot `master` 跑插件测试和打包检查，需要固定版本时传 `host_ref`，测试要额外的系统包时传 `apt_packages`。打 `v*` 标签时，`plugin-release.yml` 核对标签和 `plugin.toml` 的版本一致，把插件打成可导入的 ZIP 挂到 Release，说明取 CHANGELOG 里这个版本的一节。
 
 完整的接口说明见仓库里的[插件接口 v1](https://github.com/lendevs/LenBot/blob/master/developer/plugins-v1.md)。
