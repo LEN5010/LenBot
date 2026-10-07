@@ -33,11 +33,15 @@ code { font-family:var(--mono);font-size:.92em }
 .v-btn-toggle .v-btn > .v-btn__overlay { opacity:0 !important }
 .v-card { border-radius:var(--radius-lg) }
 .v-card--variant-outlined, .v-card.v-card--border { border-color:var(--line) }
-.v-field--variant-outlined { background:var(--surface) }
-.v-field--variant-outlined .v-field__outline { --v-field-border-opacity:1;color:var(--line-strong) }
-.v-field--focused .v-field__outline { color:var(--primary) }
-.v-field--variant-outlined .v-field__outline .v-label { color:var(--muted);opacity:1 }
-.v-field--focused .v-field__outline .v-label { color:var(--primary) }
+.v-field--variant-filled { border-radius:var(--radius) !important;background:var(--fill);transition:background-color var(--dur-1),box-shadow var(--dur-2) var(--ease-out) }
+.v-field--variant-filled > .v-field__overlay, .v-field--variant-filled > .v-field__outline { display:none }
+.v-field--variant-filled:hover { background:var(--hover) }
+.v-field--variant-filled.v-field--focused { background:var(--surface);box-shadow:0 0 0 1.5px var(--primary),0 0 0 5px rgb(180 71 106 / 12%) }
+.v-field--variant-filled.v-field--error { box-shadow:0 0 0 1.5px var(--error) }
+.v-field--variant-filled.v-field--disabled { background:var(--fill) }
+.v-field--variant-filled .v-label.v-field-label { color:var(--muted);opacity:1 }
+.v-field--variant-filled.v-field--focused .v-label.v-field-label { color:var(--primary) }
+.v-input__details { padding-inline:var(--sp-3) }
 .v-alert-title { font-size:var(--fs-md);font-weight:650;line-height:1.5 }
 .v-overlay__content > .v-list, .v-menu > .v-overlay__content > .v-card { border-radius:var(--radius);box-shadow:var(--shadow-float) }
 
@@ -54,5 +58,6 @@ code { font-family:var(--mono);font-size:.92em }
   .v-btn{min-height:44px}
 }
 @media(prefers-reduced-motion:reduce){
-  *,*::before,*::after{animation-duration:.01ms;animation-delay:0ms;transition-duration:.01ms;scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.01ms !important;animation-delay:0ms !important;animation-iteration-count:1 !important;
+    transition-duration:.01ms !important;scroll-behavior:auto !important}
 }

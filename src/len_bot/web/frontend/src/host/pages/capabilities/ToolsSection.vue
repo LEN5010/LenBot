@@ -3,7 +3,8 @@ import { computed, ref, watch } from 'vue'
 import { api, sceneName } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify, readPendingRestart } from '../../store.js'
-import { toolLabel } from '../../labels.js'
+import { toolLabel, toolNote } from '../../labels.js'
+import DevOnly from '../../ui/DevOnly.vue'
 import { clone, same } from '../../forms.js'
 import SettingSection from '../../ui/SettingSection.vue'
 import ResourceState from '../../ui/ResourceState.vue'
@@ -56,17 +57,18 @@ async function submit() {
     <AllowList :model-value="draft" @update:model-value="update" :items="items" all-label="全部可用的工具">
       <template #item="{ item }">
         <div class="tool-preview">
-          <p>{{ item.tool.summary }}</p>
-          <span class="state" :class="{ off: !item.tool.registered }">{{ item.tool.registered ? (item.tool.discovered ? '已加载到模型' : '可按需发现') : '当前不可用' }}</span>
-          <details>
-            <summary>模型调用说明</summary>
-            <p>{{ item.tool.description }}</p>
-            <pre>{{ JSON.stringify(item.tool.parameters, null, 2) }}</pre>
-            <template v-if="item.tool.instructions">
-              <strong>插件共享指南（发现工具后加载）</strong>
-              <pre>{{ item.tool.instructions }}</pre>
-            </template>
-          </details>
+          <p>{{ toolNote(item.name) || item.tool.summary }}</p>
+          <DevOnly>
+            <details>
+              <summary>给模型的说明</summary>
+              <p>{{ item.tool.description }}</p>
+              <pre>{{ JSON.stringify(item.tool.parameters, null, 2) }}</pre>
+              <template v-if="item.tool.instructions">
+                <strong>插件共享指南（找到工具后加载）</strong>
+                <pre>{{ item.tool.instructions }}</pre>
+              </template>
+            </details>
+          </DevOnly>
         </div>
       </template>
     </AllowList>
@@ -76,9 +78,7 @@ async function submit() {
 
 <style scoped>
 .tool-preview{min-width:0;margin-left:40px;font-size:var(--fs-sm);color:var(--muted)}
-.tool-preview>p{margin:0 0 var(--sp-2);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-.state{display:inline-block;padding:1px 8px;border-radius:999px;background:var(--fill);font-size:var(--fs-xs)}
-.state.off{opacity:.7}
+.tool-preview>p{margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .tool-preview details{margin-top:var(--sp-2)}
 .tool-preview summary{cursor:pointer;width:fit-content}
 .tool-preview details p{white-space:pre-wrap}

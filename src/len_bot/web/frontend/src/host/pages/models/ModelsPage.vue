@@ -26,7 +26,7 @@ import LimitsSection from './LimitsSection.vue'
 import ProviderTools from './ProviderTools.vue'
 
 const roles = [
-  ['mind', '大脑', '决定说不说、说什么、用哪些工具。更换模型前需要先停机', true],
+  ['mind', '聊天', '决定说不说、说什么、用哪些工具。更换模型前需要先停机', true],
   ['vision', '看图', '看懂群里发的图片', false],
   ['memory', '本地记忆整理', '供本地记忆整理与摘要', false],
   ['learner', '学习', '学习群里的说话方式、黑话和表情', false],
@@ -124,7 +124,7 @@ const count = value => value.toLocaleString('zh-CN')
     <PageTabs :tabs="tabs" :model-value="tab" label="模型设置" />
     <ResourceState :resource="settings" error-title="读取模型设置失败">
       <form v-if="draft" class="stack" @submit.prevent="submit">
-        <MasterDetail v-if="tab === 'providers'" :selected="selected !== null" @back="select(null)">
+        <MasterDetail v-if="tab === 'providers'" :selected="selected !== null" :empty="!draft.providers.length" @back="select(null)">
           <template #list>
             <Panel title="服务商" flush>
               <template #actions><v-btn size="small" variant="outlined" :prepend-icon="mdiPlus" @click="addProvider">添加</v-btn></template>
@@ -147,7 +147,7 @@ const count = value => value.toLocaleString('zh-CN')
             <v-text-field v-model="draft.providers[selected].base_url" label="接口地址" placeholder="https://api.example.com/v1" />
             <v-text-field v-model="draft.providers[selected].api_key" type="password" autocomplete="new-password" label="密钥"
               :placeholder="draft.providers[selected].saved ? '已设置，留空保持不变' : ''" persistent-placeholder />
-            <p class="muted small">{{ protocol(draft.providers[selected].api)?.description }} 协议支持不等于每个模型都支持，能力与额度以服务商说明为准。</p>
+            <p class="muted small">{{ protocol(draft.providers[selected].api)?.description }}</p>
             <v-text-field v-model="draft.providers[selected].proxy" label="网络代理（选填）" placeholder="http://127.0.0.1:7890" hint="此服务商的聊天、后台任务、语音和向量调用共用；留空直连，不读取系统代理" persistent-hint />
             <ProviderTools :can-probe="protocol(draft.providers[selected].api)?.roles.includes('mind')" :key="selected" :provider="draft.providers[selected]" @models="value => catalog[draft.providers[selected].alias] = value" />
             <ErrorNote v-if="protocols.error.value" title="读取协议说明失败" :error="protocols.error.value" />
@@ -163,7 +163,7 @@ const count = value => value.toLocaleString('zh-CN')
             <template v-if="draft.roles[name]">
               <div class="form-grid">
                 <v-select v-model="draft.roles[name].provider" :items="providerChoices(name)" label="服务商" />
-                <v-combobox v-model="draft.roles[name].model" :items="(catalog[draft.roles[name].provider] || []).map(item => item.id)" label="模型名（可手动填写）" hint="列表需先在服务商页读取；能力与窗口照服务商文档填写" persistent-hint />
+                <v-combobox v-model="draft.roles[name].model" :items="(catalog[draft.roles[name].provider] || []).map(item => item.id)" label="模型名（可手动填写）" hint="可以先在服务商页读取列表，也可以直接填" persistent-hint />
                 <v-text-field :model-value="draft.roles[name].context_window_tokens" type="number" label="上下文长度（token）"
                   hint="模型一次能读的最大长度，见服务商文档" persistent-hint
                   @update:model-value="value => draft.roles[name].context_window_tokens = numberOrBlank(value)" />
@@ -182,7 +182,7 @@ const count = value => value.toLocaleString('zh-CN')
                 <v-text-field :model-value="draft.roles[name].reasoning_effort ?? ''" label="思考强度" hint="支持推理的模型可填 low、medium、high，留空不设置" persistent-hint
                   @update:model-value="value => draft.roles[name].reasoning_effort = value || null" />
                 <v-text-field :model-value="draft.roles[name].thinking_budget_tokens ?? ''" type="number" label="思考额度（token，选填）" hint="Anthropic 旧式思考或 Gemini 的额度；与思考强度二选一" persistent-hint @update:model-value="value => draft.roles[name].thinking_budget_tokens = value === '' || value === null ? null : numberOrBlank(value)" />
-                <v-select v-if="providerFor(draft.roles[name].provider)?.api === 'openai-chat'" v-model="draft.roles[name].output_token_field" label="输出额度字段" :items="['max_completion_tokens', 'max_tokens']" hint="按兼容服务要求选择，不会在失败后自动换字段" persistent-hint />
+                <v-select v-if="providerFor(draft.roles[name].provider)?.api === 'openai-chat'" v-model="draft.roles[name].output_token_field" label="输出额度字段" :items="['max_completion_tokens', 'max_tokens']" hint="按服务商的要求选" persistent-hint />
               </AdvancedFields>
             </template>
           </Panel>

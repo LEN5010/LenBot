@@ -1,5 +1,5 @@
 export const palette = {
-  brand: '#e799b0',
+  brand: '#e2809f',
   'brand-soft': '#fbeff3',
   primary: '#b4476a',
   'primary-bg': '#f8e6ec',
@@ -46,7 +46,7 @@ export const vuetifyColors = {
   success: palette.success,
   warning: palette.warning,
   error: palette.error,
-  info: palette.info,
+  info: palette.primary,
   'on-background': palette.ink,
   'on-surface': palette.ink,
 }

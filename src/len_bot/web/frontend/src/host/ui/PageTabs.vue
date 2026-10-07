@@ -35,6 +35,7 @@ function target(value) {
   color:var(--muted);font:inherit;font-size:var(--fs-md);cursor:pointer;white-space:nowrap;transition:color var(--dur-2) var(--ease-out)}
 .page-tab::after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:2px;border-radius:2px 2px 0 0;background:var(--brand);transform:scaleX(0);transition:transform var(--dur-3) var(--ease-out)}
 .page-tab:hover{color:var(--ink);text-decoration:none}
+.page-tab:focus-visible{outline-offset:-2px;border-radius:var(--radius-sm)}
 .page-tab.active{color:var(--ink);font-weight:600}
 .page-tab.active::after{transform:scaleX(1)}
 .count{min-width:18px;padding:0 5px;border-radius:9px;background:var(--fill);color:var(--ink);font-size:var(--fs-xs);line-height:18px;text-align:center}

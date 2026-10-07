@@ -74,7 +74,7 @@ async function close() {
 
 <template>
   <ResourceState :resource="listing" error-title="读取资料失败">
-    <MasterDetail :selected="Boolean(open)" @back="close">
+    <MasterDetail :selected="Boolean(open)" :empty="!files.length" @back="close">
       <template #list>
         <Panel title="资料" description="世界观、人物关系这类背景，聊天时它需要会自己翻。" flush>
           <template #actions><v-btn size="small" variant="outlined" @click="create">新建</v-btn></template>

@@ -4,7 +4,7 @@ import { aliases, mdi } from 'vuetify/iconsets/mdi-svg'
 import { zhHans } from 'vuetify/locale'
 import { vuetifyColors } from '../styles/theme.js'
 
-const field = { variant: 'outlined', density: 'comfortable', hideDetails: 'auto', rounded: 'lg', color: 'primary' }
+const field = { variant: 'filled', density: 'comfortable', hideDetails: 'auto', flat: true, color: 'primary' }
 
 export default createVuetify({
   locale: { locale: 'zhHans', messages: { zhHans } },

@@ -19,7 +19,7 @@ import PermissionsSection from '../settings/PermissionsSection.vue'
 import SceneAvatar from '../../ui/SceneAvatar.vue'
 
 const route = useRoute(), router = useRouter()
-const tabs = [['messages', '消息'], ['settings', '设置'], ['permissions', '权限'], ['brain', '大脑'], ['learning', '学习']]
+const tabs = [['messages', '消息'], ['settings', '设置'], ['permissions', '权限'], ['brain', '会话'], ['learning', '学习']]
 const { scene, current } = useCurrentScene()
 const tab = computed(() => tabs.some(([key]) => key === route.query.tab) ? route.query.tab : 'messages')
 const dirty = reactive({ settings: false, learning: false, permissions: false })

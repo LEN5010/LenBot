@@ -122,7 +122,7 @@ const connectionNotes = {
         <span class="status-mark" :class="{ ok: online }"><img :src="markUrl" alt="" /><span class="status-dot" /></span>
         <div class="status-text">
           <h2>{{ online ? 'Bot 在线' : connectionLabel(state.connection) }}</h2>
-          <p>{{ state.bot_id }} · {{ state.delivery === 'onebot' ? '真实发送到 QQ' : '模拟发送，不会发到 QQ' }} · {{ state.scenes.length }} 个群聊</p>
+          <p>{{ state.bot_id }} · {{ state.delivery === 'onebot' ? '真实发送到 QQ' : '模拟发送' }} · {{ state.scenes.length }} 个群聊</p>
           <LiveStatus :status="events.status.value" @reconnect="events.reconnect" />
         </div>
       </div>
@@ -200,17 +200,17 @@ const connectionNotes = {
 </template>
 
 <style scoped>
-.status-card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--sp-4);align-items:center;padding:var(--sp-5) var(--sp-6);
-  border-radius:16px;background:var(--brand-soft);animation:rise var(--dur-4) var(--ease-out) both}
-.status-card.down{background:var(--fill)}
+.status-card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--sp-4);align-items:center;animation:rise var(--dur-4) var(--ease-out) both}
 .status-main{display:flex;align-items:center;gap:var(--sp-4);min-width:0}
 .status-mark{position:relative;flex:none}
-.status-mark img{width:52px;height:52px;border-radius:14px;display:block;box-shadow:0 2px 8px rgb(180 71 106 / 18%)}
-.status-dot{position:absolute;right:-3px;bottom:-3px;width:14px;height:14px;border-radius:50%;border:2px solid var(--brand-soft);background:var(--warning)}
-.status-card.down .status-dot{border-color:var(--fill)}
+.status-mark img{width:52px;height:52px;border-radius:14px;display:block}
+.status-mark.ok img{animation:bob 3.2s ease-in-out infinite}
+.status-dot{position:absolute;right:-3px;bottom:-3px;width:14px;height:14px;border-radius:50%;border:2px solid var(--surface);background:var(--warning)}
 .status-mark.ok .status-dot{background:var(--success);color:var(--success);animation:pulse 2s var(--ease-out) infinite}
 .status-text{display:grid;gap:2px;min-width:0;justify-items:start}
 .status-text h2{font-size:var(--fs-xl);font-weight:650}
+.status-card.down .status-text h2{color:var(--warning)}
+@keyframes bob{0%,100%{transform:none}50%{transform:translateY(-2px)}}
 .status-text p{margin:0;color:var(--muted);overflow-wrap:anywhere}
 .status-actions{display:flex;gap:var(--sp-2);flex-wrap:wrap;justify-content:flex-end}
 .status-note{grid-column:1/-1;margin:0}
@@ -245,5 +245,5 @@ const connectionNotes = {
 .scene-text strong{font-weight:600}
 .scene-text span{font-size:var(--fs-sm);color:var(--muted)}
 @media(max-width:1100px){.columns{grid-template-columns:minmax(0,1fr);grid-template-areas:'todo' 'scenes' 'activity';grid-template-rows:none}}
-@media(max-width:700px){.status-card{grid-template-columns:minmax(0,1fr);padding:var(--sp-4) var(--sp-5)}.status-actions{justify-content:flex-start}}
+@media(max-width:700px){.status-card{grid-template-columns:minmax(0,1fr)}.status-actions{justify-content:flex-start}}
 </style>

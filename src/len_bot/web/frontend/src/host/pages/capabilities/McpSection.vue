@@ -104,7 +104,7 @@ const runtimeOf = name => running.value[name]
 
 <template>
   <ResourceState :resource="mcp" error-title="读取 MCP 服务失败">
-    <MasterDetail :selected="selected !== null" @back="back">
+    <MasterDetail :selected="selected !== null" :empty="!names.length" @back="back">
       <template #list>
         <Panel title="MCP 服务" flush>
           <template #actions><v-btn variant="outlined" size="small" :prepend-icon="mdiPlus" @click="select('')">添加</v-btn></template>
@@ -113,7 +113,7 @@ const runtimeOf = name => running.value[name]
               :subtitle="runtimeOf(name) ? `${runtimeOf(name).tools.length} 个工具 · ${runtimeOf(name).scenes.map(sceneName).join('、') || '没有群在用'}` : '重启后生效'">
               <template #meta><StatusBadge dot :kind="runtimeOf(name) ? 'mcp' : ''" :value="runtimeOf(name)?.status" :text="runtimeOf(name) ? '' : '待重启'" :tone="runtimeOf(name) ? '' : 'warning'" /></template>
             </ObjectRow>
-            <li v-if="!names.length" class="muted empty">还没有 MCP 服务</li>
+            <li v-if="!names.length" class="muted empty">还没有 MCP 服务。接入后，Bot 需要时会自己找到并使用它提供的工具。</li>
           </ObjectList>
         </Panel>
       </template>

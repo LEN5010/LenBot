@@ -96,7 +96,7 @@ async function exit() {
         <span class="shell-update-dot" />新版本 {{ newer }}</RouterLink>
       <span v-if="host.state?.delivery === 'simulated'" class="shell-pill muted">模拟发送</span>
       <span class="shell-pill"><StatusBadge dot :pulse="status.tone === 'success'" :kind="status.kind" :value="status.value" :text="status.text" :tone="status.tone" /></span>
-      <v-btn :to="{ name: 'host-overview' }" variant="text" icon size="small" :aria-label="attention ? `${attention} 件事需要处理` : '没有需要处理的事'">
+      <v-btn :to="{ name: 'host-overview' }" :active="false" variant="text" icon size="small" :aria-label="attention ? `${attention} 件事需要处理` : '没有需要处理的事'">
         <v-badge v-if="attention" :content="attention" color="error" floating><v-icon :icon="mdiBellOutline" /></v-badge>
         <v-icon v-else :icon="mdiBellOutline" />
       </v-btn>

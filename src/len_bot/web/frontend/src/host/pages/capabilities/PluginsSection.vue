@@ -200,11 +200,11 @@ const facts = name => {
     <PluginCatalog v-if="view === 'discover'" :snapshot="snapshot" :busy="save.busy.value" @dirty="value => catalogDirty = value"
       @install="installEntry" @configure="open" @update="entry => chooseUpdate(entry.name, entry.ref)" />
 
-    <MasterDetail v-else :selected="selected !== null" @back="back">
+    <MasterDetail v-else :selected="selected !== null" :empty="!names.length" @back="back">
       <template #list>
         <div class="stack">
           <Panel :title="`${names.length} 个插件`" flush>
-            <template #actions><v-btn size="small" variant="text" :prepend-icon="mdiPlus" @click="zipImport = true">导入 ZIP</v-btn><v-btn size="small" variant="outlined" :prepend-icon="mdiPlus" @click="installing = true">从 Git 安装</v-btn></template>
+            <template #actions><v-btn size="small" variant="outlined" :prepend-icon="mdiPlus" @click="installing = true">从 Git 安装</v-btn><v-btn size="small" variant="outlined" :prepend-icon="mdiPlus" @click="zipImport = true">导入 ZIP</v-btn></template>
             <ObjectList class="list">
               <ObjectRow v-for="name in names" :key="name" :title="name" clickable :active="selected === name" @click="open(name)"
                 :subtitle="manifest(name)?.description || ''">
@@ -214,7 +214,7 @@ const facts = name => {
                   <StatusBadge dot v-bind="status(name)" />
                 </template>
               </ObjectRow>
-              <li v-if="!names.length" class="muted empty">还没有插件，可以去发现插件里找找。</li>
+              <li v-if="!names.length" class="muted empty">还没有插件。<RouterLink :to="{ query: { ...route.query, view: 'discover' } }">去发现插件里看看</RouterLink></li>
             </ObjectList>
           </Panel>
           <ErrorNote v-for="error in [...snapshot.discovery_errors, ...snapshot.running.discovery_errors]" :key="error" title="有插件目录读不了" :error="error" />

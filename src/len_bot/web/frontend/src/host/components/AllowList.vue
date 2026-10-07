@@ -21,12 +21,12 @@ function toggle(name, on) {
     <v-radio :label="allLabel" value="all" />
     <v-radio label="只用勾选的" value="selected" />
   </v-radio-group>
-  <ul class="allow-list">
+  <ul class="allow-list" :class="{ all: modelValue === 'all' }">
     <li v-for="item in items" :key="item.name">
       <v-checkbox :model-value="modelValue === 'all' || modelValue.includes(item.name)" :disabled="modelValue === 'all'"
         :label="item.label" hide-details density="compact" @update:model-value="value => toggle(item.name, value)" />
-      <p v-if="item.note" class="muted">{{ item.note }}</p>
       <slot name="item" :item="item" />
+      <p v-if="item.note" class="note">{{ item.note }}</p>
     </li>
     <li v-for="name in missing" :key="name">
       <v-checkbox :model-value="true" :label="`${name}（已不存在）`" hide-details density="compact" @update:model-value="toggle(name, false)" />
@@ -34,9 +34,10 @@ function toggle(name, on) {
   </ul>
 </template>
 <style scoped>
-.allow-list{list-style:none;margin:var(--sp-2) 0 0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr));gap:var(--sp-2)}
-.allow-list li{min-width:0;padding:var(--sp-1) var(--sp-3) var(--sp-3) var(--sp-1);border-radius:var(--radius-lg);transition:background-color var(--dur-2) var(--ease-out)}
-.allow-list li:hover{background:var(--fill)}
-.allow-list p{margin:calc(-1 * var(--sp-1)) 0 var(--sp-1) 40px;font-size:var(--fs-sm);text-align:left;color:rgb(var(--v-theme-warning))}
+.allow-list{list-style:none;margin:var(--sp-2) 0 0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:0 var(--sp-5)}
+.allow-list li{min-width:0;padding:var(--sp-1) 0 var(--sp-3);border-bottom:1px solid var(--line)}
+.allow-list.all :deep(.v-selection-control--disabled){opacity:1}
+.allow-list.all :deep(.v-selection-control--disabled .v-label){color:var(--ink)}
+.allow-list .note{margin:var(--sp-1) 0 0 40px;font-size:var(--fs-sm);color:var(--warning)}
 .allow-list :deep(.v-label){font-weight:600;opacity:1}
 </style>
