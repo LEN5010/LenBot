@@ -1,13 +1,15 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { api } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'
 import ErrorNote from '../../ui/ErrorNote.vue'
 
-const props = defineProps({ provider: { type: Object, required: true }, binding: { type: Object, default: null }, canProbe: { type: Boolean, default: true } })
+const props = defineProps({ provider: { type: Object, required: true }, binding: { type: Object, default: null }, canProbe: { type: Boolean, default: true },
+  models: { type: Array, default: () => [] } })
 const emit = defineEmits(['models'])
 const action = useAction(), result = ref(null)
 const model = ref(''), kind = ref('text')
+const modelIds = computed(() => props.models.map(item => item.id))
 watch(() => JSON.stringify([props.provider, props.binding]), () => { result.value = null; action.error.value = null })
 function candidate() {
   const row = props.provider
@@ -19,7 +21,7 @@ async function list() {
   const value = await action.run(() => api('/api/host/models/list', { method: 'POST', body: JSON.stringify(candidate()) }))
   if (value && snapshot === JSON.stringify(candidate())) {
     emit('models', value.models)
-    result.value = { text: `读到 ${value.models.length} 个模型，到用途页选就行。` }
+    result.value = { text: `已读取 ${value.models.length} 个模型` }
   }
 }
 async function probe() {
@@ -33,18 +35,25 @@ async function probe() {
 
 <template>
   <div class="stack">
-    <v-btn v-if="!binding" variant="outlined" :loading="action.busy.value" @click="list">读取模型列表</v-btn>
-    <v-text-field v-if="!binding && canProbe" v-model="model" label="要测试的模型名" hint="可直接手动填写，无需先保存服务商" persistent-hint />
+    <div v-if="!binding" class="probe-row">
+      <v-combobox v-if="canProbe" v-model="model" :items="modelIds" label="测试模型" />
+      <v-btn variant="outlined" :loading="action.busy.value" @click="list">读取模型列表</v-btn>
+    </div>
     <template v-if="canProbe && (!binding || binding.model)">
-      <v-select v-model="kind" label="测试内容" :items="[{ title: '只测文本，调用 1 次', value: 'text' }, { title: '测工具调用，调用 2 次', value: 'tools' }]" />
-      <p class="muted small">用这里填的设置测一次，不影响正在运行的 Bot。</p>
+      <v-select v-model="kind" label="测试内容" :items="[{ title: '文本（调用 1 次）', value: 'text' }, { title: '工具调用（调用 2 次）', value: 'tools' }]" />
       <v-btn variant="outlined" :disabled="!binding && !model" :loading="action.busy.value" @click="probe">测试模型</v-btn>
     </template>
-    <ErrorNote v-if="action.error.value" :error="action.error.value" title="请求失败，可检查地址、凭据和协议后重试；模型名也可手动填写" />
+    <ErrorNote v-if="action.error.value" :error="action.error.value" title="请求失败" />
     <div v-if="result" role="status" class="stack">
       <p style="white-space: pre-wrap">{{ result.text }}</p>
       <p v-if="result.scope" class="muted small">{{ result.scope }}</p>
-      <details v-if="result.usage"><summary>本次服务商报告的用量（不纳入聊天额度）</summary><pre>{{ JSON.stringify(result.usage, null, 2) }}</pre></details>
+      <details v-if="result.usage"><summary>服务商报告的用量</summary><pre>{{ JSON.stringify(result.usage, null, 2) }}</pre></details>
     </div>
   </div>
 </template>
+
+<style scoped>
+.probe-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--sp-3);align-items:start}
+.probe-row .v-btn{margin-top:var(--sp-2)}
+@media(max-width:600px){.probe-row{grid-template-columns:1fr}}
+</style>

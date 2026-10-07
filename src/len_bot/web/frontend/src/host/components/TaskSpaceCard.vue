@@ -9,7 +9,7 @@ import { confirm } from '../../composables/useConfirm.js'
 import ErrorNote from '../ui/ErrorNote.vue'
 import TaskCleanupDialog from './TaskCleanupDialog.vue'
 
-const props = defineProps({ scene: { type: String, required: true }, taskId: { type: Number, required: true }, operator: { type: String, required: true }, version: { type: Number, default: 0 } })
+const props = defineProps({ scene: { type: String, required: true }, taskId: { type: Number, required: true }, version: { type: Number, default: 0 } })
 const emit = defineEmits(['changed'])
 const storage = useResource(() => tasksApi.storage(props.scene, props.taskId), { immediate: false })
 watch(() => props.version, () => { if (storage.data.value) storage.reload() })
@@ -18,10 +18,9 @@ const cleaning = computed({ get: () => operation.value !== null, set: value => {
 function changed() { storage.reload(); emit('changed') }
 const closeAction = useAction()
 const terminal = computed(() => ['done', 'failed', 'cancelled'].includes(storage.data.value?.task.status))
-const validIdentity = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
 async function closeEnvironment() {
   if (!await confirm({ title: `关闭任务 #${props.taskId} 遗留的运行环境？`, text: '关闭容器和绑定的浏览器会话，工作文件和任务会话保留。', confirmLabel: '关闭' })) return
-  await closeAction.run(() => taskStorageApi.close(props.scene, props.taskId, props.operator))
+  await closeAction.run(() => taskStorageApi.close(props.scene, props.taskId))
   changed()
 }
 </script>
@@ -45,12 +44,12 @@ async function closeEnvironment() {
       <p v-else class="muted small">任务结束、浏览器关闭后可以清理。</p>
       <div v-if="terminal && (storage.data.value.task.container || storage.data.value.task.browser_active)" class="inline">
         <span class="muted small">容器{{ storage.data.value.task.container ? '仍在运行' : '已关闭' }}，账号浏览{{ storage.data.value.task.browser_active ? '仍在使用' : '已关闭' }}</span>
-        <v-btn size="small" variant="outlined" :disabled="!validIdentity" :loading="closeAction.busy.value" @click="closeEnvironment">关闭遗留运行环境</v-btn>
+        <v-btn size="small" variant="outlined" :loading="closeAction.busy.value" @click="closeEnvironment">关闭遗留运行环境</v-btn>
       </div>
       <ErrorNote v-if="closeAction.error.value" title="关闭环境失败" :error="closeAction.error.value" />
     </template>
   </div>
-  <TaskCleanupDialog v-if="cleaning" :scene="scene" :task-ids="[taskId]" :operator="operator" :operation="operation" @close="operation = null" @changed="changed" />
+  <TaskCleanupDialog v-if="cleaning" :scene="scene" :task-ids="[taskId]" :operation="operation" @close="operation = null" @changed="changed" />
 </template>
 
 <style scoped>

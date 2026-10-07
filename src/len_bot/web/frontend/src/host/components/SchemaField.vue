@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { mdiPlus } from '@mdi/js'
 import { sceneName } from '../../api.js'
 import { initialField } from '../pluginConfig.js'
+import FieldInfo from '../ui/FieldInfo.vue'
 
 const props = defineProps({
   field: { type: Object, required: true },
@@ -11,8 +12,7 @@ const props = defineProps({
 })
 const model = defineModel({ required: true })
 const title = computed(() => props.field.label || props.field.key)
-const hint = computed(() => props.field.type === 'secret' && props.configured
-  ? `${props.field.description} 已保存，留空不修改。` : props.field.description)
+const secretKept = computed(() => props.field.type === 'secret' && props.configured)
 const scenes = computed(() => props.sceneChoices.map(scene => ({ title: sceneName(scene), value: scene })))
 const inputType = computed(() => props.field.type === 'secret' ? 'password'
   : ['integer', 'number'].includes(props.field.type) ? 'number' : props.field.type === 'url' ? 'url' : 'text')
@@ -35,19 +35,16 @@ function summary(row) {
 
 <template>
   <v-select v-if="field.options" v-model="model" :items="field.options" item-title="label" item-value="value"
-    :label="title" :hint="field.description" persistent-hint />
-  <v-switch v-else-if="field.type === 'boolean'" v-model="model" :label="title" :hint="field.description" persistent-hint />
-  <v-select v-else-if="field.type === 'scene'" v-model="model" :items="scenes" :label="title"
-    :hint="field.description" persistent-hint />
-  <v-select v-else-if="field.type === 'scene_list'" v-model="model" :items="scenes" :label="title" multiple chips closable-chips
-    :hint="field.description" persistent-hint />
+    :label="title"><template v-if="field.description" #append><FieldInfo :text="field.description" /></template></v-select>
+  <v-switch v-else-if="field.type === 'boolean'" v-model="model" :label="title"><template v-if="field.description" #append><FieldInfo :text="field.description" /></template></v-switch>
+  <v-select v-else-if="field.type === 'scene'" v-model="model" :items="scenes" :label="title"><template v-if="field.description" #append><FieldInfo :text="field.description" /></template></v-select>
+  <v-select v-else-if="field.type === 'scene_list'" v-model="model" :items="scenes" :label="title" multiple chips closable-chips><template v-if="field.description" #append><FieldInfo :text="field.description" /></template></v-select>
   <v-textarea v-else-if="field.type === 'string_list'" v-model="model" rows="2" auto-grow :label="title"
-    :hint="`${field.description} 每行一项。`" persistent-hint />
+    placeholder="每行一项"><template v-if="field.description" #append><FieldInfo :text="field.description" /></template></v-textarea>
   <v-textarea v-else-if="field.type === 'string' && field.multiline" v-model="model" rows="3" auto-grow :label="title"
-    :placeholder="field.placeholder ?? undefined" :hint="field.description" persistent-hint />
+    :placeholder="field.placeholder ?? undefined"><template v-if="field.description" #append><FieldInfo :text="field.description" /></template></v-textarea>
   <fieldset v-else-if="field.type === 'object_list' && field.fields.length" class="rows">
-    <legend>{{ title }}</legend>
-    <p class="muted small">{{ field.description }}</p>
+    <legend>{{ title }} <FieldInfo v-if="field.description" :text="field.description" /></legend>
     <v-card v-for="(row, index) in model" :key="index" variant="outlined" class="row-card">
       <div class="row-heading">
         <strong>{{ summary(row) || `第 ${index + 1} 项` }}</strong>
@@ -60,10 +57,10 @@ function summary(row) {
     <v-btn variant="text" color="primary" size="small" :prepend-icon="mdiPlus" @click="addRow">添加{{ title }}</v-btn>
   </fieldset>
   <v-textarea v-else-if="field.type === 'object_list'" v-model="model" rows="5" auto-grow class="mono"
-    :label="title" :hint="`${field.description}（JSON 对象列表）`" persistent-hint />
-  <v-text-field v-else v-model="model" :label="title" :type="inputType" :placeholder="field.placeholder ?? undefined"
+    :label="`${title}（JSON 对象列表）`"><template v-if="field.description" #append><FieldInfo :text="field.description" /></template></v-textarea>
+  <v-text-field v-else v-model="model" :label="title" :type="inputType" :placeholder="secretKept ? '已保存，留空不修改' : field.placeholder ?? undefined"
     :min="field.minimum ?? undefined" :max="field.maximum ?? undefined" :step="field.type === 'integer' ? 1 : 'any'"
-    :autocomplete="field.type === 'secret' ? 'off' : undefined" :hint="hint" persistent-hint />
+    :autocomplete="field.type === 'secret' ? 'off' : undefined"><template v-if="field.description" #append><FieldInfo :text="field.description" /></template></v-text-field>
 </template>
 
 <style scoped>

@@ -80,9 +80,9 @@ const pending = computed(() => inScene && props.path?.startsWith('legacy-import/
 
 <template>
   <Panel v-if="editing" tag="form" :title="path ?? '新建记忆'" @submit.prevent="submit">
-    <v-text-field v-if="path === null" v-model="newPath" label="文件路径" hint="以 .md 结尾，例如 people/小明.md" persistent-hint />
+    <v-text-field v-if="path === null" v-model="newPath" label="文件路径" placeholder="people/小明.md" />
     <v-textarea v-model="content" label="内容" rows="12" auto-grow class="mono" />
-    <v-text-field v-model="reason" label="为什么修改" hint="会记在修改历史里" persistent-hint />
+    <v-text-field v-model="reason" label="为什么修改" />
     <ErrorNote v-if="save.error.value" title="没有保存成功" :error="save.error.value" />
     <template #footer>
       <v-spacer />

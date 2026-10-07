@@ -9,7 +9,7 @@ useUnsavedChanges(computed(() => Object.values(dirty).some(Boolean)), { onDiscar
 </script>
 
 <template>
-  <HostPage title="插件" description="安装、配置插件，并选择在哪些群里启用。" wide>
+  <HostPage title="插件" wide>
     <PluginsSection @dirty="value => dirty.plugins = value" />
   </HostPage>
 </template>

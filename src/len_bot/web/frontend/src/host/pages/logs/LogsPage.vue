@@ -101,7 +101,7 @@ const seconds = ts => Date.parse(ts) / 1000
     </MasterDetail>
 
     <template v-else>
-      <Panel title="运行日志" :description="traceTurn ? `只看一轮：${traceTurn}` : '最近 300 条，按时间倒序'">
+      <Panel title="运行日志" :description="traceTurn ? `只看一轮：${traceTurn}` : ''">
         <template #actions>
           <v-btn-toggle v-model="level" mandatory density="compact">
             <v-btn value="all">全部</v-btn><v-btn value="WARNING">警告以上</v-btn><v-btn value="ERROR">只看错误</v-btn>
@@ -131,7 +131,7 @@ const seconds = ts => Date.parse(ts) / 1000
           </ObjectList>
         </ResourceState>
       </Panel>
-      <Panel v-if="system.data.value" title="日志文件" description="每天一个文件，下载时会隐去账号形状的数字">
+      <Panel v-if="system.data.value" title="日志文件">
         <ObjectList v-if="system.data.value[1].items.length" divided>
           <ObjectRow v-for="file in system.data.value[1].items" :key="file.name" :title="file.name" :subtitle="`${Math.ceil(file.bytes / 1024)} KB`">
             <template #actions><v-btn size="small" variant="text" :href="`/api/host/log-files/${encodeURIComponent(file.name)}`">下载</v-btn></template>

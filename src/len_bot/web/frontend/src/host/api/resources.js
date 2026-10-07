@@ -17,16 +17,16 @@ export const resourcesApi = {
   /** @param {string} scene @param {ResourceRef} reference @returns {Promise<Blob>} */
   preview: (scene, reference) => api(url('/content', scene, reference, { preview: true }), {}, 'blob'),
   downloadUrl: (scene, reference) => url('/content', scene, reference),
-  /** @param {string} scene @param {{reference:ResourceRef, requester:string, name:string, note:string}} body */
+  /** @param {string} scene @param {{reference:ResourceRef, name:string, note:string}} body */
   register: (scene, body) => api(`/api/host/resources/register?${queryString({ scene })}`, { method: 'POST', body: JSON.stringify(body) }),
-  /** @param {string} scene @param {{reference:ResourceRef, requester:string, name:string}} body */
+  /** @param {string} scene @param {{reference:ResourceRef, name:string}} body */
   adopt: (scene, body) => api(`/api/host/resources/adopt?${queryString({ scene })}`, { method: 'POST', body: JSON.stringify(body) }),
-  /** @param {string} scene @param {{reference:ResourceRef, requester:string}} body */
+  /** @param {string} scene @param {{reference:ResourceRef}} body */
   remove: (scene, body) => api(`/api/host/resources?${queryString({ scene })}`, { method: 'DELETE', body: JSON.stringify(body) }),
-  /** @param {string} scene @param {{file:File, requester:string, name:string}} input */
-  upload: (scene, { file, requester, name }) => {
+  /** @param {string} scene @param {{file:File, name:string}} input */
+  upload: (scene, { file, name }) => {
     const body = new FormData()
-    body.append('file', file); body.append('requester', requester); body.append('name', name)
+    body.append('file', file); body.append('name', name)
     return api(`/api/host/resources/upload?${queryString({ scene })}`, { method: 'POST', body })
   },
 }

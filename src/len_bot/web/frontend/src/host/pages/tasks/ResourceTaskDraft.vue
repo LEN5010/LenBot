@@ -6,7 +6,7 @@ import Panel from '../../ui/Panel.vue'
 import ObjectList from '../../ui/ObjectList.vue'
 import ObjectRow from '../../ui/ObjectRow.vue'
 
-defineProps({ scene: { type: String, required: true }, operator: { type: String, required: true } })
+defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['dirty', 'created'])
 const selections = ref([]), creating = ref(false), formDirty = ref(false)
 const dirty = computed(() => selections.value.length > 0 || formDirty.value)
@@ -26,7 +26,7 @@ function created(task) {
 
 <template>
   <slot :select="select" />
-  <Panel v-if="selections.length" :title="`下一个任务的资料 · ${selections.length}`" description="可以继续选择本群的其他文件，在新任务里还能改文件名。">
+  <Panel v-if="selections.length" :title="`下一个任务的资料 · ${selections.length}`">
     <template #actions><v-btn variant="outlined" @click="creating = true">带这些资料新建任务</v-btn></template>
     <ObjectList divided>
       <ObjectRow v-for="(item, index) in selections" :key="index" :title="item.name" :subtitle="resourceLabel(item.reference)">
@@ -34,6 +34,6 @@ function created(task) {
       </ObjectRow>
     </ObjectList>
   </Panel>
-  <NewTask v-if="creating" :scene="scene" :operator="operator" :initial-resources="selections"
+  <NewTask v-if="creating" :scene="scene" :initial-resources="selections"
     @dirty="value => formDirty = value" @created="created" @close="creating = false; formDirty = false" />
 </template>

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from ...configuration.types import STRICT
 from .materials import failure
+from .owner import panel_owner
 from ...runtime.network import NetworkRuntime
 from ...work.materials import finish_file_operation
 from ...work.storage import continuation_state, storage_usage, temporary_usage
@@ -22,7 +23,6 @@ from ...work.store import TERMINAL, Task, TaskStore
 class CleanupSelection(BaseModel):
     model_config = STRICT
     task_ids: list[Annotated[int, Field(gt=0)]] = Field(min_length=1, max_length=100)
-    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
     operation: Literal['temporary', 'environment']
 
     @model_validator(mode='after')
@@ -30,11 +30,6 @@ class CleanupSelection(BaseModel):
         if len(set(self.task_ids)) != len(self.task_ids):
             raise ValueError('一次清理中的任务 ID 必须不同')
         return self
-
-
-class CloseEnvironment(BaseModel):
-    model_config = STRICT
-    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
 
 
 def register_host_task_storage(app: FastAPI, *, runtime: NetworkRuntime,
@@ -119,10 +114,11 @@ def register_host_task_storage(app: FastAPI, *, runtime: NetworkRuntime,
         worker_for(scene)
         if runtime.tasks is None:
             raise HTTPException(409, '当前没有任务服务')
+        requester = panel_owner(runtime)
         results = []
         for id in body.task_ids:
             try:
-                result = await runtime.tasks.clean_task_files(scene, id, requester=body.requester, operation=body.operation)
+                result = await runtime.tasks.clean_task_files(scene, id, requester=requester, operation=body.operation)
             except (ValueError, RuntimeError, OSError) as error:
                 results.append({'task_id': id, 'status': 'error', 'error': ''.join(traceback.format_exception_only(error)).strip(),
                                 'removal': None})
@@ -131,12 +127,12 @@ def register_host_task_storage(app: FastAPI, *, runtime: NetworkRuntime,
         return {'scene': scene, 'operation': body.operation, 'items': results}
 
     @app.post('/api/host/tasks/{id}/close-environment')
-    async def close_environment(id: int, scene: str, body: CloseEnvironment, _: str = Depends(user)):
+    async def close_environment(id: int, scene: str, _: str = Depends(user)):
         worker_for(scene)
         if runtime.tasks is None:
             raise HTTPException(409, '当前没有任务服务')
         try:
-            return await runtime.tasks.close_task_environment(scene, id, requester=body.requester)
+            return await runtime.tasks.close_task_environment(scene, id, requester=panel_owner(runtime))
         except PermissionError as error:
             raise HTTPException(403, str(error)) from error
         except (ValueError, RuntimeError) as error:

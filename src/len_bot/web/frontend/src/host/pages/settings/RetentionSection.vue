@@ -42,14 +42,14 @@ async function runPrune() {
 </script>
 
 <template>
-  <SettingSection title="数据保留" description="定期删除旧的聊天原文和请求记录，节省空间。角色、长期记忆和备份不受影响。"
+  <SettingSection title="数据保留"
     :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
     <v-switch :model-value="draft !== null" label="自动清理旧记录" @update:model-value="toggle" />
     <template v-if="draft">
       <div class="form-grid">
-        <v-text-field :model-value="draft.request_days" type="number" label="模型请求记录保留天数" hint="请求原文只用于排查问题，通常保留几天就够" persistent-hint
+        <v-text-field :model-value="draft.request_days" type="number" label="模型请求记录保留天数"
           @update:model-value="value => draft.request_days = numberOrBlank(value)" />
-        <v-text-field :model-value="draft.timeline_days" type="number" label="回复记录保留天数" hint="至少 32 天" persistent-hint
+        <v-text-field :model-value="draft.timeline_days" type="number" label="回复记录保留天数"
           @update:model-value="value => draft.timeline_days = numberOrBlank(value)" />
       </div>
       <div class="group">

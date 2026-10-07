@@ -2,7 +2,7 @@
 import { computed, reactive, ref } from 'vue'
 import { mdiMessageTextOutline, mdiSendOutline, mdiChatProcessingOutline, mdiAlarm, mdiCounter, mdiRefresh, mdiLanConnect,
   mdiLanDisconnect, mdiCheckCircleOutline, mdiArrowRight, mdiMagnify } from '@mdi/js'
-import { api, sceneName, sceneNumber } from '../../../api.js'
+import { api, sceneName, sceneNumber, sceneSubtitle } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'
 import { confirm } from '../../../composables/useConfirm.js'
 import { useHostEvents } from '../../events.js'
@@ -138,7 +138,6 @@ const connectionNotes = {
     <ErrorNote v-if="state?.connection.last_error" title="最近一次连接或运行失败" :error="state.connection.last_error" />
 
     <StatGrid v-if="day" :items="stats" />
-    <p v-if="day" class="muted small trend-note">数字是今天的合计，下方小图是最近 24 小时每小时的变化。</p>
 
     <div class="columns">
         <Panel title="需要处理的事" flush class="area-todo">
@@ -182,7 +181,7 @@ const connectionNotes = {
               <SceneAvatar :scene="item.scene" :size="36" />
               <span class="scene-text"><strong>{{ sceneName(item.scene) }}</strong>
                 <span>{{ item.chat_enabled
-                  ? [sceneNumber(item.scene), host.members[item.scene] !== undefined ? `${host.members[item.scene]} 人` : '', item.persona.name].filter(Boolean).join(' · ')
+                  ? [sceneSubtitle(item.scene), host.members[item.scene] !== undefined ? `${host.members[item.scene]} 人` : '', item.persona.name].filter(Boolean).join(' · ')
                   : '聊天已关闭，只记录消息' }}</span></span>
             </RouterLink>
             <v-switch :model-value="item.chat_enabled" density="compact" hide-details inset
@@ -214,7 +213,6 @@ const connectionNotes = {
 .status-text p{margin:0;color:var(--muted);overflow-wrap:anywhere}
 .status-actions{display:flex;gap:var(--sp-2);flex-wrap:wrap;justify-content:flex-end}
 .status-note{grid-column:1/-1;margin:0}
-.trend-note{margin:calc(-1 * var(--sp-2)) 0 0}
 .columns{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,2fr);grid-template-areas:'todo scenes' 'activity scenes';grid-template-rows:auto 1fr;gap:var(--sp-6) var(--sp-6);align-items:start;margin-top:var(--sp-3)}
 .area-todo{grid-area:todo}
 .area-activity{grid-area:activity}

@@ -11,7 +11,7 @@ import { useCurrentScene } from '../composables/useCurrentScene.js'
 import { host, readHostState, readOverview, readPendingRestart, readSceneTitles, readUpdates } from '../host/store.js'
 import { attentionItems } from '../host/attention.js'
 import { sectionLabel } from '../host/labels.js'
-import { sceneName, sceneTitles } from '../api.js'
+import { sceneName } from '../api.js'
 import { hostAreas, hostGroups, hostTarget } from '../router/hostNavigation.js'
 import ErrorNote from '../host/ui/ErrorNote.vue'
 import StatusBadge from '../host/ui/StatusBadge.vue'
@@ -50,10 +50,10 @@ function refresh() {
   readPendingRestart()
   readOverview()
 }
-onMounted(() => { refresh(); readUpdates() })
+onMounted(() => { refresh(); readUpdates(); readSceneTitles() })
 watch(() => route.name, refresh)
-watch(() => host.state?.connection.connected && host.state.scenes.some(item => !sceneTitles[item.scene]),
-  missing => { if (missing) readSceneTitles() }, { immediate: true })
+// Cached names arrive at once; each new connection reads the names again.
+watch(() => host.state?.connection.connected, connected => { if (connected) readSceneTitles() })
 watch(mobile, value => { drawer.value = !value })
 watch(() => route.fullPath, () => { if (mobile.value) drawer.value = false })
 

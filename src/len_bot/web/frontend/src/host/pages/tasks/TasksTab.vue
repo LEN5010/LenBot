@@ -18,7 +18,7 @@ import LoadMore from '../../ui/LoadMore.vue'
 import NewTask from './NewTask.vue'
 import TaskDetail from './TaskDetail.vue'
 
-const props = defineProps({ scene: { type: String, required: true }, operator: { type: String, required: true } })
+const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
 const route = useRoute(), router = useRouter()
 const state = useResource(() => tasksApi.state())
@@ -93,11 +93,11 @@ const accepting = computed(() => state.data.value?.configured && state.data.valu
         </Panel>
       </template>
       <template #placeholder>从左边选一个任务查看详情。</template>
-      <TaskDetail v-if="selected" :key="selected" :id="selected" :scene="scene" :operator="operator" :version="version"
+      <TaskDetail v-if="selected" :key="selected" :id="selected" :scene="scene" :version="version"
         :service="data" :settings="settings" @dirty="value => detailDirty = value" @changed="list.reload()" @created="created" />
     </MasterDetail>
   </ResourceState>
-  <NewTask v-if="creating" :scene="scene" :operator="operator" @dirty="value => newDirty = value" @created="created" @close="creating = false" />
+  <NewTask v-if="creating" :scene="scene" @dirty="value => newDirty = value" @created="created" @close="creating = false" />
 </template>
 
 <style scoped>

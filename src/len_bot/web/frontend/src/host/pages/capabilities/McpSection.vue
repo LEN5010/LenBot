@@ -140,17 +140,17 @@ const runtimeOf = name => running.value[name]
       <SettingSection v-if="editing" :title="editing.isNew ? '添加 MCP 服务' : '设置'" :dirty="dirty || (editing.isNew && Boolean(editing.name.trim()))"
         :problem="editing.name.trim() ? '' : '请填写服务名'" :saving="save.busy.value" :error="save.error.value" @save="submit">
         <template v-if="!editing.isNew" #actions><v-btn color="error" variant="text" size="small" :disabled="save.busy.value" @click="remove">删除服务</v-btn></template>
-        <v-text-field v-if="editing.isNew" v-model="editing.name" label="服务名" hint="小写字母开头，可用小写字母、数字和下划线，最多 24 位" persistent-hint />
+        <v-text-field v-if="editing.isNew" v-model="editing.name" label="服务名" placeholder="小写字母、数字和下划线，最多 24 位" />
         <v-switch v-model="editing.enabled" label="启动时连接" />
         <v-select v-model="editing.scenes" :items="sceneOptions" multiple chips closable-chips label="哪些群能用" />
         <v-btn-toggle v-model="editing.type" mandatory>
           <v-btn value="stdio">本机程序</v-btn><v-btn value="http">网络地址</v-btn></v-btn-toggle>
         <template v-if="editing.type === 'stdio'">
-          <v-text-field v-model="editing.command" label="启动命令" hint="例如 npx 或程序的完整路径" persistent-hint />
-          <v-textarea v-model="editing.args" rows="2" auto-grow label="命令参数" hint="每行一个" persistent-hint />
+          <v-text-field v-model="editing.command" label="启动命令" placeholder="npx" />
+          <v-textarea v-model="editing.args" rows="2" auto-grow label="命令参数" />
           <v-text-field v-model="editing.cwd" label="工作目录" />
         </template>
-        <v-text-field v-else v-model="editing.url" label="服务地址" hint="例如 http://127.0.0.1:8000/mcp" persistent-hint />
+        <v-text-field v-else v-model="editing.url" label="服务地址" placeholder="http://127.0.0.1:8000/mcp" />
         <h3>{{ editing.type === 'stdio' ? '环境变量' : '请求头' }}</h3>
         <RowEditor :items="editing[pairKey]" :make="() => ({ key: '', value: '', saved: false })" add-label="添加一项">
           <template #default="{ item }">

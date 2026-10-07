@@ -3,10 +3,8 @@ import { computed, reactive } from 'vue'
 import { useRoute } from 'vue-router'
 import { useCurrentScene } from '../../../composables/useCurrentScene.js'
 import { useUnsavedChanges } from '../../../composables/useUnsavedChanges.js'
-import { host } from '../../store.js'
 import HostPage from '../../ui/HostPage.vue'
 import PageTabs from '../../ui/PageTabs.vue'
-import OperatorField from '../../components/OperatorField.vue'
 import TasksTab from './TasksTab.vue'
 import SchedulesTab from './SchedulesTab.vue'
 import ProactiveTab from './ProactiveTab.vue'
@@ -20,12 +18,11 @@ useUnsavedChanges(computed(() => Object.values(dirty).some(Boolean)), { keep: ['
 </script>
 
 <template>
-  <HostPage title="任务" description="Bot 接下的独立任务、提醒和主动开话题。" :wide="tab === 'tasks'">
-    <template v-if="tab !== 'proactive'" #actions><OperatorField /></template>
+  <HostPage title="任务" :wide="tab === 'tasks'">
     <PageTabs :tabs="tabs" :model-value="tab" label="任务" />
     <template v-if="scene">
-      <TasksTab v-if="tab === 'tasks'" :key="`t${scene}`" :scene="scene" :operator="host.operator" @dirty="value => dirty.tasks = value" />
-      <SchedulesTab v-else-if="tab === 'schedules'" :key="`s${scene}`" :scene="scene" :operator="host.operator" @dirty="value => dirty.schedules = value" />
+      <TasksTab v-if="tab === 'tasks'" :key="`t${scene}`" :scene="scene" @dirty="value => dirty.tasks = value" />
+      <SchedulesTab v-else-if="tab === 'schedules'" :key="`s${scene}`" :scene="scene" @dirty="value => dirty.schedules = value" />
       <ProactiveTab v-else :key="`p${scene}`" :scene="scene" />
     </template>
   </HostPage>
