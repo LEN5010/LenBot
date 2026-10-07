@@ -14,14 +14,28 @@ STAGING = '.lenbot-restoring'
 HEADROOM = 256 * 1024 * 1024
 
 
+def _copy_file(source: str | os.PathLike, target: str | os.PathLike) -> str | os.PathLike:
+    """copy2, but the contents are flushed to disk through the handle that wrote them.
+
+    Windows commits only a handle open for writing (fsync on a read-only one fails with EBADF),
+    and a copied read-only file could not be reopened for writing afterwards.
+    """
+    with open(source, 'rb') as reader, open(target, 'wb') as writer:
+        shutil.copyfileobj(reader, writer, 1 << 20)
+        writer.flush()
+        os.fsync(writer.fileno())
+    shutil.copystat(source, target)
+    return target
+
+
 def copy_path(source: Path, target: Path) -> None:
     if source.is_symlink():
         raise ValueError(f'Instance backup path must not be a symbolic link: {source}')
     if source.is_dir():
-        shutil.copytree(source, target, symlinks=True, ignore=shutil.ignore_patterns(LOCK))
+        shutil.copytree(source, target, symlinks=True, ignore=shutil.ignore_patterns(LOCK), copy_function=_copy_file)
     else:
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        _copy_file(source, target)
     if os.name == 'posix' and os.geteuid() == 0:
         pairs = [(source, target)]
         if source.is_dir():
@@ -31,10 +45,6 @@ def copy_path(source: Path, target: Path) -> None:
             info = original.lstat()
             os.chown(copied, info.st_uid, info.st_gid, follow_symlinks=False)
     paths = [target, *target.rglob('*')] if target.is_dir() else [target]
-    for path in paths:
-        if path.is_file() and not path.is_symlink():
-            with path.open('rb') as copied:
-                os.fsync(copied.fileno())
     for path in reversed(paths):
         if path.is_dir() and not path.is_symlink():
             sync_directory(path)

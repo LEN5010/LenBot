@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -58,9 +58,14 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        checking = asyncio.create_task(releases.run()) if releases.enabled else None
         try:
             yield
         finally:
+            if checking is not None:
+                checking.cancel()
+                with suppress(asyncio.CancelledError):
+                    await checking
             await trials.close()
 
     app = FastAPI(title="LenBot 运行管理", lifespan=lifespan)
@@ -85,7 +90,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
     register_host_browser(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_permissions(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_capabilities(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
-    register_host_updates(app, root=root, user=user)
+    releases = register_host_updates(app, root=root, user=user, check_enabled=config.panel.update_check)
     register_host_settings(app, root=root, running=config, user=user, write_lock=write_lock,
                            personas=lambda: {scene: chat.persona for scene, chat in runtime.chats.items()})
     register_host_persona(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
