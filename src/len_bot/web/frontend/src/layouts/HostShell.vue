@@ -8,7 +8,7 @@ import { mdiViewDashboardOutline, mdiChatProcessingOutline, mdiForumOutline, mdi
 import { logout, useAuth } from '../composables/useAuth.js'
 import { confirm } from '../composables/useConfirm.js'
 import { useCurrentScene } from '../composables/useCurrentScene.js'
-import { host, readHostState, readOverview, readPendingRestart, readSceneTitles } from '../host/store.js'
+import { host, readHostState, readOverview, readPendingRestart, readSceneTitles, readUpdates } from '../host/store.js'
 import { attentionItems } from '../host/attention.js'
 import { sectionLabel } from '../host/labels.js'
 import { sceneName, sceneTitles } from '../api.js'
@@ -41,6 +41,7 @@ const restartItems = computed(() => {
     ...value.plugins.map(item => `插件 ${item.name}`), ...value.personas.map(item => `角色 ${item.name}`)])]
 })
 const attention = computed(() => attentionItems(host.state, host.overview).length)
+const newer = computed(() => host.updates?.check?.update_available ? host.updates.check.latest : '')
 const account = computed(() => auth.user?.username || '')
 const toast = computed({ get: () => Boolean(host.toast), set: value => { if (!value) host.toast = '' } })
 
@@ -49,7 +50,7 @@ function refresh() {
   readPendingRestart()
   readOverview()
 }
-onMounted(refresh)
+onMounted(() => { refresh(); readUpdates() })
 watch(() => route.name, refresh)
 watch(() => host.state?.connection.connected && host.state.scenes.some(item => !sceneTitles[item.scene]),
   missing => { if (missing) readSceneTitles() }, { immediate: true })
@@ -91,6 +92,8 @@ async function exit() {
         <strong>{{ area?.title || route.meta.title }}</strong>
       </nav>
       <v-spacer />
+      <RouterLink v-if="newer" :to="{ name: 'host-system', query: { tab: 'updates' } }" class="shell-pill shell-update">
+        <span class="shell-update-dot" />新版本 {{ newer }}</RouterLink>
       <span v-if="host.state?.delivery === 'simulated'" class="shell-pill muted">模拟发送</span>
       <span class="shell-pill"><StatusBadge dot :pulse="status.tone === 'success'" :kind="status.kind" :value="status.value" :text="status.text" :tone="status.tone" /></span>
       <v-btn :to="{ name: 'host-overview' }" variant="text" icon size="small" :aria-label="attention ? `${attention} 件事需要处理` : '没有需要处理的事'">

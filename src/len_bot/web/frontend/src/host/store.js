@@ -2,8 +2,8 @@ import { reactive } from 'vue'
 import { api, sceneTitles } from '../api.js'
 
 export const host = reactive({ state: null, stateError: null, restart: null, toast: '', operator: '', titleErrors: {},
-  overview: null, overviewError: null, members: {} })
-let stateRead = 0, restartRead = 0, titlesRead = 0, overviewRead = 0
+  overview: null, overviewError: null, members: {}, updates: null })
+let updatesRead = 0, stateRead = 0, restartRead = 0, titlesRead = 0, overviewRead = 0
 
 export async function readHostState() {
   const own = ++stateRead
@@ -64,4 +64,14 @@ export function clearHost() {
   Object.assign(host, { state: null, stateError: null, restart: null, toast: '', operator: '', titleErrors: {},
     overview: null, overviewError: null, members: {} })
   for (const key of Object.keys(sceneTitles)) delete sceneTitles[key]
+}
+
+export async function readUpdates() {
+  const own = ++updatesRead
+  try {
+    const value = await api('/api/host/updates')
+    if (own === updatesRead) host.updates = value
+  } catch {
+    if (own === updatesRead) host.updates = null
+  }
 }
