@@ -137,7 +137,7 @@ python -m len_bot.next.maintenance.memory_reindex
 - 关联 ID：`scene`、`platform_message_id`、`message_seq`、`turn_id`、`tool_call_id`、`tool`、`plugin`、`task_id`、`job`，有就带上；
 - `error`：`type`、`message` 和完整 `traceback`。
 
-一条消息从收到、开始一轮、调用模型和工具、插件处理到发出回复，都能按 `turn_id` 串起来；任务按 `task_id`。面板日志页可以按级别、群、一轮、插件和任务筛选，回复记录里点“这一轮的运行日志”直接跳过去。配置里的密钥、插件的密钥字段会从日志里隐去；下载日志文件和诊断包时还会遮去 5 位以上的数字。
+一条消息从收到、开始一轮、调用模型和工具、插件处理到发出回复，都能按 `turn_id` 串起来；任务按 `task_id`。面板日志页可以按级别、群、一轮、插件和任务筛选，回复记录里点「这一轮的运行日志」直接跳过去。配置里的密钥、插件的密钥字段会从日志里隐去；下载日志文件和诊断包时还会遮去 5 位以上的数字。
 
 终端只显示简短的一行；完整记录以日志文件为准。维护命令（迁移、升级、`doctor` 等）的开始、结束和失败也写进同一个文件；`upgrade inspect`、`upgrade paths` 只读实例，`upgrade restore` 会整体替换实例（包括日志），这三步不写实例日志，由更新器记在自己的日志里。部署包的更新器另有 `updates/updater.jsonl`（同样格式的更新记录）和 `updates/updater.log`（子进程原始输出），超过 5 MiB 在更新器启动时轮转。
 

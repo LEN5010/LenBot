@@ -9,7 +9,10 @@ export default defineConfig({
   base: '/LenBot/',
   cleanUrls: true,
   lastUpdated: true,
-  head: [['link', { rel: 'icon', href: '/LenBot/lenbot-favicon.svg', type: 'image/svg+xml' }]],
+  head: [
+    ['link', { rel: 'icon', href: '/LenBot/lenbot-favicon.svg', type: 'image/svg+xml' }],
+    ['meta', { property: 'og:image', content: 'https://lendevs.github.io/LenBot/brand/lenbot-social-preview.png' }],
+  ],
   themeConfig: {
     logo: '/lenbot-mark.svg',
     nav: [
@@ -42,6 +45,7 @@ export default defineConfig({
         { text: '维护', items: [
           { text: '更新与恢复', link: '/guide/update' },
           { text: '备份', link: '/guide/backup' },
+          { text: '日志与排查', link: '/guide/logs' },
           { text: '常见问题', link: '/guide/faq' },
         ] },
       ],
