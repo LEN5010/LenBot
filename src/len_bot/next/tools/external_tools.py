@@ -11,7 +11,7 @@ class ExternalTool:
     name: str
     description: str
     parameters: dict
-    # Shown in results and the panel, for example "插件 clock" or "MCP 服务 files".
+    # Shown in results and the panel, for example "插件 group_digest" or "MCP 服务 files".
     source: str
     call: Callable[[str, dict], Awaitable[str]] = field(repr=False, compare=False)
 

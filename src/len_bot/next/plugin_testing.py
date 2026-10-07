@@ -37,7 +37,7 @@ class _LocalHost(PluginHost):
         super().__init__(config, core_tools=set())
         self.deliveries = deliveries
         self.messages: list[ChatMessage] = []
-        self.runtime = SimpleNamespace(store=Store(config.database), runners={
+        self.runtime = SimpleNamespace(store=Store(config.database), mcp=None, slots=None, runners={
             scene: SimpleNamespace(state=SimpleNamespace(paused=False)) for scene in config.scenes})
 
     async def send_parts(self, plugin: str, scene: str, parts: Sequence[Content], reply_to: str | None) -> Sent:

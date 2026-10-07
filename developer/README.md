@@ -7,7 +7,7 @@
 | [角色包](personas.md) | 角色目录结构和写法 |
 | [群聊表达](expression-materials.md) | 表达原则和提示词分工 |
 | [插件接口 v1](plugins-v1.md)（[English](plugins-v1.en.md)） | 插件清单、装饰器、上下文、测试和发布 |
-| [内置插件](builtin-plugins.md) | 随程序提供的四个插件 |
+| [独立插件与示例](plugin-examples.md) | 群聊总结、GSUID 桥接与教学模板 |
 | [插件目录](plugin-catalog.md) | 静态插件目录的格式 |
 
 ## 写插件

@@ -82,7 +82,7 @@
 - 插件和 LenBot 共用一个 Python 环境，依赖冲突会显示原始错误，不会自动放宽版本。
 - 停用会保留参数和选群；卸载删除源码和配置，保留插件数据，删除数据是另一个操作。
 - 插件都在 LenBot 目录下的 `plugins/`：安装的插件、候选版本和插件数据（`plugins/.data/`）都在这里。也可以把插件目录直接复制进去，这类插件不由安装器管理。
-- 内置插件跟着 LenBot 升级。
+- 业务插件独立安装和更新，不跟着 LenBot 升级。群总结和 GSUID 桥接见[独立插件](../../developer/plugin-examples.md)。旧实例删除 `clock`、`rss_broadcast` 的根配置和选群引用；`group_digest`、`gscore_adapter` 保留原参数与数据，更新宿主后安装同名独立插件。
 
 部署包和 Docker 的升级会自动恢复插件依赖。源码运行重建了 Python 环境以后，停机执行一次：
 

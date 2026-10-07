@@ -22,7 +22,6 @@ from ..platform.identity import validate_scene
 from ..tools.skills import Skill, load_catalog, load_plugin_skills
 from ..storage.store import encode
 
-BUILTIN = Path(__file__).resolve().parents[1] / "builtin_plugins"
 STRICT = ConfigDict(extra="forbid", strict=True)
 FIELD_TYPES = {"string": str, "secret": str, "integer": int, "number": float, "boolean": bool,
                "string_list": list[str], "object_list": list[dict[str, JsonValue]],
@@ -255,10 +254,10 @@ def read_manifest(directory: Path) -> Manifest:
 
 
 def discover(paths: list[Path]) -> tuple[dict[str, list[Path]], list[str]]:
-    """Plugin directories by name across the builtin directory and ``plugins.paths``."""
+    """Plugin directories by name across ``plugins.paths``."""
     found: dict[str, list[Path]] = {}
     errors = []
-    for base in (BUILTIN, *paths):
+    for base in paths:
         if not base.is_dir():
             errors.append(f"插件目录不存在或不是目录：{base}")
             continue
@@ -285,4 +284,3 @@ def scene_skill_catalog(config: HostConfig, scene: str) -> tuple[Skill, ...]:
             read_manifest(directories[0])
             skills.extend(load_plugin_skills(directories[0] / "skills", name))
     return tuple(skills)
-

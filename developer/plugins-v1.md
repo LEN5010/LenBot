@@ -36,7 +36,7 @@ description = "每群独立计数"
 - “取消候选”保留已安装源码；首次安装尚未应用时取消会移除其配置入口。停用保留参数、群选择和数据；卸载删除源码、候选和启用配置，保留插件业务数据和共享依赖包。删除数据仍是插件停止后的单独动作。
 - 插件自有文件／KV 格式由作者维护。增加必填配置或删除字段须在应用前明确填写；数据转换用作者提供的停机命令。选择旧源码不代表数据能回退，宿主不自动删除未知配置或回滚 KV。
 
-[四个内置插件](builtin-plugins.md)覆盖命令接管、无模型订阅、生成与委派、外部服务。发现页仍使用[静态目录](plugin-catalog.md)，首版没有市场后端。
+[独立插件与示例](plugin-examples.md)覆盖命令接管、生成与委派、外部服务。发现页仍使用[静态目录](plugin-catalog.md)，首版没有市场后端。
 
 ## 入口
 
@@ -125,6 +125,35 @@ default = []
 
 运行参数仍只存在根 `lenbot.config.json`。不要把 KV 当作第二份配置，也不要从环境变量覆盖面板值。
 
+## 工具说明如何交给聊天模型
+
+`@tool(name, description)` 的 description 是模型看到的完整使用说明；参数类型、默认值和 `Annotated[..., Field(description=...)]` 生成参数 schema。工具函数的 docstring、README 和 `plugin.toml` 的介绍不自动注入聊天提示。插件技能供后台任务读取，也不替代聊天工具说明。
+
+所有插件工具通过 `tool_search` 发现，角色须同时允许这个入口和实际工具名。发现目录与搜索结果显示 description 的第一句，工具从下一次请求开始可用，届时提供完整 description 和参数 schema。搜索按工具名或描述中的原词匹配，不做语义检索。
+
+第一句写明用途，使用用户会说的词，例如“日报”“群聊总结”；后文写触发条件、参数选择、默认值和调用后的行为。参数说明放在 Field 中，不靠函数 docstring。后台生成并自行发送的工具应说明“立即返回、完成后自行发送”，让聊天模型避免重复转述或发送。
+
+```python
+from typing import Annotated
+from pydantic import Field
+from len_bot.next.plugin import Invocation, Plugin, tool
+
+class Example(Plugin):
+    @tool("recent_count", "统计当前群最近一段时间的消息数量。小时数按当前时间向前计算，不发送群消息。")
+    async def count(self, ctx: Invocation,
+                    hours: Annotated[int, Field(ge=1, le=72, description="向前回溯的小时数")] = 24) -> str:
+        before = ctx.now()
+        after = before - hours * 3600
+        count = 0
+        while True:
+            page = ctx.messages_between(after, before, offset=count, limit=500)
+            count += len(page)
+            if len(page) < 500:
+                return f"过去 {hours} 小时共有 {count} 条消息。"
+```
+
+当前接口没有额外的按工具加载提示文件；需要的说明写进 description 与参数 schema。工具返回文本，可以返回 JSON 文本；执行上下文由宿主确定当前群，插件不用让模型填群号。
+
 ## 调用上下文
 
 命令和全文／正则的 `Invocation.message` 是真实触发消息；工具调用可能没有 message，不据此编造请求人。`ctx.scene` 是当前启用场景，例如 `onebot:group:80001`；`ctx.message.sender.uid` 和 `self.ctx.bot_id` 是带平台的账号，例如 `onebot:70001`。提及使用 `Mention("onebot:70001")`。
@@ -180,7 +209,7 @@ async def publish(self, ctx):
 
 插件可带 `skills/<技能名>/SKILL.md` 和相关资源。宿主只为启用该插件的场景提供目录，并继续应用角色 `skills` 许可；任务以只读方式挂载。名称遵循现有技能命名规则，与其他来源冲突就报错。插件技能可在面板查看，不能通过普通技能的移动／删除操作改写插件源码。
 
-内置的 [RSS 播报与群总结示例](builtin-plugins.md) 分别覆盖无模型、单次模型、独立工作三种路径。
+[counter 教学示例](examples/counter/)和[独立群总结插件](https://github.com/lendevs/lenbot-plugin-group-digest)覆盖无模型、单次模型、独立工作三种路径。
 
 ## 生命周期和错误
 

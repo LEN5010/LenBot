@@ -2,74 +2,32 @@
   "version": 1,
   "entries": [
     {
-      "name": "clock",
-      "description": "精确命令 /时间：按本场景时区回复当前日期、星期和时间，不叫醒大脑。",
-      "authors": [
-        "LEN5010"
-      ],
-      "license": "AGPL-3.0-or-later",
-      "version": "1.0.0",
-      "interface": 1,
-      "title": "时间查询",
-      "category": "群聊命令",
-      "capabilities": [
-        "无模型调用",
-        "场景时区"
-      ],
-      "usage": [
-        "在目标群启用后发送 /时间。",
-        "show_seconds 控制是否显示秒。"
-      ],
-      "install": "builtin",
-      "repository": "https://github.com/lendevs/LenBot.git"
-    },
-    {
-      "name": "rss_broadcast",
-      "description": "在明确时区的 cron 时刻直接播报 RSS 2.0 订阅，不调用模型；/订阅播报 可手动查看新条目。",
-      "authors": [
-        "LEN5010"
-      ],
-      "license": "AGPL-3.0-only",
-      "version": "1.0.0",
-      "interface": 1,
-      "title": "订阅播报",
-      "category": "自动播报",
-      "capabilities": [
-        "无模型调用",
-        "RSS 2.0",
-        "cron 与 KV"
-      ],
-      "usage": [
-        "填写订阅名称、RSS 地址、发送场景、cron 与时区，再为目标群启用。",
-        "发送 /订阅播报 或 /订阅播报 名称，直接发送未播出的条目。",
-        "首次到点发送最新条目；重启不补发离线期间的时刻。"
-      ],
-      "install": "builtin",
-      "repository": "https://github.com/lendevs/LenBot.git"
-    },
-    {
       "name": "group_digest",
-      "description": "/群总结 显式单次生成；/群工作 按真实发送者委派文件或长工作。不是每条聊天自动调用。",
+      "description": "每天定时或按需生成群聊总结卡片；/群总结 文字总结，/群工作 委派长工作。",
       "authors": [
         "LEN5010"
       ],
       "license": "AGPL-3.0-only",
-      "version": "1.0.0",
+      "version": "1.2.0",
       "interface": 1,
-      "title": "群总结与群工作",
+      "title": "群聊总结与群工作",
       "category": "工作工具",
       "capabilities": [
-        "单次模型生成",
+        "每日总结卡片",
+        "分批模型生成",
         "工作任务",
-        "只读技能"
+        "只读技能",
+        "按群增量整理"
       ],
       "usage": [
-        "发送 /群总结 只列已确定的安排，按已绑定用途生成一次总结。",
-        "发送 /群工作 把刚才安排做成 CSV，按真实发送者权限创建任务。",
-        "群工作需要 worker 和场景任务能力；附带技能还需角色允许。"
+        "安装后填写配置，并选择启用的群。",
+        "/群日报 或 /群日报 6 生成总结卡片；也可以允许工具 group_summary_card。",
+        "每日总结默认 22:00，只有选入 daily_scenes 的群才自动发送。",
+        "/群总结 生成文字总结；/群工作 委派长工作，需要任务能力和权限。",
+        "增量默认关闭，按群开启后每小时整理；自然语言可指定 hours 或 start_at、end_at。"
       ],
-      "install": "builtin",
-      "repository": "https://github.com/lendevs/LenBot.git"
+      "install": "git",
+      "repository": "https://github.com/lendevs/lenbot-plugin-group-digest"
     },
     {
       "name": "gscore_adapter",
@@ -92,8 +50,8 @@
         "发送 /gs 命令；断线后发送 /gs连接 明确连接。",
         "gscore_status 提供实际连接状态，是否给模型使用由角色工具许可决定。"
       ],
-      "install": "builtin",
-      "repository": "https://github.com/lendevs/LenBot.git"
+      "install": "git",
+      "repository": "https://github.com/lendevs/lenbot-plugin-gscore-adapter"
     }
   ]
 }

@@ -33,6 +33,8 @@ Event routing is still there. Exact commands and keyword rules are handled direc
 | Learning | Learns phrasing, slang and stickers from the group and watches how people react to replies; everything can be adopted, edited or disabled in the panel |
 | Management | The panel manages models, budgets, permissions, reminders and logs; owners can also change settings by asking in chat |
 
+Group summaries and the GSUID Core bridge are [standalone plugins (zh)](developer/plugin-examples.md), installed and updated separately.
+
 ## Ways to run it
 
 All three run the same program. On first start without a configuration it prints a link to a web setup wizard: connect OneBot, read the bot account, enter the owner and a model, then continue to the panel.

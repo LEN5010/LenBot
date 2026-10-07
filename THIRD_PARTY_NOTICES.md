@@ -33,7 +33,6 @@ LenBot 的原创代码采用 AGPL-3.0-only，插件模板和计数示例采用 G
 | [Pi](https://github.com/earendil-works/pi) | 后台任务容器里的工作进程 | 任务镜像安装 npm 包 `@earendil-works/pi-coding-agent`，许可证资料随任务镜像保留 |
 | BrowserSkill | 账号浏览的守护进程、浏览器扩展和文件助手 | 独立部署；源码包只附带[远程文件补丁和配方](deploy/current/browserskill-files.md)，不含完整上游代码 |
 | OneBot v11 实现 | 登录 QQ、收发消息 | 由用户自选并单独运行 |
-| [GSUID Core](https://github.com/Genshin-bots/gsuid_core) | 内置插件 `gscore_adapter` 连接的服务 | 插件按其公开协议独立编写，来源记录见[协议来源](src/len_bot/next/builtin_plugins/gscore_adapter/SOURCE.md) |
 
 ## 设计参考
 

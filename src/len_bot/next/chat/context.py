@@ -97,7 +97,7 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
         )
     if "tool_search" in names:
         system += "\n" + Template((PROMPTS / "next_tools.md").read_text()).substitute(
-            catalog="\n".join(f"- {tool['function']['name']}：{tool['function']['description'].split('；')[0]}"
+            catalog="\n".join(f"- {tool['function']['name']}：{tool['function']['description'].split('。', 1)[0]}"
                               for tool in deferred) or "（当前没有允许发现的低频工具）")
     return system
 
