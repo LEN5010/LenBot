@@ -1,9 +1,9 @@
 # 部署包
 
-部署包装的是带面板的程序和安装脚本，不带 Python。安装时 [uv](https://docs.astral.sh/uv/getting-started/installation/) 会准备 Python 3.13，并按包里锁定的依赖清单安装，所以需要网络，不需要 Node.js。用 Git 安装插件时还需要系统里有 Git。
+部署包里是构建好的程序、面板和安装脚本，不带 Python。安装时由 [uv](https://docs.astral.sh/uv/getting-started/installation/) 准备 Python 3.13，再按包里锁定的版本装依赖，所以要联网，但不需要 Node.js。想用 Git 装插件的话，系统里还要有 `git`。
 
-::: warning 还没有发布
-部署包会随 0.2.0 发布到 [GitHub Releases](https://github.com/lendevs/LenBot/releases)，在那之前请[从源码运行](./install-source)。
+::: warning 0.2.0 还没有发布
+部署包会随 0.2.0 发布到 [GitHub Releases](https://github.com/lendevs/LenBot/releases)。在那之前请[从源码运行](./install-source)。
 :::
 
 | 系统 | 下载 |
@@ -12,11 +12,11 @@
 | macOS（Intel、Apple 芯片） | `lenbot-<版本>-macos.tar.gz` |
 | Windows x64 | `lenbot-<版本>-windows.zip` |
 
-Windows 原生运行支持聊天、面板、插件和记忆。后台任务需要 Docker 管理任务容器，Windows 上请用 [Docker 安装](./install-docker)或 WSL2。
+Windows 原生运行支持聊天、面板、插件和记忆，但不支持后台任务（任务容器要靠 Docker 管理）。Windows 上要用后台任务，请改用 [Docker 安装](./install-docker)或 WSL2。
 
 ## 安装
 
-目标目录必须是一个还不存在的新目录。
+下面以 0.2.0 为例。安装目标必须是一个还不存在的目录。
 
 ::: code-group
 
@@ -36,9 +36,9 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 install "$HOME\lenbot"
 
 :::
 
-第一次运行没有配置，会打印向导链接，按[首次配置](./first-setup)填完就进入面板。之后每次 `run` 都直接启动。在终端里按 Ctrl-C 停止。
+第一次运行会打印首次配置的链接，按[首次配置](./first-setup)填完就进入面板。之后每次 `run` 都直接启动，Ctrl-C 停止。
 
-`run` 还会打印一行**更新与恢复**的链接。面板打不开、升级失败时，从这个链接进入恢复页。
+`run` 还会打印一行**更新与恢复**的链接，记下来。面板打不开或升级失败时，从这里进恢复页。
 
 ## 安装目录
 
@@ -81,7 +81,7 @@ powershell -ExecutionPolicy Bypass -File "$HOME\lenbot\service.ps1" stop
 - **macOS** 注册为当前用户的 launchd 服务 `local.lenbot`，服务自身的输出在 `logs/service.stdout.log`，宿主运行日志在实例目录的 `logs/lenbot.jsonl`，面板日志页可以直接查看。还可以双击 `start.command`、`stop.command`、`restart.command`。
 - **Windows** 注册为登录时启动的计划任务 `LenBot`，在后台运行；`stop` 会让程序正常关闭。
 
-服务不会在崩溃后自动拉起，异常退出时先看日志找原因。升级不需要重新注册服务。
+服务崩溃后不会自动拉起，异常退出时先看日志。升级后不用重新注册服务。
 
 ## 更新
 

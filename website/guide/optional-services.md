@@ -1,6 +1,6 @@
 # 可选服务
 
-只聊天的话，有 OneBot 和一个聊天模型就够了。下面这些按需添加，都在面板里配置。
+只聊天的话，有 OneBot 和一个聊天模型就够了。下面这些用到再加，都在面板里配置。
 
 ## 模型用途
 
@@ -30,7 +30,7 @@ docker exec lenbot-embeddings ollama pull bge-m3:567m
 
 ## 语音转写
 
-自动转写群里的语音需要一个 OpenAI 兼容的转写服务，绑定到 `asr` 用途，再在群设置里打开。本地部署 whisper.cpp 的方法见仓库里的 [ASR 说明](https://github.com/lendevs/LenBot/blob/master/deploy/current/asr.md)。
+自动转写群里的语音需要一个 OpenAI 兼容的转写服务，绑定到 `asr` 用途，再在**群聊 → 设置**里打开「自动转写语音消息」。本地部署 whisper.cpp 的方法见仓库里的 [ASR 说明](https://github.com/lendevs/LenBot/blob/master/deploy/current/asr.md)。
 
 ## 账号浏览
 
@@ -38,7 +38,9 @@ docker exec lenbot-embeddings ollama pull bge-m3:567m
 
 ## 代理软件的 fake-ip 模式
 
-Clash、Surge 等代理开启 fake-ip 时，域名都会解析成 `198.18.x.x` 这类保留地址。LenBot 读网页、取图片和任务出网时会拒绝保留地址，错误里能看到 `私有或保留地址`。在配置里写上代理实际使用的网段：
+Clash、Surge 这类代理开了 fake-ip 后，所有域名都会解析成 `198.18.x.x` 一类的保留地址。LenBot 读网页、取图片和任务出网时会拒绝保留地址，报错里能看到 `私有或保留地址`。
+
+在**能力 → 网页**的「代理的假 IP 网段」里填上代理实际用的网段，对应配置文件里的：
 
 ```json
 "network": {
@@ -47,4 +49,8 @@ Clash、Surge 等代理开启 fake-ip 时，域名都会解析成 `198.18.x.x` �
 }
 ```
 
-按域名连接且解析结果落在假 IP 网段时，LenBot 用 `public_dns_url` 的 DNS JSON 接口查询真实 A／AAAA 地址，核对为公网后固定连接这些地址。接口须兼容 `name`、`type` 参数及 `Status`、`Answer` 响应；可以换成可访问的同协议服务。查询失败或真实地址属于私网时，本次请求报错；直接写保留 IP 仍会被拦截。
+之后按域名连接、解析结果又落在这个网段时，LenBot 会通过 `public_dns_url` 查真实的 A／AAAA 记录，确认是公网地址后直接连过去。
+
+- `public_dns_url` 要是 DNS JSON 接口（接受 `name`、`type` 参数，返回 `Status`、`Answer`），连不上 Google 的话换一个同协议的服务。
+- 查询失败，或者查到的真实地址是内网，这次请求直接报错。
+- 直接写保留 IP 的地址仍然会被拦。
