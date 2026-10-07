@@ -74,3 +74,17 @@ def test_missing_version_notes_are_reported(tmp_path, monkeypatch):
     prepare = load('prepare_release')
     monkeypatch.setattr(prepare, 'NOTES', tmp_path)
     assert prepare.notes_problems('0.3.0') == ['缺少 ' + str(Path(tmp_path.name) / 'v0.3.0.md')]
+
+
+def test_manifest_reads_the_actual_interface_and_formats(tmp_path):
+    import json
+    metadata = load('release_metadata')
+    project = SCRIPTS.parent
+    (tmp_path / 'lenbot-0.2.0-linux.tar.gz').write_bytes(b'synthetic')
+    manifest = json.loads(metadata.write_manifest(project, tmp_path, revision='synthetic').read_text())
+    from len_bot.plugin import INTERFACE
+    from len_bot.next.config import CONFIG_VERSION
+    from len_bot.next.storage.store import FORMAT_VERSION
+    assert manifest['plugin_interface'] == INTERFACE
+    assert manifest['formats']['config'] == CONFIG_VERSION and manifest['formats']['business'] == FORMAT_VERSION
+    assert manifest['files']['lenbot-0.2.0-linux.tar.gz']['bytes'] == len(b'synthetic')
