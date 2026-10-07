@@ -7,6 +7,7 @@ BrowserSkill 在专用环境独立部署。LenBot 保存服务扩展补丁与构
 - 上游：[Tencent/BrowserSkill](https://github.com/Tencent/BrowserSkill)，基线 `147727a0e2ded65a7d0f364beea8cc2ebcdec8af`。
 - 本地扩展分支：`codex/remote-files`，提交 `fa718074bc2f795cb5d3f726977dc6da6f34d41a`。
 - 对应补丁：[browserskill-remote-files.patch](browserskill-remote-files.patch)。包含 daemon、扩展、Native Messaging 文件助手及协议 schema。
+- 上游许可：[browserskill-LICENSE](browserskill-LICENSE)，逐字保留基线版本的 MIT 原文和 `Copyright (c) 2026 Tencent` 版权声明，与补丁一起随宿主源码包和部署包分发。
 - 本轮构建使用 Rust 1.99.0、Node 26.8.2、pnpm 10.17.0；Rust 与前端依赖使用各自锁文件。
 
 这一服务扩展与 LenBot 任务文件工具、会话面板已接通。安装此服务不会自动改变宿主配置，根配置仍明确指定 daemon 的 socket、home、binary 与实际设备 ID。
@@ -61,4 +62,4 @@ pnpm --filter @browser-skill/extension build
 
 当前已核对真实 daemon 的远程授权、WebSocket／IPC／Native Messaging 分块字节与清理，以及助手的跨会话归属、完成状态和下载目录边界。LenBot 已接通任务上传、下载、截图落盘、资源登记与会话展示；对应浏览器页面操作与发行产物按集中阶段完成。
 
-BrowserSkill 与其文件助手按原 MIT 许可独立提供。发行时附该组件的对应源码、补丁、许可证与实际依赖声明；版本产物不包含配对凭据、浏览器资料或业务文件。
+BrowserSkill、远程文件补丁与其文件助手按 MIT 许可独立提供，保留上游版权声明；LenBot 原创代码仍采用 AGPL-3.0-only。发行时附该组件的对应源码、补丁、许可证与实际依赖声明；版本产物不包含配对凭据、浏览器资料或业务文件。

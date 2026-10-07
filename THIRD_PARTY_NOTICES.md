@@ -26,13 +26,21 @@ LenBot 的原创代码采用 AGPL-3.0-only，插件模板和计数示例采用 G
 
 ## 独立服务
 
-下面这些服务由用户单独安装和运行，LenBot 只通过它们的接口连接：
+下面这些服务与 LenBot 宿主分开运行，通过各自的接口连接：
 
 | 项目 | 用途 | 说明 |
 |---|---|---|
 | [Pi](https://github.com/earendil-works/pi) | 后台任务容器里的工作进程 | 任务镜像安装 npm 包 `@earendil-works/pi-coding-agent`，许可证资料随任务镜像保留 |
-| BrowserSkill | 账号浏览的守护进程、浏览器扩展和文件助手 | 独立部署；源码包只附带[远程文件补丁和配方](deploy/current/browserskill-files.md)，不含完整上游代码 |
+| [BrowserSkill](https://github.com/Tencent/BrowserSkill) | 账号浏览的守护进程、浏览器扩展和文件助手 | 独立部署；提供修改后的配套程序包和对应源码，宿主源码包附带补丁、配方与上游 MIT 许可证 |
 | OneBot v11 实现 | 登录 QQ、收发消息 | 由用户自选并单独运行 |
+
+## BrowserSkill 补丁与配套程序
+
+[`browserskill-remote-files.patch`](deploy/current/browserskill-remote-files.patch) 基于 Tencent/BrowserSkill 提交 `147727a0e2ded65a7d0f364beea8cc2ebcdec8af`，包含上游代码上下文，以及远程文件传输、浏览器扩展和 Native Messaging 文件助手的修改。
+
+BrowserSkill 的原版权声明为 `Copyright (c) 2026 Tencent`。基线版本的 MIT 许可证原文保留在 [`browserskill-LICENSE`](deploy/current/browserskill-LICENSE)，与补丁一起随宿主源码包和部署包分发。补丁及修改后的 BrowserSkill 配套程序按 MIT 提供，不改变 LenBot 原创代码的 AGPL-3.0-only 许可。
+
+独立 BrowserSkill 程序包保留上游 `LICENSE`、版本信息和实际取得的依赖许可资料；对应修改后源码随同版发行另行提供。构建与修改范围见[配套文件服务说明](deploy/current/browserskill-files.md)。
 
 ## 设计参考
 
