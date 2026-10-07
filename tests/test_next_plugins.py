@@ -400,3 +400,33 @@ async def test_scene_disable_keeps_other_scene_cron(tmp_path):
         assert [item["scene"] for item in state["crons"]] == ["onebot:group:80001"]
     finally:
         await host.close()
+
+
+@pytest.mark.asyncio
+async def test_hung_plugin_start_and_stop_are_cut_off(tmp_path, monkeypatch):
+    import asyncio
+
+    from len_bot.next.plugins import host as plugin_host
+
+    monkeypatch.setattr(plugin_host, "PLUGIN_START_SECONDS", .1)
+    monkeypatch.setattr(plugin_host, "PLUGIN_STOP_SECONDS", .1)
+    extra = tmp_path / "personal"
+    extra.mkdir()
+    for name, hung in (("slowstart", "start"), ("slowstop", "stop")):
+        directory = _copy_sample(extra, name)
+        (directory / "__init__.py").write_text(
+            'import asyncio\nfrom len_bot.plugin import Plugin\n'
+            f'class Hung(Plugin):\n    async def {hung}(self):\n        await asyncio.Event().wait()\n',
+            encoding="utf-8")
+    root = _root(tmp_path, {"paths": [str(extra)], "slowstart": {}, "slowstop": {}}, ["slowstart", "slowstop"])
+    host = PluginHost(load_host_config(root), core_tools=CORE)
+    async with asyncio.timeout(3):
+        await host.start()
+    assert host.plugins["slowstart"].status == "failed"
+    assert "start() 超过 0.1 秒" in host.plugins["slowstart"].error
+    assert host.plugins["slowstop"].status == "running"
+    with pytest.raises(ExceptionGroup) as failure:
+        async with asyncio.timeout(3):
+            await host.close()
+    assert [str(error) for error in failure.value.exceptions] == ["插件 stop() 超过 0.1 秒没有返回，已取消"]
+    assert host.plugins["slowstop"].status == "failed"

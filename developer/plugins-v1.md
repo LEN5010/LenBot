@@ -301,7 +301,7 @@ async def publish(self, ctx):
 
 ## 生命周期和错误
 
-`start()` 建立资源，`stop()` 关闭资源；启动协程也由宿主拥有，重载或停用会先取消并等待未完成的启动，再串行关闭该实例的资源。用 `self.ctx.start_task(name, coroutine)` 登记自有后台协程，宿主停止时会取消。它不是容器工作任务。不在 asyncio 主循环里跑阻塞网络请求。
+`start()` 建立资源，`stop()` 关闭资源；启动协程也由宿主拥有，重载或停用会先取消并等待未完成的启动，再串行关闭该实例的资源。`start()` 超过 60 秒、`stop()` 超过 30 秒没有返回时宿主取消它并把插件标为失败，耗时的准备放进 `start_task`。用 `self.ctx.start_task(name, coroutine)` 登记自有后台协程，宿主停止时会取消。它不是容器工作任务。不在 asyncio 主循环里跑阻塞网络请求。
 
 一次处理器报错结束该次调用，原错由宿主写进运行日志（`plugin_error`），不自动重试、换服务或停用整个插件。插件自己的记录用 `self.ctx.log`（标准 `logging.Logger`），写进宿主的 `logs/lenbot.jsonl`，自动带上插件名和当前的群、一轮、工具调用 ID；面板日志页可按插件筛选。需要特权的具体入口可用 `ctx.require_owner()`；不必给普通查询加主人门槛。
 
