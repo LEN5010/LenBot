@@ -9,6 +9,10 @@ The plugin template repository
 GNU General Public License version 3 only (GPL-3.0-only); see its own
 LICENSE file.
 
+The BrowserSkill remote-file patch and the modified BrowserSkill component
+are provided under the MIT License. BrowserSkill is Copyright (c) 2026 Tencent.
+The upstream license is retained in deploy/current/browserskill-LICENSE.
+
 Dependencies and separately installed services keep their own licenses and
 copyright notices. See THIRD_PARTY_NOTICES.md and the dependency license
 files that accompany built distributions.

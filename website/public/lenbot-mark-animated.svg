@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="8 0 80 88" role="img" aria-label="LenBot">
+  <style>
+    .body { animation: bob 3.6s ease-in-out infinite; }
+    .antenna { transform-origin: 47px 27px; animation: sway 3.6s ease-in-out infinite; }
+    .eye { transform-box: fill-box; transform-origin: center; animation: blink 5s infinite; }
+    @keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+    @keyframes sway { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(7deg); } }
+    @keyframes blink { 0%, 90%, 96%, 100% { transform: scaleY(1); } 93% { transform: scaleY(0.12); } }
+    @media (prefers-reduced-motion: reduce) { .body, .antenna, .eye { animation: none; } }
+  </style>
+  <g class="body">
+    <path class="antenna" d="M47 27C44 18 47 11 55 9C61 8 64 13 60 16C57 17.5 55.5 14.5 58.5 12.5" fill="none" stroke="#E2809F" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M48 26C67 26 79 37 79 51S67 76 48 76C44.5 76 41 75.5 38 74.6L22 81L26 69C20 64.5 17 58 17 51C17 37 29 26 48 26Z" fill="#E2809F"/>
+    <rect class="eye" x="35" y="43" width="7" height="14" rx="3.5" fill="#2A2530"/>
+    <rect class="eye" x="54" y="43" width="7" height="14" rx="3.5" fill="#2A2530"/>
+    <path d="M42.5 62Q45.25 65 48 62Q50.75 65 53.5 62" fill="none" stroke="#2A2530" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

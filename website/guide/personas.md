@@ -1,21 +1,21 @@
 # 角色
 
-角色决定 Bot 是谁、怎么说话。一个角色是一个目录：
+角色规定了 Bot 的身份和说话方式。每个角色是一个目录，包含下面这些文件。
 
 | 文件 | 内容 |
 |---|---|
 | `persona.yaml` | 名字、身份、性格、别名、工具和技能许可 |
 | `voice.md` | 说话方式 |
 | `boundaries.md` | 底线 |
-| `examples.yaml` | 人工写的情境和台词 |
+| `examples.yaml` | 人工编写的情境和台词 |
 | `knowledge/` | 按需检索的资料 |
 | `stickers/` | 表情图片和 `index.yaml` |
 
-首次配置会建好第一个角色。之后在面板的角色页编辑：
+首次配置时会创建第一个角色，之后在面板的角色页编辑。
 
-- 改完先在页面下方**试聊**，用还没保存的设定聊几句，满意再保存。
-- 可以导出、导入表单草稿；ZIP 导入会建一个新目录，不覆盖已有角色。
-- 哪个群用哪个角色，在**群聊 → 设置**里选。
-- 角色改动在重启后生效。
+- 修改后，可以先在页面下方**试聊**。试聊使用尚未保存的设定，确认满意后再保存。
+- 表单草稿可以导出，也可以导入。导入 ZIP 时会新建一个目录，不覆盖已有的角色。
+- 各群使用哪个角色，在**群聊 → 设置**中选择。
+- 对角色的修改在重启后生效。
 
-写法和样例见[写角色包](../develop/personas)，可以参考仓库里的[示例角色](https://github.com/lendevs/LenBot/tree/master/examples/personas/companion)。
+角色文件的写法和样例见[写角色包](../develop/personas)，也可以参考仓库里的[示例角色](https://github.com/lendevs/LenBot/tree/master/examples/personas/companion)。

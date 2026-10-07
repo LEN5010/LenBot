@@ -32,7 +32,7 @@ REQUIRED_SOURCE = (
     'deploy/current/first-setup.example.json',
     'deploy/current/services.compose.yaml',
     'deploy/current/start-asr.sh', 'deploy/current/asr.md',
-    'deploy/current/browserskill-files.md', 'deploy/current/browserskill-remote-files.patch',
+    'deploy/current/browserskill-files.md', 'deploy/current/browserskill-remote-files.patch', 'deploy/current/browserskill-LICENSE',
     'deploy/README.md', 'deploy/README.en.md', 'deploy/current/operations.md', 'CONTRIBUTING.md',
     'CONTRIBUTING.en.md', 'README.en.md', 'examples/personas/companion/persona.yaml', 'examples/replay/cases.json',
     'docker/next-worker/Dockerfile', 'docker/next-worker/lenbot-extension.ts',
