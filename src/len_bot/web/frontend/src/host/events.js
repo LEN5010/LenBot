@@ -1,8 +1,5 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-// Change notices from WS /api/host/events. Each notice only says "something
-// changed"; the page re-reads. Notices arriving during a read cause exactly one
-// more read afterwards. A closed connection stays closed until reconnect().
 export function useHostEvents(read) {
   const status = ref('connecting')
   let socket = null, reading = false, again = false, active = true

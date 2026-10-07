@@ -1,6 +1,4 @@
 <script setup>
-// The scene's own additions to the role in the isolated test: extra names,
-// relationships and a behavior addendum. Saved to the root config; applies after a restart.
 import { computed, ref, watch } from 'vue'
 import { api } from '../api.js'
 import { useAction, useResource } from '../composables/useResource.js'

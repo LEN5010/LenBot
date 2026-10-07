@@ -1,7 +1,4 @@
 <script setup>
-// One object in a list: title, subtitle, a status or meta slot and actions.
-// With `to` the row is a link, with `clickable` a button; actions stay outside
-// the clickable area.
 defineProps({
   title: { type: String, default: '' },
   subtitle: { type: String, default: '' },

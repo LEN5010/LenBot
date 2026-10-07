@@ -1,5 +1,4 @@
 <script setup>
-// Add a sticker, or edit what the Bot knows about one. `entry` is null when adding a new picture.
 import { computed, ref, watch } from 'vue'
 import ErrorNote from '../../ui/ErrorNote.vue'
 import FormDialog from '../../ui/FormDialog.vue'

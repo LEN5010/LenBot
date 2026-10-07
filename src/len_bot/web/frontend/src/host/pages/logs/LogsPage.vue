@@ -72,7 +72,7 @@ const seconds = ts => Date.parse(ts) / 1000
   <HostPage title="日志" :wide="tab === 'turns'">
     <PageTabs :tabs="[['turns', '回复记录'], ['system', '系统日志']]" :model-value="tab" label="日志" />
 
-    <MasterDetail v-if="tab === 'turns'" :selected="Boolean(selected)" list-width="300px" @back="open(null)">
+    <MasterDetail v-if="tab === 'turns'" :selected="Boolean(selected)" :empty="!turns.length" list-width="300px" @back="open(null)">
       <template #list>
         <Panel title="最近 20 次回复" flush>
           <template #actions><LiveStatus :status="events.status.value" @reconnect="events.reconnect" /></template>

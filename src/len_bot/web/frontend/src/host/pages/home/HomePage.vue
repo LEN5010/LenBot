@@ -46,7 +46,6 @@ async function disconnectQQ() {
   await readHostState()
 }
 
-// One switch per group: off means messages are still saved but neither the Bot nor its plugins speak there.
 const switching = reactive({})
 const switchError = useAction()
 async function setChat(scene, enabled) {
@@ -118,12 +117,12 @@ const connectionNotes = {
     <ErrorNote v-if="host.stateError" title="读取运行状态失败" :error="host.stateError" @retry="readHostState" />
     <ErrorNote v-if="host.overviewError" title="读取今日统计失败" :error="host.overviewError" @retry="readOverview" />
 
-    <section v-if="state" class="status-card">
+    <section v-if="state" class="status-card" :class="{ down: !online }">
       <div class="status-main">
         <span class="status-mark" :class="{ ok: online }"><img :src="markUrl" alt="" /><span class="status-dot" /></span>
         <div class="status-text">
           <h2>{{ online ? 'Bot 在线' : connectionLabel(state.connection) }}</h2>
-          <p>{{ state.bot_id }} · {{ state.delivery === 'onebot' ? '真实发送到 QQ' : '模拟发送，不会发到 QQ' }} · {{ state.scenes.length }} 个群聊</p>
+          <p>{{ state.bot_id }} · {{ state.delivery === 'onebot' ? '真实发送到 QQ' : '模拟发送' }} · {{ state.scenes.length }} 个群聊</p>
           <LiveStatus :status="events.status.value" @reconnect="events.reconnect" />
         </div>
       </div>
@@ -201,28 +200,32 @@ const connectionNotes = {
 </template>
 
 <style scoped>
-.status-card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--sp-4);align-items:center;padding:var(--sp-5);
-  border-radius:var(--radius-lg);border:1px solid var(--line);background:var(--surface)}
+.status-card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--sp-4);align-items:center;animation:rise var(--dur-4) var(--ease-out) both}
 .status-main{display:flex;align-items:center;gap:var(--sp-4);min-width:0}
 .status-mark{position:relative;flex:none}
-.status-mark img{width:48px;height:48px;border-radius:var(--radius-lg);display:block}
+.status-mark img{width:52px;height:52px;border-radius:14px;display:block}
+.status-mark.ok img{animation:bob 3.2s ease-in-out infinite}
 .status-dot{position:absolute;right:-3px;bottom:-3px;width:14px;height:14px;border-radius:50%;border:2px solid var(--surface);background:var(--warning)}
 .status-mark.ok .status-dot{background:var(--success);color:var(--success);animation:pulse 2s var(--ease-out) infinite}
 .status-text{display:grid;gap:2px;min-width:0;justify-items:start}
 .status-text h2{font-size:var(--fs-xl);font-weight:650}
+.status-card.down .status-text h2{color:var(--warning)}
+@keyframes bob{0%,100%{transform:none}50%{transform:translateY(-2px)}}
 .status-text p{margin:0;color:var(--muted);overflow-wrap:anywhere}
 .status-actions{display:flex;gap:var(--sp-2);flex-wrap:wrap;justify-content:flex-end}
 .status-note{grid-column:1/-1;margin:0}
 .trend-note{margin:calc(-1 * var(--sp-2)) 0 0}
-.columns{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,2fr);grid-template-areas:'todo scenes' 'activity scenes';grid-template-rows:auto 1fr;gap:var(--sp-4);align-items:start}
+.columns{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,2fr);grid-template-areas:'todo scenes' 'activity scenes';grid-template-rows:auto 1fr;gap:var(--sp-6) var(--sp-6);align-items:start;margin-top:var(--sp-3)}
 .area-todo{grid-area:todo}
 .area-activity{grid-area:activity}
 .area-scenes{grid-area:scenes}
-.pad{padding:0 var(--sp-5) var(--sp-4);margin:0}
+.pad{padding:var(--sp-2) 0 var(--sp-3);margin:0}
+.columns :deep(.panel.flush .panel-head){padding-left:0;padding-right:0}
+.columns :deep(.panel.flush .panel-foot){padding-left:0;padding-right:0}
 .todo-count{min-width:22px;height:22px;padding:0 6px;border-radius:11px;background:var(--error-bg);color:var(--error);font-size:var(--fs-xs);font-weight:600;line-height:22px;text-align:center}
 .all-good{display:flex;align-items:center;gap:var(--sp-2);color:var(--success);font-weight:600}
 .rows{border-top:1px solid var(--line)}
-.row{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3) var(--sp-5);border-bottom:1px solid var(--line);min-width:0}
+.row{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3) 0;border-bottom:1px solid var(--line);min-width:0}
 .row:last-child{border-bottom:0}
 .row-text{display:grid;gap:var(--sp-1);flex:1;min-width:0}
 .activity{display:flex;align-items:baseline;gap:var(--sp-3);color:inherit}
@@ -242,5 +245,5 @@ const connectionNotes = {
 .scene-text strong{font-weight:600}
 .scene-text span{font-size:var(--fs-sm);color:var(--muted)}
 @media(max-width:1100px){.columns{grid-template-columns:minmax(0,1fr);grid-template-areas:'todo' 'scenes' 'activity';grid-template-rows:none}}
-@media(max-width:700px){.status-card{grid-template-columns:minmax(0,1fr);padding:var(--sp-4)}.status-actions{justify-content:flex-start}}
+@media(max-width:700px){.status-card{grid-template-columns:minmax(0,1fr)}.status-actions{justify-content:flex-start}}
 </style>

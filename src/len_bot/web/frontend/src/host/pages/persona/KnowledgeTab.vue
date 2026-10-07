@@ -1,5 +1,4 @@
 <script setup>
-// Background files the role can look things up in while chatting, one Markdown file each.
 import { computed, ref, watch } from 'vue'
 import { api, sceneName } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
@@ -20,7 +19,6 @@ const listing = useResource(() => api(base.value))
 const files = computed(() => listing.data.value?.files || [])
 const shared = computed(() => (listing.data.value?.affected_scenes || []).filter(item => item !== props.scene))
 
-// The open file: null, { creating: true }, or { filename, content } as saved.
 const open = ref(null), name = ref(''), text = ref('')
 const dirty = computed(() => open.value?.creating ? Boolean(name.value || text.value) : Boolean(open.value && text.value !== open.value.content))
 watch(dirty, value => emit('dirty', value), { immediate: true })
@@ -76,7 +74,7 @@ async function close() {
 
 <template>
   <ResourceState :resource="listing" error-title="读取资料失败">
-    <MasterDetail :selected="Boolean(open)" @back="close">
+    <MasterDetail :selected="Boolean(open)" :empty="!files.length" @back="close">
       <template #list>
         <Panel title="资料" description="世界观、人物关系这类背景，聊天时它需要会自己翻。" flush>
           <template #actions><v-btn size="small" variant="outlined" @click="create">新建</v-btn></template>

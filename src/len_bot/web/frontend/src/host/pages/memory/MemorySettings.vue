@@ -64,7 +64,7 @@ async function submit() {
       <v-switch v-model="draft.auto_recall" label="聊天时自动想起相关的记忆" hide-details />
       <v-switch v-model="ingestOn" label="后台自动整理记忆" hint="攒够一批新消息后自动整理，只处理开启之后的消息" persistent-hint />
       <v-alert v-if="ingestOn && noMemoryModel" type="info">
-        需要先到 <RouterLink :to="{ name: 'host-models', query: { tab: 'roles' } }">模型</RouterLink> 页设置记忆整理用的模型，整理会消耗 token。</v-alert>
+        需要先到 <RouterLink :to="{ name: 'host-models', query: { tab: 'roles' } }">模型</RouterLink> 页设置记忆整理用的模型。</v-alert>
       <v-switch v-model="draft.summaries" hide-details
         label="为每个目录生成摘要，根目录摘要作为本群画像" />
       <v-text-field v-model="draft.local.directory" label="保存目录" hint="在 LenBot 目录里，例如 data/memory" persistent-hint />

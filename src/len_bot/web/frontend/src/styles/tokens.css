@@ -1,4 +1,3 @@
-/* Scales. Colors come from styles/theme.js. Scoped styles use only these. */
 :root {
   --fs-xs:12px;
   --fs-sm:13px;
@@ -12,7 +11,6 @@
   --sp-4:16px;
   --sp-5:24px;
   --sp-6:32px;
-  /* Controls, small blocks, cards. --radius-xl is kept for older pages and equals the card radius. */
   --radius-sm:6px;
   --radius:8px;
   --radius-lg:12px;
@@ -22,9 +20,9 @@
   --shadow-hover:0 1px 2px rgb(20 20 30 / 5%),0 4px 12px rgb(20 20 30 / 6%);
   --shadow-float:0 8px 28px rgb(20 20 30 / 12%);
   --ease-out:cubic-bezier(.22,1,.36,1);
-  /* No overshoot anywhere; the old spring curve now eases out like the rest. */
   --ease-spring:var(--ease-out);
   --dur-1:120ms;
   --dur-2:180ms;
   --dur-3:240ms;
+  --dur-4:360ms;
 }

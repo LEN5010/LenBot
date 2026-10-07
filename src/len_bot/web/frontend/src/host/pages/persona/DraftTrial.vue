@@ -1,5 +1,4 @@
 <script setup>
-// Try the form as it is now, saved or not, in a test chat that never reaches QQ.
 import { ref } from 'vue'
 import { api } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'

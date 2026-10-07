@@ -1,6 +1,4 @@
 <script setup>
-// Rows the user adds and removes. The slot renders one row's fields; `make`
-// creates a new row; without `addLabel` rows can only be removed. The array is edited in place.
 import { mdiClose, mdiPlus } from '@mdi/js'
 const props = defineProps({
   items: { type: Array, required: true },

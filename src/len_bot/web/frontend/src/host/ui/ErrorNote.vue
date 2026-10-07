@@ -1,6 +1,4 @@
 <script setup>
-// A plain-language title, with the original error text folded underneath.
-// Pass `@retry` to offer a retry button.
 import Fold from './Fold.vue'
 defineProps({ title: { type: String, required: true }, error: { type: [Object, String], required: true }, onRetry: { type: Function, default: null } })
 </script>

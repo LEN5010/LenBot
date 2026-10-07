@@ -20,7 +20,6 @@ const props = defineProps({
 const emit = defineEmits(['changed'])
 const stopped = computed(() => props.service.configured && finished(props.task.status) && props.task.container === null)
 
-// Keep a delivered file in this group's shared materials, so later tasks can be given it.
 const shared = useResource(() => materialsApi.list(props.scene), { immediate: false })
 const keepFile = ref(null), keepName = ref('')
 const keep = useAction()

@@ -25,10 +25,10 @@ watch(() => page.data.value, value => {
   if (value) entries.value = value.before ? [...value.entries, ...entries.value] : value.entries
 })
 const action = useAction()
-const roleLabels = { user: '交给大脑的内容', assistant: 'Bot 的想法', tool: '工具结果', system: '系统设定' }
+const roleLabels = { user: '交给模型的内容', assistant: 'Bot 的想法', tool: '工具结果', system: '系统设定' }
 const text = value => typeof value === 'string' ? value : JSON.stringify(value, null, 2)
 const questions = {
-  compact: { title: '整理回想？', text: '把较早的对话整理成回想，会调用一次大脑模型。', confirmLabel: '整理' },
+  compact: { title: '整理回想？', text: '把较早的对话整理成回想，会调用一次聊天模型。', confirmLabel: '整理' },
   'new-context': { title: '开始新会话？', text: 'Bot 会从这里重新开始，不再带着之前的对话。聊天记录、记忆和提醒都保留。', confirmLabel: '开始新会话' },
 }
 
@@ -47,7 +47,7 @@ async function operate(kind) {
 <template>
   <ErrorNote v-if="action.error.value" title="操作没有完成" :error="action.error.value" />
   <ResourceState :resource="page" error-title="读取会话失败" v-slot="{ data }">
-    <Panel title="回想" description="Bot 对较早对话的概括，会和最近的对话一起交给大脑。">
+    <Panel title="回想" description="Bot 对较早对话的概括，会和最近的对话一起交给聊天模型。">
       <template #actions><v-btn variant="outlined" :loading="action.busy.value" @click="operate('compact')">整理回想</v-btn></template>
       <p v-if="data.recap !== null" class="readable-copy recap">{{ data.recap }}</p>
       <p v-else class="muted recap">还没有回想。</p>

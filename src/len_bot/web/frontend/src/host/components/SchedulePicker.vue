@@ -1,6 +1,4 @@
 <script setup>
-// Builds the schedule `when` text the backend accepts: an ISO time with offset,
-// `every 30m/2h/1d`, or `cron:minute hour * * weekdays` in the scene timezone.
 import { computed, ref, watch } from 'vue'
 
 const props = defineProps({ timezone: { type: String, required: true } })
@@ -13,7 +11,6 @@ const days = ref([1, 2, 3, 4, 5, 6, 0])
 const custom = ref('')
 const weekdays = [[1, '一'], [2, '二'], [3, '三'], [4, '四'], [5, '五'], [6, '六'], [0, '日']]
 
-// Offset of the scene timezone at a given instant, in minutes.
 function offsetAt(instant) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: props.timezone, hourCycle: 'h23',
     year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -25,7 +22,6 @@ function isoWithOffset(day, clock) {
   const [y, m, d] = day.split('-').map(Number), [h, mi] = clock.split(':').map(Number)
   const guess = Date.UTC(y, m - 1, d, h, mi)
   const offset = offsetAt(guess - offsetAt(guess) * 60000)
-  // A skipped local clock must not become a different time after conversion.
   if (offsetAt(guess - offset * 60000) !== offset) return ''
   const sign = offset < 0 ? '-' : '+', abs = Math.abs(offset)
   const pad = value => String(value).padStart(2, '0')

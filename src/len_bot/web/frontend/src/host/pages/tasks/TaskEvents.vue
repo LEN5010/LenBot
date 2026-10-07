@@ -38,7 +38,6 @@ async function open(event) {
   const record = await reading.run(() => tasksApi.event(props.scene, props.taskId, event.id))
   if (record) full.value = { ...full.value, [event.id]: record }
 }
-// Text and images a person can read; everything else is only in developer mode.
 function parts(record) {
   const body = record.body
   const plain = ['text', 'title', 'message', 'value', 'note', 'summary'].filter(key => typeof body[key] === 'string').map(key => body[key])

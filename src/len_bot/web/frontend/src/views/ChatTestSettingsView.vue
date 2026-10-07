@@ -1,6 +1,4 @@
 <script setup>
-// What the isolated test instance is running now: scene, role, examples,
-// knowledge files and tools. Only the scene additions are editable.
 import { computed } from 'vue'
 import { api } from '../api.js'
 import { useResource } from '../composables/useResource.js'

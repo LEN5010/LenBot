@@ -84,7 +84,7 @@ class Chat:
             if any(previous["settings"][key] != current[key] for key in ("api", "base_url", "model")):
                 _, active = self.store.active_history(config.scene)
                 if any(message["role"] in {"assistant", "tool"} for _, message in active):
-                    raise ValueError("大脑模型绑定已改变；当前会话仍含旧提供方原生条目，"
+                    raise ValueError("聊天模型绑定已改变；当前会话仍含旧提供方原生条目，"
                                      "请停机执行显式可移植历史转换")
         if (config.models.roles.vision is None) != (vision is None):
             raise ValueError("vision 客户端必须与根配置的视觉模型绑定一起提供")

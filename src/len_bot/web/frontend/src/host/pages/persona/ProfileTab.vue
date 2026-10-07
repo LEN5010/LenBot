@@ -59,7 +59,7 @@ async function draftFiles() {
   <template v-if="draft">
     <v-alert v-if="shared.length" type="info">这个角色也用在 {{ shared.map(sceneName).join('、') }}，改动会一起生效。</v-alert>
     <ProfileDraftFile :profile="draft" :preview="previewProfile" :disabled="save.busy.value" @imported="value => draft = value" />
-    <form class="stack" @submit.prevent="submit">
+    <form class="stack profile" @submit.prevent="submit">
       <Panel title="它是谁">
         <div class="who">
           <AvatarCard :scene="scene" :directory="saved.data.value.directory" :name="draft.name" />
@@ -90,6 +90,7 @@ async function draftFiles() {
 </template>
 
 <style scoped>
+.profile{max-width:880px}
 .who{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--sp-5);align-items:start}
 @media(max-width:600px){.who{grid-template-columns:1fr}}
 </style>

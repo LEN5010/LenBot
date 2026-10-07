@@ -1,5 +1,4 @@
 <script setup>
-// A small trend line over evenly spaced values, drawn in the brand color.
 import { computed } from 'vue'
 const props = defineProps({ values: { type: Array, required: true }, label: { type: String, required: true } })
 const width = 120, height = 32

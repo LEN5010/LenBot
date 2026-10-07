@@ -2,8 +2,6 @@ import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { host } from '../host/store.js'
 
-// The scene every per-scene page shows. It lives in `?scene=`; without one,
-// the scene used last (or the first) is shown. The shell's picker changes it.
 const last = ref('')
 
 export function resolveScene(value) {
@@ -24,7 +22,6 @@ export function useCurrentScene() {
   return { scene, current }
 }
 
-// Switching scene keeps the page and tab, and drops what was selected in it.
 export function sceneTarget(route, scene) {
   const query = { scene }
   if (typeof route.query.tab === 'string') query.tab = route.query.tab
