@@ -5,21 +5,16 @@ from dataclasses import asdict
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
 
 from ...runtime.network import NetworkRuntime
 from ...chat.proactive import ProactiveStore
 from ...chat.schedule import ScheduleArguments, cancel_arrangement, create_arrangement
 from ...chat.schedule_store import ScheduleStore
+from .owner import panel_owner
 
 
 class PanelScheduleArguments(ScheduleArguments):
-    requester: str = Field(pattern=r"^[a-z][a-z0-9_-]*:[^:\s/\\]+$")
-
-
-class CancelArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    requester: str = Field(pattern=r"^[a-z][a-z0-9_-]*:[^:\s/\\]+$")
+    requester: None = None
 
 
 def register_host_schedules(app: FastAPI, *, runtime: NetworkRuntime,
@@ -78,7 +73,8 @@ def register_host_schedules(app: FastAPI, *, runtime: NetworkRuntime,
         if "schedule" not in chat.toolset.allowed_tool_names:
             raise HTTPException(403, "当前角色或场景未开放 schedule")
         try:
-            item = create_arrangement(runtime.store, chat.config, body, now=runtime.store.now)
+            item = create_arrangement(runtime.store, chat.config, body.model_copy(update={'requester': panel_owner(runtime)}),
+                                      now=runtime.store.now)
         except PermissionError as error:
             raise HTTPException(403, str(error)) from error
         except ValueError as error:
@@ -87,14 +83,14 @@ def register_host_schedules(app: FastAPI, *, runtime: NetworkRuntime,
         return asdict(item)
 
     @app.post("/api/host/schedules/{id}/cancel")
-    async def cancel(id: int, scene: str, body: CancelArguments, _: str = Depends(user)):
+    async def cancel(id: int, scene: str, _: str = Depends(user)):
         chat = chat_for(scene)
         try:
             ScheduleStore(runtime.store).get_schedule(scene, id)
         except ValueError as error:
             raise HTTPException(404, str(error)) from error
         try:
-            item = cancel_arrangement(runtime.store, chat.config, id=id, requester=body.requester)
+            item = cancel_arrangement(runtime.store, chat.config, id=id, requester=panel_owner(runtime))
         except PermissionError as error:
             raise HTTPException(403, str(error)) from error
         except ValueError as error:

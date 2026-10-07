@@ -61,8 +61,8 @@ watch(value, text => emit('update:modelValue', text), { immediate: true })
       <v-text-field v-model.number="every" type="number" min="1" label="每隔" hide-details />
       <v-select v-model="unit" :items="[{ title: '分钟', value: 'm' }, { title: '小时', value: 'h' }, { title: '天', value: 'd' }]" label="单位" hide-details />
     </div>
-    <v-text-field v-else v-model="custom" label="时间写法" persistent-hint
-      hint="例如 2026-10-02T09:00:00+08:00、every 2h，或 cron:30 9 * * 1-5（工作日 9:30）" />
+    <v-text-field v-else v-model="custom" label="时间写法"
+      placeholder="2026-10-02T09:00:00+08:00、every 2h 或 cron:30 9 * * 1-5" />
     <p v-if="mode === 'once' && oneTime === ''" role="alert" class="problem small">{{ timezone }} 在这一天没有这个时间（夏令时跳过了）。换一个时间，或者选自己写，填带 UTC 偏移的时间。</p>
     <p class="muted small">按 {{ timezone }} 的时间{{ value ? `，保存为 ${value}` : '' }}</p>
   </div>

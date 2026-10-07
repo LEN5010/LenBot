@@ -19,7 +19,7 @@ useUnsavedChanges(computed(() => Object.values(dirty).some(Boolean)), { onDiscar
 </script>
 
 <template>
-  <HostPage :title="current ? `角色 · ${current.persona.name}` : '角色'" description="Bot 在群里扮演的人：名字、性格、说话方式、资料和表情。改完重启后生效。" :wide="tab === 'knowledge'">
+  <HostPage :title="current ? `角色 · ${current.persona.name}` : '角色'" :wide="tab === 'knowledge'">
     <PageTabs :tabs="tabs" :model-value="tab" label="角色内容" />
     <template v-if="scene">
       <ProfileTab v-if="tab === 'profile'" :key="`p${scene}`" :scene="scene" @dirty="value => dirty.profile = value" />

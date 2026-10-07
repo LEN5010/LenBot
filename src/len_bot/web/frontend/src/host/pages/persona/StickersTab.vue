@@ -72,7 +72,7 @@ async function remove(file) {
 
 <template>
   <ResourceState :resource="listing" error-title="读取表情失败">
-    <Panel title="表情" description="Bot 聊天时会按描述挑合适的表情发出去。">
+    <Panel title="表情">
       <template #actions><v-btn :prepend-icon="mdiPlus" variant="outlined" @click="edit(null)">添加表情</v-btn></template>
       <ErrorNote v-if="removing.error.value" title="没有删除成功" :error="removing.error.value" />
       <p v-if="!entries.length" class="muted">还没有表情。</p>
@@ -94,7 +94,7 @@ async function remove(file) {
         </li>
       </ul>
     </Panel>
-    <Panel v-if="loose.length" title="还没写描述的图片" description="这些图片在角色文件夹里，写上描述后 Bot 才会用。">
+    <Panel v-if="loose.length" title="还没写描述的图片">
       <ul class="plain-list grid">
         <li v-for="item in loose" :key="item.file">
           <div class="picture"><img :src="image(item.file)" :alt="item.file" loading="lazy" /></div>

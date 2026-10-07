@@ -25,18 +25,18 @@ const save = useAction(), binding = useAction()
 const persona = ref('')
 
 const timing = [
-  ['direct_idle_seconds', '被叫到后等几秒再回', '这段时间里没有新消息就开始回复，方便把连发的几条一起看'],
-  ['direct_max_seconds', '被叫到后最多等几秒', ''],
-  ['named_idle_seconds', '被提到名字后等几秒再回', ''],
-  ['named_max_seconds', '被提到名字后最多等几秒', ''],
-  ['focus_seconds', '说完话后继续留意几秒', '这段时间里群友接话，Bot 更容易接着聊；回复或 @ 别人的消息不算'],
-  ['focus_idle_seconds', '留意期间等几秒再回', ''],
-  ['focus_max_seconds', '留意期间最多等几秒', ''],
-  ['keyword_cooldown_seconds', '关键词冷却（秒）', '同一个关键词两次叫醒 Bot 的最短间隔'],
-  ['ambient_threshold', '插话门槛', '越高越不容易在没被叫到时插话'],
-  ['ambient_min_interval_seconds', '两次插话最短间隔（秒）', ''],
-  ['ambient_max_interval_seconds', '两次插话最长间隔（秒）', 'Bot 一直没插话时，间隔会逐渐拉长到这个值'],
-  ['max_extensions', '最多延长等待次数', '等待期间又来新消息时，最多再等几次'],
+  ['direct_idle_seconds', '被叫到后等几秒再回'],
+  ['direct_max_seconds', '被叫到后最多等几秒'],
+  ['named_idle_seconds', '被提到名字后等几秒再回'],
+  ['named_max_seconds', '被提到名字后最多等几秒'],
+  ['focus_seconds', '说完话后继续留意几秒'],
+  ['focus_idle_seconds', '留意期间等几秒再回'],
+  ['focus_max_seconds', '留意期间最多等几秒'],
+  ['keyword_cooldown_seconds', '关键词冷却（秒）'],
+  ['ambient_threshold', '插话门槛'],
+  ['ambient_min_interval_seconds', '两次插话最短间隔（秒）'],
+  ['ambient_max_interval_seconds', '两次插话最长间隔（秒）'],
+  ['max_extensions', '最多延长等待次数'],
 ]
 
 function sceneBody(value, rows) {
@@ -112,53 +112,52 @@ async function removeScene() {
       <QuietControl :scene="scene" />
 
       <form class="stack" @submit.prevent="submit">
-        <Panel title="回复方式" description="聊天模型根据完整上下文直接组织回复。">
+        <Panel title="回复方式">
           <div class="form-grid">
             <v-text-field :model-value="draft.timezone ?? ''" label="本群时区" placeholder="和全局一致"
-              hint="留空使用全局时区，例如 Asia/Shanghai" persistent-hint @update:model-value="value => draft.timezone = value || null" />
+              @update:model-value="value => draft.timezone = value || null" />
           </div>
-          <v-switch v-model="draft.transcribe_audio" label="自动转写语音消息" hint="需要先在模型页配置语音识别" persistent-hint />
+          <v-switch v-model="draft.transcribe_audio" label="自动转写语音消息" />
         </Panel>
 
         <Panel title="什么时候说话">
           <v-switch v-model="draft.attention.only_direct" label="只在被 @、被回复或私聊时说话" />
           <template v-if="!draft.attention.only_direct">
             <v-slider v-model="draft.attention.activity" :min="0" :max="1" :step="0.05" label="活跃度" thumb-label color="primary"
-              hint="活跃度越高，Bot 越常在没被叫到时插话" persistent-hint />
+              />
             <v-combobox v-model="draft.attention.keywords" label="关键词" multiple chips closable-chips
-              hint="群里出现这些词时，Bot 会留意要不要接话" persistent-hint />
+              />
           </template>
           <v-combobox v-model="draft.attention.other_bot_ids" label="群里其他 Bot 的账号" placeholder="onebot:QQ号" multiple chips closable-chips
-            hint="这些账号的普通消息不会叫醒 Bot，避免两个 Bot 互相聊个没完" persistent-hint />
+            />
           <v-switch :model-value="draft.attention.quiet_hours !== null" label="每天的安静时段" @update:model-value="toggleQuiet" />
           <div v-if="draft.attention.quiet_hours" class="form-grid">
             <v-text-field v-model="draft.attention.quiet_hours.start" label="开始" type="time" />
-            <v-text-field v-model="draft.attention.quiet_hours.end" label="结束" type="time" hint="早于开始表示跨过午夜" persistent-hint />
+            <v-text-field v-model="draft.attention.quiet_hours.end" label="结束" type="time" />
             <v-select v-model="draft.attention.quiet_hours.direct" label="安静时被 @" :items="[
               { title: '照常回复', value: 'allow' }, { title: '回一句固定的话', value: 'notice' }, { title: '等安静结束再回', value: 'defer' }]"
               @update:model-value="value => { if (value !== 'notice') draft.attention.quiet_hours.notice_text = null }" />
             <v-text-field v-if="draft.attention.quiet_hours.direct === 'notice'" v-model="draft.attention.quiet_hours.notice_text" label="固定回复的内容" />
           </div>
           <AdvancedFields label="等待与插话的细节">
-            <v-text-field v-for="[key, label, hint] in timing" :key="key" :model-value="draft.attention[key]" type="number" :label="label"
-              :hint="hint" :persistent-hint="Boolean(hint)" @update:model-value="value => draft.attention[key] = numberOrBlank(value)" />
+            <v-text-field v-for="[key, label] in timing" :key="key" :model-value="draft.attention[key]" type="number" :label="label" @update:model-value="value => draft.attention[key] = numberOrBlank(value)" />
           </AdvancedFields>
         </Panel>
 
         <Panel v-if="group" title="主动开话题">
           <v-switch :model-value="draft.proactive !== null" label="群里安静太久时主动开个话题"
-            hint="每天最多一次，安静时段内不会；需要先在学习标签打开回复效果" persistent-hint @update:model-value="toggleProactive" />
+            @update:model-value="toggleProactive" />
           <div v-if="draft.proactive" class="form-grid">
-            <v-text-field :model-value="draft.proactive.idle_seconds / 3600" type="number" label="安静多少小时后" hint="至少 10 分钟" persistent-hint
+            <v-text-field :model-value="draft.proactive.idle_seconds / 3600" type="number" label="安静多少小时后"
               @update:model-value="value => draft.proactive.idle_seconds = value === '' ? '' : Math.round(Number(value) * 3600)" />
             <v-text-field v-model="draft.proactive.start" label="每天从几点开始" type="time" />
             <v-text-field v-model="draft.proactive.end" label="到几点结束" type="time" />
           </div>
         </Panel>
 
-        <Panel title="在本群的称呼与关系" description="只对这个群生效，角色本身的设定在角色页修改。">
+        <Panel title="在本群的称呼与关系">
           <v-combobox v-model="draft.scene_persona.persona_aliases" label="群友对 Bot 的其他称呼" multiple chips closable-chips
-            hint="群里这样叫 Bot 时，Bot 知道是在叫自己" persistent-hint />
+            />
           <h3>和群友的关系</h3>
           <RowEditor :items="relationships" :make="() => ({ qq: '', text: '' })" add-label="添加关系" columns="160px minmax(0,1fr)">
             <template #default="{ item }">
@@ -168,11 +167,11 @@ async function removeScene() {
           </RowEditor>
           <p v-if="duplicateAccount" class="problem">有重复的账号，请合并成一条</p>
           <v-textarea :model-value="draft.scene_persona.behavior_addendum ?? ''" label="本群的额外要求" rows="2" auto-grow
-            hint="例如：这个群聊技术话题，回复可以长一点" persistent-hint
+            placeholder="这个群聊技术话题，回复可以长一点"
             @update:model-value="value => draft.scene_persona.behavior_addendum = value || null" />
         </Panel>
 
-        <Panel title="提醒与任务" description="谁能用这些功能，在本群的「权限」标签页里设置。">
+        <Panel title="提醒与任务">
           <div class="form-grid">
             <v-switch v-model="draft.schedules.enabled" label="允许定提醒" />
             <v-switch v-model="draft.schedules.autonomous" label="允许 Bot 自己定提醒" :disabled="!draft.schedules.enabled" />
@@ -180,7 +179,7 @@ async function removeScene() {
               @update:model-value="value => draft.schedules.max_pending = numberOrBlank(value)" />
           </div>
           <div class="form-grid">
-            <v-switch v-model="draft.tasks.enabled" label="允许委托任务" hint="需要先在能力页配置任务执行环境" persistent-hint />
+            <v-switch v-model="draft.tasks.enabled" label="允许委托任务" />
             <v-text-field :model-value="draft.tasks.max_running" type="number" label="同时进行的任务数" :disabled="!draft.tasks.enabled"
               @update:model-value="value => draft.tasks.max_running = numberOrBlank(value)" />
             <v-text-field :model-value="draft.tasks.max_daily_tasks" type="number" label="每人每天最多新任务" :disabled="!draft.tasks.enabled"
@@ -188,7 +187,7 @@ async function removeScene() {
           </div>
           <AdvancedFields v-if="draft.tasks.enabled" label="任务联网流量">
             <v-text-field v-for="[key, label] in [['egress_max_task_bytes', '每个任务流量上限（字节）'], ['egress_max_daily_bytes', '本群每天流量上限（字节）'], ['egress_bytes_per_second', '限速（字节／秒）']]"
-              :key="key" :model-value="draft.tasks[key] ?? ''" type="number" :label="label" hint="留空使用全局设置" persistent-hint
+              :key="key" :model-value="draft.tasks[key] ?? ''" type="number" :label="label" placeholder="全局设置"
               @update:model-value="value => draft.tasks[key] = numberOrNull(value)" />
           </AdvancedFields>
         </Panel>
@@ -200,7 +199,7 @@ async function removeScene() {
       <Panel title="角色与移除">
         <ErrorNote v-if="binding.error.value" title="没有保存成功" :error="binding.error.value" />
         <div class="bind-row">
-          <v-combobox v-model="persona" :items="personaOptions" label="角色包目录" hint="选择已有角色包，或填写新的角色包目录" persistent-hint />
+          <v-combobox v-model="persona" :items="personaOptions" label="角色包目录" />
           <v-btn variant="outlined" :loading="binding.busy.value" :disabled="!persona || persona === saved.persona" @click="rebind">换角色</v-btn>
         </div>
         <template #footer>

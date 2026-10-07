@@ -35,7 +35,7 @@ async function run(action) {
 </script>
 
 <template>
-  <Panel title="后台整理" description="攒够一批新消息后，Bot 会在后台把值得记住的内容整理进记忆。">
+  <Panel title="后台整理">
     <template #actions><v-btn size="small" variant="text" :loading="ingest.loading.value" @click="ingest.reload()">刷新</v-btn></template>
     <ResourceState :resource="ingest" error-title="读取整理状态失败" v-slot="{ data }">
       <p v-if="!data.enabled" class="muted">后台整理没有开启，可以在设置里打开。</p>

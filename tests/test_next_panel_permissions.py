@@ -135,8 +135,7 @@ def test_unauthed_http_and_websocket_are_rejected(panel_config, panel_root):
             "persona_aliases": [], "relationships": {}, "behavior_addendum": None,
         }).status_code == 401
         assert client.post("/api/chat-test/messages", json={
-            "uid": 'onebot:80002', "nickname": "测试者", "text": "不会入库", "mention_bot": True,
-            "reply_to": None,
+            "uid": 'onebot:80002', "nickname": "测试者", "text": "不会入库", "mentions": ["all"],
         }).status_code == 401
         assert client.post("/api/auth/logout").status_code == 401
         with pytest.raises(WebSocketDisconnect) as failure:
@@ -146,6 +145,22 @@ def test_unauthed_http_and_websocket_are_rejected(panel_config, panel_root):
 
     with Store(panel_config.database) as store:
         assert store.recent_records(panel_config.scene) == []
+
+
+def test_virtual_member_mentions_another_member_with_a_group_role(panel_config, panel_root):
+    with TestClient(create_app(panel_config, root=panel_root)) as client:
+        assert _login(client).status_code == 200
+        assert client.post("/api/chat-test/messages", json={
+            "uid": "onebot:80002", "nickname": "群友甲", "text": "你看这个", "mentions": ["onebot:80003"],
+            "role": "admin",
+        }).status_code == 200
+        assert client.post("/api/chat-test/messages", json={
+            "uid": "onebot:80002", "nickname": "群友甲", "text": "不能自封", "role": "guest",
+        }).status_code == 422
+        message, = client.get("/api/chat-test/state").json()["messages"]
+        assert message["sender"]["role"] == "admin" and not message["mentions_bot"]
+        assert {"type": "mention", "data": {"user": "onebot:80003"}} in message["segments"]
+        assert client.post("/api/auth/logout").status_code == 200
 
 
 def test_login_validation_names_missing_username_without_echoing_password(panel_config, panel_root):
@@ -164,7 +179,6 @@ def test_virtual_sender_cannot_use_configured_bot_identity(panel_config, panel_r
         assert _login(client).status_code == 200
         response = client.post("/api/chat-test/messages", json={
             "uid": panel_config.bot_id, "nickname": "伪装自身", "text": "不能保存的虚拟消息",
-            "mention_bot": False, "reply_to": None,
         })
         assert response.status_code == 422
         assert "Bot" in response.json()["detail"]

@@ -21,7 +21,7 @@ useUnsavedChanges(computed(() => Object.values(dirty).some(Boolean)), { onDiscar
 </script>
 
 <template>
-  <HostPage title="能力" description="Bot 在群里能用的工具、技能和外部服务。" :wide="tab === 'mcp'">
+  <HostPage title="能力" :wide="tab === 'mcp'">
     <PageTabs :tabs="tabs" :model-value="tab" label="能力分类" :clear="['item']" />
     <template v-if="tab === 'tools' && scene">
       <ToolsSection :key="`t${scene}`" :scene="scene" @dirty="value => dirty.tools = value" />

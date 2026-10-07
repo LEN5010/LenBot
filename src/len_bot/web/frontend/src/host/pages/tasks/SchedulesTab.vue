@@ -16,7 +16,7 @@ import LoadMore from '../../ui/LoadMore.vue'
 import DevOnly from '../../ui/DevOnly.vue'
 import SchedulePicker from '../../components/SchedulePicker.vue'
 
-const props = defineProps({ scene: { type: String, required: true }, operator: { type: String, required: true } })
+const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
 const state = useResource(() => schedulesApi.state())
 const settings = computed(() => state.data.value?.scenes.find(item => item.scene === props.scene) || null)
@@ -29,9 +29,8 @@ watch(status, () => list.reload())
 const adding = ref(false), when = ref(''), note = ref(''), forWhom = ref('self'), other = ref('')
 watch(() => adding.value && note.value !== '', value => emit('dirty', value), { immediate: true })
 const create = useAction(), cancelling = useAction()
-const validIdentity = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
 async function submit() {
-  const result = await create.run(() => schedulesApi.create(props.scene, { requester: props.operator, when: when.value, note: note.value,
+  const result = await create.run(() => schedulesApi.create(props.scene, { when: when.value, note: note.value,
     for: forWhom.value === 'self' ? 'self' : other.value.trim() }))
   if (!result) return
   adding.value = false
@@ -41,7 +40,7 @@ async function submit() {
 }
 async function cancel(item) {
   if (!await confirm({ title: repeats(item) ? '停止这个重复提醒？' : '取消这个提醒？', text: item.note, confirmLabel: repeats(item) ? '停止' : '取消提醒', danger: true })) return
-  const result = await cancelling.run(() => schedulesApi.cancel(props.scene, item.id, props.operator))
+  const result = await cancelling.run(() => schedulesApi.cancel(props.scene, item.id))
   if (!result) return
   notify('已取消')
   list.reload()
@@ -84,11 +83,10 @@ const statuses = [{ title: '进行中', value: 'active' }, { title: '全部', va
           <template #meta><StatusBadge kind="schedule" :value="item.status" /></template>
           <template #actions>
             <v-btn v-if="['pending', 'blocked'].includes(item.status)" size="small" variant="text" color="error"
-              :disabled="!validIdentity" :loading="cancelling.busy.value" @click="cancel(item)">取消</v-btn>
+              :loading="cancelling.busy.value" @click="cancel(item)">取消</v-btn>
           </template>
         </ObjectRow>
       </ObjectList>
-      <p v-if="rows.some(item => ['pending', 'blocked'].includes(item.status)) && !validIdentity" class="muted small">在页面上方填写你的账号后可以取消提醒。</p>
       <LoadMore v-if="list.data.value?.next_offset != null" :loading="list.loading.value" @more="list.reload(true)" />
     </ResourceState>
   </Panel>
@@ -100,11 +98,10 @@ const statuses = [{ title: '进行中', value: 'active' }, { title: '全部', va
       <v-btn-toggle v-model="forWhom" mandatory>
         <v-btn value="self">提醒我</v-btn><v-btn value="other">提醒别人</v-btn></v-btn-toggle>
       <v-text-field v-if="forWhom === 'other'" v-model="other" label="对方账号" placeholder="onebot:QQ号" />
-      <p v-if="!validIdentity" class="problem">先在页面上方填写你的账号</p>
       <ErrorNote v-if="create.error.value" title="没有添加成功" :error="create.error.value" />
     </template>
     <template #actions>
-      <v-btn color="primary" :loading="create.busy.value" :disabled="!validIdentity || !note.trim() || !when || (forWhom === 'other' && !other.trim())" @click="submit">添加</v-btn>
+      <v-btn color="primary" :loading="create.busy.value" :disabled="!note.trim() || !when || (forWhom === 'other' && !other.trim())" @click="submit">添加</v-btn>
     </template>
   </FormDialog>
 </template>

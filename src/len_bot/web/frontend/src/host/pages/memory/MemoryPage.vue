@@ -30,7 +30,7 @@ useUnsavedChanges(computed(() => Object.values(dirty).some(Boolean)), { onDiscar
 </script>
 
 <template>
-  <HostPage title="记忆" description="Bot 从聊天里记住的事。可以查看、修改，也可以让它忘掉。" :wide="tab === 'browse'">
+  <HostPage title="记忆" :wide="tab === 'browse'">
     <ResourceState :resource="memory" error-title="读取记忆状态失败">
       <v-alert v-if="!state.enabled" type="info">还没有开启记忆。在下面选择记忆的保存方式，保存后重启 LenBot。</v-alert>
       <PageTabs v-if="tabs.length > 1" :tabs="tabs" :model-value="tab" label="记忆" />

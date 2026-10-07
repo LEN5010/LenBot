@@ -22,7 +22,7 @@ import ResourceTaskDraft from './ResourceTaskDraft.vue'
 import { finished } from './taskLabels.js'
 
 const props = defineProps({
-  id: { type: Number, required: true }, scene: { type: String, required: true }, operator: { type: String, required: true },
+  id: { type: Number, required: true }, scene: { type: String, required: true },
   version: { type: Number, required: true }, service: { type: Object, required: true }, settings: { type: Object, default: null },
 })
 const emit = defineEmits(['dirty', 'changed', 'created'])
@@ -31,7 +31,6 @@ watch(() => props.version, () => detail.reload())
 const task = computed(() => detail.data.value?.task)
 const resourceVersion = ref(0)
 const at = value => formatTime(value, props.settings?.timezone)
-const validIdentity = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
 
 const append = ref(''), followUp = ref(''), answer = ref(''), choice = ref(null), resourceDirty = ref(false)
 const dirty = computed(() => Boolean(append.value || followUp.value || answer.value || choice.value !== null || resourceDirty.value))
@@ -51,7 +50,7 @@ async function send(action, extra = {}) {
   if (action === 'cancel' && !await confirm({ title: '取消这个任务？', text: task.value.goal, confirmLabel: '取消任务', danger: true })) return
   if (typeof extra.confirmed === 'boolean' && !await confirm({ title: extra.confirmed ? '确定同意？' : '确定拒绝？', text: task.value.question.title,
     confirmLabel: extra.confirmed ? '同意' : '拒绝', danger: !extra.confirmed })) return
-  const result = await act.run(() => tasksApi.action(props.scene, { action, id: props.id, requester: props.operator, ...extra }))
+  const result = await act.run(() => tasksApi.action(props.scene, { action, id: props.id, ...extra }))
   if (!result) return
   if (action === 'append') append.value = ''
   if (action === 'continue') followUp.value = ''
@@ -122,31 +121,30 @@ function created(task) {
       <p v-if="task.question.message" class="text">{{ task.question.message }}</p>
       <template v-if="canAnswer">
         <div v-if="task.question.method === 'confirm'" class="inline">
-          <v-btn color="primary" :disabled="!validIdentity" :loading="act.busy.value" @click="submitAnswer(true)">同意</v-btn>
-          <v-btn variant="outlined" :disabled="!validIdentity || act.busy.value" @click="submitAnswer(false)">拒绝</v-btn>
+          <v-btn color="primary" :loading="act.busy.value" @click="submitAnswer(true)">同意</v-btn>
+          <v-btn variant="outlined" :disabled="act.busy.value" @click="submitAnswer(false)">拒绝</v-btn>
         </div>
         <template v-else-if="task.question.method === 'select'">
           <v-radio-group v-model="choice" hide-details><v-radio v-for="option in task.question.options" :key="option" :label="option" :value="option" /></v-radio-group>
-          <v-btn color="primary" class="start" :disabled="!validIdentity || choice === null" :loading="act.busy.value" @click="submitAnswer()">回答</v-btn>
+          <v-btn color="primary" class="start" :disabled="choice === null" :loading="act.busy.value" @click="submitAnswer()">回答</v-btn>
         </template>
         <template v-else>
           <v-textarea v-model="answer" label="你的回答" rows="2" auto-grow />
-          <v-btn color="primary" class="start" :disabled="!validIdentity" :loading="act.busy.value" @click="submitAnswer()">回答</v-btn>
+          <v-btn color="primary" class="start" :loading="act.busy.value" @click="submitAnswer()">回答</v-btn>
         </template>
       </template>
     </Panel>
 
     <Panel v-if="canAppend || canContinue || canCancel" title="操作">
-      <template v-if="canCancel" #actions><v-btn variant="text" color="error" size="small" :disabled="!validIdentity" :loading="act.busy.value" @click="send('cancel')">取消任务</v-btn></template>
+      <template v-if="canCancel" #actions><v-btn variant="text" color="error" size="small" :loading="act.busy.value" @click="send('cancel')">取消任务</v-btn></template>
       <div v-if="canAppend" class="compose">
         <v-textarea v-model="append" label="追加要求" rows="2" auto-grow />
-        <v-btn variant="outlined" :disabled="!validIdentity || !append.trim()" :loading="act.busy.value" @click="send('append', { text: append })">追加</v-btn>
+        <v-btn variant="outlined" :disabled="!append.trim()" :loading="act.busy.value" @click="send('append', { text: append })">追加</v-btn>
       </div>
       <div v-if="canContinue" class="compose">
-        <v-textarea v-model="followUp" label="接着做" rows="2" auto-grow hint="在原来的基础上继续，例如“再加一张图表”" persistent-hint />
-        <v-btn variant="outlined" :disabled="!validIdentity || !followUp.trim()" :loading="act.busy.value" @click="send('continue', { text: followUp })">继续</v-btn>
+        <v-textarea v-model="followUp" label="接着做" rows="2" auto-grow placeholder="再加一张图表" />
+        <v-btn variant="outlined" :disabled="!followUp.trim()" :loading="act.busy.value" @click="send('continue', { text: followUp })">继续</v-btn>
       </div>
-      <p v-if="!validIdentity" class="muted small">在页面上方填写你的账号后才能操作。</p>
     </Panel>
     <ErrorNote v-if="act.error.value" title="操作没有成功" :error="act.error.value" />
 
@@ -162,13 +160,13 @@ function created(task) {
       </ObjectList>
     </Panel>
 
-    <TaskBrowserCard :scene="scene" :task="task" :browser="detail.data.value.browser" :operator="operator" :configured="service.configured"
+    <TaskBrowserCard :scene="scene" :task="task" :browser="detail.data.value.browser" :configured="service.configured"
       @changed="resourceVersion++; detail.reload(); emit('changed')" />
     <TaskEvents :scene="scene" :task-id="id" :first="detail.data.value.events" :first-next="detail.data.value.next_after" :timezone="settings?.timezone" />
-    <TaskMore :scene="scene" :task="task" :files="detail.data.value.files" :service="service" :operator="operator" @changed="resourceVersion++; detail.reload(); emit('changed')" />
-    <ResourceTaskDraft v-if="service.configured" :scene="scene" :operator="operator" @dirty="value => resourceDirty = value" @created="created">
+    <TaskMore :scene="scene" :task="task" :files="detail.data.value.files" :service="service" @changed="resourceVersion++; detail.reload(); emit('changed')" />
+    <ResourceTaskDraft v-if="service.configured" :scene="scene" @dirty="value => resourceDirty = value" @created="created">
       <template #default="{ select }">
-        <ResourceBrowser :key="resourceVersion" :scene="scene" :task-id="id" :operator="operator" @select="select" @changed="detail.reload(); emit('changed')" />
+        <ResourceBrowser :key="resourceVersion" :scene="scene" :task-id="id" @select="select" @changed="detail.reload(); emit('changed')" />
       </template>
     </ResourceTaskDraft>
   </div>

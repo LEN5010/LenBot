@@ -40,13 +40,13 @@ async function submit(kind) {
 
 <template>
   <ResourceState :resource="settings" error-title="读取网页服务设置失败">
-    <SettingSection title="读网页" description="Bot 可以打开群友发的链接，读取网页正文。"
+    <SettingSection title="读网页"
       :dirty="readDirty" :saving="saveRead.busy.value" :error="saveRead.error.value" @save="submit('web-read')">
       <v-switch :model-value="read !== null" label="允许读网页" @update:model-value="value => read = value ? { timeout_seconds: 20 } : null" />
       <v-text-field v-if="read" :model-value="read.timeout_seconds" type="number" label="读取超时（秒）"
         @update:model-value="value => read.timeout_seconds = numberOrBlank(value)" />
     </SettingSection>
-    <SettingSection title="搜索网页" description="Bot 可以用必应搜索查资料。"
+    <SettingSection title="搜索网页"
       :dirty="searchDirty" :saving="saveSearch.busy.value" :error="saveSearch.error.value" @save="submit('web-search')">
       <v-switch :model-value="search !== null" label="允许搜索网页"
         @update:model-value="value => search = value ? { provider: 'bing_rss', timeout_seconds: 15, max_results: 5 } : null" />
@@ -57,12 +57,12 @@ async function submit(kind) {
           @update:model-value="value => search.timeout_seconds = numberOrBlank(value)" />
       </div>
     </SettingSection>
-    <SettingSection title="代理的假 IP 网段" description="开着 fake-ip 时，填入代理的假 IP 网段。Bot 会查询真实公网地址再连接，私网和本机地址不会放行。"
+    <SettingSection title="代理的假 IP 网段"
       :dirty="networkDirty" :saving="saveNetwork.busy.value" :error="saveNetwork.error.value" @save="submit('network')">
       <v-textarea v-model="fakeIp" rows="2" auto-grow label="假 IP 网段" placeholder="198.18.0.0/15"
-        hint="每行一个，以代理软件设置里的网段为准；没开 fake-ip 就留空。" persistent-hint />
+        />
       <v-text-field v-if="fakeIpList.length" v-model="publicDns" label="真实 DNS 查询地址"
-        hint="需要支持 DNS JSON 的解析服务。" persistent-hint />
+        />
     </SettingSection>
   </ResourceState>
 </template>

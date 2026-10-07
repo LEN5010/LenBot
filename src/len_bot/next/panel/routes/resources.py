@@ -6,11 +6,12 @@ from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import BaseModel, JsonValue
 from starlette.concurrency import run_in_threadpool
 
 from ...configuration.types import STRICT
 from .materials import failure
+from .owner import panel_owner
 from ..task_models import RegisteredFile
 from ...runtime.network import NetworkRuntime
 from ...work.materials import MaterialName
@@ -21,7 +22,6 @@ from ...work.store import TaskStore
 class RegisterResource(BaseModel):
     model_config = STRICT
     reference: ResourceFileRef
-    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
     name: MaterialName
     note: str = ''
 
@@ -48,20 +48,17 @@ class ResourceEntry(BaseModel):
 class AdoptResource(BaseModel):
     model_config = STRICT
     reference: ResourceFileRef
-    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
     name: MaterialName
 
 
 class DeleteResource(BaseModel):
     model_config = STRICT
     reference: ResourceFileRef
-    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
 
 
 class UploadResource(BaseModel):
     model_config = STRICT
     name: MaterialName
-    requester: str = Field(pattern=r'^[a-z][a-z0-9_-]*:[^:\s/\\]+$')
     file: UploadFile
 
 
@@ -157,7 +154,7 @@ def register_host_resources(app: FastAPI, *, runtime: NetworkRuntime,
         if runtime.tasks is None:
             raise HTTPException(409, '当前没有任务服务')
         try:
-            return await runtime.tasks.register_resource(scene, body.reference, requester=body.requester,
+            return await runtime.tasks.register_resource(scene, body.reference, requester=panel_owner(runtime),
                                                         name=body.name, note=body.note)
         except PermissionError as error:
             raise HTTPException(403, str(error)) from error
@@ -173,7 +170,7 @@ def register_host_resources(app: FastAPI, *, runtime: NetworkRuntime,
     @app.post('/api/host/resources/adopt')
     async def adopt(scene: str, body: AdoptResource, _: str = Depends(user)):
         try:
-            return await tasks(scene).adopt_resource(scene, body.reference, requester=body.requester, name=body.name)
+            return await tasks(scene).adopt_resource(scene, body.reference, requester=panel_owner(runtime), name=body.name)
         except PermissionError as error:
             raise HTTPException(403, str(error)) from error
         except (ValueError, OSError, RuntimeError) as error:
@@ -182,7 +179,7 @@ def register_host_resources(app: FastAPI, *, runtime: NetworkRuntime,
     @app.delete('/api/host/resources')
     async def delete(scene: str, body: DeleteResource, _: str = Depends(user)):
         try:
-            return await tasks(scene).delete_resource(scene, body.reference, requester=body.requester)
+            return await tasks(scene).delete_resource(scene, body.reference, requester=panel_owner(runtime))
         except PermissionError as error:
             raise HTTPException(403, str(error)) from error
         except (ValueError, OSError) as error:
@@ -192,7 +189,7 @@ def register_host_resources(app: FastAPI, *, runtime: NetworkRuntime,
     async def upload(scene: str, body: Annotated[UploadResource, Form(media_type='multipart/form-data')],
                      _: str = Depends(user)):
         try:
-            return await tasks(scene).upload_resource(scene, body.file.file, requester=body.requester, name=body.name)
+            return await tasks(scene).upload_resource(scene, body.file.file, requester=panel_owner(runtime), name=body.name)
         except PermissionError as error:
             raise HTTPException(403, str(error)) from error
         except (ValueError, OSError, RuntimeError) as error:

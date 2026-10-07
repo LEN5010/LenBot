@@ -9,15 +9,15 @@ import ErrorNote from '../../ui/ErrorNote.vue'
 import ResourceBrowser from '../../components/ResourceBrowser.vue'
 import { finished } from './taskLabels.js'
 
-const props = defineProps({ scene: String, task: Object, browser: Object, operator: String, configured: Boolean })
+const props = defineProps({ scene: String, task: Object, browser: Object, configured: Boolean })
 const emit = defineEmits(['changed'])
 const status = useResource(() => browserApi.taskStatus(props.scene, props.task.id), { immediate: false })
 const closing = useAction(), files = ref(false), resourcesVersion = ref(0)
 const canClose = computed(() => props.configured && finished(props.task.status) && props.task.browser_active
-  && props.task.browser_session && /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
+  && props.task.browser_session)
 watch(() => props.task.browser_active, () => { status.data.value = null })
 async function close() {
-  const result = await closing.run(() => taskStorageApi.close(props.scene, props.task.id, props.operator))
+  const result = await closing.run(() => taskStorageApi.close(props.scene, props.task.id))
   if (!result) return
   status.data.value = null; notify('已关闭浏览会话和执行环境，文件保留'); emit('changed')
 }
@@ -35,15 +35,13 @@ function changed() { resourcesVersion.value++; emit('changed') }
         <v-btn v-if="canClose" size="small" variant="outlined" :loading="closing.busy.value" @click="close">关闭遗留会话</v-btn>
       </div>
       <p v-if="task.browser_active && status.data.value" class="small">设备{{ status.data.value.browser ? '在线' : '离线' }} · {{ status.data.value.session ? '会话存在' : '找不到这个会话' }}<template v-if="status.data.value.session?.agent_window_id"> · 窗口 {{ status.data.value.session.agent_window_id }}</template></p>
-      <p v-if="task.browser_active && !task.browser_session && finished(task.status)" class="muted small">可以在能力 › 独立任务里找到这个会话并关闭。</p>
     </template>
     <template v-else>
       <p>{{ browser.public_enabled ? '任务可以用公共浏览器打开网页。' : '任务没有开启公共浏览器。' }}{{ task.container ? '任务环境正在运行。' : '' }}</p>
-      <p class="muted small">公共浏览器随任务环境关闭，下载、截图和 PDF 保留在工作区。</p>
     </template>
     <ErrorNote v-if="status.error.value" title="读取浏览器状态失败" :error="status.error.value" />
     <ErrorNote v-if="closing.error.value" title="关闭失败" :error="closing.error.value" />
-    <ResourceBrowser v-if="files && configured" :key="`${resourcesVersion}-${browser.output_count}`" :scene="scene" :task-id="task.id" :operator="operator"
+    <ResourceBrowser v-if="files && configured" :key="`${resourcesVersion}-${browser.output_count}`" :scene="scene" :task-id="task.id"
       initial-path="out/browser" :selectable="false" @changed="changed" />
   </Panel>
 </template>

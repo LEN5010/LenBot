@@ -10,7 +10,7 @@ import ErrorNote from '../../ui/ErrorNote.vue'
 import FormDialog from '../../ui/FormDialog.vue'
 import RowEditor from '../../ui/RowEditor.vue'
 
-const props = defineProps({ scene: { type: String, required: true }, operator: { type: String, required: true },
+const props = defineProps({ scene: { type: String, required: true },
   initialResources: { type: Array, default: () => [] } })
 const emit = defineEmits(['dirty', 'created', 'close'])
 const goal = ref(''), deliverable = ref(''), context = ref(''), materials = ref([]), accountBrowser = ref(false)
@@ -26,10 +26,9 @@ const inputProblem = computed(() => {
   return ''
 })
 watch(dirty, value => emit('dirty', value), { immediate: true })
-const validIdentity = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
 const create = useAction()
 async function submit() {
-  const result = await create.run(() => tasksApi.delegate(props.scene, { requester: props.operator, goal: goal.value, deliverable: deliverable.value, context: context.value,
+  const result = await create.run(() => tasksApi.delegate(props.scene, { goal: goal.value, deliverable: deliverable.value, context: context.value,
       account_browser: accountBrowser.value, materials: materials.value, resources: resources.value }))
   if (!result) return
   notify('任务已排队')
@@ -45,14 +44,13 @@ async function close() {
 <template>
   <FormDialog :model-value="true" title="新建任务" size="md" :busy="create.busy.value" persistent @update:model-value="close">
     <v-textarea v-model="goal" label="要做什么" rows="3" auto-grow />
-    <v-textarea v-model="deliverable" label="做完交付什么" rows="2" auto-grow hint="例如一份 PDF 报告、一段整理好的文字" persistent-hint />
+    <v-textarea v-model="deliverable" label="做完交付什么" rows="2" auto-grow placeholder="一份 PDF 报告、一段整理好的文字" />
     <v-textarea v-model="context" label="补充说明（可不填）" rows="2" auto-grow />
     <v-select v-model="materials" :items="files" multiple chips closable-chips label="给任务的资料（可不选）"
-      hint="从本群的共享资料里选，任务里只能读不能改" persistent-hint :loading="shared.loading.value" />
+      :loading="shared.loading.value" />
     <ErrorNote v-if="shared.error.value" title="读取共享资料失败" :error="shared.error.value" />
     <template v-if="resources.length">
       <h3>从资源页选取的资料</h3>
-      <p class="muted small">创建时复制一份给任务，之后原文件修改或删除不影响任务。</p>
       <RowEditor :items="resources" :make="() => null" add-label="">
         <template #default="{ item }">
           <v-text-field v-model="item.name" label="任务中的文件名" :hint="resourceLabel(item.reference)" persistent-hint />
@@ -61,11 +59,10 @@ async function close() {
     </template>
     <p v-if="inputProblem" class="problem">{{ inputProblem }}</p>
     <v-checkbox v-model="accountBrowser" label="使用账号浏览器（需要主人本人发起）" />
-    <p v-if="!validIdentity" class="problem">先在页面上方填写你的账号</p>
     <ErrorNote v-if="create.error.value" title="没有创建成功" :error="create.error.value" />
     <p v-if="create.error.value && (materials.length || resources.length)" class="muted small">选了资料时，任务可能已经建好了，请先看看任务列表再决定要不要重新提交。</p>
     <template #actions>
-      <v-btn color="primary" :loading="create.busy.value" :disabled="!validIdentity || !goal.trim() || !deliverable.trim() || Boolean(inputProblem)" @click="submit">开始</v-btn>
+      <v-btn color="primary" :loading="create.busy.value" :disabled="!goal.trim() || !deliverable.trim() || Boolean(inputProblem)" @click="submit">开始</v-btn>
     </template>
   </FormDialog>
 </template>

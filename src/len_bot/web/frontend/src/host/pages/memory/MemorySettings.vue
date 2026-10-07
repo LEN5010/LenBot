@@ -62,27 +62,27 @@ async function submit() {
     <v-switch v-model="enabled" label="开启本地记忆" hide-details />
     <template v-if="draft">
       <v-switch v-model="draft.auto_recall" label="聊天时自动想起相关的记忆" hide-details />
-      <v-switch v-model="ingestOn" label="后台自动整理记忆" hint="攒够一批新消息后自动整理，只处理开启之后的消息" persistent-hint />
+      <v-switch v-model="ingestOn" label="后台自动整理记忆" />
       <v-alert v-if="ingestOn && noMemoryModel" type="info">
         需要先到 <RouterLink :to="{ name: 'host-models', query: { tab: 'roles' } }">模型</RouterLink> 页设置记忆整理用的模型。</v-alert>
       <v-switch v-model="draft.summaries" hide-details
         label="为每个目录生成摘要，根目录摘要作为本群画像" />
-      <v-text-field v-model="draft.local.directory" label="保存目录" hint="在 LenBot 目录里，例如 data/memory" persistent-hint />
+      <v-text-field v-model="draft.local.directory" label="保存目录" placeholder="data/memory" />
 
       <AdvancedFields>
-        <v-text-field :model-value="draft.recall_budget_chars" type="number" label="每次最多想起多少字" hint="100 到 12000" persistent-hint
+        <v-text-field :model-value="draft.recall_budget_chars" type="number" label="每次最多想起多少字"
           @update:model-value="value => draft.recall_budget_chars = numberOrBlank(value)" />
-        <v-text-field :model-value="draft.recall_limit" type="number" label="每次最多想起几条" hint="1 到 20" persistent-hint
+        <v-text-field :model-value="draft.recall_limit" type="number" label="每次最多想起几条"
           @update:model-value="value => draft.recall_limit = numberOrBlank(value)" />
         <template v-if="draft.ingest">
           <v-text-field v-for="[key, label] in ingestFields" :key="key" :model-value="draft.ingest[key]" type="number" :label="label"
             @update:model-value="value => draft.ingest[key] = numberOrBlank(value)" />
         </template>
-        <v-switch v-model="vectorOn" label="用向量模型搜索记忆" hint="关闭时按文字搜索" persistent-hint />
+        <v-switch v-model="vectorOn" label="用向量模型搜索记忆" />
         <template v-if="draft.local.embedding">
           <v-select v-model="draft.local.embedding.provider" :items="providers" label="向量模型服务商" />
           <v-text-field v-model="draft.local.embedding.model" label="向量模型名" />
-          <v-text-field :model-value="draft.local.embedding.dimensions ?? ''" type="number" label="向量维数" hint="留空用模型默认值" persistent-hint
+          <v-text-field :model-value="draft.local.embedding.dimensions ?? ''" type="number" label="向量维数" placeholder="模型默认值"
             @update:model-value="value => draft.local.embedding.dimensions = numberOrNull(value)" />
         </template>
       </AdvancedFields>

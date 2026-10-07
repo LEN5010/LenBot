@@ -15,7 +15,7 @@ import { finished } from './taskLabels.js'
 
 const props = defineProps({
   scene: { type: String, required: true }, task: { type: Object, required: true }, files: { type: Array, required: true },
-  service: { type: Object, required: true }, operator: { type: String, required: true },
+  service: { type: Object, required: true },
 })
 const emit = defineEmits(['changed'])
 const stopped = computed(() => props.service.configured && finished(props.task.status) && props.task.container === null)
@@ -56,7 +56,6 @@ function skillMoved() { inspected.value = null; skills.reload() }
 
       <div v-if="files.length && service.configured" class="block">
         <h3>存为本群共享资料</h3>
-        <p class="muted small">以后新建任务时可以选这份资料。</p>
         <div class="keep">
           <v-select :model-value="keepFile" :items="files.filter(file => file.exists).map(file => ({ title: file.name, value: file.id }))" label="交付的文件" @update:model-value="chooseKeep" />
           <v-text-field v-model="keepName" label="保存为" />
@@ -66,7 +65,7 @@ function skillMoved() { inspected.value = null; skills.reload() }
         <ErrorNote v-if="keep.error.value" title="没有保存成功" :error="keep.error.value" />
       </div>
 
-      <TaskSpaceCard v-if="service.configured" :scene="scene" :task-id="task.id" :operator="operator" @changed="emit('changed')" />
+      <TaskSpaceCard v-if="service.configured" :scene="scene" :task-id="task.id" @changed="emit('changed')" />
 
       <div v-if="stopped" class="block">
         <div class="inline"><h3>任务自己写的技能</h3><v-btn size="small" variant="text" :loading="skills.loading.value" @click="skills.reload()">查看</v-btn></div>

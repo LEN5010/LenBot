@@ -39,6 +39,15 @@ def log_sent(seq: int, part: ChatMessage, error: str | None, *, index: int, part
               part=index + 1, parts=parts, error=error, **({} if plugin is None else {'plugin': plugin}))
 
 
+def simulate(part: ChatMessage, simulated: bool) -> None:
+    """Mark a part about to be sent. A simulated part gets a local message ID, so a later message can quote it
+    the way it quotes a delivered one; a real part waits for the platform's ID."""
+    if simulated:
+        part.send_status, part.platform_message_id = "simulated", f"simulated:{uuid4()}"
+    else:
+        part.send_status = "unconfirmed"
+
+
 class MessageSender(Protocol):
     def __call__(self, message: ChatMessage, *, image_bytes: bytes | None = None) -> Awaitable[SendResult]: ...
 
@@ -171,7 +180,7 @@ class ChatExpression:
                         self.store.expression_error(entry_seq, str(error))
                         raise
                 part.time = self.now()
-                part.send_status = "simulated" if self.send_message is None else "unconfirmed"
+                simulate(part, self.send_message is None)
                 errors.append(None)
                 content = report_parts(parts, errors, self.context.render)
                 message_seq = self.store.start_expression_part(entry_seq, part, prefix + content,
@@ -228,7 +237,7 @@ class ChatExpression:
                     self.check_send_available()
                     check_speech(self.store, self.config)
                     part.time = self.now()
-                    part.send_status = "simulated" if self.send_message is None else "unconfirmed"
+                    simulate(part, self.send_message is None)
                     errors.append(None)
                     image = prepared[index].image
                     seq = self.store.start_outgoing(part, persona_id=self.persona.id, image=(None if image is None else

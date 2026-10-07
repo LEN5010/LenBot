@@ -46,8 +46,7 @@ async function openUpdater() {
         </div>
       </div>
       <v-alert v-if="check?.error" type="warning" variant="tonal">{{ check.error }}</v-alert>
-      <p v-if="data.managed">更新器会在主面板停机后继续运行。准备完成并确认后，才会停止聊天和任务、备份数据并升级。</p>
-      <p v-else>当前从源码运行，用 Git 更新、准备依赖后在终端停机迁移。</p>
+      <p v-if="!data.managed" class="muted">源码运行</p>
       <v-alert v-if="data.status?.error" type="error" variant="tonal">{{ data.status.error }}</v-alert>
       <v-alert v-if="action.error.value" type="error" variant="tonal">{{ action.error.value.message }}</v-alert>
       <div class="actions">

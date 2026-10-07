@@ -11,7 +11,6 @@ import ResourceState from '../../ui/ResourceState.vue'
 const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['saved', 'dirty'])
 const lists = [['admins', '管理员'], ['whitelist', '白名单'], ['blacklist', '黑名单']]
-const listHints = { admins: '可以使用管理类功能，具体见下方', whitelist: '比普通群友多一些权限，具体见下方', blacklist: '这些人的消息会保存，但不会叫醒 Bot' }
 const abilities = [
   ['delegate', '委托 Bot 做任务'], ['long_running', '让任务执行超过 30 分钟'], ['task_manage', '管理别人的任务'],
   ['own_reminder', '给自己定提醒'], ['other_reminder', '替别人定提醒'], ['reminder_manage', '管理别人的提醒'],
@@ -37,12 +36,11 @@ async function submit() {
 
 <template>
   <ResourceState :resource="permissions" error-title="读取权限失败">
-    <SettingSection v-if="draft" title="权限" description="上半部分的名单所有群通用；本群名单和谁可以做什么只对这个群生效。"
+    <SettingSection v-if="draft" title="权限"
       :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
-      <p>主人：<strong>{{ permissions.data.value.owners.length ? permissions.data.value.owners.join('、') : '未设置' }}</strong>，在连接设置里修改。主人拥有全部权限。</p>
+      <p>主人：<strong>{{ permissions.data.value.owners.length ? permissions.data.value.owners.join('、') : '未设置' }}</strong></p>
       <h3>所有群通用的名单</h3>
-      <v-combobox v-for="[field, label] in lists" :key="field" v-model="draft.global_identities[field]" :label="`${label}账号`"
-        :hint="listHints[field]" persistent-hint multiple chips closable-chips />
+      <v-combobox v-for="[field, label] in lists" :key="field" v-model="draft.global_identities[field]" :label="`${label}账号`" multiple chips closable-chips />
       <v-switch :model-value="draft.scene_identities !== null" label="本群另外加名单"
         @update:model-value="value => draft.scene_identities = value ? { admins: [], whitelist: [], blacklist: [] } : null" />
       <template v-if="draft.scene_identities">
@@ -57,7 +55,6 @@ async function submit() {
       <AdvancedFields label="只对任务或提醒生效的名单">
         <template v-for="[key, label] in [['task_identities', '任务'], ['schedule_identities', '提醒']]" :key="key">
           <v-text-field :model-value="draft[key].owner ?? ''" :label="`${label}主人账号`"
-            :hint="`在${label}权限里按主人对待，其他功能不受影响`" persistent-hint
             @update:model-value="value => draft[key].owner = value.trim() || null" />
           <v-combobox v-model="draft[key].admins" :label="`${label}管理员账号`" multiple chips closable-chips />
           <v-combobox v-model="draft[key].whitelist" :label="`${label}白名单账号`" multiple chips closable-chips />

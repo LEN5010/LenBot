@@ -52,7 +52,7 @@ function update(entry) { selected.value = null; emit('update', entry) }
       <v-select v-model="category" :items="categories" label="分类" />
     </div>
     <Fold label="目录来源">
-      <v-text-field v-model="source" label="远程目录地址" hint="留空使用本版本随附目录" persistent-hint :disabled="sourceAction.busy.value || refresh.busy.value" />
+      <v-text-field v-model="source" label="远程目录地址" placeholder="本版本随附目录" :disabled="sourceAction.busy.value || refresh.busy.value" />
       <v-btn size="small" variant="outlined" class="start" :disabled="!dirty || refresh.busy.value" :loading="sourceAction.busy.value" @click="saveSource">保存并读取</v-btn>
     </Fold>
   </Panel>

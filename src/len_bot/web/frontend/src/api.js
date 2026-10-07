@@ -57,3 +57,8 @@ export function sceneName(id) {
   if (!id) return '全部场景'
   return sceneTitles[id] || sceneNumber(id)
 }
+
+// The number shown under a known name; empty while only the number is known, since sceneName already shows it.
+export function sceneSubtitle(id) {
+  return sceneTitles[id] ? id.split(':').slice(2).join(':') : ''
+}

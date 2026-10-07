@@ -47,7 +47,7 @@ function changed() {
 <template>
   <ResourceState :resource="skills" error-title="读取技能失败">
   <SettingSection v-if="draft !== null" title="技能"
-    :description="`已保存角色 ${skills.data.value.role_skills.persona.name} 的独立任务可以使用的技能。` + (shared.length ? `这个角色也用在 ${shared.map(sceneName).join('、')}，修改会一起生效。` : '')"
+    :description="shared.length ? `这个角色也用在 ${shared.map(sceneName).join('、')}，修改会一起生效。` : ''"
     :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
     <p v-if="skills.data.value.directory === null && !items.length" class="muted">还没有可用技能，可启用附带技能的插件或在任务环境设置技能目录。</p>
     <template v-else>

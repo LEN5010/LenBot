@@ -22,7 +22,7 @@ from ...memory.service import LocalMemoryConfig, open_memory
 from ...models.client import ChatModel
 from ...runtime.identity import IdentitySettings
 from ...runtime.network import NetworkRuntime
-from ...trials.panel import PanelSession, TestMessage
+from ...trials.panel import PanelSession, TestMessage, stored_image
 from ..auth import changes_socket, cookie_name
 from ...persona.profile import PERSONA_FILES, Persona, PersonaTarget, parse_persona_files, require_persona_target
 from ...storage.store import Store
@@ -270,6 +270,18 @@ def register_host_trials(app: FastAPI, trials: HostTrials, user):
         if trial.stopped is not None:
             raise HTTPException(409, '这个试聊已经停止，不接收消息')
         return trial.session.receive(item)
+
+    @app.get('/api/host/trials/{trial_id}/messages/{seq}/images/{image_index}')
+    async def image(trial_id: str, seq: int, image_index: int, _: str = Depends(user)):
+        trial = trials.get(trial_id)
+        if trial.stopped is None:
+            return stored_image(trial.session.store, trial.scene, seq, image_index)
+        with Store(trial.config.database) as store:
+            return stored_image(store, trial.scene, seq, image_index)
+
+    @app.get('/api/host/trials/{trial_id}/avatar')
+    async def avatar(trial_id: str, _: str = Depends(user)):
+        return trials.get(trial_id).session.avatar()
 
     @app.get('/api/host/trials/{trial_id}/turns/{turn_id}')
     async def turn(trial_id: str, turn_id: str, _: str = Depends(user)):

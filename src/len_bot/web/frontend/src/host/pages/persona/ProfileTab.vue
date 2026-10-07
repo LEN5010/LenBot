@@ -67,18 +67,18 @@ async function draftFiles() {
             <v-text-field v-model="draft.name" label="名字" />
             <div class="form-grid">
               <v-combobox v-model="draft.aliases" label="别名" multiple chips closable-chips
-                hint="群友这样叫时，它知道是在叫自己" persistent-hint />
+                />
               <v-combobox v-model="draft.self_reference" label="自称" multiple chips closable-chips
-                hint="它说话时怎么称呼自己，比如 我、本喵" persistent-hint />
+                placeholder="我、本喵" />
             </div>
           </div>
         </div>
-        <v-textarea v-model="draft.brief" label="简介" rows="3" auto-grow hint="身份、背景和性格" persistent-hint />
-        <v-textarea v-model="draft.behavior" label="做事方式" rows="3" auto-grow hint="它在群里什么时候开口、怎么回应别人" persistent-hint />
-        <v-textarea v-model="draft.boundaries" label="底线" rows="3" auto-grow hint="它不会做、不会说的事" persistent-hint />
+        <v-textarea v-model="draft.brief" label="简介" rows="3" auto-grow placeholder="身份、背景和性格" />
+        <v-textarea v-model="draft.behavior" label="做事方式" rows="3" auto-grow placeholder="它在群里什么时候开口、怎么回应别人" />
+        <v-textarea v-model="draft.boundaries" label="底线" rows="3" auto-grow placeholder="它不会做、不会说的事" />
       </Panel>
       <Panel title="怎么说话">
-        <v-textarea v-model="draft.voice" label="说话方式" rows="4" auto-grow hint="语气、句子长短、口头禅、用不用表情符号" persistent-hint />
+        <v-textarea v-model="draft.voice" label="说话方式" rows="4" auto-grow placeholder="语气、句子长短、口头禅、用不用表情符号" />
         <StylesEditor v-model="draft.styles" />
       </Panel>
       <ExamplesEditor v-model:examples="draft.examples" v-model:tags="draft.example_tags" />

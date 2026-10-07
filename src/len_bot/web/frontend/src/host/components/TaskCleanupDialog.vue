@@ -12,17 +12,16 @@ import StatusBadge from '../ui/StatusBadge.vue'
 import ResourceBrowser from './ResourceBrowser.vue'
 
 const props = defineProps({ scene: { type: String, required: true }, taskIds: { type: Array, required: true },
-  operator: { type: String, required: true }, operation: { type: String, required: true } })
+  operation: { type: String, required: true } })
 const emit = defineEmits(['close', 'changed'])
 const selected = ref(props.taskIds[0]), result = ref(null), filesVersion = ref(0)
 const storage = useResource(() => tasksApi.storage(props.scene, selected.value))
 watch(selected, () => storage.reload())
 const current = computed(() => storage.data.value?.task_id === selected.value ? storage.data.value : null)
 const clean = useAction()
-const validIdentity = computed(() => /^[a-z][a-z0-9_-]*:[^:\s/\\]+$/.test(props.operator))
 const title = computed(() => props.operation === 'temporary' ? '清理临时文件' : '释放整个任务环境')
 async function run() {
-  const value = await clean.run(() => taskStorageApi.cleanup(props.scene, { task_ids: props.taskIds, requester: props.operator, operation: props.operation }))
+  const value = await clean.run(() => taskStorageApi.cleanup(props.scene, { task_ids: props.taskIds, operation: props.operation }))
   if (!value) return
   result.value = value; filesVersion.value++; storage.reload(); emit('changed')
 }
@@ -42,8 +41,7 @@ async function run() {
       </ObjectRow>
     </ObjectList>
     <template v-if="operation === 'environment'">
-      <p class="muted small">下面是任务的 out 目录。需要保留的文件可以先下载、登记交付或存为共享资料。</p>
-      <ResourceBrowser :key="`${selected}:${filesVersion}`" :scene="scene" :task-id="selected" :operator="operator"
+      <ResourceBrowser :key="`${selected}:${filesVersion}`" :scene="scene" :task-id="selected"
         initial-path="out" :selectable="false" @changed="storage.reload(); emit('changed')" />
     </template>
     <ErrorNote v-if="clean.error.value" title="清理请求失败" :error="clean.error.value" />
@@ -54,9 +52,8 @@ async function run() {
         <template #meta><StatusBadge :text="item.status === 'complete' ? '清理完成' : '未完成'" :tone="item.status === 'complete' ? 'success' : 'error'" /></template>
       </ObjectRow>
     </ObjectList>
-    <p v-if="!validIdentity" class="problem">先在页面上方填写你的账号</p>
     <template #actions>
-      <v-btn v-if="!result" color="error" :loading="clean.busy.value" :disabled="!validIdentity" @click="run">{{ title }}</v-btn>
+      <v-btn v-if="!result" color="error" :loading="clean.busy.value" @click="run">{{ title }}</v-btn>
     </template>
   </FormDialog>
 </template>

@@ -58,7 +58,7 @@ async function submit() {
 
 <template>
   <ResourceState :resource="stored" error-title="读取场景补充失败">
-    <SettingSection v-if="draft" title="本场景补充" description="只改这个场景里的称呼、关系和行为补充，保存后重启测试实例生效。"
+    <SettingSection v-if="draft" title="本场景补充"
       :restart="false" :dirty="dirty" :saving="save.busy.value" :error="save.error.value" :problem="problem" @save="submit">
       <template #actions><v-btn variant="text" :loading="stored.loading.value" @click="reread">重新读取</v-btn></template>
       <v-alert v-if="stored.data.value.restart_required" type="warning">有修改等待重启，重启测试实例后生效。</v-alert>
@@ -77,7 +77,7 @@ async function submit() {
           <v-textarea v-model="item.description" label="说明" rows="1" auto-grow hide-details="auto" />
         </RowEditor>
       </div>
-      <v-textarea v-model="draft.behavior_addendum" label="行为补充" rows="4" auto-grow hint="这个场景里额外的行为要求，留空就是不补充" persistent-hint />
+      <v-textarea v-model="draft.behavior_addendum" label="行为补充" rows="4" auto-grow />
     </SettingSection>
   </ResourceState>
 </template>
