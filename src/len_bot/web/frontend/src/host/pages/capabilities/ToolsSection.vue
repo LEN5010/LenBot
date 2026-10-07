@@ -57,7 +57,7 @@ async function submit() {
       <template #item="{ item }">
         <div class="tool-preview">
           <p>{{ item.tool.summary }}</p>
-          <span>{{ item.tool.registered ? (item.tool.discovered ? '已加载到模型' : '可按需发现') : '当前不可用' }}</span>
+          <span class="state" :class="{ off: !item.tool.registered }">{{ item.tool.registered ? (item.tool.discovered ? '已加载到模型' : '可按需发现') : '当前不可用' }}</span>
           <details>
             <summary>模型调用说明</summary>
             <p>{{ item.tool.description }}</p>
@@ -75,10 +75,12 @@ async function submit() {
 </template>
 
 <style scoped>
-.tool-preview { min-width: 0; font-size: 0.85rem; }
-.tool-preview p { margin: 0.4rem 0; white-space: pre-wrap; }
-.tool-preview span { color: var(--text-muted, #777); }
-.tool-preview details { margin-top: 0.5rem; }
-.tool-preview summary { cursor: pointer; }
-.tool-preview pre { overflow: auto; max-height: 24rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-preview{min-width:0;margin-left:40px;font-size:var(--fs-sm);color:var(--muted)}
+.tool-preview>p{margin:0 0 var(--sp-2);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.state{display:inline-block;padding:1px 8px;border-radius:999px;background:var(--fill);font-size:var(--fs-xs)}
+.state.off{opacity:.7}
+.tool-preview details{margin-top:var(--sp-2)}
+.tool-preview summary{cursor:pointer;width:fit-content}
+.tool-preview details p{white-space:pre-wrap}
+.tool-preview pre{overflow:auto;max-height:24rem;white-space:pre-wrap;overflow-wrap:anywhere;padding:var(--sp-2);border-radius:8px;background:var(--fill)}
 </style>

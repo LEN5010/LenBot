@@ -34,7 +34,9 @@ function toggle(name, on) {
   </ul>
 </template>
 <style scoped>
-.allow-list{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,240px),1fr));gap:var(--sp-1) var(--sp-4)}
-.allow-list li{min-width:0}
-.allow-list p{margin:calc(-1 * var(--sp-1)) 0 var(--sp-2) 40px;font-size:var(--fs-sm)}
+.allow-list{list-style:none;margin:var(--sp-2) 0 0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr));gap:var(--sp-2)}
+.allow-list li{min-width:0;padding:var(--sp-1) var(--sp-3) var(--sp-3) var(--sp-1);border-radius:var(--radius-lg);transition:background-color var(--dur-2) var(--ease-out)}
+.allow-list li:hover{background:var(--fill)}
+.allow-list p{margin:calc(-1 * var(--sp-1)) 0 var(--sp-1) 40px;font-size:var(--fs-sm);text-align:left;color:rgb(var(--v-theme-warning))}
+.allow-list :deep(.v-label){font-weight:600;opacity:1}
 </style>
