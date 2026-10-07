@@ -80,19 +80,30 @@ def is_direct(message: ChatMessage) -> bool:
     return not message.is_self and (message.scene.split(":", 2)[1] == "private" or message.mentions_bot)
 
 
+def addressed_to_others(message: ChatMessage, bot_id: str) -> bool:
+    """A message that replies to or @-mentions someone else and not the bot; @all counts as the whole group."""
+    if message.mentions_bot:
+        return False
+    return message.reply_to is not None or any(
+        segment.type == "mention" and segment.data["user"] not in {"all", bot_id} for segment in message.segments)
+
+
 def participation_score(pending: list[tuple[ChatMessage, float]],
-                        recent: list[tuple[ChatMessage, float]], config: Attention) -> float:
+                        recent: list[tuple[ChatMessage, float]], config: Attention, bot_id: str) -> float:
     humans = [(message, at) for message, at in pending
               if not message.is_self and message.sender.uid not in config.other_bot_ids]
     if not humans:
         return 0.0
     texts = [plain_text(message).strip() for message, _ in humans]
     substantial = [text for text in texts if text.strip(" ?？!！。~") not in REACTIONS]
+    # A question put to a particular member is theirs to answer.
+    open_texts = [text for (message, _), text in zip(humans, texts)
+                  if text.strip(" ?？!！。~") not in REACTIONS and not addressed_to_others(message, bot_id)]
     score = 0.2 + min(len(humans) / 10, 2.0)
     if any(("?" in text or "？" in text) and len(re.sub(r"[\W_]", "", text)) >= 3
-           for text in substantial):
+           for text in open_texts):
         score += 1.0
-    if any(HELP.search(text) for text in substantial):
+    if any(HELP.search(text) for text in open_texts):
         score += 1.0
     if not substantial:
         score -= 0.8
@@ -265,10 +276,11 @@ class SceneRunner:
         if words:
             state.offer(PendingWake("named", at, words))
         elif (self.settings.focus_seconds > 0 and state.last_contact_at is not None
-              and state.focus_started_at <= at <= state.last_contact_at + self.settings.focus_seconds):
+              and state.focus_started_at <= at <= state.last_contact_at + self.settings.focus_seconds
+              and not addressed_to_others(message, self.config.bot_id)):
             state.offer(PendingWake("focus", at))
         elif state.pending is None and self.settings.activity > 0:
-            score = participation_score(pending, recent, self.settings)
+            score = participation_score(pending, recent, self.settings, self.config.bot_id)
             if score > self.settings.ambient_threshold:
                 state.offer(PendingWake("ambient", at, score=score))
 
@@ -338,6 +350,8 @@ class SceneRunner:
         receipt = {"status": "queued" if state.pending else "stored", "message_seq": seq,
                    "platform_message_id": message.platform_message_id,
                    "wake_channel": state.pending.channel if state.pending else None}
+        if not message.is_self and addressed_to_others(message, self.config.bot_id):
+            receipt["addressed_to_others"] = True
         if blocked:
             receipt['reason'] = 'blacklisted: saved without wake or automatic media processing'
         if state.paused:
@@ -711,6 +725,8 @@ class SceneRunner:
         if result["status"] == "limited":
             self.resume = True
         result["pending_wake"] = pending_wake
+        result["channel"] = channel
+        result["silence_level"] = state.silence_level
         self.emit(result)
         if result["status"] == "limited" and channel == "direct":
             await self.limit_notice(LimitReached(result["error"], result["limit_until"]))
