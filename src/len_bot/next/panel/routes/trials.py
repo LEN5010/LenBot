@@ -27,6 +27,7 @@ from ..auth import changes_socket, cookie_name
 from ...persona.profile import PERSONA_FILES, Persona, PersonaTarget, parse_persona_files, require_persona_target
 from ...storage.store import Store
 from len_bot.web.auth import session_user
+from ...prompt_files import read_prompt
 
 
 class PersonaDraft(PersonaTarget):
@@ -210,7 +211,7 @@ class HostTrials:
                 await finish_role_write(write_trial_files, config, persona, persona_draft)
                 store = stack.enter_context(Store(config.database))
                 if context:
-                    intro = (Path(__file__).resolve().parents[3] / 'prompts' / 'next_trial_context.md').read_text()
+                    intro = read_prompt('next_trial_context.md')
                     store.append(scene, {'role': 'user', 'content': intro + '\n\n' + '\n'.join(context)})
                 mind = await stack.enter_async_context(ChatModel(config.model_settings('mind')))
                 vision = (None if config.models.roles.vision is None else

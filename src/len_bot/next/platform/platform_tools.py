@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from string import Template
 from zoneinfo import ZoneInfo
 
@@ -14,10 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .messages import Segment, render_body
 from .onebot_messages import normalized_segment
 from ..storage.store import Store, encode
+from ..prompt_files import read_prompt
 
 
 PlatformCall = Callable[[str, dict], Awaitable[dict]]
-PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
 PAGE_CHARS = 4000
 FORWARD_DEPTH = 3
 FORWARD_NODES = 300
@@ -170,7 +169,7 @@ async def open_forward(store: Store, scene: str, timezone: str, args: OpenForwar
     result = {"message": args.message, "forward": args.forward, "forward_id": forward_id,
               "top_level_items": count, "offset": args.offset, "total_chars": len(text),
               "next_offset": None if end == len(text) else end, "text": text[args.offset:end]}
-    return Template((PROMPTS / "next_forward.md").read_text(encoding="utf-8")).substitute(
+    return Template(read_prompt("next_forward.md")).substitute(
         scene=scene, result=encode(result)).strip()
 
 
@@ -229,5 +228,5 @@ async def member_info(scene: str, timezone: str, args: MemberInfoArguments, call
     zone = ZoneInfo(timezone)
     for field in ("join_time", "last_sent_time"):
         member[field] = datetime.fromtimestamp(member[field], zone).isoformat(sep=" ", timespec="seconds")
-    return Template((PROMPTS / "next_member_info.md").read_text(encoding="utf-8")).substitute(
+    return Template(read_prompt("next_member_info.md")).substitute(
         scene=scene, result=encode(member)).strip()

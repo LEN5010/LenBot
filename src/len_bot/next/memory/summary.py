@@ -6,7 +6,6 @@ import asyncio
 from contextlib import nullcontext
 from dataclasses import asdict
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from ..chat.recap import ContextBudgetError, estimate_request
@@ -16,12 +15,12 @@ from ..models.client import ChatModel, ModelProtocolError, ModelReply
 from ..models.slots import ModelSlots
 from ..models.tokens import token_record
 from ..storage.store import encode
+from ..prompt_files import read_prompt
 
 if TYPE_CHECKING:
     from ..config import SharedConfig
 
 
-PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "next_memory_summary.md"
 
 
 def _error_text(error: BaseException) -> str:
@@ -68,7 +67,7 @@ class MemorySummarizer:
         self.jobs = jobs
         self.model = model
         self.slots = slots
-        self._prompt = PROMPT.read_text(encoding="utf-8")
+        self._prompt = read_prompt("next_memory_summary.md")
         jobs.recover_summaries()
 
     async def summarize(self, scene: str, path: str, *,

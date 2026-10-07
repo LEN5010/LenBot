@@ -14,6 +14,7 @@ from ..persona.profile import Persona, load_persona
 from ..tools.skills import select_skills
 from ..plugins.manifest import scene_skill_catalog
 from ..plugins.install import PluginInstaller
+from .. import prompt_files
 from ..storage.files import sync_directory
 
 
@@ -32,7 +33,8 @@ def restart_summary(root: Path, running: HostConfig, personas: dict[str, Persona
     return {
         "plugins": [item.model_dump() for item in PluginInstaller(root).pending() if item.requested],
         "sections": [name for name in HostConfig.model_fields
-                     if name != "scenes" and getattr(running, name) != getattr(saved, name)],
+                     if name != "scenes" and getattr(running, name) != getattr(saved, name)]
+                    + (["prompts"] if prompt_files.pending(root) else []),
         "scenes": sorted(scene for scene in running.scenes.keys() | saved.scenes.keys()
                          if running.scenes.get(scene) != saved.scenes.get(scene)),
         "personas": [{"path": path, "name": name} for path, name in sorted(changed_personas.items())],

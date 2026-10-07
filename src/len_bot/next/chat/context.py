@@ -22,6 +22,7 @@ from ..tools.skills import Skill
 from ..storage.store import Store, encode
 from ..work.store import TaskStore
 from .schedule_store import ScheduleStore
+from ..prompt_files import read_prompt
 
 
 PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
@@ -35,9 +36,9 @@ def character_material(config: LabConfig, persona: Persona) -> str:
         scene_details["关系说明（账号 → 描述）"] = dict(sorted(config.relationships.items()))
     if config.behavior_addendum is not None:
         scene_details["本场景行为补充"] = config.behavior_addendum
-    scene_material = (Template((PROMPTS / "next_scene_persona.md").read_text()).substitute(
+    scene_material = (Template(read_prompt("next_scene_persona.md")).substitute(
         details=encode(scene_details)) if scene_details else "")
-    return Template((PROMPTS / "next_character.md").read_text()).substitute(
+    return Template(read_prompt("next_character.md")).substitute(
         brief=persona.brief, self_reference="、".join(persona.self_reference),
         aliases="、".join(persona.aliases), behavior=persona.behavior, voice=persona.voice,
         boundaries=persona.boundaries,
@@ -47,7 +48,7 @@ def character_material(config: LabConfig, persona: Persona) -> str:
 
 
 def expression_principles(persona: Persona) -> str:
-    return Template((PROMPTS / "next_expression_principles.md").read_text()).substitute(name=persona.name)
+    return Template(read_prompt("next_expression_principles.md")).substitute(name=persona.name)
 
 
 def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, platform: bool,
@@ -60,28 +61,28 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
     names = (allowed_names - deferred_names) | (set(discovered) & allowed_names)
     info_by_name = {info["discovery"]["name"]: info for info in external_info}
     deferred = [tool for tool in allowed if tool["function"]["name"] in deferred_names] + list(external)
-    system = Template((PROMPTS / "next_mind.md").read_text()).substitute(
+    system = Template(read_prompt("next_mind.md")).substitute(
         name=persona.name, scene=config.scene, bot_id=config.bot_id,
         character=character_material(config, persona),
-        response_choice=Template((PROMPTS / "next_response_choice.md").read_text()).substitute(name=persona.name),
+        response_choice=Template(read_prompt("next_response_choice.md")).substitute(name=persona.name),
         expression_principles=expression_principles(persona),
-        outlet=(PROMPTS / ("next_platform_outlet.md" if platform else
-                           "next_simulated_outlet.md")).read_text().strip(),
+        outlet=read_prompt(("next_platform_outlet.md" if platform else
+                           "next_simulated_outlet.md")).strip(),
     )
-    system += "\n" + (PROMPTS / "next_chat_examples.md").read_text()
+    system += "\n" + read_prompt("next_chat_examples.md")
     if "react" in names:
-        system += "\n" + (PROMPTS / "next_react.md").read_text()
+        system += "\n" + read_prompt("next_react.md")
     if "schedule" in names:
-        system += "\n" + (PROMPTS / "next_schedule.md").read_text()
+        system += "\n" + read_prompt("next_schedule.md")
     if "memory" in names:
-        system += "\n" + Template((PROMPTS / "next_memory.md").read_text()).substitute(
+        system += "\n" + Template(read_prompt("next_memory.md")).substitute(
             backend=config.memory.backend,
-            backend_details=(PROMPTS / f"next_memory_{config.memory.backend}.md").read_text(),
+            backend_details=read_prompt(f"next_memory_{config.memory.backend}.md"),
         )
     elif config.memory is not None and config.memory.auto_recall:
-        system += "\n" + (PROMPTS / "next_memory_recall.md").read_text()
+        system += "\n" + read_prompt("next_memory_recall.md")
     if "task" in names:
-        system += "\n" + Template((PROMPTS / "next_tasks.md").read_text()).substitute(
+        system += "\n" + Template(read_prompt("next_tasks.md")).substitute(
             network=encode({"enabled": config.worker.egress.enabled,
                            "max_task_bytes": (config.worker.egress.max_task_bytes
                                if config.tasks.egress_max_task_bytes is None else config.tasks.egress_max_task_bytes),
@@ -89,16 +90,16 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
                                if config.tasks.egress_max_daily_bytes is None else config.tasks.egress_max_daily_bytes)}),
         )
     if "send_file" in names:
-        system += "\n" + (PROMPTS / "next_files.md").read_text()
+        system += "\n" + read_prompt("next_files.md")
     if 'host_manage' in names:
-        system += '\n' + (PROMPTS / 'next_host_manage.md').read_text()
+        system += '\n' + read_prompt('next_host_manage.md')
     if "delegate" in names and skills:
-        system += "\n" + Template((PROMPTS / "next_skills.md").read_text()).substitute(
+        system += "\n" + Template(read_prompt("next_skills.md")).substitute(
             catalog=encode([{"name": skill.name, "description": skill.description}
                             for skill in skills if not skill.disable_model_invocation]),
         )
     if "tool_search" in names:
-        system += "\n" + Template((PROMPTS / "next_tools.md").read_text()).substitute(
+        system += "\n" + Template(read_prompt("next_tools.md")).substitute(
             catalog="\n".join(f"- {item['name']} [{item['source']}]：{item['description']}"
                 for item in [info_by_name[tool["function"]["name"]]["discovery"]
                              if tool["function"]["name"] in info_by_name else discovery_view(tool)
@@ -127,7 +128,7 @@ def jargon_context(config: LabConfig, store: Store, messages: list[ChatMessage],
     terms = JargonStore(store).matches(config.scene, texts, limit=10)
     if not terms:
         return None
-    return Template((PROMPTS / "next_jargon_context.md").read_text()).substitute(
+    return Template(read_prompt("next_jargon_context.md")).substitute(
         jargon=encode([{"词": item["term"], "含义": item["meaning"], "来源": item["source"]} for item in terms]),
     )
 
@@ -162,7 +163,7 @@ def turn_state(config: LabConfig, store: Store, *, now: float,
     jargon = jargon_context(config, store, store.recent_context_messages(config.scene))
     if jargon is not None:
         state["content"] += "\n" + jargon
-    state["content"] = Template((PROMPTS / "next_turn_state.md").read_text()).substitute(state=state["content"])
+    state["content"] = Template(read_prompt("next_turn_state.md")).substitute(state=state["content"])
     return state
 
 
@@ -217,5 +218,5 @@ class ChatContext:
         profile = None if self.memory is None else await self.memory.read_group_profile(self.config.scene)
         if profile is not None:
             state = {**state, "content": state["content"] + "\n" + Template(
-                (PROMPTS / "next_group_profile.md").read_text()).substitute(profile=profile.strip())}
+                read_prompt("next_group_profile.md")).substitute(profile=profile.strip())}
         return [{"role": "system", "content": self.system}] + project_history(recap, entries) + [state]

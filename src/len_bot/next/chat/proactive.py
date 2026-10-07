@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -15,7 +14,6 @@ if TYPE_CHECKING:
     from ..storage.store import Store
 
 
-PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "next_proactive.md"
 PAUSE_SECONDS = 7 * 86400.0
 OUTCOMES = ("silent", "answered", "ignored", "unobserved")
 # Enough steps to pass a week-long pause, skipped days and quiet intervals.

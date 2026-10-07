@@ -13,7 +13,6 @@ from .config import load_host_config
 from .instance_lock import instance_lock
 from .runtime.lifecycle import HostLifecycle, RESTART_EXIT
 from .runtime.logs import configure_logging, credentials, redact
-from .chat.context import PROMPTS
 from .chat.tools import build_tools, tool_catalog
 from .panel.app import create_app
 from .models.client import ChatModel
@@ -36,6 +35,7 @@ from .work.service import WorkTasks
 from .work.store import TaskStore
 from .tools.skills import load_catalog, select_skills
 from .plugins.store import PluginStore
+from .prompt_files import activate as activate_prompts, read_prompt
 
 
 class HostPanelServer(uvicorn.Server):
@@ -112,6 +112,7 @@ async def run(lifecycle: HostLifecycle, *, container: bool = False) -> None:
     ) for settings, persona in scenes}
     slots = ModelSlots(config.max_model_requests)
     with configure_logging(config.logging, credentials(config)), Store(config.database) as store:
+        activate_prompts(root)
         PluginStore(store).recover_plugin_calls()
         if config.onebot is None and (TaskStore(store).containers() or TaskStore(store).browser_in_use()):
             raise ValueError('stdin模拟宿主不能清理原库中残留的容器或账号浏览会话；先在所属原实例明确处理，不使用导入的定位访问外部实例')
@@ -158,9 +159,7 @@ async def run(lifecycle: HostLifecycle, *, container: bool = False) -> None:
                 for tool in selected:
                     if tool["name"] == "memory":
                         tool["parameters"]["properties"]["action"]["enum"] = memory.actions
-                        tool["description"] += "\n" + (
-                            PROMPTS / f"next_memory_{memory.settings.backend}.md"
-                        ).read_text()
+                        tool["description"] += "\n" + read_prompt(f"next_memory_{memory.settings.backend}.md")
                 data_tools[settings.scene] = selected
             tasks = (WorkTasks(config, store, slots, task_update, skills=skills,
                               memory=memory, data_tools=data_tools,

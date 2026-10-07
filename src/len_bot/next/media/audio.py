@@ -5,7 +5,6 @@ import asyncio
 import logging
 import sqlite3
 from contextlib import nullcontext
-from pathlib import Path
 from typing import TYPE_CHECKING
 from weakref import WeakValueDictionary
 
@@ -18,11 +17,11 @@ from ..platform.platform_tools import PlatformCall
 from ..platform.onebot_audio import fetch_record
 from ..storage.store import Store, encode
 from ..runtime.logs import log_context
+from ..prompt_files import read_prompt
 
 if TYPE_CHECKING:
     from ..config import LabConfig
 
-PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "next_transcribe.md"
 LOG = logging.getLogger(__name__)
 
 
@@ -136,7 +135,7 @@ def display(row, arguments, *, audio_reused: bool, reused: bool) -> str:
     result = {key: row[key] for key in ("duration", "fetched_at", "transcript", "provider", "model", "transcribed_at")}
     result.update(scene=row["scene"], platform_message_id=arguments.message, audio=arguments.audio,
                   wav_bytes=len(row["wav"]), audio_reused=audio_reused, transcript_reused=reused)
-    return encode(result) + "\n" + PROMPT.read_text(encoding="utf-8").strip()
+    return encode(result) + "\n" + read_prompt("next_transcribe.md").strip()
 
 
 class AudioService:

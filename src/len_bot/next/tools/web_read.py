@@ -9,7 +9,6 @@ import sys
 import time
 from datetime import datetime, timezone
 from email.message import Message
-from pathlib import Path
 from string import Template
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -20,12 +19,12 @@ from ..configuration.chat import WebReadSettings
 from .http_read import fetch_public
 from ..storage.store import Store, WebPage
 from ..trials.replay_web import RecordedWeb
+from ..prompt_files import read_prompt
 
 
 PAGE_CHARS = 4000
 TEXT_BYTES = 2_000_000
 PDF_BYTES = 10_000_000
-PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "next_web_read.md"
 
 
 class WebReadArguments(BaseModel):
@@ -137,7 +136,7 @@ def _page(document: int, page: WebPage, offset: int) -> str:
         "next_offset": end if end < total else None,
         "text": page.content[offset:end],
     }
-    return Template(PROMPT.read_text()).substitute(result=json.dumps(result, ensure_ascii=False))
+    return Template(read_prompt("next_web_read.md")).substitute(result=json.dumps(result, ensure_ascii=False))
 
 
 def _reject_json_constant(value: str) -> None:

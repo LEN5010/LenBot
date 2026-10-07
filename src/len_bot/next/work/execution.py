@@ -6,7 +6,6 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from functools import partial
 import json
-from pathlib import Path
 from string import Template
 import traceback
 from typing import Literal, TYPE_CHECKING
@@ -33,13 +32,13 @@ from ..storage.pool import worker_pool_usage
 from .store import Task, TaskStore
 from .worker_model import Limits, WorkerModelProxy
 from .worker_session import WorkerSession, worker_session
+from ..prompt_files import read_prompt
 
 if TYPE_CHECKING:
     from ..tools.external_tools import ExternalTool
     from ..tools.mcp_host import MCPHost
 
 
-PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
 
 
 class TaskMCPCall(BaseModel):
@@ -241,7 +240,7 @@ class TaskExecution:
     async def _consume(self) -> str:
         item, session = self.item, self._session
         # PiRpc's reader already drains stdout while prompt is being accepted.
-        environment = Template((PROMPTS / "next_worker_environment.md").read_text()).substitute(
+        environment = Template(read_prompt("next_worker_environment.md")).substitute(
             facts=json.dumps({
                 "public_network": session.egress is not None,
                 "proxy": None if session.egress is None else f"http://127.0.0.1:{session.egress.port}",
@@ -265,14 +264,14 @@ class TaskExecution:
         request = item.input + "\n\n" + environment
         continuation = self.records.continuation(item)
         if continuation is not None:
-            request += '\n\n' + Template((PROMPTS / 'next_worker_continuation.md').read_text()).substitute(
+            request += '\n\n' + Template(read_prompt('next_worker_continuation.md')).substitute(
                 facts=json.dumps({'task_id': item.id, 'scene': item.scene, 'original_requester': item.requester,
                     'original_goal': item.goal, 'original_deliverable': item.deliverable,
                     'original_context': item.context, 'original_created_at': item.created,
                     'current_operator': continuation.requester, 'current_text': continuation.text},
                     ensure_ascii=False, allow_nan=False))
         if item.materials:
-            request += '\n\n' + Template((PROMPTS / 'next_worker_materials.md').read_text()).substitute(
+            request += '\n\n' + Template(read_prompt('next_worker_materials.md')).substitute(
                 materials=json.dumps([{'name': name, 'path': f'/inputs/{name}'} for name in item.materials],
                                      ensure_ascii=False, allow_nan=False))
         # Pi 0.87.1 acknowledges prompt preflight with success:true and no data.
