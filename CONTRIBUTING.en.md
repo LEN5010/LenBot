@@ -82,7 +82,7 @@ Maintenance commands are run as `python -m len_bot.next.maintenance.<module>`. I
 ```sh
 uv run --no-sync pytest -q
 uv run --no-sync python -m compileall -q src/len_bot
-uv run --no-sync ruff check src/len_bot scripts deploy/updater deploy/package
+uv run --no-sync ruff check src/len_bot scripts deploy/updater deploy/package tests
 ```
 
 Tests cover only external protocol boundaries (parsing OneBot, Pi RPC, model and memory service responses), data migrations, permissions and configuration validation, using anonymized real samples. Do not mock call sequences, test private functions or snapshot prompts.
@@ -107,14 +107,14 @@ uv run --no-sync python scripts/build_release.py /tmp/lenbot-release
 
 This rebuilds the panel in a copy and produces the sdist, the wheel, the Linux/macOS/Windows packages and the release manifest, without starting or uploading anything. Releases go through the [Release workflow](.github/workflows/release.yml); see the [release guide (zh)](deploy/releasing.md).
 
-[CI](.github/workflows/ci.yml) compiles, runs tests, builds the panel and packages. Passing CI does not mean panel interactions or real chats were checked.
+[CI](.github/workflows/ci.yml) compiles, runs tests, builds the panel and packages. Tests run on both Python 3.13 and 3.14 ([check.yml](.github/workflows/check.yml)): 3.13 is the minimum in `pyproject.toml`, and 3.14 catches problems on the next interpreter early. The same workflow runs actionlint over every workflow file. Unit tests run on Linux only; Windows and macOS are covered by the install smoke tests alone. Passing CI does not mean panel interactions or real chats were checked.
 
 ## Submitting changes
 
 - Use the [bug template](.github/ISSUE_TEMPLATE/bug.md) and the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
 - Run `git diff --check` before committing. Never commit real configuration, databases, credentials, personal personas or build output.
 - Commit messages say what behavior changed, what you checked and what is still unconfirmed.
-- When behavior or interfaces change, update the matching docs in the README, `developer/` or `deploy/`.
+- When behavior or interfaces change, update the matching docs in the README, the documentation site `website/`, `developer/` or `deploy/`. Chinese is the primary version; files that have an English version (README, CONTRIBUTING, deployment overview, plugin interface) are updated together. If you touch `website/`, run `npm run build` there; dead links fail the build.
 - Authors are people. Do not add tool or model attribution to commits or PRs, such as `Co-Authored-By:` lines pointing to machine identities or `Generated with …` footers.
 
 ## License

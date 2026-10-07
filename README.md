@@ -2,86 +2,84 @@
 
 # LenBot
 
-[English](README.en.md)
+[English](README.en.md) · [文档](https://lendevs.github.io/LenBot/) · [快速开始](https://lendevs.github.io/LenBot/guide/quick-start)
 
-LenBot 是一个长期待在群里的聊天 Agent。它通过 OneBot v11 接入 QQ，用 Python、asyncio 和 SQLite 写成，自带网页管理面板。
+LenBot 是一个长期待在 QQ 群里的聊天机器人。它通过 OneBot v11 收发 QQ 消息，用你自己选的大模型思考和说话。
 
-安装和使用说明见**[文档站](https://lendevs.github.io/LenBot/)**。
+和它聊天不用敲命令。群友说话时，它自己判断这句话要不要接、接谁的话、要不要回个表情；有人让它写报告、查资料，它把活交给后台慢慢做，做完再把结果发回群里。角色、记忆、插件、模型和权限都在网页面板里管理。
 
 <img src="website/public/screenshots/home.png" alt="面板首页" width="860">
 
-## 设计思路
-
-LenBot 的基本单位是群聊场景。每个群（或私聊）都有一个一直存在的 Agent 会话：
-
-- 群友的消息、插件发来的通知、后台任务的进展，都作为输入进入同一个运行时，由这个会话统一处理。
-- Agent 自己决定什么时候开口、说什么、发不发表情、要不要把一件长工作交给后台任务。
-- 宿主负责记清每件事的实际状态：任务做到哪一步了，话有没有真的发出去，文件有没有真的送到。
-
-事件路由仍然保留：精确命令、关键词规则由插件直接处理，不必经过模型。但协调整个群聊行为的是 Agent，它不只是某条命令触发的一个功能。
-
 ## 能做什么
 
-| 范围 | 内容 |
-|---|---|
-| 群聊 | 每个场景一份持久会话；自己判断回不回、回谁；表情、引用、提及；长对话自动压缩成回想 |
-| 角色 | 角色包包含设定、说话方式、底线、样例、知识和表情，可导入导出，改动前可以先试聊 |
-| 记忆 | 本地 Markdown 记忆，按群隔离；全文检索，可选向量检索；后台整理，可以修改、删除和彻底遗忘 |
-| 后台任务 | 长工作交给独立 Docker 容器里的 Pi 执行，可以追问、取消、续接；产物登记后可以发到群里 |
-| 工具 | 网页搜索与阅读、看图、语音转写、合并转发、群成员资料、MCP，以及浏览器任务 |
-| 插件 | 同进程 Python 插件：命令、规则、定时、工具和技能；支持 Git 和 ZIP 安装、版本检查、单插件重载 |
-| 学习 | 从群聊里学说法、黑话和表情，观察群友对回复的反应；每一项都能在面板里采用、修改或停用 |
-| 管理 | 面板管理模型、预算、权限、提醒和日志；主人也可以在群里用一句话改设置 |
+- **像群友一样聊天。** 每个群有一段一直延续的对话，聊久了会把早先的内容整理成回想。会引用、会 @ 人、会发表情，也可以设置成没被叫到时主动插话。
+- **有自己的角色。** 设定、说话方式、底线、样例、资料和表情放在一个角色包里。默认角色是小然，装好就能用，也可以自己写。改完先在面板里试聊，满意再保存。
+- **记得群里的事。** 记忆是本地的 Markdown 文件，每个群分开存。面板里能看、能改，也能让它彻底忘掉某件事。
+- **能干耗时的活。** 写报告、整理资料交给 Docker 容器里的后台任务去做，聊天不用等。做的过程中可以追问、补充要求或者取消。
+- **会用工具。** 搜网页、读网页、看图、转写语音、看合并转发、查群成员，也能接 MCP 服务。
+- **能装插件。** 插件用 Python 写，可以加命令、定时任务和给模型用的工具。官方插件有群聊总结、GSUID Core 桥接、A-SOUL 和哔哩哔哩。
+- **跟着群学。** 它会留意群里常用的说法、黑话和表情，学到的内容都能在面板里查看、修改或停用。
 
-群聊总结、GSUID Core 桥接、A-SOUL 和哔哩哔哩通过[独立插件](developer/plugin-examples.md)按需安装与更新。
+## 不做什么
 
-## 运行方式
+- 目前只接 QQ。
+- 自己不登录 QQ，需要另外运行一个 OneBot 实现，比如 [NapCat](https://github.com/NapNeko/NapCatQQ)。
+- 不自带模型，要用你自己的模型服务和 API Key。支持 OpenAI 兼容接口、OpenAI Responses、Anthropic 和 Gemini。
+- 能听懂语音，但只用文字回复。
+- 提示词和面板只有中文。
 
-三种方式运行的是同一个程序。第一次启动时没有配置，会打印一个网页向导的链接：连接 OneBot、读出 Bot 账号、填主人和模型，保存后进入面板。
+## 快速开始
 
-向导默认使用小然，包含现有的设定、说话方式、底线、知识和表情；也可以选择自定义角色。角色包复制到实例后可以独立编辑。
+首个公开版本 0.2.0 还在准备，部署包和 Docker 镜像发布之前，先从源码运行。开始前准备好：
 
-| 方式 | 适合 | 说明 |
-|---|---|---|
-| 部署包 | Linux、macOS、Windows 日常使用 | 只需要 [uv](https://docs.astral.sh/uv/)，自带服务启停；在面板里升级，失败可以恢复。见[部署包](https://lendevs.github.io/LenBot/guide/install-package) |
-| Docker | 服务器、NAS，或需要后台任务的 Windows | 实例数据放在命名卷里，同样在面板里升级。见 [Docker](https://lendevs.github.io/LenBot/guide/install-docker) |
-| 源码 | 开发、想跟着主线走 | `uv` 直接从源码启动，见下文和[开发指南](CONTRIBUTING.md) |
-
-下载地址：
-
-- 部署包：[GitHub Releases](https://github.com/lendevs/LenBot/releases)，`lenbot-<版本>-linux.tar.gz`、`-macos.tar.gz`、`-windows.zip`。
-- 镜像：`ghcr.io/lendevs/lenbot`、`lenbot-updater`、`lenbot-worker`，Docker Hub 上是同名的 `docker.io/lendevs/...`，支持 amd64 和 arm64。
-
-从源码运行需要 uv 和 Node.js 22（用来构建面板）：
+- [uv](https://docs.astral.sh/uv/) 和 Node.js 22
+- 一个已经登录 QQ 的 OneBot 实现
+- 模型服务的接口地址和 API Key
 
 ```sh
 git clone https://github.com/lendevs/LenBot.git
 cd LenBot
-./scripts/install.sh      # 安装依赖并构建面板，不启动
-uv run --no-sync len-bot  # 第一次会打印向导链接
+./scripts/install.sh
+uv run --no-sync len-bot
 ```
 
-源码目录本身就是实例目录：配置、数据库、角色和运行数据都在仓库根目录，已在 `.gitignore` 中排除。
+第一次启动时，终端会打印一个链接：
 
-刚开始建议选**模拟发送**：Bot 照常收消息、想回复，但不会真的发到 QQ，可以先在面板里试聊。要真聊天，还需要一个已登录 QQ 的 OneBot v11 实现。模型按调用计费，模拟发送也一样。
+```text
+尚无根配置。请打开 http://127.0.0.1:52811/#token=...
+```
 
-`lenbot.config.json` 是唯一的运行配置，里面有密钥，不要提交到 Git。运行时在面板里改，需要重启的修改会提示；手工编辑前先停机。
+在浏览器里打开它，跟着向导填完六步：管理员账号、连接 QQ、主人、模型、角色和第一个群、官方插件。保存后 LenBot 直接启动，页面会自动跳到面板。
+
+「回复怎么发」第一次建议选模拟发送，回复只出现在面板里。到面板的对话测试页和它聊几句，觉得可以了，再去「设置 → 连接」把发送方式改成真实发送到 QQ。
+
+详细步骤见文档里的[快速开始](https://lendevs.github.io/LenBot/guide/quick-start)。
+
+## 安装方式
+
+三种方式跑的是同一个程序，按你的情况选：
+
+| 方式 | 适合 |
+|---|---|
+| [部署包](https://lendevs.github.io/LenBot/guide/install-package) | 在自己的电脑或 Linux 服务器上长期运行。只需要 uv，带服务启停脚本，在面板里升级，升级失败能恢复 |
+| [Docker](https://lendevs.github.io/LenBot/guide/install-docker) | 服务器和 NAS；在 Windows 上想用后台任务也选它 |
+| [源码](https://lendevs.github.io/LenBot/guide/install-source) | 想改代码，或者想跟着开发版走 |
+
+0.2.0 发布后，部署包在 [GitHub Releases](https://github.com/lendevs/LenBot/releases)，镜像在 `ghcr.io/lendevs/lenbot`，Docker Hub 上有同名镜像。
 
 ## 文档
 
 | 想做什么 | 去哪看 |
 |---|---|
 | 安装、首次配置、日常使用 | [文档站](https://lendevs.github.io/LenBot/) |
-| 选择部署方式、可选服务 | [部署](deploy/README.md) |
-| 日常使用、角色、插件和任务维护 | [使用与维护](deploy/current/operations.md) |
+| 选部署方式、配可选服务 | [部署](deploy/README.md) |
+| 维护角色、插件和任务 | [使用与维护](deploy/current/operations.md) |
+| 写插件 | [插件开发](developer/README.md)、[插件模板](https://github.com/lendevs/lenbot-plugin-template) |
+| 写角色包 | [角色包](developer/personas.md)、[小然的角色包](examples/personas/companion/) |
 | 了解内部结构 | [架构](developer/architecture.md) |
-| 写插件 | [插件开发](developer/README.md)，[插件模板](https://github.com/lendevs/lenbot-plugin-template) |
-| 参与开发、构建发行包 | [开发指南](CONTRIBUTING.md) |
-| 写或调整角色包 | [角色包](developer/personas.md)，[示例角色](examples/personas/companion/) |
+| 参与开发 | [开发指南](CONTRIBUTING.md) |
 
-## 现状
-
-首个公开版本是 0.2.0，各版本的变化、兼容要求和已知问题见 [changelogs](changelogs/)。目前只有 OneBot（QQ）一个平台适配器，提示词和面板只有中文，不提供语音合成（TTS）。
+版本说明的草稿在 [changelogs](changelogs/)。
 
 ## 许可证
 

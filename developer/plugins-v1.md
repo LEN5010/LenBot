@@ -68,7 +68,7 @@ from len_bot.plugin import Plugin, Invocation, command, fullmatch, regex, tool, 
 
 每个方法只用一个入口装饰器。匹配优先级为命令、全文、正则；正则按 priority 降序。同一消息最多一个处理器接管，不唤醒聊天模型。匹配只接受纯文本，开头的回复段和 @自己可去掉。
 
-处理结果记录到后续对话上下文，但不会因此启动模型。处理器返回字符串不自动发消息；调用 `await ctx.reply("文字")` 才发送。大脑选择 tool 属于模型聊天轮，插件 tool 本身是否调用模型是另一回事，插件说明必须写清楚。
+处理结果记录到后续对话上下文，但不会因此启动模型。处理器返回字符串不自动发消息；调用 `await ctx.reply("文字")` 才发送。聊天模型选择调用 tool 属于一轮聊天，插件 tool 本身是否调用模型是另一回事，插件说明必须写清楚。
 
 ## 配置表单
 
@@ -250,7 +250,7 @@ def unavailable_tools(self, scene: str) -> dict[str, str]:
 | 原消息 | `ctx.recent_messages(limit=20)`，只读当前场景，最多 100 条 |
 | 时间段消息 | `ctx.messages_between(after, before, offset=0, limit=200)`，Unix 时间 `after <= time < before`，按时间从早到晚，每页最多 500 条，用 offset 翻页 |
 | 记忆 | `await ctx.memory(arguments)`，当前场景记忆服务，不直连后端数据库 |
-| 主动交给大脑 | `await ctx.emit_event(text)`，与直接发送相反，它会唤醒大脑 |
+| 主动交给聊天模型 | `await ctx.emit_event(text)`，与直接发送相反，它会唤醒聊天模型 |
 | 时间 | `ctx.now()` 和 `ctx.timezone()`，明确场景时区 |
 | 主人权限 | `ctx.require_owner()`，使用真实来源发送者 |
 | 公网原图 | `await ctx.fetch_image(url, timeout_seconds=15)`，返回已校验原件 bytes |
@@ -302,6 +302,8 @@ async def publish(self, ctx):
 ## 生命周期和错误
 
 `start()` 建立资源，`stop()` 关闭资源；启动协程也由宿主拥有，重载或停用会先取消并等待未完成的启动，再串行关闭该实例的资源。用 `self.ctx.start_task(name, coroutine)` 登记自有后台协程，宿主停止时会取消。它不是容器工作任务。不在 asyncio 主循环里跑阻塞网络请求。
+
+`start()` 限时 60 秒，`stop()` 限时 30 秒。`start()` 超时，宿主取消它、把插件标为失败，错误是 `TimeoutError: 插件 start() 超过 60 秒没有返回，已取消`，其余部分照常启动；`stop()` 超时同样被取消并报出同类错误，不会卡住关闭。要等网络、预热缓存这类耗时准备，放进 `start_task`，不要在 `start()` 里等。`migrate_data` 不限时。
 
 一次处理器报错结束该次调用，原错由宿主写进运行日志（`plugin_error`），不自动重试、换服务或停用整个插件。插件自己的记录用 `self.ctx.log`（标准 `logging.Logger`），写进宿主的 `logs/lenbot.jsonl`，自动带上插件名和当前的群、一轮、工具调用 ID；面板日志页可按插件筛选。需要特权的具体入口可用 `ctx.require_owner()`；不必给普通查询加主人门槛。
 

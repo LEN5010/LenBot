@@ -1,6 +1,6 @@
 # Docker
 
-Docker 安装有三个镜像，都支持 Linux amd64 和 arm64：
+Docker 安装用到三个镜像，都有 Linux amd64 和 arm64 版本：
 
 | 镜像 | 作用 |
 |---|---|
@@ -10,13 +10,13 @@ Docker 安装有三个镜像，都支持 Linux amd64 和 arm64：
 
 Docker Hub 上有同名镜像：`docker.io/lendevs/lenbot` 等。
 
-::: warning 还没有发布
-镜像会随 0.2.0 发布。在那之前可以按仓库里的 [Dockerfile](https://github.com/lendevs/LenBot/blob/master/deploy/current/Dockerfile) 从源码构建。
+::: warning 0.2.0 还没有发布
+镜像会随 0.2.0 发布。在那之前可以用仓库里的 [Dockerfile](https://github.com/lendevs/LenBot/blob/master/deploy/current/Dockerfile) 从源码构建，步骤见[从源码构建镜像](https://github.com/lendevs/LenBot/blob/master/deploy/current/docker.md#从源码构建镜像)。
 :::
 
 ## 安装
 
-新建一个部署目录，用更新器镜像生成 Compose 配方和数据卷。这一步不启动任何服务：
+新建一个部署目录，用更新器镜像生成 Compose 配方和数据卷。这一步只写文件、建卷，不启动服务：
 
 ```sh
 mkdir -p ~/lenbot && cd ~/lenbot
@@ -39,7 +39,13 @@ docker run --rm \
 
 还会建两个数据卷：`lenbot-data` 放实例，`lenbot-python-<版本>` 放程序环境。
 
-常用选项：`--registry dockerhub` 改用 Docker Hub；`--panel-port`、`--update-port` 改面板和更新页在本机的端口，默认 11307 和 11308；`--project` 改容器和卷名的前缀，同一台机器跑多个实例时用。
+`init.py` 的常用选项：
+
+| 选项 | 作用 |
+|---|---|
+| `--registry dockerhub` | 改从 Docker Hub 拉镜像 |
+| `--panel-port`、`--update-port` | 面板和更新页在本机的端口，默认 11307 和 11308 |
+| `--project` | 容器和卷名的前缀，默认 `lenbot`；同一台机器跑多个实例时改它 |
 
 ## 第一次启动
 
@@ -52,7 +58,7 @@ docker compose -p lenbot logs lenbot
 
 面板和更新页只发布到本机回环地址。从别的机器访问，用 SSH 端口转发或自己配 HTTPS 反向代理。
 
-日常启停：
+三个 `-f` 每次都要带上。日常启停：
 
 ```sh
 docker compose -p lenbot -f host.compose.yaml -f host.version.compose.yaml -f host.updater.compose.yaml stop
