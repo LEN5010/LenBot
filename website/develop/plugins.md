@@ -76,6 +76,10 @@ class Counter(Plugin):
 
 在清单里用 `[config.<字段名>]` 声明参数，面板据此生成表单，插件里从 `ctx.config` 读到已经校验过的值。每个字段必须写 `type` 和 `description`；写了 `default` 就是选填，否则必填。支持文字、密钥、数字、开关、列表、群选择、路径、网址和对象列表。
 
+## 启动和停止
+
+需要准备资源时重写 `async def start(self)`，收尾放在 `async def stop(self)`。`start()` 限时 60 秒，超时会被取消、插件标为失败，LenBot 其余部分照常启动；`stop()` 限时 30 秒，超时同样被取消，不会卡住关闭。等网络、预热缓存这类慢活用 `self.ctx.start_task(name, coroutine)` 放到后台。
+
 ## 日志
 
 `self.ctx.log` 是标准的 `logging.Logger`。写进去的记录进入 LenBot 的运行日志 `logs/lenbot.jsonl`，自动带上插件名和当前的群、一轮、工具调用 ID，面板日志页可以按插件筛选。处理器抛出的错误由 LenBot 记录，不需要自己再写一遍。
