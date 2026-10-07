@@ -45,7 +45,7 @@ The runtime core is in `src/len_bot/next/`. The entry point is `len_bot.next.hos
 | `memory/` | Local memory text, index, recall and background curation |
 | `work/`, `browser/` | Background tasks (Pi containers) and browser cooperation |
 | `storage/` | Database schema and codecs |
-| `plugins/`, `builtin_plugins/` | Plugin runtime, installation and built-in plugins |
+| `plugins/` | Plugin runtime and installation; business plugins live in separate repositories |
 | `plugin.py`, `plugin_testing.py`, `text_cards.py`, `image_assets.py` | Public interfaces for plugins |
 | `tools/`, `media/` | Web, skills, MCP and other tools; image and voice handling |
 | `panel/` | Panel backend and the first-run wizard |
@@ -60,7 +60,9 @@ Elsewhere:
 - `src/len_bot/eval/`: expression replay.
 - `tests/`: tests.
 - `docker/next-worker/`: the task image.
-- `deploy/`: deployment material.
+- `deploy/`: deployment material; `deploy/updater/` is the updater shared by packages and Docker.
+- `website/`: documentation site (VitePress); preview with `cd website && npm ci && npm run dev`.
+- `changelogs/`: one release notes file per version.
 - `scripts/`: install and packaging scripts.
 - `examples/`: the example persona and public replay cases.
 
@@ -87,7 +89,7 @@ When changing prompts or persona expression, compare replies before and after wi
 
 ## Data format
 
-The business database starts from public baseline v1. To change the schema, create the new structure directly in `storage/schema.py`, add an upgrade step from the previous version to `UPGRADES` in `maintenance/migrate.py`, and bump `FORMAT_VERSION` in `storage/store.py`. Upgrades run only from the maintenance command while stopped; the runtime has no old/new compatibility branches.
+The business database starts from public baseline v1. To change the schema, create the new structure directly in `storage/schema.py`, add an upgrade step from the previous version to `UPGRADES` in `maintenance/migrate.py`, and bump `FORMAT_VERSION` in `storage/store.py`. The memory job database, local memory index and root configuration work the same way; their numbers are listed in the [release guide (zh)](deploy/releasing.md#兼容编号). Upgrades run only from the maintenance command while stopped; the runtime has no old/new compatibility branches.
 
 ## Build and release
 
@@ -95,7 +97,7 @@ The business database starts from public baseline v1. To change the schema, crea
 uv run --no-sync python scripts/build_release.py /tmp/lenbot-release
 ```
 
-This rebuilds the panel in a copy and produces the sdist, the wheel and the Linux/macOS packages, without starting or uploading anything. Releases go through the [Release workflow](.github/workflows/release.yml); see the [release guide (zh)](deploy/releasing.md).
+This rebuilds the panel in a copy and produces the sdist, the wheel, the Linux/macOS/Windows packages and the release manifest, without starting or uploading anything. Releases go through the [Release workflow](.github/workflows/release.yml); see the [release guide (zh)](deploy/releasing.md).
 
 [CI](.github/workflows/ci.yml) compiles, runs tests, builds the panel and packages. Passing CI does not mean panel interactions or real chats were checked.
 

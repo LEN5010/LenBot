@@ -9,10 +9,6 @@ on:
         description: Push versioned images and create a Release (requires the matching existing tag)
         type: boolean
         default: false
-      prerelease:
-        description: Mark the Release as a prerelease
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -22,12 +18,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  checks:
+    uses: ./.github/workflows/check.yml
+
   packages:
+    needs: checks
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       image: ${{ steps.version.outputs.image }}
       publish: ${{ steps.version.outputs.publish }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      dockerhub: ${{ steps.version.outputs.dockerhub }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -39,18 +41,42 @@ jobs:
       - name: Resolve the one release version
         id: version
         env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
           PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
           uv python install 3.13
           uv run --no-project --python 3.13 python - <<'PY'
-          import os, tomllib
+          import os, re, tomllib
+          from scripts.release_metadata import release_version
           from pathlib import Path
-          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
+          version = release_version(tomllib.loads(Path('pyproject.toml').read_text())['project']['version'])
           publish = os.environ['PUBLISH'] == 'true'
+          if publish and not os.environ['DOCKERHUB_NAMESPACE']:
+              raise ValueError('Set the Docker Hub namespace before publishing')
           if publish and os.environ['GITHUB_REF'] != 'refs/tags/v' + version:
               raise ValueError('Publishing requires the checked-out tag v' + version)
+          # changelogs/v<version>.md becomes the Release body as it is; a draft is never published.
+          note_file = Path('changelogs') / f'v{version}.md'
+          notes = note_file.read_text() if note_file.exists() else ''
+          if publish and (not notes.startswith(f'# LenBot {version}\n') or '（发布时填写' in notes):
+              raise ValueError(f'{note_file} must exist, start with "# LenBot {version}" and keep no （发布时填写 placeholder')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'version={version}\nimage=ghcr.io/{os.environ["GITHUB_REPOSITORY"].lower()}\npublish={str(publish).lower()}\n')
+              output.write(f'prerelease={str(bool(re.search(r"(a|b|rc)\d+$", version))).lower()}\ndockerhub=docker.io/{os.environ["DOCKERHUB_NAMESPACE"]}/lenbot\n')
+          PY
+      - name: Refuse an already published version
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name' > "$RUNNER_TEMP/existing-tags"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          tags = Path(os.environ['RUNNER_TEMP'], 'existing-tags').read_text().splitlines()
+          if 'v' + os.environ['VERSION'] in tags:
+              raise ValueError('This Release already exists; do not rebuild or overwrite its version')
           PY
       - name: Build corresponding packages and deployment bundles
         run: uv run --no-project --python 3.13 python scripts/build_release.py "$RUNNER_TEMP/release"
@@ -63,7 +89,9 @@ jobs:
               --source-archive "$RUNNER_TEMP/release/artifacts/$component-$VERSION-source.tar.gz"
           done
           cp deploy/components.json "$RUNNER_TEMP/release/artifacts/components.json"
-          cp deploy/release-notes.md "$RUNNER_TEMP/release/artifacts/release-notes.md"
+          notes="changelogs/v$VERSION.md"
+          if [ -f "$notes" ]; then cp "$notes" "$RUNNER_TEMP/release/artifacts/release-notes.md"
+          else printf '# LenBot %s 候选构建\n\n本版还没有版本说明。\n' "$VERSION" > "$RUNNER_TEMP/release/artifacts/release-notes.md"; fi
           printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/release/artifacts/source-revision.txt"
       - uses: actions/upload-artifact@v4
         with:
@@ -71,12 +99,17 @@ jobs:
           path: ${{ runner.temp }}/release/artifacts/*
           if-no-files-found: error
 
-  images:
+  # Images are pushed per architecture while building, so the packages are installed and started first.
+  smoke:
     needs: packages
+    uses: ./.github/workflows/install-smoke.yml
+
+  images:
+    needs: [packages, smoke]
     strategy:
       fail-fast: false
       matrix:
-        component: [host, worker]
+        component: [host, worker, updater]
         target:
           - {runner: ubuntu-24.04, platform: linux/amd64, arch: amd64}
           - {runner: ubuntu-24.04-arm, platform: linux/arm64, arch: arm64}
@@ -87,7 +120,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        if: matrix.component == 'host'
+        if: matrix.component != 'worker'
         with:
           name: release-packages
           path: packages
@@ -101,6 +134,7 @@ jobs:
           case "$COMPONENT" in
             host) CONTEXT=.; FILE=deploy/current/Dockerfile; TAG="$IMAGE" ;;
             worker) CONTEXT=.; FILE=docker/next-worker/Dockerfile; TAG="$IMAGE-worker" ;;
+            updater) CONTEXT=.; FILE=docker/updater/Dockerfile; TAG="$IMAGE-updater" ;;
           esac
           printf 'context=%s\nfile=%s\ntag=%s\n' "$CONTEXT" "$FILE" "$TAG" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v4
@@ -110,19 +144,48 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/login-action@v4
+        if: needs.packages.outputs.publish == 'true'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - uses: docker/build-push-action@v7
         with:
           context: ${{ steps.recipe.outputs.context }}
           file: ${{ steps.recipe.outputs.file }}
           platforms: ${{ matrix.target.platform }}
           build-args: ${{ matrix.component == 'host' && 'PACKAGE_SOURCE=wheel' || '' }}
-          build-contexts: ${{ matrix.component == 'host' && 'release=./packages' || '' }}
+          build-contexts: ${{ matrix.component != 'worker' && 'release=./packages' || '' }}
           tags: ${{ steps.recipe.outputs.tag }}:${{ needs.packages.outputs.version }}-${{ matrix.target.arch }}
-          push: ${{ needs.packages.outputs.publish == 'true' }}
-          outputs: ${{ needs.packages.outputs.publish != 'true' && format('type=docker,dest={0}/image.tar', runner.temp) || '' }}
+          load: true
+          push: false
           labels: |
             org.opencontainers.image.version=${{ needs.packages.outputs.version }}
             io.lenbot.release.revision=${{ github.sha }}
+      - name: Check the built component before uploading
+        env:
+          COMPONENT: ${{ matrix.component }}
+          TAG: ${{ steps.recipe.outputs.tag }}:${{ needs.packages.outputs.version }}-${{ matrix.target.arch }}
+        run: |
+          case "$COMPONENT" in
+            host) python3 scripts/smoke_install.py docker packages "$RUNNER_TEMP/image-smoke" --image "$TAG" ;;
+            worker) docker run --rm --network none --entrypoint pi "$TAG" --version ;;
+            updater) docker run --rm --network none --entrypoint python "$TAG" /opt/lenbot-updater/controller.py --help ;;
+          esac
+          docker save -o "$RUNNER_TEMP/image.tar" "$TAG"
+      - name: Push the verified architecture image to both registries
+        if: needs.packages.outputs.publish == 'true'
+        env:
+          COMPONENT: ${{ matrix.component }}
+          TAG: ${{ steps.recipe.outputs.tag }}:${{ needs.packages.outputs.version }}-${{ matrix.target.arch }}
+          DOCKERHUB: ${{ needs.packages.outputs.dockerhub }}
+          VERSION: ${{ needs.packages.outputs.version }}
+          ARCH: ${{ matrix.target.arch }}
+        run: |
+          suffix=''
+          if [ "$COMPONENT" != host ]; then suffix="-$COMPONENT"; fi
+          python3 scripts/push_release_image.py "$TAG" "$TAG"
+          python3 scripts/push_release_image.py "$TAG" "$DOCKERHUB$suffix:$VERSION-$ARCH"
       - uses: actions/upload-artifact@v4
         if: needs.packages.outputs.publish != 'true'
         with:
@@ -219,25 +282,47 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Assemble architecture manifests
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Assemble architecture manifests and record immutable image references
         env:
           IMAGE: ${{ needs.packages.outputs.image }}
+          DOCKERHUB: ${{ needs.packages.outputs.dockerhub }}
           VERSION: ${{ needs.packages.outputs.version }}
         run: |
-          for suffix in '' '-worker'; do
-            docker buildx imagetools create -t "$IMAGE$suffix:$VERSION" \
-              "$IMAGE$suffix:$VERSION-amd64" "$IMAGE$suffix:$VERSION-arm64"
-          done
-          printf '宿主：`%s:%s`\n\n任务：`%s-worker:%s`\n' \
-            "$IMAGE" "$VERSION" "$IMAGE" "$VERSION" > artifacts/images.md
-      - name: Publish the existing tag and its files
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          images = {}
+          for registry, base in [('ghcr', os.environ['IMAGE']), ('dockerhub', os.environ['DOCKERHUB'])]:
+              images[registry] = {}
+              for component, suffix in [('host', ''), ('worker', '-worker'), ('updater', '-updater')]:
+                  image = base + suffix
+                  tag = image + ':' + os.environ['VERSION']
+                  subprocess.run(['docker', 'buildx', 'imagetools', 'create', '-t', tag,
+                                  tag + '-amd64', tag + '-arm64'], check=True)
+                  result = subprocess.run(['docker', 'buildx', 'imagetools', 'inspect', tag,
+                                           '--format', '{{json .Manifest}}'], check=True, capture_output=True, text=True)
+                  images[registry][component] = image + '@' + json.loads(result.stdout)['digest']
+          Path('images.json').write_text(json.dumps(images, indent=2) + '\n')
+          PY
+          cp images.json artifacts/images.json
+          python3 scripts/release_metadata.py artifacts --images images.json
+      - name: Publish the existing tag and immutable assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/publish_release.py artifacts
+      - name: Update stable image aliases only after the complete Release
+        if: needs.packages.outputs.prerelease == 'false'
+        env:
+          IMAGE: ${{ needs.packages.outputs.image }}
+          DOCKERHUB: ${{ needs.packages.outputs.dockerhub }}
           VERSION: ${{ needs.packages.outputs.version }}
-          PRERELEASE: ${{ github.event_name == 'push' || inputs.prerelease }}
         run: |
-          cat artifacts/release-notes.md artifacts/images.md > "$RUNNER_TEMP/notes.md"
-          args=()
-          if [ "$PRERELEASE" = true ]; then args+=(--prerelease); fi
-          gh release create "v$VERSION" --verify-tag --title "LenBot $VERSION" \
-            --notes-file "$RUNNER_TEMP/notes.md" "${args[@]}" artifacts/*
+          for base in "$IMAGE" "$DOCKERHUB"; do
+            for suffix in '' '-worker' '-updater'; do
+              docker buildx imagetools create -t "$base$suffix:latest" "$base$suffix:$VERSION"
+            done
+          done

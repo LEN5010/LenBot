@@ -6,6 +6,10 @@
 
 LenBot is a chat agent that lives in your group chats. It connects to QQ through OneBot v11, is written in Python with asyncio and SQLite, and ships with a web control panel.
 
+Installation and usage guides are on the **[documentation site (zh)](https://lendevs.github.io/LenBot/)**.
+
+<img src="website/public/screenshots/home.png" alt="Panel home" width="860">
+
 ## How it is designed
 
 LenBot is organized around the chat scene. Every group (or private chat) has one long-lived agent session:
@@ -29,15 +33,22 @@ Event routing is still there. Exact commands and keyword rules are handled direc
 | Learning | Learns phrasing, slang and stickers from the group and watches how people react to replies; everything can be adopted, edited or disabled in the panel |
 | Management | The panel manages models, budgets, permissions, reminders and logs; owners can also change settings by asking in chat |
 
+Group summaries and the GSUID Core bridge are [standalone plugins (zh)](developer/plugin-examples.md), installed and updated separately.
+
 ## Ways to run it
 
-All three run the same program. On first start without a configuration, `len-bot` opens a web setup wizard: connect OneBot, read the bot account, enter the owner and a model, then continue to the panel.
+All three run the same program. On first start without a configuration it prints a link to a web setup wizard: connect OneBot, read the bot account, enter the owner and a model, then continue to the panel.
 
 | Option | Good for | Notes |
 |---|---|---|
-| Release package | Day-to-day use on Linux or macOS | Only needs [uv](https://docs.astral.sh/uv/); includes service control and offline upgrades, see [package](deploy/package/README.md) |
-| Docker | Servers, NAS, Windows via WSL2 | Instance data lives in named volumes, see [Docker](deploy/current/docker.md) |
+| Release package | Day-to-day use on Linux, macOS or Windows | Only needs [uv](https://docs.astral.sh/uv/); includes service control; upgrade from the panel and restore if it fails, see [package (zh)](https://lendevs.github.io/LenBot/guide/install-package) |
+| Docker | Servers, NAS, or Windows when background tasks are needed | Instance data lives in named volumes; upgrades also run from the panel, see [Docker (zh)](https://lendevs.github.io/LenBot/guide/install-docker) |
 | Source | Development, tracking the main branch | Start directly from the checkout with `uv`, see below and [CONTRIBUTING](CONTRIBUTING.en.md) |
+
+Downloads:
+
+- Packages: [GitHub Releases](https://github.com/lendevs/LenBot/releases), `lenbot-<version>-linux.tar.gz`, `-macos.tar.gz`, `-windows.zip`.
+- Images: `ghcr.io/lendevs/lenbot`, `lenbot-updater`, `lenbot-worker`, mirrored as `docker.io/lendevs/...` on Docker Hub, for amd64 and arm64.
 
 Running from source needs uv and Node.js 22 (to build the panel):
 
@@ -60,6 +71,7 @@ Most documentation is in Chinese. English versions exist for this README, [CONTR
 
 | Task | Where |
 |---|---|
+| Install, first setup, daily use | [Documentation site (zh)](https://lendevs.github.io/LenBot/) |
 | Choose a deployment, optional services | [Deployment](deploy/README.en.md) |
 | Daily use, personas, plugins, tasks | [Operations (zh)](deploy/current/operations.md) |
 | Internal structure | [Architecture (zh)](developer/architecture.md) |
@@ -69,7 +81,7 @@ Most documentation is in Chinese. English versions exist for this README, [CONTR
 
 ## Status
 
-LenBot has no stable release yet. OneBot (QQ) is the only platform adapter, prompts and the panel are Chinese only, and there is no TTS. Known issues and what was verified are listed in each release's notes.
+The first public version is 0.2.0. Changes, compatibility requirements and known issues of each version are in [changelogs](changelogs/). OneBot (QQ) is the only platform adapter, prompts and the panel are Chinese only, and there is no text-to-speech.
 
 ## License
 

@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 from ...config import HostConfig
 from ...runtime.lifecycle import HostLifecycle
 from ...configuration.editing import _read_saved, restart_summary
+from importlib.metadata import version
 from .trials import HostTrials
 from ...runtime.network import NetworkRuntime
 from ...work.store import TaskStore
@@ -23,7 +24,8 @@ def register_host_restart(app: FastAPI, *, root: Path, running: HostConfig,
     async def ready(response: Response):
         # Login sessions expire with a process, so reconnect only needs public process identity.
         response.headers['Cache-Control'] = 'no-store'
-        return lifecycle.process()
+        return {**lifecycle.process(), 'version': version('len-bot'), 'status': runtime.status,
+                'ready': runtime.status not in ('starting', 'failed'), 'error': runtime.last_runtime_error}
 
     def preview() -> dict:
         saved = _read_saved(root)

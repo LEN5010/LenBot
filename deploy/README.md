@@ -2,15 +2,15 @@
 
 [English](README.en.md)
 
-LenBot 有三种运行方式，跑的是同一个程序，读的也是同一种实例目录：
+LenBot 有三种运行方式，跑的是同一个程序，读的也是同一种实例目录。面向新用户的完整步骤见[文档站](https://lendevs.github.io/LenBot/)。
 
 | 方式 | 适合 | 需要 | 说明 |
 |---|---|---|---|
-| 部署包 | Linux／macOS 日常使用 | uv | [部署包](package/README.md) |
-| Docker | 服务器、NAS、Windows（WSL2） | Docker | [Docker 部署](current/docker.md) |
+| 部署包 | Linux、macOS、Windows 日常使用 | uv | [部署包](package/README.md) |
+| Docker | 服务器、NAS，或需要后台任务的 Windows | Docker | [Docker 部署](current/docker.md) |
 | 源码 | 开发、跟着主线走 | uv、Node.js 22 | 下文 |
 
-不管用哪种方式，第一次启动 `len-bot` 都会打开本机网页向导：
+不管用哪种方式，第一次启动都会打印一个本机网页向导的链接：
 
 1. 连接 OneBot，从平台读出 Bot 自己的账号；
 2. 填主人的 QQ；
@@ -41,7 +41,7 @@ cd LenBot
 uv run --no-sync len-bot
 ```
 
-仓库根目录就是实例目录。更新代码：
+仓库根目录就是实例目录。部署包和 Docker 自带更新器，在面板里升级，失败可以恢复，见文档站的[更新与恢复](https://lendevs.github.io/LenBot/guide/update)；源码运行没有更新器，自己更新代码：
 
 ```sh
 # 先停掉 Bot（Ctrl-C）

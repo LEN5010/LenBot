@@ -37,8 +37,11 @@ class ChatExpression:
 
     def __init__(self, config: LabConfig, persona: Persona, store: Store, *, context: ChatContext,
                  send_message: MessageSender | None, notify: Callable[[], None],
-                 on_reply_sample: Callable[[], None] | None, now: Callable[[], float]):
+                 on_reply_sample: Callable[[], None] | None, now: Callable[[], float],
+                 exclude_from_memory: Callable[[int], None] | None = None):
         self.config, self.persona, self.store = config, persona, store
+        # Plugin output (pushes, cards, summaries) is not something that happened in the group.
+        self.exclude_from_memory = exclude_from_memory
         self.context = context
         self.send_message = send_message
         self.notify, self.on_reply_sample, self.now = notify, on_reply_sample, now
@@ -216,6 +219,8 @@ class ChatExpression:
                     image = prepared[index].image
                     seq = self.store.start_outgoing(part, persona_id=self.persona.id, image=(None if image is None else
                                                     (image, prepared[index].description)))
+                    if self.exclude_from_memory is not None:
+                        self.exclude_from_memory(seq)
                     self.notify()
                     if self.send_message is None:
                         continue

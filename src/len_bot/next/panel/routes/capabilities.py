@@ -97,7 +97,8 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
             function = tool["function"]
             name = function["name"]
             tools.append({
-                "name": name, "description": function["description"],
+                "name": name, "description": function["description"], "summary": function["description"],
+                "parameters": function["parameters"], "instructions": None,
                 "allowed": chat.persona.tools == "all" or name in chat.persona.tools,
                 "registered": name in chat.toolset.allowed_tool_names,
                 "discovered": name in chat.toolset.discovered_tools,
@@ -105,15 +106,22 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                 "reasons": tool_unavailable_reasons(chat.config, chat.persona, name,
                                                     host_management=chat.toolset.host_management is not None),
             })
-        for tool in (([] if runtime.plugins is None else runtime.plugins.tools_for(scene))
-                     + ([] if runtime.mcp is None else runtime.mcp.tools_for(scene))):
-            allowed = chat.persona.tools == "all" or tool.name in chat.persona.tools
-            tools.append({
-                "name": tool.name, "description": tool.description, "source": tool.source,
-                "allowed": allowed, "registered": tool.name in chat.toolset.allowed_tool_names,
-                "discovered": tool.name in chat.toolset.discovered_tools, "deferred": True,
-                "reasons": [] if allowed else ["角色没有允许这个工具"],
-            })
+        plugin_tools = [] if runtime.plugins is None else runtime.plugins.tool_previews(scene)
+        mcp_tools = [] if runtime.mcp is None else [
+            {**tool.discovery, "summary": tool.discovery["description"], "description": tool.description,
+             "parameters": tool.definition["function"]["parameters"], "instructions": tool.instructions, "reasons": []}
+            for tool in runtime.mcp.tools_for(scene)]
+        for preview in plugin_tools + mcp_tools:
+            name = preview["name"]
+            allowed = chat.persona.tools == "all" or name in chat.persona.tools
+            reasons = list(preview["reasons"])
+            if not allowed:
+                reasons.append("角色没有允许这个工具")
+            if "tool_search" not in chat.toolset.allowed_tool_names:
+                reasons.append("角色没有允许 tool_search，无法发现插件工具")
+            tools.append({**preview, "allowed": allowed,
+                "registered": name in chat.toolset.allowed_tool_names,
+                "discovered": name in chat.toolset.discovered_tools, "deferred": True, "reasons": reasons})
         return {
             "scene": scene,
             "scenes": [{"scene": key, "persona": {"id": value.persona.id, "name": value.persona.name}}

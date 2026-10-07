@@ -18,8 +18,8 @@ def main() -> None:
     parser.add_argument('output', type=Path)
     parser.add_argument('--platform', required=True, choices=('linux-amd64', 'linux-arm64', 'macos-amd64', 'macos-arm64'))
     args = parser.parse_args()
-    version = tomllib.loads((PROJECT / 'pyproject.toml').read_text())['project']['version']
-    component = json.loads((PROJECT / 'deploy/components.json').read_text())['browserskill']
+    version = tomllib.loads((PROJECT / 'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
+    component = json.loads((PROJECT / 'deploy/components.json').read_text(encoding='utf-8'))['browserskill']
     target = component['targets'][args.platform]
     name = f'browserskill-{version}-{args.platform}'
     args.output.mkdir(parents=True, exist_ok=True)

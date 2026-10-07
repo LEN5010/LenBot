@@ -1,0 +1,43 @@
+# 从源码运行
+
+适合开发，或者想跟着主线走。需要 [uv](https://docs.astral.sh/uv/) 和 Node.js 22（用来构建面板）。
+
+```sh
+git clone https://github.com/lendevs/LenBot.git
+cd LenBot
+./scripts/install.sh      # 安装依赖并构建面板，不启动
+uv run --no-sync len-bot  # 第一次会打印首次配置的链接
+```
+
+源码目录本身就是实例目录：配置、数据库、角色和运行数据都在仓库根目录，已经写进 `.gitignore`。
+
+macOS 上可以双击 `deploy/current/start.command` 启动。
+
+## 更新
+
+面板不会改动开发目录，源码运行时要自己更新：
+
+```sh
+# 先 Ctrl-C 停掉
+git pull
+./scripts/install.sh
+uv run --no-sync python -m len_bot.next.maintenance.migrate_config
+uv run --no-sync python -m len_bot.next.maintenance.migrate
+uv run --no-sync python -m len_bot.next.maintenance.migrate_memory_jobs
+uv run --no-sync python -m len_bot.next.maintenance.migrate_local_memory
+uv run --no-sync python -m len_bot.next.maintenance.plugin_dependencies
+uv run --no-sync len-bot
+```
+
+五条维护命令依次升级根配置、业务数据库、记忆处理库、本地记忆索引，最后恢复插件依赖。已经是最新格式的什么也不做。升级前先[备份](./backup)。
+
+## 作为系统服务
+
+Linux 上可以用仓库里的 [systemd 模板](https://github.com/lendevs/LenBot/blob/master/deploy/current/lenbot.service)，按实际情况改用户、工作目录和可写路径：
+
+```sh
+sudo install -m 0644 deploy/current/lenbot.service /etc/systemd/system/lenbot.service
+sudo systemctl daemon-reload
+sudo systemctl start lenbot
+sudo journalctl -u lenbot -n 100 --no-pager
+```

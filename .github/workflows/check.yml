@@ -1,0 +1,16 @@
+name: Runtime checks
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: '0.12.13'
+      - run: uv sync --locked
+      - run: uv run --no-sync python -m compileall -q src/len_bot scripts deploy/updater deploy/package
+      - run: uv run --no-sync pytest -q

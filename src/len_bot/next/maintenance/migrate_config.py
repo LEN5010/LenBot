@@ -15,6 +15,7 @@ import sys
 import tempfile
 
 from ..instance_lock import instance_lock
+from ..config import CONFIG_VERSION
 
 
 def _without_prices(source: dict, path: Path) -> dict:
@@ -45,10 +46,15 @@ def _without_prices(source: dict, path: Path) -> dict:
 def migrate_config(path: Path) -> bool:
     """Rewrite one configuration file atomically; keep the original beside it. Returns whether it changed."""
     source = json.loads(path.read_text(encoding="utf-8"))
+    format_version = source.get('config_version', 0)
+    if format_version not in (0, CONFIG_VERSION):
+        raise ValueError(f'{path}: unsupported configuration format {format_version}; target={CONFIG_VERSION}')
     upgraded = _without_prices(source, path)
+    tokens_changed = upgraded != source
+    upgraded['config_version'] = CONFIG_VERSION
     if upgraded == source:
         return False
-    backup = path.with_name(path.name + ".pre-tokens.bak")
+    backup = path.with_name(path.name + ('.pre-tokens.bak' if tokens_changed else '.pre-config-v0.bak'))
     with backup.open("x", encoding="utf-8") as copy:
         copy.write(path.read_text(encoding="utf-8"))
     handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")

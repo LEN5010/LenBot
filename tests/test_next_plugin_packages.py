@@ -12,12 +12,13 @@ from len_bot.next.plugins.manifest import read_manifest
 
 
 COUNTER = Path(__file__).parents[1] / 'developer' / 'examples' / 'counter'
+COUNTER_VERSION = read_manifest(COUNTER).version
 
 
 def package(*, prefix='', changed_manifest=None, member=None):
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, 'w') as archive:
-        for name in ('plugin.toml', '__init__.py', 'README.md'):
+        for name in ('plugin.toml', '__init__.py', 'README.md', 'prompts/tools.md'):
             data = (COUNTER / name).read_bytes()
             if name == 'plugin.toml' and changed_manifest is not None:
                 data = changed_manifest.encode()
@@ -34,9 +35,9 @@ async def test_zip_root_layout_and_source_identity(tmp_path, prefix):
     manifest, record, output = await installer.prepare_zip(package(prefix=prefix), 'counter-v1.zip', [])
     assert manifest.name == record.name == 'counter'
     assert record.installed is None and record.candidate.kind == 'zip'
-    assert record.candidate.version == '1.0.0' and len(record.candidate.revision) == 64
+    assert record.candidate.version == COUNTER_VERSION and len(record.candidate.revision) == 64
     assert record.application == 'plugin' and record.requested is False and output == ''
-    assert read_manifest(installer.candidates / 'counter').version == '1.0.0'
+    assert read_manifest(installer.candidates / 'counter').version == COUNTER_VERSION
     assert not (installer.directory / 'counter').exists()
 
 
@@ -63,11 +64,11 @@ async def test_zip_rejects_symlink_and_invalid_archive(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(('original', 'replacement', 'reason'), [
-    ('requires_lenbot = ">=0.1,<1"', 'requires_lenbot = ">=99"', 'requires host'),
+    ('requires_lenbot = ">=0.2,<1"', 'requires_lenbot = ">=99"', 'requires host'),
     ('requires_python = ">=3.13"', 'requires_python = "<3"', 'requires Python'),
     ('platforms = ["linux", "darwin", "win32"]', 'platforms = []', 'platforms'),
-    ('version = "1.0.0"', 'version = "latest"', 'Invalid version'),
-    ('requires_lenbot = ">=0.1,<1"', 'requires_lenbot = ""', 'Version range must be explicit'),
+    (f'version = "{COUNTER_VERSION}"', 'version = "latest"', 'Invalid version'),
+    ('requires_lenbot = ">=0.2,<1"', 'requires_lenbot = ""', 'Version range must be explicit'),
     ('interface = 1', 'interface = 0', '接口版本'),
 ])
 async def test_zip_compatibility_rejects_before_installation(tmp_path, original, replacement, reason):

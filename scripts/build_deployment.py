@@ -15,14 +15,14 @@ def build_deployments(wheel: Path, project: Path, output: Path, requirements: Pa
         metadata = BytesParser().parsebytes(archive.read(metadata_path))
         version = metadata['Version']
     results = []
-    for platform in ('linux', 'macos'):
+    for platform in ('linux', 'macos', 'windows'):
         name = f'lenbot-{version}-{platform}'
         with tempfile.TemporaryDirectory() as temporary:
             bundle = Path(temporary) / name
             shutil.copytree(project / 'deploy/package', bundle, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-            guide = (bundle / 'README.md').read_text()
+            guide = (bundle / 'README.md').read_text(encoding='utf-8')
             (bundle / 'README.md').write_text(guide.replace('](../current/', '](deploy/current/').replace(
-                '](../current)', '](deploy/current)'))
+                '](../current)', '](deploy/current)'), encoding='utf-8')
             shutil.copy2(wheel, bundle / wheel.name)
             shutil.copy2(requirements, bundle / 'requirements.txt')
             shutil.copytree(project / 'deploy', bundle / 'deploy', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
@@ -33,8 +33,7 @@ def build_deployments(wheel: Path, project: Path, output: Path, requirements: Pa
             for resource in ('CONTRIBUTING.md', 'CONTRIBUTING.en.md', 'AGENTS.md', 'SECURITY.md'):
                 shutil.copy2(project / resource, bundle / resource)
             # Keep the published guides' relative links without bundling the whole source tree.
-            for pattern in ('src/len_bot/next/builtin_plugins/*/README.md',
-                            'src/len_bot/next/plugins/plugin_catalog.json', 'src/len_bot/prompts/*.md'):
+            for pattern in ('src/len_bot/next/plugins/plugin_catalog.json', 'src/len_bot/prompts/*.md'):
                 for source in project.glob(pattern):
                     target = bundle / source.relative_to(project)
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -44,9 +43,19 @@ def build_deployments(wheel: Path, project: Path, output: Path, requirements: Pa
             (bundle / 'release.json').write_text(json.dumps({
                 'version': version, 'platform': platform, 'wheel': wheel.name,
                 'python': '3.13', 'dependencies': 'requirements.txt exported from the release uv.lock; uv downloads Python and selected dependencies',
-            }, ensure_ascii=False, indent=2) + '\n')
-            destination = output / (name + '.tar.gz')
-            with tarfile.open(destination, 'x:gz') as archive:
-                archive.add(bundle, arcname=name)
+            }, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+            recipe = bundle / 'deploy/current/host.compose.yaml'
+            recipe.write_text(recipe.read_text(encoding='utf-8').replace('lenbot-current:local', f'ghcr.io/lendevs/lenbot:{version}')
+                              .replace('lenbot-python-r1', f'lenbot-python-{version}'))
+            if platform == 'windows':
+                destination = output / (name + '.zip')
+                with zipfile.ZipFile(destination, 'x', compression=zipfile.ZIP_DEFLATED, strict_timestamps=False) as archive:
+                    for file in sorted(bundle.rglob('*')):
+                        if file.is_file():
+                            archive.write(file, file.relative_to(bundle.parent).as_posix())
+            else:
+                destination = output / (name + '.tar.gz')
+                with tarfile.open(destination, 'x:gz') as archive:
+                    archive.add(bundle, arcname=name)
             results.append(destination)
     return results

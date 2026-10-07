@@ -135,14 +135,14 @@ async def test_updates_preserve_unrelated_configuration_and_pending_panel_change
 @pytest.mark.asyncio
 async def test_described_settings_are_valid_schemas_and_plugin_secrets_are_preserved(tmp_path):
     source = instance(tmp_path)
-    plugin = tmp_path / 'plugins' / 'clock_fixture'
-    original = Path(__file__).parents[1] / 'src/len_bot/next/builtin_plugins/clock'
+    plugin = tmp_path / 'plugins' / 'sample_fixture'
+    original = Path(__file__).parents[1] / 'tests/fixtures/plugins/sample'
     shutil.copytree(original, plugin, ignore=shutil.ignore_patterns('__pycache__'))
-    manifest = (plugin / 'plugin.toml').read_text().replace('name = "clock"', 'name = "clock_fixture"')
+    manifest = (plugin / 'plugin.toml').read_text().replace('name = "sample"', 'name = "sample_fixture"')
     manifest += '\n[config.token]\ntype = "secret"\ndescription = "服务凭据"\n'
     (plugin / 'plugin.toml').write_text(manifest)
-    source['plugins'] = {'paths': ['plugins'], 'disabled': ['clock_fixture'],
-                         'clock_fixture': {'show_seconds': True, 'token': 'plugin-secret-marker'}}
+    source['plugins'] = {'paths': ['plugins'], 'disabled': ['sample_fixture'],
+                         'sample_fixture': {'show_details': True, 'token': 'plugin-secret-marker'}}
     (tmp_path / 'lenbot.config.json').write_text(json.dumps(source, ensure_ascii=False))
     async with running(tmp_path) as runtime:
         manager = runtime.management
@@ -151,24 +151,24 @@ async def test_described_settings_are_valid_schemas_and_plugin_secrets_are_prese
             described = await manager.execute('onebot:group:80001', arguments('describe', section=section))
             Draft202012Validator.check_schema(described['schema'])
             assert 'model-secret-marker' not in json.dumps(described)
-        described = await manager.execute('onebot:group:80001', arguments('describe', section='plugin', plugin='clock_fixture'))
+        described = await manager.execute('onebot:group:80001', arguments('describe', section='plugin', plugin='sample_fixture'))
         Draft202012Validator.check_schema(described['schema'])
         assert 'plugin-secret-marker' not in json.dumps(described)
-        saved = await manager.execute('onebot:group:80001', arguments('update', section='plugin', plugin='clock_fixture',
-                                                             changes={'config': {'show_seconds': False}}))
+        saved = await manager.execute('onebot:group:80001', arguments('update', section='plugin', plugin='sample_fixture',
+                                                             changes={'config': {'show_details': False}}))
         assert saved['applied'] is True
-        assert saved['saved']['config'] == {'show_seconds': False}
+        assert saved['saved']['config'] == {'show_details': False}
         assert saved['saved']['enabled'] is False
         assert 'plugin-secret-marker' not in json.dumps(saved)
         raw = json.loads((tmp_path / 'lenbot.config.json').read_text())
-        assert raw['plugins']['clock_fixture']['token'] == 'plugin-secret-marker'
+        assert raw['plugins']['sample_fixture']['token'] == 'plugin-secret-marker'
         selected = await manager.execute('onebot:group:80001', arguments('update', section='scene_plugins',
-                                                                 changes={'plugins': ['clock_fixture']}))
+                                                                 changes={'plugins': ['sample_fixture']}))
         assert selected['applied'] is True and selected['restart_required'] is False
-        assert runtime.config.scenes['onebot:group:80001'].plugins == ['clock_fixture']
+        assert runtime.config.scenes['onebot:group:80001'].plugins == ['sample_fixture']
         before = (tmp_path / 'lenbot.config.json').read_bytes()
         with pytest.raises(ValueError, match='非秘密'):
-            await manager.execute('onebot:group:80001', arguments('update', section='plugin', plugin='clock_fixture',
+            await manager.execute('onebot:group:80001', arguments('update', section='plugin', plugin='sample_fixture',
                 changes={'config': {'token': 'replacement'}}))
         assert (tmp_path / 'lenbot.config.json').read_bytes() == before
 

@@ -2,15 +2,15 @@
 
 [中文](README.md)
 
-LenBot runs in three ways. All of them run the same program against the same kind of instance directory:
+LenBot runs in three ways. All of them run the same program against the same kind of instance directory. Step-by-step guides for new users are on the [documentation site (zh)](https://lendevs.github.io/LenBot/).
 
 | Option | Good for | Needs | Guide |
 |---|---|---|---|
-| Release package | Day-to-day use on Linux or macOS | uv | [Package (zh)](package/README.md) |
-| Docker | Servers, NAS, Windows via WSL2 | Docker | [Docker (zh)](current/docker.md) |
+| Release package | Day-to-day use on Linux, macOS or Windows | uv | [Package (zh)](package/README.md) |
+| Docker | Servers, NAS, or Windows when background tasks are needed | Docker | [Docker (zh)](current/docker.md) |
 | Source | Development, tracking the main branch | uv, Node.js 22 | below |
 
-Whichever you choose, the first start of `len-bot` opens a local web wizard:
+Whichever you choose, the first start prints a link to a local web wizard:
 
 1. Connect OneBot and read the bot's own account from the platform.
 2. Enter the owner's QQ number.
@@ -41,7 +41,7 @@ cd LenBot
 uv run --no-sync len-bot
 ```
 
-The checkout is the instance directory. To update:
+The checkout is the instance directory. Package and Docker installs include an updater: upgrade from the panel and restore from it if something fails, see [update and restore (zh)](https://lendevs.github.io/LenBot/guide/update). A source checkout has no updater; update it yourself:
 
 ```sh
 # stop the bot first (Ctrl-C)

@@ -82,9 +82,9 @@
 - 插件和 LenBot 共用一个 Python 环境，依赖冲突会显示原始错误，不会自动放宽版本。
 - 停用会保留参数和选群；卸载删除源码和配置，保留插件数据，删除数据是另一个操作。
 - 插件都在 LenBot 目录下的 `plugins/`：安装的插件、候选版本和插件数据（`plugins/.data/`）都在这里。也可以把插件目录直接复制进去，这类插件不由安装器管理。
-- 内置插件跟着 LenBot 升级。
+- 业务插件独立安装和更新，不跟着 LenBot 升级。群总结和 GSUID 桥接见[独立插件](../../developer/plugin-examples.md)。旧实例删除 `clock`、`rss_broadcast` 的根配置和选群引用；`group_digest`、`gscore_adapter` 保留原参数与数据，更新宿主后安装同名独立插件。
 
-重建 Python 环境以后（比如升级部署包或换了 Docker 镜像），停机执行一次：
+部署包和 Docker 的升级会自动恢复插件依赖。源码运行重建了 Python 环境以后，停机执行一次：
 
 ```sh
 python -m len_bot.next.maintenance.plugin_dependencies
@@ -111,7 +111,7 @@ Clash、Surge 等代理软件开启 fake-ip（假 IP）或增强模式时，本�
 - **产物**：生成文件、登记为交付、发到 QQ 是三件事，各自有记录。在任务详情里可以预览、下载、登记和发送。
 - **清理**：资源页可以对任务做两种清理。清理临时文件会保留会话、输入和产物；释放环境会删除整个工作区，之后不能续接，已登记的交付和共享资料保留。任务还在运行、或还占着容器和浏览器会话时不能清理。
 - **渲染**：任务镜像带 `lenbot-render`，能把 HTML 渲染成 PDF、截图和打印预览，例如 `lenbot-render out/document.html --pdf out/document.pdf --screenshot out/page.png`。
-- **镜像**：升级任务镜像要重新构建，并在停机后把配置改到新标签。
+- **镜像**：用官方任务镜像 `lenbot-worker` 时，部署包和 Docker 的面板升级会一起换成同版本；自己构建的镜像要自己重建，并在停机后把 `worker.image` 改到新标签。
 
 ## 记忆维护
 
@@ -129,7 +129,9 @@ python -m len_bot.next.maintenance.memory_reindex
 
 ## 升级与备份
 
-升级前：
+部署包和 Docker 安装在面板 → 设置 → 版本与更新里升级：更新器停机、做完整快照、执行下面第 4 步的迁移、切换版本并启动，失败时可以在更新页恢复快照，见文档站的[更新与恢复](https://lendevs.github.io/LenBot/guide/update)。部署包也可以离线执行 `install.sh upgrade`，见[部署包](../package/README.md#升级)。
+
+源码运行手动升级，升级前：
 
 1. 停掉 Bot、试聊和其他会写数据的程序。
 2. 备份实例目录，以及配置里指向实例外的任务和交付目录。SQLite 的 `-wal` 文件也是数据，要一起备份。
@@ -148,7 +150,6 @@ python -m len_bot.next.maintenance.memory_reindex
 
 启动时不会自动升级数据；数据格式不对会直接报错。所有命令和运行共用实例锁 `.lenbot-instance.lock`，有别的命令占着就会拒绝执行。不要手动删除锁文件。
 
-部署包的 `install.sh upgrade` 和 Docker 的升级步骤会替你执行第 4 步，见[部署包](../package/README.md#升级)和 [Docker](docker.md#停机升级)。
 
 面板登录按来源 IP 统计尝试次数，15 分钟内失败或正在校验的尝试达到 5 次后拒绝继续校验；更换用户名不会重置次数，成功登录清除该 IP 的计数。
 

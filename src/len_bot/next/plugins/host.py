@@ -19,7 +19,7 @@ import time
 from typing import TYPE_CHECKING, Literal, get_type_hints
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError, create_model
 
 from ..config import HostConfig
 from ..tools.external_tools import ExternalTool
@@ -31,8 +31,10 @@ from ..models.client import ChatModel, ModelReply
 from ..models.request import request_model
 from ..chat.schedule_time import Cron, next_cron, parse_cron
 from ..tools.skills import Skill, load_plugin_skills
-from .manifest import BUILTIN, Manifest, discover, read_manifest, redact_values
+from .manifest import Manifest, discover, read_manifest, redact_values
 from ..storage.store import encode
+from ..image_assets import MAX_IMAGE_BYTES, inspect_image
+from ..tools.http_read import fetch_public
 from .store import PluginStore
 
 if TYPE_CHECKING:
@@ -43,6 +45,7 @@ logger = logging.getLogger(__name__)
 PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
 STRICT = ConfigDict(extra="forbid", strict=True)
 ERROR_LIMIT = 20
+JSON_RESULT = TypeAdapter(JsonValue, config=ConfigDict(strict=True, allow_inf_nan=False))
 
 
 @dataclass
@@ -66,6 +69,15 @@ class CronJob:
     last_error: str | None = None
 
 
+@dataclass(frozen=True)
+class ToolEntry:
+    description: str
+    summary: str | None
+    model: type[BaseModel]
+    method: str
+    needs_source: bool
+
+
 @dataclass
 class Loaded:
     name: str
@@ -81,9 +93,10 @@ class Loaded:
     fullmatches: dict[str, tuple[str, str]] = field(default_factory=dict)
     patterns: list[Pattern] = field(default_factory=list)
     notices: dict[str, str] = field(default_factory=dict)                   # type -> method
-    tools: dict[str, tuple[str, type[BaseModel], str]] = field(default_factory=dict)
+    tools: dict[str, ToolEntry] = field(default_factory=dict)
     backgrounds: list[Background] = field(default_factory=list)
     crons: dict[tuple[str, str], CronJob] = field(default_factory=dict)
+    instructions: str | None = None
     skills: tuple[Skill, ...] = ()
     errors: deque = field(default_factory=lambda: deque(maxlen=ERROR_LIMIT))
     ready: asyncio.Event = field(default_factory=asyncio.Event)
@@ -106,7 +119,7 @@ class Matched:
     arguments: tuple = ()
 
 
-def _arguments(tool: str, function: Callable) -> type[BaseModel]:
+def _arguments(tool: str, function: Callable, *, needs_source: bool) -> type[BaseModel]:
     hints = get_type_hints(function, include_extras=True)
     fields = {}
     for parameter in list(inspect.signature(function).parameters.values())[2:]:
@@ -116,6 +129,11 @@ def _arguments(tool: str, function: Callable) -> type[BaseModel]:
             raise ValueError(f"工具 {tool} 的参数 {parameter.name} 缺少类型标注")
         default = ... if parameter.default is parameter.empty else parameter.default
         fields[parameter.name] = (hints[parameter.name], default)
+    if needs_source:
+        if "source_message_id" in fields:
+            raise ValueError(f"工具 {tool} 的 source_message_id 由宿主提供，不能声明在处理函数中")
+        fields["source_message_id"] = (str, Field(min_length=1,
+            description="发起这项请求的真实群消息 ID；从聊天记录选择，宿主据此读取实际发送者，不能填写账号 ID"))
     return create_model(f"PluginTool_{tool}", __config__=STRICT, **fields)
 
 
@@ -168,10 +186,15 @@ class PluginHost:
     def _load(self, record: Loaded, directories: list[Path], values: dict, data_dir: Path,
               core_tools: set[str]) -> None:
         if len(directories) != 1:
-            raise ValueError("未在内置目录和 plugins.paths 中找到" if not directories else
+            raise ValueError("未在 plugins.paths 中找到" if not directories else
                              "多个目录提供同名插件：" + "、".join(map(str, directories)))
         record.directory = directory = directories[0]
         record.manifest = manifest = read_manifest(directory)
+        if manifest.model is not None:
+            instructions = (directory / manifest.model.instructions).resolve()
+            if not instructions.is_relative_to(directory.resolve()):
+                raise ValueError("model.instructions 必须位于插件目录内")
+            record.instructions = instructions.read_text(encoding="utf-8").strip()
         record.skills = load_plugin_skills(directory / "skills", record.name)
         try:
             parsed = manifest.values_model(self.config.scenes).model_validate(values)
@@ -221,7 +244,8 @@ class PluginHost:
             elif mark[0] == "tool":
                 if mark[1] in core_tools or mark[1] in self.tool_owner or mark[1] in record.tools:
                     raise ValueError(f"工具名 {mark[1]} 与核心工具或其他插件工具重复")
-                record.tools[mark[1]] = (mark[2], _arguments(mark[1], getattr(cls, attribute)), attribute)
+                record.tools[mark[1]] = ToolEntry(mark[2], mark[3],
+                    _arguments(mark[1], getattr(cls, attribute), needs_source=mark[4]), attribute, mark[4])
             else:
                 record.backgrounds.append(Background(attribute, mark[1]))
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -305,6 +329,23 @@ class PluginHost:
     async def delete_kv(self, plugin: str, key: str) -> bool:
         return PluginKV(self._active(plugin).context.data_dir).delete(key)
 
+    async def fetch_image(self, plugin: str, url: str, timeout_seconds: float) -> bytes:
+        self._active(plugin)
+        async with asyncio.timeout(timeout_seconds):
+            _, _, data = await fetch_public(url, timeout_seconds, lambda _type, _prefix: MAX_IMAGE_BYTES,
+                                           fake_ip_networks=self.config.network.networks())
+        await asyncio.to_thread(inspect_image, data)
+        return data
+
+    def source_message(self, scene: str, platform_id: str) -> ChatMessage:
+        message = self.runtime.store.find_message(scene, platform_id)
+        if (message is None or message.is_self or message.recalled or message.send_status != "received"
+                or message.sender.uid in self.config.scene_config(scene).attention.other_bot_ids):
+            raise ValueError(f"source_message_id 不是当前场景的真实请求消息：{platform_id!r}")
+        if message.sender.uid in self.config.scene_config(scene).permissions.blacklist:
+            raise PermissionError(f"账号 {message.sender.uid} 在当前场景黑名单中")
+        return message
+
     async def send_text(self, plugin: str, scene: str, text: str, reply_to: str | None) -> Sent:
         return await self.send_parts(plugin, scene, [Text(text)], reply_to)
 
@@ -333,6 +374,16 @@ class PluginHost:
         if self.runtime is None:
             raise RuntimeError("插件宿主尚未接入运行中的场景")
         return self.runtime.store.recent(scene, limit)
+
+    def messages_between(self, plugin: str, scene: str, after: float, before: float,
+                         offset: int, limit: int) -> list[ChatMessage]:
+        self._active(plugin, scene)
+        if self.runtime is None:
+            raise RuntimeError("插件宿主尚未接入运行中的场景")
+        store = self.runtime.store
+        return [message for _, message in store.search_messages(
+            scene, query=None, who=None, after=after, before=before, snapshot=store.max_message_seq(scene),
+            offset=offset, limit=limit)]
 
     async def memory(self, plugin: str, scene: str, arguments: dict) -> str:
         self._active(plugin, scene)
@@ -443,26 +494,59 @@ class PluginHost:
 
     def tools_for(self, scene: str, *, preparing: bool = False) -> list[ExternalTool]:
         tools = []
+        if self.scene_paused(scene):
+            return tools
         for record in self.plugins.values():
             if (record.status != "running" and not (preparing and record.status == "loaded")) or scene not in record.scenes:
                 continue
-            for name, (description, model, method) in record.tools.items():
-                tools.append(ExternalTool(name=name, description=description,
-                                          parameters=model.model_json_schema(), source=f"插件 {record.name}",
-                                          call=self._tool_call(record, name, model, method)))
+            unavailable = record.instance.unavailable_tools(scene)
+            for name, entry in record.tools.items():
+                if name not in unavailable:
+                    tools.append(self._external_tool(record, name, entry))
         return tools
 
-    def _tool_call(self, record: Loaded, name: str, model: type[BaseModel], method: str
+    def _external_tool(self, record: Loaded, name: str, entry: ToolEntry) -> ExternalTool:
+        return ExternalTool(name=name, description=entry.description, summary=entry.summary,
+                            instructions=record.instructions, parameters=entry.model.model_json_schema(),
+                            source=f"插件 {record.name}", call=self._tool_call(record, name, entry))
+
+    def tool_previews(self, scene: str) -> list[dict]:
+        """All configured plugin tools, including reasons they cannot be discovered."""
+        previews = []
+        for record in self.plugins.values():
+            unavailable = {} if record.instance is None else record.instance.unavailable_tools(scene)
+            for name, entry in record.tools.items():
+                tool = self._external_tool(record, name, entry)
+                reasons = []
+                if record.status != "running":
+                    reasons.append(f"插件未运行：{record.status}")
+                if scene not in record.scenes:
+                    reasons.append("插件未在当前群启用")
+                if self.scene_paused(scene):
+                    reasons.append("当前群已关闭聊天")
+                if name in unavailable:
+                    reasons.append(unavailable[name])
+                previews.append({**tool.discovery, "summary": tool.discovery["description"],
+                    "description": tool.description, "parameters": tool.definition["function"]["parameters"],
+                    "instructions": tool.instructions, "scenes": list(record.scenes),
+                    "needs_source": entry.needs_source, "reasons": reasons})
+        return previews
+
+    def _tool_call(self, record: Loaded, name: str, entry: ToolEntry
                    ) -> Callable[[str, dict], Awaitable[str]]:
         async def call(scene: str, arguments: dict) -> str:
             try:
-                self._active(record.name, scene)
+                self._speaking(record.name, scene)
                 if record.status != "running":
                     raise RuntimeError(f"插件 {record.name} 未运行：{record.status}；{record.error or '尚未启动或已经停止'}")
-                parsed = model.model_validate(arguments)
-                task = asyncio.create_task(getattr(record.instance, method)(
-                    Invocation(record.context, scene), **{key: getattr(parsed, key) for key in model.model_fields}),
-                    name=f"{record.name}:tool:{name}")
+                unavailable = record.instance.unavailable_tools(scene)
+                if name in unavailable:
+                    raise ValueError(unavailable[name])
+                parsed = entry.model.model_validate(arguments)
+                values = {key: getattr(parsed, key) for key in entry.model.model_fields}
+                message = self.source_message(scene, values.pop("source_message_id")) if entry.needs_source else None
+                task = asyncio.create_task(getattr(record.instance, entry.method)(
+                    Invocation(record.context, scene, message), **values), name=f"{record.name}:tool:{name}")
                 self.tasks[task] = record.name
                 task.add_done_callback(lambda done: self.tasks.pop(done, None))
                 try:
@@ -472,7 +556,7 @@ class PluginHost:
                         raise
                     raise RuntimeError(f"插件 {record.name} 已停止或重载，本次工具调用中断") from None
                 if not isinstance(result, str):
-                    raise TypeError(f"插件工具必须返回文本，实际 {type(result).__name__}")
+                    result = encode(JSON_RESULT.validate_python(result))
             except Exception as error:
                 safe = self._record(record, f"工具 {name}", error)
                 if safe != f"{type(error).__name__}: {error}":
@@ -679,9 +763,8 @@ class PluginHost:
         try:
             directories = found.get(name, [])
             for directory in directories:
-                if directory.parent != BUILTIN:
-                    for cache in directory.rglob("__pycache__"):
-                        shutil.rmtree(cache)
+                for cache in directory.rglob("__pycache__"):
+                    shutil.rmtree(cache)
             self._load(record, directories, record.values, settings.data_directory / name, reserved)
             if self.started or (self.runtime is not None and self.runtime.accepting):
                 await self.start_plugin(record)
@@ -716,8 +799,11 @@ class PluginHost:
                               "description": item.description, "priority": item.priority}
                              for item in record.patterns]),
                 "notices": sorted(record.notices),
-                "tools": [{"name": name, "description": description}
-                          for name, (description, _, _) in record.tools.items()],
+                "tools": [{"name": name, "description": entry.description,
+                           "summary": entry.description if entry.summary is None else entry.summary,
+                           "parameters": entry.model.model_json_schema(), "needs_source": entry.needs_source}
+                          for name, entry in record.tools.items()],
+                "instructions": record.instructions,
                 "backgrounds": [{"method": item.method, "every_seconds": item.seconds,
                                  "last_started": item.last_started, "last_finished": item.last_finished,
                                  "last_error": item.last_error} for item in record.backgrounds],

@@ -25,7 +25,12 @@ async def install(root: Path) -> None:
         directories = found.get(name, [])
         if len(directories) != 1:
             raise ValueError(f'插件 {name} 需要唯一源码目录，实际为：{directories}')
-        manifests.append(read_manifest(directories[0]))
+        try:
+            manifests.append(read_manifest(directories[0]))
+        except ValueError as error:
+            if name not in config.plugins.disabled:
+                raise
+            print(f'停用插件 {name} 不兼容，保留源码和数据，不恢复依赖：{error}')
     requirements = list(dict.fromkeys(item for manifest in manifests for item in manifest.dependencies))
     print('已配置插件：' + ', '.join(item.name for item in manifests))
     if requirements:

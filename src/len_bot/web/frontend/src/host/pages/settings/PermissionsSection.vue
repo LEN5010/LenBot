@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { api, sceneName } from '../../../api.js'
+import { api } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { roleOptions } from '../../labels.js'
 import { clone, same } from '../../forms.js'
@@ -37,7 +37,7 @@ async function submit() {
 
 <template>
   <ResourceState :resource="permissions" error-title="读取权限失败">
-    <SettingSection v-if="draft" :title="`权限 · ${sceneName(scene)}`" description="本群名单和谁可以做什么只对这个群生效，在顶栏切换群。"
+    <SettingSection v-if="draft" title="权限" description="上半部分的名单所有群通用；本群名单和谁可以做什么只对这个群生效。"
       :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
       <p>主人：<strong>{{ permissions.data.value.owners.length ? permissions.data.value.owners.join('、') : '未设置' }}</strong>，在连接设置里修改。主人拥有全部权限。</p>
       <h3>所有群通用的名单</h3>
