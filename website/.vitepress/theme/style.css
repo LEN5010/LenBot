@@ -26,9 +26,18 @@
 .shots figure { margin: 0; }
 .shots img { width: 100%; border: 1px solid var(--vp-c-divider); border-radius: 12px; box-shadow: 0 8px 28px rgba(29, 27, 32, 0.08); }
 .shots figcaption { margin-top: 10px; color: var(--vp-c-text-2); font-size: 14px; }
-.stage { max-width: 1152px; margin: 48px auto 0; padding: 0 24px; }
-.stage .box { border: 1px solid var(--vp-c-divider); border-radius: 12px; padding: 20px 24px; background: var(--vp-c-bg-soft); }
-.stage h2 { margin: 0 0 8px; font-size: 20px; }
-.stage p { margin: 6px 0; color: var(--vp-c-text-2); line-height: 1.8; }
+.home-section { max-width: 1152px; margin: 48px auto 0; padding: 0 24px; }
+.home-section h2 { margin: 0 0 16px; font-size: 22px; font-weight: 600; border-top: none; padding-top: 0; }
+.home-section .box { border: 1px solid var(--vp-c-divider); border-radius: 12px; padding: 20px 24px; background: var(--vp-c-bg-soft); }
+.home-section .box h2 { font-size: 20px; margin-bottom: 8px; }
+.home-section .box p { margin: 6px 0; color: var(--vp-c-text-2); line-height: 1.8; }
+.home-section .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; counter-reset: step; }
+.home-section .steps li { margin: 0; counter-increment: step; position: relative; padding: 18px 20px 18px 64px; border-radius: 12px; background: var(--vp-c-bg-soft); }
+.steps li::before { content: counter(step); position: absolute; left: 20px; top: 18px; width: 28px; height: 28px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--vp-c-brand-soft); color: var(--vp-c-brand-1); font-weight: 600; font-size: 14px; }
+.steps strong { display: block; margin-bottom: 4px; color: var(--vp-c-text-1); }
+.steps span { color: var(--vp-c-text-2); font-size: 14px; line-height: 1.7; }
+@media (min-width: 960px) { .steps { grid-template-columns: repeat(4, 1fr); } }
+.VPHero .image-src { max-width: 240px; max-height: 240px; }
+@media (min-width: 960px) { .VPHero .image-src { max-width: 300px; max-height: 300px; } }
 @media (min-width: 960px) { .shots { grid-template-columns: 1fr 1fr; } .shots figure.wide { grid-column: 1 / -1; } }
-.stage h2 { border-top: none; padding-top: 0; }

@@ -5,7 +5,7 @@ const repo = 'https://github.com/lendevs/LenBot'
 export default defineConfig({
   lang: 'zh-CN',
   title: 'LenBot',
-  description: '住在 QQ 群里的聊天 Agent，自带网页管理面板',
+  description: '基于大模型的 QQ 群聊机器人，通过 OneBot v11 接入 QQ，用网页面板管理',
   base: '/LenBot/',
   cleanUrls: true,
   lastUpdated: true,

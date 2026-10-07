@@ -2,7 +2,7 @@
 
 [中文](CONTRIBUTING.md)
 
-If you only want to write a plugin, you can skip this page and start from the [plugin guide](developer/plugins-v1.en.md) or the [plugin template](https://github.com/lendevs/lenbot-plugin-template) instead.
+Plugin authors do not need this page; start from the [plugin guide](developer/plugins-v1.en.md) or the [plugin template](https://github.com/lendevs/lenbot-plugin-template).
 
 ## Local development
 
@@ -18,9 +18,9 @@ The repository root is your local instance: `lenbot.config.json`, the database, 
 
 After changing the frontend, run `npm run build` in `src/len_bot/web/frontend`. The output in `web/static/dist/` is not committed. `npm run dev` works for frontend work too.
 
-### Trying things on a copy
+### Testing on a copy
 
-To leave the data you use alone, stop the bot and make a test instance:
+To keep the data in use untouched, stop the bot and make a test instance:
 
 ```sh
 uv run --no-sync python -m len_bot.next.maintenance.test_copy . /tmp/lenbot-test --panel-port 8089
@@ -51,20 +51,22 @@ The runtime core is in `src/len_bot/next/`. The entry point is `len_bot.next.hos
 | `maintenance/` | Commands run while stopped: data upgrades, reindexing, plugin dependencies, storage pools, test copies |
 | `trials/` | Isolated trial chats in the panel |
 
-Elsewhere:
+Other directories:
 
-- `src/len_bot/plugin.py`, `plugin_testing.py`, `text_cards.py`, `image_assets.py`: public interfaces for plugins; plugins import only from these.
-- `src/len_bot/prompts/`: prompts.
-- `src/len_bot/builtin_skills/`: task skills.
-- `src/len_bot/web/frontend/`: the Vue panel.
-- `src/len_bot/eval/`: expression replay.
-- `tests/`: tests.
-- `docker/next-worker/`: the task image.
-- `deploy/`: deployment material; `deploy/updater/` is the updater shared by packages and Docker.
-- `website/`: documentation site (VitePress); preview with `cd website && npm ci && npm run dev`.
-- `changelogs/`: one release notes file per version.
-- `scripts/`: install and packaging scripts.
-- `examples/`: the example persona and public replay cases.
+| Path | Contents |
+|---|---|
+| `src/len_bot/plugin.py`, `plugin_testing.py`, `text_cards.py`, `image_assets.py` | Public interfaces for plugins; plugins import only from these |
+| `src/len_bot/prompts/` | Prompts |
+| `src/len_bot/builtin_skills/` | Task skills |
+| `src/len_bot/web/frontend/` | The Vue panel |
+| `src/len_bot/eval/` | Expression replay |
+| `tests/` | Tests |
+| `docker/next-worker/` | The task image |
+| `deploy/` | Deployment material. `deploy/updater/` is the updater shared by packages and Docker |
+| `website/` | Documentation site (VitePress); preview with `cd website && npm ci && npm run dev` |
+| `changelogs/` | One release notes file per version |
+| `scripts/` | Install and packaging scripts |
+| `examples/` | The example persona and public replay cases |
 
 Maintenance commands are run as `python -m len_bot.next.maintenance.<module>`. Import from concrete modules; `__init__.py` files do not re-export.
 
@@ -85,15 +87,33 @@ uv run --no-sync python -m compileall -q src/len_bot
 uv run --no-sync ruff check src/len_bot scripts deploy/updater deploy/package tests
 ```
 
-Tests cover only external protocol boundaries (parsing OneBot, Pi RPC, model and memory service responses), data migrations, permissions and configuration validation, using anonymized real samples. Do not mock call sequences, test private functions or snapshot prompts.
+Tests cover only the following. Test samples are anonymized real data.
+
+- External protocol boundaries: parsing of OneBot, Pi RPC, and model and memory service responses
+- Data migrations
+- Permissions
+- Configuration validation
+
+Do not mock call sequences, test private functions or snapshot prompts.
 
 When changing prompts or persona expression, compare replies before and after with the [expression replay](examples/replay/). When you find a bad reply, write the situation down as a replay case before changing prompts, rather than piling prohibitions into the prompt. General situations go in `examples/replay/`; cases taken from real group chats stay on your machine and are not committed.
 
 ## Data format
 
-The business database starts from public baseline v1. To change the schema, create the new structure directly in `storage/schema.py`, add an upgrade step from the previous version to `BUSINESS` in `maintenance/migrate.py`, and bump `FORMAT_VERSION` in `storage/store.py`. The memory job database, local memory index and root configuration work the same way; their numbers are listed in the [release guide (zh)](deploy/releasing.md#兼容编号). Upgrades run only from the maintenance command while stopped; the runtime has no old/new compatibility branches.
+The business database starts from public baseline v1. To change the schema:
 
-All three databases upgrade through `maintenance/migrations.py`: an integrity check before and after, one transaction per step that also sets `user_version`, and work outside the database (such as deleting files) returned by the step and run after it commits. A standalone migration command keeps one copy of the input format beside the file, `<file>.v<format>.bak`; `upgrade apply` already holds a full snapshot and skips it.
+1. Create the new structure directly in `storage/schema.py`.
+2. Add a step to `BUSINESS` in `maintenance/migrate.py` that upgrades the previous version.
+3. Bump `FORMAT_VERSION` in `storage/store.py`.
+
+The memory job database, local memory index and root configuration work the same way; their numbers are listed in the [release guide (zh)](deploy/releasing.md#兼容编号). Upgrades run only from the maintenance command while stopped; the runtime has no old/new compatibility branches.
+
+All three databases upgrade through `maintenance/migrations.py`:
+
+- An integrity check runs before and after the upgrade.
+- Each step runs in one transaction, which also sets `user_version`.
+- Work outside the database, such as deleting files, is returned by the step and runs after the step commits.
+- A standalone migration command keeps one copy of the input format beside the file, `<file>.v<format>.bak`. `upgrade apply` already holds a full snapshot and does not make this copy.
 
 JSON bodies stored in the databases decode strictly into dataclasses (`ChatMessage`, `Sender`, `Segment`, `Task`, `TaskFile`, `Schedule`, and the records inside model calls and memory jobs). Adding, removing or changing a field there changes the data format: bump the format number and rewrite existing bodies in the upgrade step.
 

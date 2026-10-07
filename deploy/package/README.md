@@ -1,14 +1,16 @@
 # LenBot 部署包
 
-这个包里有带面板的程序、安装脚本和更新器，不带 Python，也不带任何私人配置或角色。安装需要 [uv](https://docs.astral.sh/uv/getting-started/installation/) 和网络：uv 准备 Python 3.13，按包里锁定的 `requirements.txt` 安装依赖，不需要 Node.js。用 Git 安装插件时还需要系统里有 Git。
+这个包中有带面板的程序和安装脚本，以及更新器。包中不带 Python，也不包含任何私人配置或角色。
+
+安装时需要 [uv](https://docs.astral.sh/uv/getting-started/installation/) 和网络连接。uv 会准备 Python 3.13，并按包中锁定的 `requirements.txt` 安装依赖，不需要 Node.js。通过 Git 安装插件时，系统中还需要有 Git。
 
 完整说明见文档站的[部署包](https://lendevs.github.io/LenBot/guide/install-package)和[更新与恢复](https://lendevs.github.io/LenBot/guide/update)。
 
-Windows 原生运行支持聊天、面板、插件和记忆；后台任务需要 Docker 管理任务容器，要用的话请装 Docker 版或在 WSL2 里装 Linux 包。
+在 Windows 上直接运行时，聊天和面板可以使用，插件和记忆也可以使用。后台任务需要由 Docker 管理任务容器，需要后台任务时，请安装 Docker 版，或者在 WSL2 中安装 Linux 包。
 
 ## 安装
 
-目标是一个还不存在的新目录。在解压出的包目录里执行：
+安装目标必须是一个尚不存在的新目录。在解压出的包目录中执行下面的命令。
 
 ```sh
 # Linux／macOS
@@ -22,9 +24,11 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 install "$HOME\lenbot"
 & "$HOME\lenbot\run.cmd"
 ```
 
-第一次运行没有配置，会打印首次配置的链接：连接 OneBot 读取 Bot 账号、填写主人、测试聊天模型，保存后直接启动并进入面板。`run` 还会打印一行**更新与恢复**的链接，面板打不开或升级失败时从这里进恢复页。终端里按 Ctrl-C 停止。
+第一次运行时还没有配置，终端会打印首次配置的链接。在向导中连接 OneBot 并读取 Bot 账号，填写主人，再测试聊天模型。保存后 LenBot 直接启动，页面进入面板。
 
-安装目录：
+`run` 还会打印一行**更新与恢复**页的链接。面板无法打开或升级失败时，从这个链接进入恢复页。在终端中按 Ctrl-C 停止。
+
+安装目录的结构如下。
 
 ```text
 lenbot/
@@ -39,11 +43,11 @@ lenbot/
   logs/                macOS 服务输出、离线升级日志
 ```
 
-程序只读 `instance/lenbot.config.json`，不从环境变量或启动参数读业务配置。安装后不要搬动目录，程序环境和服务配置里记的是绝对路径。
+程序只读取 `instance/lenbot.config.json`，不从环境变量或启动参数读取业务配置。安装后请不要移动这个目录，因为程序环境和服务配置中记录的是绝对路径。
 
 ## 系统服务
 
-先在前台完成首次配置并停掉，再注册：
+先在前台完成首次配置并停止 LenBot，再注册服务。
 
 ```sh
 "$HOME/lenbot/service" install
@@ -56,26 +60,48 @@ lenbot/
 powershell -ExecutionPolicy Bypass -File "$HOME\lenbot\service.ps1" install   # 还有 start、stop、status、uninstall
 ```
 
-- **Linux**：当前用户的 systemd 服务 `lenbot.service`，日志用 `journalctl --user -u lenbot.service`。没有图形会话的服务器先执行 `loginctl enable-linger`，让用户服务在登出后继续运行。
-- **macOS**：当前用户的 launchd 服务 `local.lenbot`，服务自身的输出在 `logs/service.stdout.log` 和 `logs/service.stderr.log`，宿主运行日志在实例目录的 `logs/lenbot.jsonl`；也可以双击 `start.command`、`stop.command`、`restart.command`。
-- **Windows**：登录时启动的计划任务 `LenBot`，后台运行；`stop` 通知更新器先停 LenBot 再退出。
+### Linux
 
-服务不开机自启（Windows 是登录时启动）、崩溃后不自动拉起。停止时更新器会等正在进行的更新步骤结束，再停 LenBot。升级不需要重新注册服务。
+注册为当前用户的 systemd 服务 `lenbot.service`，日志用 `journalctl --user -u lenbot.service` 查看。在没有图形会话的服务器上，需要先执行 `loginctl enable-linger`，用户服务才会在登出后继续运行。
+
+### macOS
+
+注册为当前用户的 launchd 服务 `local.lenbot`。服务本身的输出写在 `logs/service.stdout.log` 和 `logs/service.stderr.log`，宿主的运行日志写在实例目录的 `logs/lenbot.jsonl`。也可以双击 `start.command` 启动，双击 `stop.command` 停止，双击 `restart.command` 重启。
+
+### Windows
+
+注册为登录时启动的计划任务 `LenBot`，在后台运行。执行 `stop` 时，会通知更新器先停止 LenBot，然后退出。
+
+### 注意事项
+
+服务不会开机自动启动（Windows 上是登录时启动），崩溃后也不会自动重新启动。停止服务时，更新器会等待正在进行的更新步骤结束，再停止 LenBot。升级后不需要重新注册服务。
 
 ## 升级
 
-推荐在面板 → 设置 → 版本与更新里升级：先准备（LenBot 照常运行），再确认停机升级；更新器会先做完整快照，失败时在更新页恢复。
+推荐在面板的设置 → 版本与更新中升级。先准备更新，这一步期间 LenBot 照常运行，然后确认停机升级。更新器会先制作完整快照，升级失败时可以在更新页恢复。
 
-也可以用新版部署包离线升级。先停掉 LenBot，在**新版本**的包目录里执行：
+也可以用新版本的部署包离线升级。先停止 LenBot，然后在**新版本**的包目录中执行下面的命令。
 
 ```sh
 ./install.sh upgrade "$HOME/lenbot"          # Windows：.\install.ps1 upgrade "$HOME\lenbot"
 ```
 
-离线升级和面板升级做同样的事：检查已启用插件的兼容性，给实例做快照，执行数据迁移，切换版本，同时换上新版更新器；完成后不启动，由你自己启动。快照在 `backups/`，之后可以在更新页恢复到升级前。上一次升级失败还没恢复时，离线升级会拒绝执行，先 `run` 打开更新页恢复。
+离线升级执行的步骤与面板升级相同。
 
-迁移只往新格式走，旧程序读不了迁移后的数据；要回到旧版本只能恢复升级前的快照，恢复后升级之后产生的聊天记录和修改会丢失。
+1. 检查已启用插件的兼容性。
+2. 为实例制作快照。
+3. 执行数据迁移。
+4. 切换版本，同时换上新版本的更新器。
+
+完成后不会自动启动，需要手动启动 LenBot。快照存放在 `backups/` 中，之后可以在更新页恢复到升级前。如果上一次升级失败后还没有恢复，离线升级会拒绝执行。请先执行 `run`，打开更新页完成恢复。
+
+迁移只能从旧格式升级到新格式，旧版本的程序无法读取迁移后的数据。要回到旧版本，只能恢复升级前的快照。恢复后，升级之后产生的聊天记录和修改都会丢失。
 
 ## 可选服务
 
-向量记忆、语音转写、后台任务和账号浏览都是可选的，普通聊天不需要。配置见文档站的[可选服务](https://lendevs.github.io/LenBot/guide/optional-services)。
+以下服务都是可选的，普通聊天不需要。配置方法见文档站的[可选服务](https://lendevs.github.io/LenBot/guide/optional-services)。
+
+- 向量记忆
+- 语音转写
+- 后台任务
+- 账号浏览
