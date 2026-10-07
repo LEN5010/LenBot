@@ -157,55 +157,49 @@ class JargonStore:
 
     def complete_discovery(self, id: int, proposals: list[tuple[str, int]],
                            exclude_uids: Sequence[str]) -> None:
-        """Count true message occurrences and advance this stream in one transaction."""
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
-            call = self.db.execute(
-                "SELECT scene,after_seq,through_seq FROM jargon_calls "
-                "WHERE id=? AND purpose='discovery' AND status='running'", (id,),
-            ).fetchone()
-            if call is None:
-                raise ValueError(f"No running jargon discovery call {id}")
-            scene, after, through = call
-            state = self.db.execute(
-                "SELECT start_seq,after_seq FROM jargon_state WHERE scene=?", (scene,),
-            ).fetchone()
-            if state is None or state["after_seq"] != after:
-                raise ValueError(f"Jargon discovery position changed for {scene}")
-            known = {row["term"]: row for row in self.db.execute(
-                "SELECT id,term,count,sample_seqs FROM jargon WHERE scene=?", (scene,),
-            )}
-            recent = list(self._scan(scene, after, through, exclude_uids))
-            now = self.store.now()
-            for term, row in known.items():
-                hits = [seq for seq, text in recent if term in text]
-                if hits:
-                    samples = (json.loads(row["sample_seqs"]) + hits)[-20:]
-                    self.db.execute(
-                        "UPDATE jargon SET count=?,sample_seqs=?,updated=? WHERE id=?",
-                        (row["count"] + len(hits), encode(samples), now, row["id"]),
-                    )
-            new = {term: {"count": 0, "samples": deque(maxlen=20)}
-                   for term, _ in proposals if term not in known}
-            for seq, text in self._scan(scene, state["start_seq"], through, exclude_uids) if new else ():
-                for term, values in new.items():
-                    if term in text:
-                        values["count"] += 1
-                        values["samples"].append(seq)
+        """Scan outside the writer transaction, then publish counts and the cursor together."""
+        call = self.db.execute(
+            "SELECT scene,after_seq,through_seq FROM jargon_calls "
+            "WHERE id=? AND purpose='discovery' AND status='running'", (id,),
+        ).fetchone()
+        if call is None:
+            raise ValueError(f"No running jargon discovery call {id}")
+        scene, after, through = call
+        state = self.db.execute('SELECT start_seq,after_seq FROM jargon_state WHERE scene=?', (scene,)).fetchone()
+        if state is None or state['after_seq'] != after:
+            raise ValueError(f"Jargon discovery position changed for {scene}")
+        known = {row['term']: row for row in self.db.execute(
+            'SELECT id,term,count,sample_seqs FROM jargon WHERE scene=?', (scene,))}
+        recent = list(self._scan(scene, after, through, exclude_uids))
+        hits = {term: [seq for seq, text in recent if term in text] for term in known}
+        new = {term: {'count': 0, 'samples': deque(maxlen=20)} for term, _ in proposals if term not in known}
+        for seq, text in self._scan(scene, state['start_seq'], through, exclude_uids) if new else ():
             for term, values in new.items():
-                self.db.execute(
-                    "INSERT INTO jargon(scene,term,count,sample_seqs,status,updated) "
-                    "VALUES (?,?,?,?,'pending',?)",
-                    (scene, term, values["count"], encode(list(values["samples"])), now),
-                )
-            changed = self.db.execute(
-                "UPDATE jargon_state SET after_seq=? WHERE scene=? AND after_seq=?",
-                (through, scene, after),
-            )
+                if term in text:
+                    values['count'] += 1
+                    values['samples'].append(seq)
+        now = self.store.now()
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            current = self.db.execute('SELECT start_seq,after_seq FROM jargon_state WHERE scene=?', (scene,)).fetchone()
+            if current is None or tuple(current) != tuple(state):
+                raise ValueError(f"Jargon discovery position changed for {scene}")
+            for term, row in known.items():
+                if hits[term]:
+                    samples = (json.loads(row['sample_seqs']) + hits[term])[-20:]
+                    self.db.execute('UPDATE jargon SET count=?,sample_seqs=?,updated=? WHERE id=?',
+                                    (row['count'] + len(hits[term]), encode(samples), now, row['id']))
+            for term, values in new.items():
+                self.db.execute("INSERT INTO jargon(scene,term,count,sample_seqs,status,updated) "
+                                "VALUES (?,?,?,?,'pending',?)", (scene, term, values['count'], encode(list(values['samples'])), now))
+            changed = self.db.execute('UPDATE jargon_state SET after_seq=? WHERE scene=? AND after_seq=?',
+                                      (through, scene, after))
             if changed.rowcount != 1:
                 raise ValueError(f"Jargon discovery position changed for {scene}")
-            self.db.execute("UPDATE jargon_calls SET status='complete',ended=? WHERE id=?",
-                            (now, id))
+            completed = self.db.execute("UPDATE jargon_calls SET status='complete',ended=? WHERE id=? AND status='running'",
+                                       (now, id))
+            if completed.rowcount != 1:
+                raise ValueError(f"No running jargon discovery call {id}")
 
     def complete_meaning(self, id: int, meaning: str, confidence: float) -> None:
         with self.db:

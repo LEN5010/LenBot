@@ -219,8 +219,8 @@ class MemoryIngestor:
             self.jobs.details(job)
 
         try:
-            async with asyncio.timeout(self.settings.timeout_seconds):
-                async with self.memory.write_lock(scene):
+            async with self.memory.write_lock(scene):
+                async with asyncio.timeout(self.settings.timeout_seconds):
                     rows = self._selected_input(scene, job)
                     if not rows:
                         return

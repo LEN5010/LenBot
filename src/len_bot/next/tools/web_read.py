@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import sys
 import time
@@ -61,7 +62,13 @@ def _web_limit(media_type: str, prefix: bytes) -> int:
 def _decode(body: bytes, content_type: str) -> str:
     header = Message()
     header["content-type"] = content_type
-    encoding = header.get_content_charset() or "utf-8"
+    encoding = codecs.lookup(header.get_content_charset() or "utf-8").name
+    if (encoding not in {"utf-8", "utf-8-sig", "ascii", "gb18030", "gbk", "gb2312", "big5", "big5hkscs",
+                         "shift_jis", "cp932", "euc_jp", "euc_kr", "iso2022_jp", "koi8-r", "koi8-u",
+                         "utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le", "utf-32-be"}
+            and not encoding.startswith("iso8859-")
+            and encoding not in {f"cp125{n}" for n in range(9)}):
+        raise ValueError(f"web_read unsupported web charset: {encoding}")
     return body.decode(encoding, errors="strict")
 
 
@@ -139,7 +146,7 @@ def _reject_json_constant(value: str) -> None:
 
 async def execute_web_read(store: Store, scene: str, settings: WebReadSettings,
                            arguments: WebReadArguments, *, recording: RecordedWeb | None = None,
-                           fake_ip_networks: tuple) -> str:
+                           fake_ip_networks: tuple, public_dns_url: str | None = None) -> str:
     if arguments.document is not None:
         page = store.web_page(scene, arguments.document)
         if page is None:
@@ -150,7 +157,7 @@ async def execute_web_read(store: Store, scene: str, settings: WebReadSettings,
         async with deadline:
             if recording is None:
                 final_url, content_type, body = await fetch_public(arguments.url, settings.timeout_seconds, _web_limit,
-                                                                           fake_ip_networks=fake_ip_networks)
+                                                                           fake_ip_networks=fake_ip_networks, public_dns_url=public_dns_url)
                 fetched_at = time.time()
             else:
                 item, body = recording.document(arguments.url)

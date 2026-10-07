@@ -64,7 +64,7 @@ async def list_models(provider, *, timeout_seconds: float = 30) -> list[dict]:
         while True:
             response = await client.get('models', params=params)
             if not response.is_success:
-                raise ModelHTTPError(f'Model list HTTP {response.status_code}: {response.text}')
+                raise ModelHTTPError(f'Model list HTTP {response.status_code}: {response.text.replace(provider.api_key, "[hidden]")[:2000]}')
             body = response.text
             try:
                 body = response.json()

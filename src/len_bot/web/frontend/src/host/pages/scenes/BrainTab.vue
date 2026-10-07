@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { api } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { confirm } from '../../../composables/useConfirm.js'
@@ -19,8 +19,10 @@ const everything = ref(false), entries = ref([])
 const page = useResource(async (before = null) => {
   const query = new URLSearchParams({ limit: 50, active_only: !everything.value, ...(before ? { before } : {}) })
   const value = await api(`${root}?${query}`)
-  entries.value = before ? [...value.entries, ...entries.value] : value.entries
-  return value
+  return { ...value, before }
+})
+watch(() => page.data.value, value => {
+  if (value) entries.value = value.before ? [...value.entries, ...entries.value] : value.entries
 })
 const action = useAction()
 const roleLabels = { user: '交给大脑的内容', assistant: 'Bot 的想法', tool: '工具结果', system: '系统设定' }

@@ -116,6 +116,23 @@ def _available(saved: HostConfig) -> tuple[dict[str, list[dict]], list[str]]:
             for name, directories in found.items()}, errors
 
 
+def configured_values(change: PluginChange, manifest: Manifest, previous: dict, scenes) -> dict:
+    values = {}
+    for key, value in change.config.items():
+        if key not in manifest.config:
+            raise ValueError(f'插件 {manifest.name} 没有配置项 {key}')
+        if value is None and manifest.config[key].type == 'secret':
+            if key not in previous:
+                raise ValueError(f'{key} 尚未保存过，不能留空保持原值')
+            value = previous[key]
+        values[key] = value
+    try:
+        manifest.values_model(scenes).model_validate(values)
+    except ValidationError as error:
+        raise ValueError(redact_values(f'plugins.{manifest.name}: {error}', manifest, values)) from None
+    return values
+
+
 def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, running: HostConfig,
                           user: Callable[[Request], str], write_lock: asyncio.Lock) -> None:
     manager = runtime.management.plugins
@@ -137,7 +154,15 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
         for name, entries in available.items():
             for entry in entries:
                 entry['managed'] = (manager.installer.records / (name + '.json')).is_file()
-        configured = {} if saved.plugins is None else saved.plugins.configured
+        configured = {} if saved.plugins is None else dict(saved.plugins.configured)
+        disabled = [] if saved.plugins is None else list(saved.plugins.disabled)
+        for record in pending:
+            staged = manager.installer.candidate_values(record.name)
+            if staged is not None:
+                configured[record.name] = staged.values
+                disabled = [name for name in disabled if name != record.name]
+                if not staged.enabled:
+                    disabled.append(record.name)
         manifests = {}
         for name in configured:
             entries = available.get(name, [])
@@ -149,7 +174,7 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
             "available": available, "discovery_errors": errors,
             "saved": {"paths": raw_plugins.get("paths", ["plugins"]),
                       "data_directory": raw_plugins.get("data_directory", "plugins/.data"),
-                      "disabled": [] if saved.plugins is None else saved.plugins.disabled,
+                      "disabled": disabled,
                       "plugins": {name: _masked(manifests[name], values, installed=installed.get(name, []))
                                   for name, values in configured.items()}},
             "retained_data": ([] if saved.plugins is None or not saved.plugins.data_directory.is_dir() else
@@ -236,7 +261,10 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
     async def import_zip(file: UploadFile = File(...), switch_source: bool = Form(False), _: str = Depends(user)):
         if file.filename is None:
             raise HTTPException(422, 'ZIP 文件需要文件名')
-        data = await file.read()
+        from ...plugins.install import MAX_ZIP_BYTES
+        data = await file.read(MAX_ZIP_BYTES + 1)
+        if len(data) > MAX_ZIP_BYTES:
+            raise HTTPException(413, '插件 ZIP 上传不能超过 200 MiB')
         return await operate(lambda: manager.import_zip(data, file.filename, switch_source=switch_source))
 
     @app.post('/api/host/plugins/{name}/apply')
@@ -289,6 +317,25 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
         require_name(name)
         change = await _body(request, PluginChange)
 
+        metadata = manager.installer.records / (name + '.json')
+        if metadata.exists() and manager.installer.read(name).candidate is not None:
+            async def stage_values():
+                saved = await asyncio.to_thread(_read_saved, root)
+                manifest = plugin_manifest(saved, name, manager.installer)
+                staged = manager.installer.candidate_values(name)
+                previous = saved.plugins.configured[name] if staged is None else staged.values
+                values = configured_values(change, manifest, previous, saved.scenes) if change.enabled else previous
+                await asyncio.to_thread(manager.installer.save_candidate_values, name, values, change.enabled)
+                if not change.enabled:
+                    def disable(source, _):
+                        disabled = source['plugins'].setdefault('disabled', [])
+                        if name not in disabled:
+                            disabled.append(name)
+                    saved = await manager.save(disable)
+                    await manager.apply(name, saved)
+                return {'name': name, 'candidate_config_saved': True}
+            return await operate(stage_values)
+
         def edit(source: dict, saved: HostConfig) -> None:
             if saved.plugins is None:
                 source['plugins'] = {}
@@ -302,19 +349,7 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
                 return
             manifest = plugin_manifest(saved, name, manager.installer)
             previous = plugins.get(name, {})
-            values = {}
-            for key, value in change.config.items():
-                if key not in manifest.config:
-                    raise ValueError(f"插件 {name} 没有配置项 {key}")
-                if value is None and manifest.config[key].type == "secret":
-                    if key not in previous:
-                        raise ValueError(f"{key} 尚未保存过，不能留空保持原值")
-                    value = previous[key]
-                values[key] = value
-            try:
-                manifest.values_model(saved.scenes).model_validate(values)
-            except ValidationError as error:
-                raise ValueError(redact_values(f"plugins.{name}: {error}", manifest, values)) from None
+            values = configured_values(change, manifest, previous, saved.scenes)
             plugins[name] = values
             plugins['disabled'] = [item for item in plugins.get('disabled', []) if item != name]
 

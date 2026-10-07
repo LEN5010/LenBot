@@ -60,6 +60,9 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 def create_session(username: str) -> str:
     """Creates a new session token for the user."""
+    now = time.time()
+    for expired in [key for key, session in _ACTIVE_SESSIONS.items() if session['expires_at'] <= now]:
+        del _ACTIVE_SESSIONS[expired]
     token = secrets.token_urlsafe(32)
     _ACTIVE_SESSIONS[token] = {
         "username": username,

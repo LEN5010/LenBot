@@ -59,6 +59,7 @@ class WorkerSettings(BaseModel):
     active_timeout_seconds: float = Field(default=1800.0, gt=0, allow_inf_nan=False)
     input_timeout_seconds: float = Field(default=1800.0, ge=0.001, le=4294967.295, allow_inf_nan=False)
     max_file_bytes: int = Field(default=25 * 1024 * 1024, gt=0, strict=True)
+    max_delivery_bytes: int = Field(default=500 * 1024 * 1024, gt=0, strict=True)
     input_support: Literal["text", "text-image"] = "text"
     model_reasoning: bool
     egress: EgressSettings = Field(default_factory=EgressSettings)
@@ -76,7 +77,7 @@ class WorkerSettings(BaseModel):
     def absolute_path(cls, value: Path) -> Path:
         if not value.is_absolute():
             raise ValueError("must be an explicit absolute path")
-        return value
+        return value.resolve()
 
     @field_validator("docker_host")
     @classmethod

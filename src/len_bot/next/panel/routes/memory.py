@@ -102,7 +102,7 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
             code = (409 if isinstance(error, FileExistsError) else
                     404 if isinstance(error, FileNotFoundError) else
                     422 if isinstance(error, ValueError) else 500)
-            raise HTTPException(code, f"{type(error).__name__}: {error}") from error
+            raise HTTPException(code, redact(f"{type(error).__name__}: {error}", secrets)) from error
 
     @app.get("/api/host/memory/state")
     async def state(_: str = Depends(user)):

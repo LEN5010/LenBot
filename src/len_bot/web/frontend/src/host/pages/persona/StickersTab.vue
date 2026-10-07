@@ -38,10 +38,10 @@ function done(result, text) {
 async function save({ file, description, emotions, tags }) {
   const result = await write.run(async () => {
     const directory = listing.data.value.saved_path
-    let current = listing.data.value.entries
+    let current = listing.data.value.entries || []
     let name = editing.value?.file
     if (!editing.value) {
-      if (current === null) current = (await putEntries([])).entries
+      if (listing.data.value.entries === null) current = (await putEntries([])).entries
       const form = new FormData()
       form.append('name', file.name)
       form.append('file', file)

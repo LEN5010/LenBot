@@ -56,9 +56,12 @@ class TaskFiles:
         destination = self.settings.delivery_root / item.scene / str(item.id)
         destination.mkdir(parents=True, exist_ok=True)
         target = destination / uuid4().hex
+        remaining = self.settings.max_delivery_bytes - sum(file.size for file in self.records.list_files(item.scene, item.id))
+        if remaining <= 0:
+            raise ValueError('Task registered deliveries reached worker.max_delivery_bytes')
         try:
             await self.sandbox.copy_out(sandbox, arguments.path, target,
-                                        max_bytes=self.settings.max_file_bytes)
+                                        max_bytes=min(self.settings.max_file_bytes, remaining))
             file = self.records.add_file(item.scene, item.id, name=arguments.name, path=str(target),
                                          size=target.stat().st_size, note=arguments.note)
         except BaseException:

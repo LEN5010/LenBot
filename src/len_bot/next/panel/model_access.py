@@ -23,6 +23,8 @@ class ProviderDraft(BaseModel):
         if key is None:
             if saved is None:
                 raise ValueError('新服务商需要填写 API Key')
+            if (self.api, self.base_url.rstrip('/'), self.proxy) != (saved.api, saved.base_url, saved.proxy):
+                raise ValueError('服务商协议、地址或代理改变后需要重新填写 API Key')
             key = saved.api_key
         return Provider(api=self.api, base_url=self.base_url, api_key=key, proxy=self.proxy)
 

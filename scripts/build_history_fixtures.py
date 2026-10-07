@@ -27,6 +27,7 @@ OUTPUT = ROOT / 'tests/fixtures/history'
 FIXTURES = {
     'config0-business1-jobs5-index2': 'a572456',
     'config0-business2-jobs6-index2': 'c9ff238',
+    'config2-business3-jobs6-index3': '02fb0ff',
 }
 
 WRITER = r'''
@@ -88,7 +89,7 @@ store.end_call(call, {'message': {'role': 'assistant', 'content': '好'}}, usage
                **({'cost': None} if money else {'tokens': tokens}))
 store.end_turn(turn, 'done')
 ScheduleStore(store).create_schedule(SCENE, due_at=now() + 86_400, timezone='Asia/Shanghai', note='交报告',
-                                     target='70001', requester=OWNER, limit=10)
+                                     target=OWNER if FORMAT_VERSION >= 3 else '70001', requester=OWNER, limit=10)
 tasks = TaskStore(store)
 task = tasks.create(SCENE, OWNER, '整理报告', '一页摘要', '群聊', '整理报告')
 tasks.start(SCENE, task.id)
@@ -116,8 +117,9 @@ memory._initialize()
 note = scene_dir / 'onebot-group-80001' / 'people.md'
 note.parent.mkdir(parents=True, exist_ok=True)
 note.write_text('# 群友\n\n群友1 周五交报告。\n', encoding='utf-8')
-for name in ('.abstract.md', '.overview.md'):
-    (note.parent / name).write_text('旧摘要\n', encoding='utf-8')
+if FORMAT_VERSION < 3:
+    for name in ('.abstract.md', '.overview.md'):
+        (note.parent / name).write_text('旧摘要\n', encoding='utf-8')
 print(f'business {FORMAT_VERSION}')
 '''
 

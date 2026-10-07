@@ -53,3 +53,18 @@ async def test_pi_output_budget_is_validated_forwarded_and_recorded_without_retr
     assert [item['request']['max_completion_tokens'] for item in started] == [256, 1024]
     assert started[1]['text_request_estimate_tokens'] - started[0]['text_request_estimate_tokens'] == 768
     assert len(finished) == 2 and all(result['error'] is None for _, result in finished)
+
+
+def test_rejected_calls_remain_unknown_in_records_but_do_not_block_a_task_budget(tmp_path):
+    from len_bot.next.storage.store import Store
+    from len_bot.next.work.store import TaskStore
+    with Store(tmp_path / 'state.db') as store:
+        tasks = TaskStore(store)
+        task = tasks.create('onebot:group:80001', 'onebot:70001', '测试', '测试', '测试', '测试')
+        call = tasks.start_call(task.scene, task.id, {'model': 'fixture'})
+        tasks.finish_call(call, {'http_status': 429, 'tokens': None, 'error': 'upstream model HTTP 429'})
+        assert tasks.call_tokens(task.scene, task.id) == [None]
+        assert tasks.call_tokens(task.scene, task.id, for_budget=True) == []
+        interrupted = tasks.start_call(task.scene, task.id, {'model': 'fixture'})
+        tasks.finish_call(interrupted, {'http_status': 200, 'tokens': None, 'error': 'response interrupted'})
+        assert tasks.call_tokens(task.scene, task.id, for_budget=True) == [None]

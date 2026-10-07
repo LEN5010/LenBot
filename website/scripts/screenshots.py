@@ -20,7 +20,7 @@ def prepare_plugins(page) -> None:
         page.wait_for_timeout(2500)
     for group in ('周末桌游局', '读书会'):
         chip = page.locator('.scene-picks .v-chip', has_text=group)
-        if 'mdi-check' not in (chip.inner_html()):
+        if chip.get_attribute('aria-pressed') != 'true':
             chip.click()
             page.wait_for_timeout(2500)
     page.mouse.move(0, 0)

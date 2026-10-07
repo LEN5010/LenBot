@@ -24,9 +24,8 @@ def register_host_restart(app: FastAPI, *, root: Path, running: HostConfig,
     async def ready(response: Response):
         # Login sessions expire with a process, so reconnect only needs public process identity.
         response.headers['Cache-Control'] = 'no-store'
-        response.headers['Access-Control-Allow-Origin'] = '*'
         return {**lifecycle.process(), 'version': version('len-bot'), 'status': runtime.status,
-                'ready': runtime.status not in ('starting', 'failed'), 'error': runtime.last_runtime_error}
+                'ready': runtime.status not in ('starting', 'failed')}
 
     def preview() -> dict:
         saved = _read_saved(root)

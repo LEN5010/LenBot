@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from .process_files import open_stderr
+
 import asyncio
 from collections.abc import Awaitable, Callable
 import json
-import os
 import traceback
 from pathlib import Path
 from typing import Mapping
@@ -37,8 +38,7 @@ class WorkerTransport:
                     stderr_path: Path, proxy: WorkerModelProxy,
                     startup_timeout_seconds: float,
                     task_request: Callable[[str, bytes], Awaitable[dict]] | None = None) -> WorkerTransport:
-        stderr_file = os.fdopen(os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
-                                       0o600), "ab")
+        stderr_file = open_stderr(stderr_path)
         try:
             process = await asyncio.create_subprocess_exec(
                 *argv, cwd=cwd, env=dict(env), stdin=asyncio.subprocess.PIPE,

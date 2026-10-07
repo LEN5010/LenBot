@@ -68,6 +68,18 @@ def _login(client: TestClient):
     })
 
 
+def test_logged_in_panel_rejects_another_ports_http_and_websocket_origin(panel_config, panel_root):
+    with TestClient(create_app(panel_config, root=panel_root)) as client:
+        assert _login(client).status_code == 200
+        origin = {'Origin': 'http://testserver:6099'}
+        assert client.post('/api/auth/logout', headers=origin).status_code == 403
+        assert client.get('/api/auth/me').status_code == 200
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect('/api/chat-test/events', headers=origin):
+                pytest.fail('Cross-origin websocket was accepted')
+        assert client.post('/api/auth/logout', headers={'Origin': 'http://testserver'}).status_code == 200
+
+
 @pytest.mark.asyncio
 async def test_rotating_usernames_share_one_ip_login_limit(panel_config):
     import asyncio
@@ -95,7 +107,7 @@ async def test_rotating_usernames_share_one_ip_login_limit(panel_config):
             }
             assert (await client.post('/api/auth/login', json={
                 'username': panel_config.panel.username, 'password': 'synthetic-panel-password',
-            })).status_code == 429
+            })).status_code == 200
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app, client=('198.51.100.212', 123)),
                                      base_url='http://test') as client:
             assert (await client.post('/api/auth/login', json={

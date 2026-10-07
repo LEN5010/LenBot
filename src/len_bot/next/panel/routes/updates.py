@@ -27,7 +27,7 @@ def register_host_updates(app: FastAPI, *, root: Path, user: Callable[[Request],
             response = await client.get(reference['endpoint'] + '/api/' + path,
                                         headers={'Authorization': 'Bearer ' + reference['token']})
             if response.is_error:
-                raise HTTPException(response.status_code, response.json()['detail'])
+                raise HTTPException(502, f'更新控制器 HTTP {response.status_code}: {response.text[:2000]}')
             return response.json()
 
     @app.get('/api/host/updates')

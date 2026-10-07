@@ -47,3 +47,19 @@ def test_prompt_ack_without_data_and_native_completion_frames(tmp_path):
             await pi.close()
 
     asyncio.run(exercise())
+
+
+def test_fifo_stderr_fails_without_blocking_the_subprocess_protocol(tmp_path):
+    import subprocess
+    import pytest
+    if os.name != 'posix':
+        pytest.skip('Named-pipe task files require POSIX')
+    fifo = tmp_path / 'stderr.log'
+    os.mkfifo(fifo)
+    program = (
+        'import asyncio, os, sys\nfrom pathlib import Path\n'
+        'from len_bot.next.work.pi_rpc import PiRpc\n'
+        'asyncio.run(PiRpc.spawn([], cwd=Path.cwd(), env=os.environ, stderr_path=Path(sys.argv[1])))\n'
+    )
+    result = subprocess.run([sys.executable, '-c', program, str(fifo)], capture_output=True, timeout=3)
+    assert result.returncode != 0 and b'OSError' in result.stderr

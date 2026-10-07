@@ -30,8 +30,9 @@ def main() -> None:
         subprocess.run(command, check=True)
         release = {'assets': []}
     assets = {item['name']: item for item in release['assets']}
-    files = [args.artifacts / 'release-manifest.json', *sorted(
-        path for path in args.artifacts.iterdir() if path.is_file() and path.name != 'release-manifest.json')]
+    files = [*sorted(
+        path for path in args.artifacts.iterdir() if path.is_file() and path.name != 'release-manifest.json'),
+        args.artifacts / 'release-manifest.json']
     for path in files:
         if path.name in assets:
             expected = 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()

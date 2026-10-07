@@ -1,7 +1,7 @@
 """Replace one managed host container while preserving its daemon-side mounts."""
 
-import copy
 import http.client
+import copy
 import json
 from pathlib import Path
 import socket
@@ -35,7 +35,7 @@ class Containers:
         connection = Engine(self.deployment['docker_socket'])
         try:
             body = None if payload is None else json.dumps(payload).encode()
-            connection.request(method, '/v1.45' + endpoint, body, {'Content-Type': 'application/json'})
+            connection.request(method, endpoint, body, {'Content-Type': 'application/json'})
             response = connection.getresponse()
             data = response.read()
             if response.status >= 400:
@@ -79,7 +79,20 @@ class Containers:
         host_image, worker_image = images['host'], images['worker']
         self.command(['pull', host_image])
         original = self.info(self.metadata()['container'])
+        image_config = self.api('GET', '/images/' + quote(host_image, safe='') + '/json')['Config']
+        old_image = self.api('GET', '/images/' + quote(original['Image'], safe='') + '/json')['Config']
         configuration = copy.deepcopy(original['Config'])
+        for field in ('Entrypoint', 'Cmd', 'User', 'WorkingDir'):
+            if configuration.get(field) == old_image.get(field):
+                configuration[field] = image_config.get(field)
+        labels = {key: value for key, value in (configuration.get('Labels') or {}).items()
+                  if (old_image.get('Labels') or {}).get(key) != value}
+        configuration['Labels'] = {**(image_config.get('Labels') or {}), **labels}
+        old_env = dict(item.split('=', 1) for item in original['Config'].get('Env') or [])
+        defaults = dict(item.split('=', 1) for item in old_image.get('Env') or [])
+        overrides = {key: value for key, value in old_env.items() if defaults.get(key) != value}
+        new_env = dict(item.split('=', 1) for item in image_config.get('Env') or [])
+        configuration['Env'] = [f'{key}={value}' for key, value in {**new_env, **overrides}.items()]
         configuration['Image'] = host_image
         configuration['NetworkingConfig'] = {'EndpointsConfig': {
             name: {key: settings[key] for key in ('IPAMConfig', 'Links', 'Aliases', 'DriverOpts')}
@@ -95,9 +108,9 @@ class Containers:
                 host_config['Binds'][index] = volume + bind[bind.index(':'):]
         candidate = self.deployment['project'] + '-candidate-' + work.name.removeprefix('candidate-')
         configuration['HostConfig'] = host_config
-        self.api('POST', '/containers/create?name=' + quote(candidate), configuration)
+        created = self.api('POST', '/containers/create?name=' + quote(candidate), configuration)
         return {'version': manifest['version'], 'host_image': host_image, 'worker_image': worker_image,
-                'python_volume': volume, 'container': candidate}
+                'python_volume': volume, 'container': created['Id']}
 
     def inspect(self, target: dict) -> dict:
         result = json.loads(self.maintenance('inspect', target=target, capture=True))
@@ -132,17 +145,20 @@ class Containers:
                           text.replace('IMAGE', repr(target['worker_image']))])
 
     def select(self, target: dict) -> None:
-        current = self.metadata()['container']
+        previous = self.metadata()
+        current = self.info(previous['container'])['Id']
+        previous['container'] = current
+        selected_id = self.info(target['container'])['Id']
         name = self.deployment['container']
-        if current != target['container']:
-            if current == name:
-                old_name = self.deployment['project'] + '-previous-' + self.metadata()['version']
+        write_json(self.root / 'current.json', previous)
+        if current != selected_id:
+            write_json(self.root / 'previous.json', previous)
+            if self.info(current)['Name'].lstrip('/') == name:
+                old_name = self.deployment['project'] + '-previous-' + previous['version']
                 self.api('POST', '/containers/' + quote(current) + '/rename?name=' + quote(old_name))
-                previous = self.metadata()
-                previous['container'] = old_name
-                write_json(self.root / 'previous.json', previous)
-            self.api('POST', '/containers/' + quote(target['container']) + '/rename?name=' + quote(name))
-        selected = {**target, 'container': name}
+            if self.info(selected_id)['Name'].lstrip('/') != name:
+                self.api('POST', '/containers/' + quote(selected_id) + '/rename?name=' + quote(name))
+        selected = {**target, 'container': selected_id}
         write_json(self.root / 'current.json', selected)
         self.write_version(selected)
 
@@ -164,13 +180,13 @@ class Containers:
                 previous = recorded
         self.maintenance('restore', target=previous, snapshot=snapshot)
         current = self.metadata()['container']
+        previous = {**previous, 'container': self.info(previous['container'])['Id']}
+        write_json(self.root / 'current.json', previous)
+        self.write_version(previous)
         if current != previous['container']:
             self.api('DELETE', '/containers/' + quote(current))
-        if previous['container'] != self.deployment['container']:
+        if self.info(previous['container'])['Name'].lstrip('/') != self.deployment['container']:
             self.api('POST', '/containers/' + quote(previous['container']) + '/rename?name=' + quote(self.deployment['container']))
-        selected = {**previous, 'container': self.deployment['container']}
-        write_json(self.root / 'current.json', selected)
-        self.write_version(selected)
 
     def publish_reference(self, reference: dict) -> None:
         code = 'import json; from pathlib import Path; p=Path(".runtime/update-control.json"); p.parent.mkdir(exist_ok=True); p.write_text(DATA); p.chmod(0o600)'
@@ -194,7 +210,7 @@ class Containers:
                     return
                 if status['status'] == 'failed':
                     raise RuntimeError('Container runtime initialization failed')
-            except urllib.error.URLError:
+            except (urllib.error.URLError, OSError, http.client.HTTPException):
                 pass
             time.sleep(0.25)
         raise TimeoutError('New container did not become ready within 90 seconds')

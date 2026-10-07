@@ -31,16 +31,19 @@ export function useResource(load, { immediate = true } = {}) {
 // next attempt; the draft is left untouched either way.
 export function useAction() {
   const busy = ref(false), error = ref(null)
-  async function run(action) {
+  let active = 0
+  async function run(action, current = () => true) {
+    const own = ++active
     busy.value = true
     error.value = null
     try {
-      return await action()
+      const result = await action()
+      return current() ? result : undefined
     } catch (problem) {
-      error.value = problem
+      if (current()) error.value = problem
       return undefined
     } finally {
-      busy.value = false
+      if (own === active) busy.value = false
     }
   }
   return { busy, error, run }

@@ -289,7 +289,7 @@ class WorkTasks:
                 raise ValueError('专用账号浏览器仍被任务占用；先结束或明确清理原会话')
         timezone = self.config.scene_timezone(scene)
         local = datetime.fromtimestamp(self.store.now(), ZoneInfo(timezone))
-        midnight = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        midnight = local.replace(hour=0, minute=0, second=0, microsecond=0, fold=0).timestamp()
         if self.records.count_created(scene, requester, midnight) >= self.config.scenes[scene].tasks.max_daily_tasks:
             raise PermissionError(f"账号 {requester} 今天在本场景的任务次数已达上限")
 
@@ -487,7 +487,7 @@ class WorkTasks:
     def _limits(self, item: Task) -> Limits:
         budget = self.settings.max_tokens
         if budget is not None:
-            token_records = self.records.call_tokens(item.scene, item.id)
+            token_records = self.records.call_tokens(item.scene, item.id, for_budget=True)
             if any(tokens is None for tokens in token_records):
                 raise ValueError("任务有模型调用没有报告 token，不能继续 token 受限的请求")
             budget -= sum(tokens["input"] + tokens["output"] for tokens in token_records)
@@ -617,8 +617,7 @@ class WorkTasks:
         recent = []
         if status == 'failed' and not item.account_browser:
             page = self.records.event_page(item.scene, item.id, offset=0, snapshot=None)
-            recent = [{'event': event['id'], 'kind': event['kind'], 'created': event['created'],
-                       'preview': self._event_text(item, event)[:240]} for event in page['events']]
+            recent = [{'event': event['id'], 'kind': event['kind'], 'created': event['created']} for event in page['events']]
         finished = self.records.finish(item.scene, item.id, status, summary, error)
         files = [file_info(file, self.records) for file in self.records.list_files(item.scene, item.id)]
         body = {"status": status, "summary": summary, "error": error, "files": files,
@@ -626,7 +625,7 @@ class WorkTasks:
                 "tokens": token_summary(self.records.call_tokens(item.scene, item.id))}
         notice = f"[任务执行结束] #{item.id}；请求人 {item.requester}；{item.goal}\n" + json.dumps(body, ensure_ascii=False)
         if recent:
-            notice += '\n最近已保存过程（预览，不证明操作成功；原文可按event读取）：\n' + json.dumps(recent, ensure_ascii=False)
+            notice += '\n最近过程编号（原文由请求人或任务管理者按event读取）：\n' + json.dumps(recent, ensure_ascii=False)
         elif status == 'failed' and item.account_browser:
             notice += '\n账号浏览过程未公开；仅根主人可按权限读取原事件。'
         self.records.add_event(item.scene, item.id, "finished", body, notice=notice)

@@ -12,9 +12,7 @@ import itertools
 import json
 from pathlib import Path
 import shutil
-import signal
 import socket
-import subprocess
 import sys
 import time
 import urllib.request
@@ -103,44 +101,70 @@ async def main() -> None:
     onebot_port = free_port()
     ready = asyncio.Event()
     server = asyncio.create_task(onebot(onebot_port, ready))
-    command = [str(ROOT / '.venv/bin/len-bot')]
-    process = subprocess.Popen(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                               start_new_session=True)
-    line = ''
-    while '#token=' not in line:
-        line = await asyncio.to_thread(process.stdout.readline)
-        if not line and process.poll() is not None:
-            raise RuntimeError('len-bot exited before printing the setup link')
-    setup = line[line.index('http://'):].split()[0]
-    base, token = setup.split('/#token=')
-    post(base + '/api/setup', {
-        'bot_id': f'onebot:{BOT}', 'owners': [f'onebot:{OWNER}'], 'timezone': 'Asia/Shanghai', 'delivery': 'simulated',
-        'onebot': {'mode': 'forward_ws', 'ws_url': f'ws://127.0.0.1:{onebot_port}', 'access_token': 'demo'},
-        'provider': {'api': 'openai-chat', 'base_url': 'http://127.0.0.1:9/v1', 'api_key': 'demo'},
-        'mind': {'provider': 'primary', 'model': 'demo-chat', 'context_window_tokens': 128000},
-        'compaction': {'input_tokens': 96000}, 'scene': 'onebot:group:80001', 'persona_id': 'companion',
-        'persona_name': '小然', 'brief': '演示角色', 'voice_text': '简短', 'boundaries': '',
-        'panel_port': args.panel_port, 'username': 'demo', 'password': 'demo-password'}, {'X-Setup-Token': token})
-    # The wizard's persona is replaced by the published example, and two more invented groups are added.
-    process.send_signal(signal.SIGTERM)
-    await asyncio.to_thread(process.wait, 60)
-    shutil.rmtree(root / 'personas/companion')
-    shutil.copytree(ROOT / 'examples/personas/companion', root / 'personas/companion')
-    config = json.loads((root / 'lenbot.config.json').read_text())
-    first = config['scenes']['onebot:group:80001']
-    for group in GROUPS:
-        config['scenes'][f'onebot:group:{group}'] = {**first, 'attention': {**first.get('attention', {}), 'only_direct': True}}
-    (root / 'lenbot.config.json').write_text(json.dumps(config, ensure_ascii=False, indent=2) + '\n')
-    process = subprocess.Popen(command, cwd=root, stdout=sys.stdout, stderr=sys.stderr, start_new_session=True)
-    await ready.wait()
-    print(f'演示面板：http://127.0.0.1:{args.panel_port}  用户 demo / demo-password；Ctrl-C 结束', flush=True)
+    command = [sys.executable, '-c', 'from len_bot import main; main()']
+    process = None
+    draining = None
+    waiting = None
+    ready_task = None
+    async def drain(child):
+        while line := await child.stdout.readline():
+            print(line.decode('utf-8', 'replace'), end='', flush=True)
     try:
-        await asyncio.to_thread(process.wait)
+        process = await asyncio.create_subprocess_exec(*command, cwd=root, stdout=asyncio.subprocess.PIPE,
+                                                       stderr=asyncio.subprocess.STDOUT)
+        async with asyncio.timeout(60):
+            while True:
+                line = (await process.stdout.readline()).decode('utf-8', 'replace')
+                if '#token=' in line:
+                    break
+                if not line:
+                    raise RuntimeError(f'len-bot exited before setup with {await process.wait()}')
+        draining = asyncio.create_task(drain(process))
+        setup = line[line.index('http://'):].split()[0]
+        base, token = setup.split('/#token=')
+        await asyncio.to_thread(post, base + '/api/setup', {
+            'bot_id': f'onebot:{BOT}', 'owners': [f'onebot:{OWNER}'], 'timezone': 'Asia/Shanghai', 'delivery': 'simulated',
+            'onebot': {'mode': 'forward_ws', 'ws_url': f'ws://127.0.0.1:{onebot_port}', 'access_token': 'demo'},
+            'provider': {'api': 'openai-chat', 'base_url': 'http://127.0.0.1:9/v1', 'api_key': 'demo'},
+            'mind': {'provider': 'primary', 'model': 'demo-chat', 'context_window_tokens': 128000},
+            'compaction': {'input_tokens': 96000}, 'scene': 'onebot:group:80001', 'persona_id': 'companion',
+            'persona_name': '小然', 'brief': '演示角色', 'voice_text': '简短', 'boundaries': '',
+            'panel_port': args.panel_port, 'username': 'demo', 'password': 'demo-password'}, {'X-Setup-Token': token})
+        process.terminate()
+        async with asyncio.timeout(60):
+            await process.wait()
+            await draining
+        draining = None
+        shutil.rmtree(root / 'personas/companion')
+        shutil.copytree(ROOT / 'examples/personas/companion', root / 'personas/companion')
+        config = json.loads((root / 'lenbot.config.json').read_text())
+        first = config['scenes']['onebot:group:80001']
+        for group in GROUPS:
+            config['scenes'][f'onebot:group:{group}'] = {**first, 'attention': {**first.get('attention', {}), 'only_direct': True}}
+        (root / 'lenbot.config.json').write_text(json.dumps(config, ensure_ascii=False, indent=2) + '\n')
+        process = await asyncio.create_subprocess_exec(*command, cwd=root)
+        waiting = asyncio.create_task(process.wait())
+        ready_task = asyncio.create_task(ready.wait())
+        async with asyncio.timeout(60):
+            done, _ = await asyncio.wait((waiting, ready_task), return_when=asyncio.FIRST_COMPLETED)
+            if waiting in done:
+                raise RuntimeError(f'len-bot exited before becoming ready: {waiting.result()}')
+        print(f'演示面板：http://127.0.0.1:{args.panel_port}  用户 demo / demo-password；Ctrl-C 结束', flush=True)
+        await waiting
     finally:
-        if process.poll() is None:
-            process.send_signal(signal.SIGTERM)
-            await asyncio.to_thread(process.wait, 60)
-        server.cancel()
+        if process is not None and process.returncode is None:
+            process.terminate()
+            try:
+                async with asyncio.timeout(60):
+                    await process.wait()
+            except TimeoutError:
+                process.kill()
+                await process.wait()
+        for task in (draining, waiting, ready_task, server):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(*(task for task in (draining, waiting, ready_task, server) if task is not None),
+                             return_exceptions=True)
 
 
 if __name__ == '__main__':

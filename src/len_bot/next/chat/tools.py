@@ -346,7 +346,7 @@ class SceneTools:
         if call.name == "web_read":
             return await execute_web_read(self.store, self.config.scene, self.config.web_read,
                                           WebReadArguments.model_validate(call.arguments), recording=self.replay_web,
-                                          fake_ip_networks=self.config.network.networks()), None, None
+                                          fake_ip_networks=self.config.network.networks(), public_dns_url=self.config.network.public_dns_url), None, None
         if call.name == "web_search":
             return await execute_web_search(self.config.web_search,
                                             WebSearchArguments.model_validate(call.arguments), recording=self.replay_web), None, None
@@ -373,7 +373,7 @@ class SceneTools:
             return await execute_look(
                 self.store, self.config.scene, LookArguments.model_validate(call.arguments), self.config.images,
                 model_name=self.vision.settings.model, describe=lambda asset: self.describe_image(turn_id, asset),
-                recording=self.replay_images, fake_ip_networks=self.config.network.networks(),
+                recording=self.replay_images, fake_ip_networks=self.config.network.networks(), public_dns_url=self.config.network.public_dns_url,
             ), None, None
         if call.name == "transcribe":
             return await self.audio.transcribe(

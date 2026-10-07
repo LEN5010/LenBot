@@ -13,7 +13,8 @@ from len_bot.web.auth import verify_password
 
 
 @pytest.mark.parametrize('voice_mode', ['direct'])
-def test_first_setup_validates_and_never_overwrites(tmp_path: Path, voice_mode: str):
+@pytest.mark.parametrize('default_persona', [False, True])
+def test_first_setup_validates_and_never_overwrites(tmp_path: Path, voice_mode: str, default_persona: bool):
     body = {
         'bot_id':'onebot:90001','owners':['onebot:70001'],'timezone':'Asia/Shanghai','delivery':'simulated',
         'onebot':{'mode':'forward_ws','ws_url':'ws://127.0.0.1:9','access_token':'synthetic-token'},
@@ -25,6 +26,9 @@ def test_first_setup_validates_and_never_overwrites(tmp_path: Path, voice_mode: 
         'voice_text':'简短','boundaries':'合成场景','panel_port':8088,'username':'fixture',
         'password':'synthetic-password',
     }
+    if default_persona:
+        for name in ('persona_id', 'persona_name', 'brief', 'voice_text', 'boundaries'):
+            del body[name]
     async def exercise():
         complete = asyncio.Event()
         app = create_setup_app(tmp_path, 'fixture-token', complete)
@@ -44,7 +48,14 @@ def test_first_setup_validates_and_never_overwrites(tmp_path: Path, voice_mode: 
             assert cfg.delivery == 'simulated' and cfg.models.roles.mind.model == 'fixture'
             assert cfg.scenes['onebot:group:80001'].voice_mode == voice_mode
             assert response.json()['voice_mode'] == voice_mode
-            assert load_persona(cfg.scenes['onebot:group:80001'].persona).name == '合成角色'
+            persona = load_persona(cfg.scenes['onebot:group:80001'].persona)
+            if default_persona:
+                assert persona.id == 'companion' and persona.name == '小然'
+                assert persona.voice and persona.knowledge and persona.stickers
+                assert persona.examples == []
+                assert persona.skills == 'all' and '小然' in persona.aliases
+            else:
+                assert persona.name == '合成角色'
             assert verify_password(body['password'], cfg.panel.password_hash)
             before = (tmp_path/'lenbot.config.json').read_bytes()
             assert body['password'] not in before.decode()
@@ -104,7 +115,7 @@ async def test_setup_model_probe_makes_one_request_and_returns_original_error(tm
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://127.0.0.1',
                                      headers={'X-Setup-Token': 'fixture-token'}) as client:
             result = await client.post('/api/setup/model', json={
-                'provider': {'api': 'openai-chat', 'base_url': f'http://127.0.0.1:{port}/v1', 'api_key': 'fixture'},
+                'provider': {'api': 'openai-chat', 'base_url': f'http://127.0.0.1:{port}/v1', 'api_key': 'probe-fixture-key'},
                 'mind': {'provider': 'primary', 'model': 'fixture', 'context_window_tokens': 8192},
             })
             if status == 200:

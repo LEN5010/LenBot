@@ -14,6 +14,7 @@ from ..persona.profile import Persona, load_persona
 from ..tools.skills import select_skills
 from ..plugins.manifest import scene_skill_catalog
 from ..plugins.install import PluginInstaller
+from ..storage.files import sync_directory
 
 
 def restart_summary(root: Path, running: HostConfig, personas: dict[str, Persona]) -> dict:
@@ -61,6 +62,8 @@ def _prepare(root: Path, edit: Callable[[dict, HostConfig], None]
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(original, stream, ensure_ascii=False, allow_nan=False, indent=2)
             stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
@@ -94,6 +97,7 @@ def save_config(root: Path, running: HostConfig, edit: Callable[[dict, HostConfi
                     "先停机清理任务容器，再搬迁原文件和修改根配置。根配置未保存"
                 )
         temporary.replace(path)
+        sync_directory(path.parent)
         return candidate
     finally:
         temporary.unlink(missing_ok=True)

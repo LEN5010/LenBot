@@ -9,7 +9,7 @@ LenBot 不登录 QQ。它连接一个**已经登录 QQ、开着 OneBot v11 WebSo
 | 正向 WebSocket | LenBot 去连 OneBot | OneBot 的地址，例如 `ws://127.0.0.1:3001` |
 | 反向 WebSocket | OneBot 来连 LenBot | LenBot 的监听地址和端口，在 OneBot 里填 `ws://<LenBot 地址>:<端口>` |
 
-两边都设了访问令牌时要填同一个。首次配置时点**测试连接**，LenBot 会从 OneBot 读出 Bot 自己的 QQ 号，这一步不会往群里发消息。
+访问令牌在两边填写同一个；反向 WebSocket 监听非本机地址（例如 Docker 内的 `0.0.0.0`）时必须填写。首次配置时点**测试连接**，LenBot 会从 OneBot 读出 Bot 自己的 QQ 号，这一步不会往群里发消息。
 
 之后可以在面板的设置页改连接方式；首页能看到连接状态，断了可以手动重连。
 

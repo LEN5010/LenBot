@@ -1,7 +1,7 @@
 """Release metadata, plugin compatibility and stopped-data recovery boundaries."""
 
-import importlib.util
 import json
+import errno
 from pathlib import Path
 import sys
 
@@ -49,6 +49,38 @@ def test_snapshot_restores_root_and_external_data_without_snapshotting_lock(tmp_
     assert (root / 'data.sqlite3-wal').read_bytes() == b'wal-fixture'
     assert (outside / 'memory.md').read_text() == '升级前正文'
     assert not (root / 'new.json').exists()
+
+
+@pytest.mark.parametrize('failure', [errno.EBUSY, errno.EACCES])
+def test_restore_preserves_bind_mount_directory_but_reports_other_removal_errors(tmp_path, monkeypatch, failure):
+    root = tmp_path / 'instance'
+    mounted = root / 'worker' / 'delivery'
+    mounted.mkdir(parents=True)
+    inode = mounted.stat().st_ino
+    (mounted / 'output.txt').write_text('升级前交付')
+    (root / 'state.db').write_bytes(b'synthetic database')
+    backup = tmp_path / 'backup'
+    create([str(root)], backup)
+    (mounted / 'output.txt').write_text('升级后交付')
+    (mounted / 'extra.txt').write_text('新增')
+    rmdir = Path.rmdir
+
+    def kernel_remove(path):
+        if path == mounted:
+            raise OSError(failure, 'synthetic kernel removal error', str(path))
+        rmdir(path)
+
+    monkeypatch.setattr(Path, 'rmdir', kernel_remove)
+    if failure == errno.EACCES:
+        with pytest.raises(OSError) as error:
+            restore(root, backup)
+        assert error.value.errno == errno.EACCES
+    else:
+        restore(root, backup)
+        assert mounted.stat().st_ino == inode
+        assert (mounted / 'output.txt').read_text() == '升级前交付'
+        assert not (mounted / 'extra.txt').exists()
+        assert (root / 'state.db').read_bytes() == b'synthetic database'
 
 
 def test_target_version_blocks_enabled_plugin_without_importing_it(tmp_path):

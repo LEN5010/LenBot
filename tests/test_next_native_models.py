@@ -219,3 +219,44 @@ async def test_native_worker_http_bridge_uses_task_tokens_and_exact_model_path(t
                 await transport.close()
     assert len(received) == len(finished) == 1
     assert finished[0]['error'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('api', 'tool'), [
+    ('openai-responses', {'type': 'web_search_preview'}),
+    ('openai-responses', {'type': 'mcp', 'server_url': 'https://example.invalid/mcp'}),
+    ('anthropic', {'type': 'web_search_20250305', 'name': 'web_search'}),
+    ('gemini', {'googleSearch': {}}),
+])
+async def test_task_model_refuses_provider_network_tools_before_upstream(api, tool):
+    from len_bot.next.work.worker_model import WorkerModelError
+    started = []
+    settings = ModelSettings(api=api, base_url='http://127.0.0.1:9/v1', api_key='unused', model='fixture', temperature=None)
+    async with WorkerModelProxy(settings, 'fixture', 8192, 'task-key', Limits(5, 100000, 100000),
+                                start_call=lambda value: started.append(value), finish_call=lambda *_: None) as proxy:
+        _, payload = build_request(settings, [{'role': 'user', 'content': '测试'}], [])
+        payload['tools'] = [tool]
+        if api != 'gemini':
+            payload['stream'] = True
+        with pytest.raises(WorkerModelError, match='local function'):
+            async with proxy.open('task-key', json.dumps(payload).encode()):
+                pytest.fail('Provider network tools were forwarded')
+    assert not started
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('number', ['NaN', 'Infinity', '1e999'])
+async def test_invalid_json_number_is_a_protocol_error_with_a_recordable_raw_fragment(number):
+    from len_bot.next.models.client import ChatModel
+    from len_bot.next.storage.codec import encode
+    received = []
+    raw = '{"choices": [], "extra": ' + number + '}'
+    server = await peer_server([(200, 'application/json', raw.encode())], received)
+    async with server:
+        settings = ModelSettings(api='openai-chat', base_url=f'http://127.0.0.1:{server.sockets[0].getsockname()[1]}/v1',
+                                 api_key='fixture', model='fixture')
+        async with ChatModel(settings) as model:
+            with pytest.raises(ModelProtocolError) as failure:
+                await model.complete([{'role': 'user', 'content': '测试'}], [])
+    assert number in encode(failure.value.response)
+    assert len(received) == 1

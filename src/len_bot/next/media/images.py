@@ -86,7 +86,7 @@ def _display(scene: str, arguments: LookArguments, asset: ImageAsset, *,
 async def execute_look(store: Store, scene: str, arguments: LookArguments,
                        settings: ImageSettings, *, model_name: str,
                        describe: Callable[[ImageAsset], Awaitable[str]],
-                       recording: RecordedImages | None = None, fake_ip_networks: tuple) -> str:
+                       recording: RecordedImages | None = None, fake_ip_networks: tuple, public_dns_url: str | None = None) -> str:
     message = store.find_message(scene, arguments.message)
     if message is None:
         raise ValueError(f"当前场景没有平台消息 {arguments.message}")
@@ -114,7 +114,7 @@ async def execute_look(store: Store, scene: str, arguments: LookArguments,
                     url = image_url(pictures[arguments.image - 1].data)
                     _, _, body = await fetch_public(
                         url, settings.timeout_seconds, lambda _type, _prefix: settings.max_bytes,
-                        fake_ip_networks=fake_ip_networks,
+                        fake_ip_networks=fake_ip_networks, public_dns_url=public_dns_url,
                     )
                     fetched_at = store.now()
                     pixels_source = 'http_response'

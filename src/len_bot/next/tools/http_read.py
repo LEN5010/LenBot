@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import ipaddress
-import socket
 from collections.abc import Callable
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
-from ..work.egress_policy import blocked_address_reason, blocked_resolved_reason
+from ..work.egress_policy import blocked_address_reason, public_addresses
 
 
 MAX_REDIRECTS = 5
@@ -44,17 +42,12 @@ def _target(url: str) -> tuple[str, str, int, str, str]:
     return clean_url, ascii_host, port, host_header, parts.scheme
 
 
-async def _numeric_address(host: str, port: int, fake_ip_networks: tuple) -> str:
+async def _numeric_address(host: str, port: int, fake_ip_networks: tuple,
+                           public_dns_url: str | None, timeout_seconds: float) -> str:
     try:
         address = str(ipaddress.ip_address(host))
     except ValueError:
-        answers = await asyncio.get_running_loop().getaddrinfo(
-            host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP,
-        )
-        if not answers:
-            raise OSError(f"HTTP read DNS returned no address for {host}")
-        address = answers[0][4][0]
-        reason = blocked_resolved_reason(address, fake_ip_networks)
+        return (await public_addresses(host, port, fake_ip_networks, public_dns_url, timeout_seconds))[0]
     else:
         reason = blocked_address_reason(address)
     if reason is not None:
@@ -64,7 +57,7 @@ async def _numeric_address(host: str, port: int, fake_ip_networks: tuple) -> str
 
 async def _error_fragment(response: httpx.Response) -> str:
     fragment = bytearray()
-    async for chunk in response.aiter_bytes(chunk_size=512):
+    async for chunk in response.aiter_raw(chunk_size=512):
         fragment.extend(chunk[: ERROR_BYTES - len(fragment)])
         if len(fragment) == ERROR_BYTES:
             break
@@ -73,12 +66,12 @@ async def _error_fragment(response: httpx.Response) -> str:
 
 async def fetch_public(url: str, timeout_seconds: float,
                        byte_limit: Callable[[str, bytes], int], *,
-                       fake_ip_networks: tuple) -> tuple[str, str, bytes]:
+                       fake_ip_networks: tuple, public_dns_url: str | None = None) -> tuple[str, str, bytes]:
     """GET once per hop with checked first address, preserving original Host and TLS name."""
     current = url
     for redirect in range(MAX_REDIRECTS + 1):
         current, host, port, host_header, scheme = _target(current)
-        address = await _numeric_address(host, port, fake_ip_networks)
+        address = await _numeric_address(host, port, fake_ip_networks, public_dns_url, timeout_seconds)
         numeric_host = f"[{address}]" if ":" in address else address
         authority = numeric_host if port == (443 if scheme == "https" else 80) else f"{numeric_host}:{port}"
         parts = urlsplit(current)
@@ -89,7 +82,7 @@ async def fetch_public(url: str, timeout_seconds: float,
             transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False),
         ) as client:
             async with client.stream(
-                "GET", numeric_url, headers={"Host": host_header},
+                "GET", numeric_url, headers={"Host": host_header, "Accept-Encoding": "identity"},
                 extensions={"sni_hostname": host},
             ) as response:
                 if response.status_code in {301, 302, 303, 307, 308}:
@@ -110,7 +103,9 @@ async def fetch_public(url: str, timeout_seconds: float,
                 media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
                 body = bytearray()
                 prefix = bytearray()
-                async for chunk in response.aiter_bytes(chunk_size=65536):
+                if response.headers.get("content-encoding", "identity").lower() != "identity":
+                    raise ValueError("HTTP read requires an uncompressed response (Accept-Encoding: identity)")
+                async for chunk in response.aiter_raw(chunk_size=65536):
                     if len(prefix) < 5:
                         prefix.extend(chunk[: 5 - len(prefix)])
                     limit = byte_limit(media_type, bytes(prefix))

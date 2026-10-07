@@ -160,7 +160,8 @@ class EmbeddingClient:
             async with deadline:
                 response = await self._client.post(
                     f"{self.settings.base_url}/embeddings",
-                    json={"model": self.settings.model, "input": texts, "encoding_format": "float"},
+                    json={"model": self.settings.model, "input": texts, "encoding_format": "float",
+                          **({"dimensions": self.settings.dimensions} if self.settings.dimensions is not None else {})},
                 )
         except TimeoutError as error:
             if deadline.expired():

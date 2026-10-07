@@ -2,27 +2,19 @@
 
 from __future__ import annotations
 
+from .process_files import open_stderr
+
 import asyncio
-import ipaddress
 from collections.abc import Callable
 import json
-import os
 from pathlib import Path
 import socket
 import time
 from typing import Mapping
 
-from .egress_policy import EgressBlocked, blocked_address_reason, blocked_resolved_reason
+from .egress_policy import EgressBlocked, public_addresses
 
 from .egress_wire import CHUNK_BYTES, Channel, Pipe, read_frame
-
-
-def _is_literal_address(host: str) -> bool:
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return True
 
 
 class EgressTransportError(RuntimeError):
@@ -36,9 +28,11 @@ class EgressTransport:
                  bytes_per_second: int,
                  before_bytes: Callable[[int, str, int], None],
                  on_connection: Callable[[dict], None],
-                 on_bytes: Callable[[int, str, int], None]):
+                 on_bytes: Callable[[int, str, int], None],
+                 public_dns_url: str | None = None):
         self.process = process
         self.fake_ip_networks = fake_ip_networks
+        self.public_dns_url = public_dns_url
         self.stderr_file = stderr_file
         self.port = port
         self.connect_timeout_seconds = connect_timeout_seconds
@@ -46,6 +40,8 @@ class EgressTransport:
         self.before_bytes = before_bytes
         self.on_connection = on_connection
         self.on_bytes = on_bytes
+        self._pace_lock = asyncio.Lock()
+        self._next_chunk_at = 0.0
         self.pipe: Pipe | None = None
         self._closing = False
         self._failure: asyncio.Future[BaseException] = asyncio.get_running_loop().create_future()
@@ -60,9 +56,9 @@ class EgressTransport:
                     bytes_per_second: int,
                     before_bytes: Callable[[int, str, int], None],
                     on_connection: Callable[[dict], None],
-                    on_bytes: Callable[[int, str, int], None]) -> EgressTransport:
-        stderr_file = os.fdopen(os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
-                                       0o600), "ab")
+                    on_bytes: Callable[[int, str, int], None],
+                    public_dns_url: str | None = None) -> EgressTransport:
+        stderr_file = open_stderr(stderr_path)
         try:
             process = await asyncio.create_subprocess_exec(
                 *argv, cwd=cwd, env=dict(env), stdin=asyncio.subprocess.PIPE,
@@ -75,7 +71,7 @@ class EgressTransport:
                         connect_timeout_seconds=connect_timeout_seconds,
                         fake_ip_networks=fake_ip_networks,
                         bytes_per_second=bytes_per_second, before_bytes=before_bytes,
-                        on_connection=on_connection, on_bytes=on_bytes)
+                        on_connection=on_connection, on_bytes=on_bytes, public_dns_url=public_dns_url)
         try:
             async with asyncio.timeout(connect_timeout_seconds):
                 kind, connection_id, body = await read_frame(process.stdout)
@@ -145,20 +141,12 @@ class EgressTransport:
                                                                    asyncio.StreamWriter]:
         loop = asyncio.get_running_loop()
         async with asyncio.timeout(self.connect_timeout_seconds):
-            answers = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-            if not answers:
-                raise EgressTransportError(f"public egress target {host}:{port} has no DNS answers")
-            literal = _is_literal_address(host)
-            for entry in answers:
-                ip = entry[4][0]
-                reason = (blocked_address_reason(ip) if literal
-                          else blocked_resolved_reason(ip, self.fake_ip_networks))
-                if reason is not None:
-                    raise EgressTransportError(
-                        f"public egress target {host}:{port} resolved to {ip} ({reason})")
-            family, kind, protocol, _, address = answers[0]
-            ip = address[0]
-            sock = socket.socket(family, kind, protocol)
+            addresses = await public_addresses(host, port, self.fake_ip_networks,
+                                               self.public_dns_url, self.connect_timeout_seconds)
+            ip = addresses[0]
+            family = socket.AF_INET6 if ':' in ip else socket.AF_INET
+            address = (ip, port, 0, 0) if family == socket.AF_INET6 else (ip, port)
+            sock = socket.socket(family, socket.SOCK_STREAM, socket.IPPROTO_TCP)
             sock.setblocking(False)
             try:
                 await loop.sock_connect(sock, address)
@@ -187,20 +175,19 @@ class EgressTransport:
 
     async def _forward(self, channel: Channel, origin_reader: asyncio.StreamReader,
                        origin_writer: asyncio.StreamWriter, facts: dict) -> None:
-        next_chunk_at = 0.0
-
-        async def pace() -> None:
-            await asyncio.sleep(max(0, next_chunk_at - asyncio.get_running_loop().time()))
+        async def pace(amount: int) -> None:
+            async with self._pace_lock:
+                now = asyncio.get_running_loop().time()
+                delay = max(0, self._next_chunk_at - now)
+                self._next_chunk_at = max(now, self._next_chunk_at) + amount / self.bytes_per_second
+            await asyncio.sleep(delay)
 
         def wrote(side: str, amount: int) -> None:
-            nonlocal next_chunk_at
-            now = asyncio.get_running_loop().time()
-            next_chunk_at = max(now, next_chunk_at) + amount / self.bytes_per_second
             self._count(channel.id, side, amount, facts)
 
         async def upstream() -> None:
             while data := await channel.read():
-                await pace()
+                await pace(len(data))
                 self._permit(channel.id, "up", len(data))
                 origin_writer.write(data)
                 wrote("up", len(data))
@@ -211,7 +198,7 @@ class EgressTransport:
 
         async def downstream() -> None:
             while data := await origin_reader.read(CHUNK_BYTES):
-                await pace()
+                await pace(len(data))
                 await channel.write(
                     data,
                     before_write=lambda: self._permit(channel.id, "down", len(data)),

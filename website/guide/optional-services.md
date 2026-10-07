@@ -41,7 +41,10 @@ docker exec lenbot-embeddings ollama pull bge-m3:567m
 Clash、Surge 等代理开启 fake-ip 时，域名都会解析成 `198.18.x.x` 这类保留地址。LenBot 读网页、取图片和任务出网时会拒绝保留地址，错误里能看到 `私有或保留地址`。在配置里写上代理实际使用的网段：
 
 ```json
-"network": { "fake_ip_networks": ["198.18.0.0/15"] }
+"network": {
+  "fake_ip_networks": ["198.18.0.0/15"],
+  "public_dns_url": "https://dns.google/resolve"
+}
 ```
 
-只有按域名连接、解析结果落在这些网段时才放行；直接写 IP 的请求照样拦截。
+按域名连接且解析结果落在假 IP 网段时，LenBot 用 `public_dns_url` 的 DNS JSON 接口查询真实 A／AAAA 地址，核对为公网后固定连接这些地址。接口须兼容 `name`、`type` 参数及 `Status`、`Answer` 响应；可以换成可访问的同协议服务。查询失败或真实地址属于私网时，本次请求报错；直接写保留 IP 仍会被拦截。

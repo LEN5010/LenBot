@@ -23,11 +23,20 @@ const emit = defineEmits(['dirty'])
 const route = useRoute(), router = useRouter()
 const state = useResource(() => tasksApi.state())
 const settings = computed(() => state.data.value?.scenes.find(item => item.scene === props.scene) || null)
-const filter = ref('active'), rows = ref([])
-const list = useResource(async more => ({ more: more === true, ...(await tasksApi.list(props.scene, {
-  status: filter.value, offset: more === true ? list.data.value.next_offset : 0, limit: 20 })) }))
-watch(() => list.data.value, value => { if (value) rows.value = value.more ? [...rows.value, ...value.items] : value.items })
-watch(filter, () => list.reload())
+const filter = ref('active'), rows = ref([]), wanted = ref(20)
+const list = useResource(async () => {
+  const status = filter.value, count = wanted.value, items = []
+  let next = 0
+  while (next !== null && items.length < count) {
+    const page = await tasksApi.list(props.scene, { status, offset: next, limit: 20 })
+    items.push(...page.items)
+    next = page.next_offset
+  }
+  return { items, next_offset: next }
+})
+watch(() => list.data.value, value => { if (value) rows.value = value.items })
+watch(filter, () => { wanted.value = 20; rows.value = []; list.reload() })
+function loadMore() { wanted.value += 20; list.reload() }
 const selected = computed(() => /^[1-9][0-9]*$/.test(route.query.id ?? '') ? Number(route.query.id) : null)
 
 // Change notices re-read the list and the open task; drafts in the detail stay as typed.
@@ -79,7 +88,7 @@ const accepting = computed(() => state.data.value?.configured && state.data.valu
                   <template #meta><StatusBadge dot kind="task" :value="item.status" /></template>
                 </ObjectRow>
               </ObjectList>
-              <LoadMore v-if="list.data.value?.next_offset != null" :loading="list.loading.value" @more="list.reload(true)" />
+              <LoadMore v-if="list.data.value?.next_offset != null" :loading="list.loading.value" @more="loadMore" />
             </ResourceState>
           </div>
         </Panel>

@@ -4,6 +4,9 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 import json
 import sqlite3
+import os
+import stat
+from ...work.materials import finish_file_operation
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -31,19 +34,29 @@ class QuietChange(BaseModel):
     direct: Literal['allow', 'defer'] = 'allow'
 
 
+def stderr_tail(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise ValueError(f'Task stderr is not a regular file: {path}')
+        source.seek(0, os.SEEK_END)
+        source.seek(max(0, source.tell() - 65536))
+        return source.read(65536).decode('utf-8', 'replace')
+
+
 def register_host_operations(app, *, runtime, user):
     config, store = runtime.config, runtime.store
     def scene_exists(scene):
         if scene not in runtime.chats:
             raise HTTPException(404, '当前宿主未配置这一场景')
-    def archive(payload):
+    async def archive(payload):
         def plugin_redactor(text):
             if runtime.plugins is not None:
                 for name in runtime.plugins.plugins:
                     text = runtime.plugins.redact(name, text)
             return text
-        return Response(diagnostic_zip({"sampled_at": store.now(), **payload}, config,
-                                       plugin_redactor=plugin_redactor), media_type='application/zip',
+        return Response(await finish_file_operation(diagnostic_zip, {"sampled_at": store.now(), **payload}, config,
+                                                   plugin_redactor=plugin_redactor), media_type='application/zip',
                         headers={'Content-Disposition': 'attachment; filename="diagnostic.zip"',
                                  'Cache-Control': 'no-store'})
 
@@ -115,7 +128,7 @@ def register_host_operations(app, *, runtime, user):
         if detail is None:
             raise HTTPException(404, '当前场景没有这一轮')
         logs = await asyncio.to_thread(read_records, config.logging.directory, limit=2000, match={'turn_id': turn_id})
-        return archive({'turn': detail, 'log': list(reversed(logs)),
+        return await archive({'turn': detail, 'log': list(reversed(logs)),
                         'scope': '实际轮次与调用，以及同一轮 ID 的运行日志；输入原话以保存的请求为准'})
 
     @app.get('/api/host/tasks/{task_id}/export')
@@ -133,10 +146,10 @@ def register_host_operations(app, *, runtime, user):
         logs = await asyncio.to_thread(read_records, config.logging.directory, limit=2000,
                                        match={'scene': scene, 'task_id': str(task_id)})
         stderr = {} if config.worker is None else {
-            str(path.name): path.read_bytes()[-65536:].decode('utf-8', 'replace')
+            str(path.name): await asyncio.to_thread(stderr_tail, path)
             for path, kind in temporary_paths(config.worker, scene, task_id)
             if kind == 'file' and path.name.endswith('.stderr') and path.is_file()}
-        return archive({'task': asdict(task), 'events': events,
+        return await archive({'task': asdict(task), 'events': events,
                         'files': [dict(row) for row in store.db.execute(
                             'SELECT name,size,note,created FROM task_files WHERE scene=? AND task_id=?',
                             (scene, task_id))],
@@ -148,7 +161,7 @@ def register_host_operations(app, *, runtime, user):
         manager = runtime.retention
         return {'enabled': config.retention is not None, 'busy': manager.lock.locked(),
                 'last_result': manager.last_result, 'error': manager.error,
-                'preview': None if config.retention is None else manager.batch(preview=True)}
+                'preview': None if config.retention is None else await manager.batch_async(preview=True)}
 
     @app.post('/api/host/retention')
     async def retention_run(confirmed: bool = False, _: str = Depends(user)):
@@ -159,7 +172,7 @@ def register_host_operations(app, *, runtime, user):
             raise HTTPException(409, '已有清理批次正在执行')
         async with manager.lock:
             try:
-                result = manager.batch()
+                result = await manager.batch_async()
             except ValueError as error:
                 raise HTTPException(422, str(error)) from error
             runtime.notify()
@@ -218,4 +231,4 @@ def register_host_operations(app, *, runtime, user):
         if name not in paths:
             raise HTTPException(404, '没有这一份日志')
         # Diagnostic exports, unlike local files, also mask account-shaped numbers.
-        return archive({'log': paths[name].read_text(encoding='utf-8')})
+        return await archive({'log': await asyncio.to_thread(paths[name].read_text, encoding='utf-8')})

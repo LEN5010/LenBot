@@ -60,6 +60,8 @@ class EgressUsage:
     def _day(self, scene: str, date: str) -> list[int]:
         key = (scene, date)
         if key not in self._scene_days:
+            for old in [old for old in self._scene_days if old[0] == scene and old != key]:
+                del self._scene_days[old]
             self._scene_days[key] = list(self.records.egress_scene_day_totals(scene, date))
         return self._scene_days[key]
 
@@ -174,7 +176,8 @@ class EgressUsage:
             limit = daily_limit
         else:
             date = None
-            up, down = self._task(scene, task_id)
+            cached = self._tasks.get((scene, task_id))
+            up, down = self.records.egress_task_totals(scene, task_id) if cached is None else cached
             limit = task_limit
         return {
             "up": up, "down": down, "limit": limit, "date": date,

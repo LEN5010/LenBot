@@ -98,19 +98,22 @@ python -m len_bot.next.maintenance.plugin_dependencies
 
 Clash、Surge 等代理软件开启 fake-ip（假 IP）或增强模式时，本机查任何域名都会得到 `198.18.x.x` 这类保留地址，再由代理按域名转发。LenBot 读网页、取图片和后台任务出网时会拒绝保留地址，于是这些请求全部失败，错误里能看到 `resolved to 198.18.… (私有或保留地址)`。
 
-在根配置写上代理实际使用的假 IP 网段即可：
+在根配置写上代理实际使用的假 IP 网段和可访问的 DNS JSON 服务：
 
 ```json
-"network": { "fake_ip_networks": ["198.18.0.0/15"] }
+"network": {
+  "fake_ip_networks": ["198.18.0.0/15"],
+  "public_dns_url": "https://dns.google/resolve"
+}
 ```
 
-只有按域名连接、而且解析结果落在这些网段里时才放行；直接写 IP 的请求照样拦截。网段不能覆盖 `10.0.0.0/8`、`192.168.0.0/16` 这类真实局域网，也不能是公网段。代理软件里实际的网段以它的设置为准。
+按域名连接且解析结果落在假 IP 网段时，会向 `public_dns_url` 查询真实 A／AAAA 地址，核对为公网后固定连接这些地址。接口须兼容 `name`、`type` 参数及 `Status`、`Answer` 响应；查询失败或真实地址是私网时，本次请求报错。直接写保留 IP 仍会被拦截。网段不能覆盖 `10.0.0.0/8`、`192.168.0.0/16` 这类真实局域网，也不能是公网段。代理软件里实际的网段以它的设置为准。
 
 ## 后台任务
 
 - **资料**：资源页可以上传本群共享资料。新建任务时可以从共享资料、其他任务的文件和交付里选，最多 16 份。任务拿到的是只读副本，原文件之后改了或删了都不影响任务。
 - **追问和续接**：任务可以向请求人提问，等回答期间不占执行名额。任务结束后可以明确续接，用原来的会话和文件。`worker.max_calls` 按每次执行计算，`max_tokens` 按整个任务累计输入加输出 token。失败不会自动重试。
-- **产物**：生成文件、登记为交付、发到 QQ 是三件事，各自有记录。在任务详情里可以预览、下载、登记和发送。
+- **产物**：生成文件、登记为交付、发到 QQ 是三件事，各自有记录。在任务详情里可以预览、下载、登记和发送。单文件默认上限 25 MiB，整个任务登记的交付累计默认上限 500 MiB（`worker.max_delivery_bytes`），续接不会重置。
 - **清理**：资源页可以对任务做两种清理。清理临时文件会保留会话、输入和产物；释放环境会删除整个工作区，之后不能续接，已登记的交付和共享资料保留。任务还在运行、或还占着容器和浏览器会话时不能清理。
 - **渲染**：任务镜像带 `lenbot-render`，能把 HTML 渲染成 PDF、截图和打印预览，例如 `lenbot-render out/document.html --pdf out/document.pdf --screenshot out/page.png`。
 - **镜像**：用官方任务镜像 `lenbot-worker` 时，部署包和 Docker 的面板升级会一起换成同版本；自己构建的镜像要自己重建，并在停机后把 `worker.image` 改到新标签。
@@ -171,7 +174,7 @@ python -m len_bot.next.maintenance.memory_reindex
 启动时不会自动升级数据；数据格式不对会直接报错。所有命令和运行共用实例锁 `.lenbot-instance.lock`，有别的命令占着就会拒绝执行。不要手动删除锁文件。
 
 
-面板登录按来源 IP 统计尝试次数，15 分钟内失败或正在校验的尝试达到 5 次后拒绝继续校验；更换用户名不会重置次数，成功登录清除该 IP 的计数。
+面板登录按来源 IP 统计尝试次数，15 分钟内失败或正在校验的尝试达到 5 次后，错误凭据返回 429；更换用户名不会重置次数。正确凭据仍可登录并清除该 IP 的计数，避免同一代理后的用户互相锁住。面板写入与 WebSocket 核对浏览器 Origin；反向代理须保留 Host，并传递正确的 `X-Forwarded-Proto`。
 
 业务数据库从公开版本的格式 v1 开始，之后每次格式变化都有对应的升级步骤，目前是格式 3。记忆处理库目前是格式 6，本地记忆索引为格式 3。
 
@@ -181,7 +184,9 @@ python -m len_bot.next.maintenance.memory_reindex
 
 `migrate_config` 要在数据库升级之前执行，数据库升级会读取根配置。它删除旧版本的模型价格（`models.prices`、各用途的 `price`）和空的金额上限，原文件保存为 `lenbot.config.json.pre-tokens.bak`；对话测试实例的配置一并处理。金额上限（`limits.daily_model_cost`、`scene_daily_model_cost`、`worker.max_cost`）没法换算成 token，配置里填了这几项时命令直接报错并列出原值，文件不改；手动删掉它们、改填 `limits.daily_tokens`、`scene_daily_tokens`、`worker.max_tokens` 后再执行。
 
-根配置从格式 1 升到 2 时，移除已退役旧核心的 `history_import`、`reminder_import`、`media_import`、`media_archive` 字段，原配置保存为 `lenbot.config.json.pre-config-v1.bak`。这四项已没有执行入口，迁移仅清理配置，不读写它们引用的旧实例数据。仍在使用的 `task_archive` 保留。已有格式 1 实例更新源码后须先停机执行 `python -m len_bot.next.maintenance.migrate_config`，再启动；首次向导直接生成格式 2。
+根配置从格式 1 升到 2 时，移除已退役旧核心的 `history_import`、`reminder_import`、`media_import`、`media_archive` 字段。这四项已没有执行入口，迁移仅清理配置，不读写它们引用的旧实例数据；仍在使用的 `task_archive` 保留。格式 3 增加 `worker.max_delivery_bytes` 和 `network.public_dns_url`；已有实例更新源码后须先停机执行 `python -m len_bot.next.maintenance.migrate_config`，再启动。原配置按输入格式保存为 `lenbot.config.json.pre-config-v<编号>.bak`；首次向导直接生成格式 3。
+
+任务的 `max_tokens` 按整个任务累计厂商报告的输入加输出。明确被服务拒绝的 HTTP 4xx（例如 401、429）且没有 usage 时，不阻止修正后续接；已经接受或中断的调用、5xx 等仍保留未知用量，配置了任务 token 上限时暂停续接。不会估算或把未知消耗记成零。`max_daily_tasks` 计新建任务数，续接沿用原任务；普通成员可补充信息，确认操作仍要求任务管理权限。
 
 业务数据库从格式 1 升到 2 时，各调用记录原来的估算金额被删除，改为从同一行保存的 usage 重新统计 token；usage 读不出 token 的行会让升级停下并报出行号。
 
