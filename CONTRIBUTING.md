@@ -113,4 +113,4 @@ uv run --no-sync python scripts/build_release.py /tmp/lenbot-release
 
 ## 许可证
 
-提交到本仓库的代码按 [AGPL-3.0-only](LICENSE) 授权；`developer/examples/counter/` 和插件模板按 GPL-3.0-only 授权。第三方材料的来源和许可写在 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md)，引入新的第三方代码或素材时一起更新。
+提交到本仓库的代码按 [AGPL-3.0-only](LICENSE) 授权；插件模板按 GPL-3.0-only 授权。第三方材料的来源和许可写在 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md)，引入新的第三方代码或素材时一起更新。

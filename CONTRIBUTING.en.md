@@ -113,4 +113,4 @@ This rebuilds the panel in a copy and produces the sdist, the wheel, the Linux/m
 
 ## License
 
-Code contributed to this repository is licensed under [AGPL-3.0-only](LICENSE); `developer/examples/counter/` and the plugin template are GPL-3.0-only. Sources and licenses of third-party material are listed in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md); update it when you bring in third-party code or assets.
+Code contributed to this repository is licensed under [AGPL-3.0-only](LICENSE); the plugin template is GPL-3.0-only. Sources and licenses of third-party material are listed in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md); update it when you bring in third-party code or assets.

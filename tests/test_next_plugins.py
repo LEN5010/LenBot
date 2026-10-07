@@ -205,7 +205,7 @@ async def test_dependency_restore_ignores_unapplied_first_install_candidate(tmp_
     from len_bot.next.plugins.install import PluginInstaller
 
     root = _root(tmp_path, {'paths': ['plugins'], 'sample': {}, 'counter': {}, 'disabled': ['counter']})
-    package = Path(__file__).parents[1] / 'developer/examples/counter'
+    package = _copy_sample(tmp_path / 'zip-source', 'counter')
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, 'w') as archive:
         for name in ('plugin.toml', '__init__.py'):

@@ -15,6 +15,7 @@ from .next.platform.identity import validate_scene
 from .next.platform.messages import ChatMessage, Sender, Segment
 from .plugin import Content, Image, Sent, Text
 from .next.plugins.host import PluginHost
+from .next.plugins.data import write_version
 from .next.plugins.manifest import parse_manifest
 from .next.plugins.store import PluginStore
 from .next.storage.store import Store
@@ -88,8 +89,13 @@ class PluginTest:
 
     def __init__(self, package: Path, *, config: dict | None = None,
                  scenes: Sequence[str] = ('onebot:group:80001',), owners: Sequence[str] = (),
-                 now: Callable[[], float] = time.time, models: dict | None = None):
+                 now: Callable[[], float] = time.time, models: dict | None = None,
+                 data: Path | None = None, data_version: int | None = None):
+        """``data`` is copied in as the plugin's existing data directory; ``data_version`` records the
+        version it was written with (data without one counts as 1). A higher manifest ``data_version``
+        then runs ``migrate_data`` before ``start``, as on a real upgrade."""
         self.now, self.models = now, models
+        self.data, self.data_version = data, data_version
         self.package = Path(package)
         self.manifest = parse_manifest(self.package / 'plugin.toml')
         self.manifest.require_compatible()
@@ -107,6 +113,10 @@ class PluginTest:
         plugins = root / 'plugins'
         shutil.copytree(self.package, plugins / self.manifest.name,
                         ignore=shutil.ignore_patterns('.git', '__pycache__', '.venv'))
+        if self.data is not None:
+            shutil.copytree(self.data, root / 'plugin-data' / self.manifest.name)
+            if self.data_version is not None:
+                write_version(root / 'plugin-data' / self.manifest.name, self.data_version)
         config = HostConfig.model_validate({
             'bot_id': 'onebot:90001', 'owners': self.owners, 'mode': 'isolated-multi',
             'timezone': 'Asia/Shanghai', 'database': root / 'messages.db',

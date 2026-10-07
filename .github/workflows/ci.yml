@@ -46,6 +46,61 @@ jobs:
           path: ${{ runner.temp }}/release/artifacts/*
           if-no-files-found: error
 
+  catalog:
+    runs-on: ubuntu-latest
+    outputs:
+      plugins: ${{ steps.read.outputs.plugins }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: src/len_bot/next/plugins/plugin_catalog.json
+          sparse-checkout-cone-mode: false
+      - id: read
+        name: List official plugins pinned by the built-in catalog
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          prefix = 'https://github.com/lendevs/'
+          entries = json.load(open('src/len_bot/next/plugins/plugin_catalog.json'))['entries']
+          plugins = [{'name': entry['name'], 'repository': entry['repository'].removeprefix('https://github.com/').removesuffix('.git'),
+                      'ref': entry['ref']} for entry in entries if entry['repository'].startswith(prefix)]
+          print('plugins=' + json.dumps(plugins))
+          PY
+
+  official-plugins:
+    # Every host commit must still run the plugin versions the catalog installs.
+    needs: catalog
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: ${{ fromJSON(needs.catalog.outputs.plugins) }}
+    name: plugin ${{ matrix.plugin.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: host-source
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.plugin.repository }}
+          ref: ${{ matrix.plugin.ref }}
+          path: plugin
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.13"
+      - run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+      - run: uv python install 3.13
+      - run: uv venv --python 3.13
+      - run: uv pip install ./host-source pytest pytest-asyncio
+      - name: Install declared plugin dependencies
+        run: |
+          uv run --no-project --python .venv/bin/python python -c 'import pathlib,tomllib; data=tomllib.loads(pathlib.Path("plugin/plugin.toml").read_text()); pathlib.Path("plugin-requirements.txt").write_text("\n".join(data.get("dependencies", [])))'
+          uv pip install --requirements plugin-requirements.txt
+      - run: uv run --no-project --python ../.venv/bin/python python -m pytest -q --confcutdir=tests
+        working-directory: plugin
+      - name: Check runtime ZIP resources
+        run: uv run --no-project --python .venv/bin/python python host-source/scripts/package_plugin.py plugin "$RUNNER_TEMP/plugin.zip"
+
   install-smoke:
     needs: build
     uses: ./.github/workflows/install-smoke.yml

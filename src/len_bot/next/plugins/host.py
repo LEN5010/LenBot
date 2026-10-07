@@ -27,6 +27,7 @@ from ..platform.messages import ChatMessage
 from ...plugin import (MARK, Content, GenerationRole, Image, Text,
                      Invocation, Notice, Plugin, PluginContext, Sent)
 from .kv import PluginKV
+from .data import prepare_data
 from ..models.client import ChatModel, ModelReply
 from ..models.request import request_model
 from ..chat.schedule_time import Cron, next_cron, parse_cron
@@ -324,14 +325,15 @@ class PluginHost:
             raise RuntimeError(f"插件 {plugin} 未处于可运行状态：{record.status}")
         return record
 
+    # KV runs in a worker thread: a lock wait in one plugin's file must not stall the event loop.
     async def get_kv(self, plugin: str, key: str, default: JsonValue) -> JsonValue:
-        return PluginKV(self._active(plugin).context.data_dir).get(key, default)
+        return await asyncio.to_thread(PluginKV(self._active(plugin).context.data_dir).get, key, default)
 
     async def set_kv(self, plugin: str, key: str, value: JsonValue) -> None:
-        PluginKV(self._active(plugin).context.data_dir).set(key, value)
+        await asyncio.to_thread(PluginKV(self._active(plugin).context.data_dir).set, key, value)
 
     async def delete_kv(self, plugin: str, key: str) -> bool:
-        return PluginKV(self._active(plugin).context.data_dir).delete(key)
+        return await asyncio.to_thread(PluginKV(self._active(plugin).context.data_dir).delete, key)
 
     async def fetch_image(self, plugin: str, url: str, timeout_seconds: float) -> bytes:
         self._active(plugin)
@@ -669,6 +671,11 @@ class PluginHost:
 
     async def start_plugin(self, record: Loaded) -> None:
         async def start() -> None:
+            data_dir = record.context.data_dir
+            migrated = await prepare_data(record.name, record.manifest.data_version, data_dir,
+                                          data_dir.parent / '.backups', record.instance.migrate_data)
+            if migrated is not None:
+                log_event(logger, 'plugin_data_migrated', **migrated)
             await record.instance.start()
             if record.status != "loaded":
                 return

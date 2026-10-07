@@ -176,6 +176,8 @@ class Manifest(BaseModel):
     name: str
     version: str = Field(min_length=1)
     interface: int
+    # Shape of data_dir and KV; raised together with Plugin.migrate_data, never lowered.
+    data_version: int = Field(default=1, ge=1, strict=True)
     requires_lenbot: str
     requires_python: str
     platforms: list[Literal['linux', 'darwin', 'win32']] = Field(min_length=1)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
@@ -157,6 +158,11 @@ class PluginContext:
     @property
     def bot_id(self) -> str:
         return self.host.bot_id
+
+    @property
+    def log(self) -> logging.Logger:
+        """This plugin's logger; records join the host log with the plugin name and the current turn or task."""
+        return logging.getLogger(f'len_bot.plugins.{self.name}')
 
     def start_task(self, name: str, coroutine: Coroutine) -> asyncio.Task:
         return self.host.start_task(self.name, name, coroutine)
@@ -327,6 +333,15 @@ class Plugin:
     def unavailable_tools(self, scene: str) -> Mapping[str, str]:
         """Tool names and configuration reasons; excludes these tools from discovery."""
         return {}
+
+    async def migrate_data(self, from_version: int) -> None:
+        """Bring ``ctx.data_dir`` and KV from ``from_version`` to the manifest's ``data_version``.
+
+        Called before ``start`` only when the manifest's ``data_version`` is higher than the
+        version the existing data was written with. The host copies the data directory first
+        and puts it back if this raises; raising leaves the plugin failed, not half-migrated.
+        """
+        raise NotImplementedError(f'插件 {self.ctx.name} 提高了 data_version，但没有实现从 {from_version} 迁移的 migrate_data')
 
     async def start(self) -> None:
         """Called once after the platform connection is ready."""

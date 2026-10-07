@@ -2,7 +2,7 @@
 
 插件是一个 Python 包：一个 `plugin.toml` 清单，一个 `__init__.py`，里面恰好定义一个 `Plugin` 子类。插件和 LenBot 在同一个进程里运行，只从 `len_bot.plugin` 导入接口。
 
-最快的开始方式是在 GitHub 上用[插件模板](https://github.com/lendevs/lenbot-plugin-template)生成仓库，或者复制[计数插件示例](https://github.com/lendevs/LenBot/tree/master/developer/examples/counter)。
+最快的开始方式是在 GitHub 上用[插件模板](https://github.com/lendevs/lenbot-plugin-template)生成仓库。
 
 ## 清单
 

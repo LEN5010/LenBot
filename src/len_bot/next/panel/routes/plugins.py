@@ -249,6 +249,11 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
         require_name(name)
         return await operate(lambda: manager.cancel(name))
 
+    @app.post('/api/host/plugins/{name}/rollback')
+    async def rollback(name: str, _: str = Depends(user)):
+        require_name(name)
+        return await operate(lambda: manager.rollback(name))
+
     @app.post('/api/host/plugins/{name}/reload')
     async def reload(name: str, _: str = Depends(user)):
         require_name(name)
