@@ -42,12 +42,28 @@ async def test_zip_root_layout_and_source_identity(tmp_path, prefix):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('name', ['../escaped', '/escaped', 'a/../../escaped', 'a\\escaped'])
+@pytest.mark.parametrize('name', ['../escaped', '/escaped', 'a/../../escaped', 'a\\escaped', 'D:/evil.py', 'a/D:/evil.py'])
 async def test_zip_rejects_paths_outside_package(tmp_path, name):
     installer = PluginInstaller(tmp_path)
     with pytest.raises(ValueError, match='Invalid plugin ZIP member'):
         await installer.prepare_zip(package(member=name), 'sample.zip', [])
     assert not (installer.records / 'sample.json').exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('member', ['__pycache__/__init__.pyc', 'source.pyc', '__PYCACHE__/__init__.PYC'])
+async def test_zip_bytecode_is_rejected_before_candidate_registration(tmp_path, member):
+    installer = PluginInstaller(tmp_path)
+    with pytest.raises(ValueError, match='Python bytecode'):
+        await installer.prepare_zip(package(member=member), 'sample.zip', [])
+    assert not (installer.records / 'sample.json').exists()
+
+
+@pytest.mark.asyncio
+async def test_finder_metadata_does_not_hide_the_plugin_root(tmp_path):
+    installer = PluginInstaller(tmp_path)
+    manifest, _, _ = await installer.prepare_zip(package(prefix='sample/', member='__MACOSX/._sample'), 'sample.zip', [])
+    assert manifest.name == 'sample'
 
 
 @pytest.mark.asyncio

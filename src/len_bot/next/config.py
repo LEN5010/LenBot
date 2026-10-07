@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from .work.egress_policy import NetworkSettings
 from .browser.client import AccountBrowserSettings
 from .models.asr import AudioSettings
+from .storage.files import sync_directory
 from .runtime.identity import IdentitySettings, combine_identities
 from .models.limits import ResourceLimits
 from .configuration.mcp import MCPService, SERVICE_NAME
@@ -44,12 +45,12 @@ from .configuration.maintenance import (
     ReplayClockSettings,
 )
 
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 
 
 class SharedConfig(BaseModel):
     model_config = STRICT
-    config_version: Literal[2] = 2
+    config_version: Literal[3] = 3
     @property
     def _instance_root(self) -> Path | None:
         # Loader location is not a runtime setting and is not serialized or compared.
@@ -571,7 +572,10 @@ def save_scene_persona(root: Path, changes: ScenePersona) -> None:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(candidate, stream, ensure_ascii=False, allow_nan=False, indent=2)
             stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
         temporary.replace(path)
+        sync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 

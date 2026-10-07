@@ -31,7 +31,7 @@ def entrypoints(root: Path, platform: str, uv: str) -> None:
     if platform == 'windows':
         quote_ps = lambda value: "'" + str(value).replace("'", "''") + "'"
         command = '& ' + quote_ps(root / 'control/.venv/Scripts/python.exe') + ' -X utf8 ' + quote_ps(root / 'control/code/controller.py') + ' ' + quote_ps(root)
-        (root / 'run.ps1').write_text(command + '\n', encoding='utf-8')
+        (root / 'run.ps1').write_text(command + '\n', encoding='utf-8-sig')
         (root / 'run.cmd').write_text('@powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1"\n')
         # Starts at logon through Task Scheduler; stop asks the controller, which stops the host before exiting.
         (root / 'service.ps1').write_text('''param([Parameter(Mandatory)][ValidateSet('install', 'uninstall', 'start', 'stop', 'status')][string]$Action)
@@ -53,7 +53,7 @@ switch ($Action) {
   }
   'status' { Get-ScheduledTask -TaskName $Name | Get-ScheduledTaskInfo }
 }
-'''.replace('ROOT', quote_ps(root)), encoding='utf-8')
+'''.replace('ROOT', quote_ps(root)), encoding='utf-8-sig')
         return
     if platform == 'linux':
         def systemd(value: str) -> str:

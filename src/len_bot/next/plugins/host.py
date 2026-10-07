@@ -193,6 +193,8 @@ class PluginHost:
             raise ValueError("未在 plugins.paths 中找到" if not directories else
                              "多个目录提供同名插件：" + "、".join(map(str, directories)))
         record.directory = directory = directories[0]
+        for cache in directory.rglob('__pycache__'):
+            shutil.rmtree(cache)
         record.manifest = manifest = read_manifest(directory)
         SECRETS.add(secret_values(manifest, values))
         if manifest.model is not None:
@@ -339,7 +341,7 @@ class PluginHost:
         self._active(plugin)
         async with asyncio.timeout(timeout_seconds):
             _, _, data = await fetch_public(url, timeout_seconds, lambda _type, _prefix: MAX_IMAGE_BYTES,
-                                           fake_ip_networks=self.config.network.networks())
+                                           fake_ip_networks=self.config.network.networks(), public_dns_url=self.config.network.public_dns_url)
         await asyncio.to_thread(inspect_image, data)
         return data
 
@@ -744,9 +746,10 @@ class PluginHost:
             except Exception as error:
                 record.status, record.error = "failed", self._record(record, "停止", error)
                 raise
-            record.instance = None
-            self._unload_module(record)
-            self._notify()
+            finally:
+                record.instance = None
+                self._unload_module(record)
+                self._notify()
 
     async def reload(self, name: str, saved: HostConfig) -> None:
         if self.closing:
@@ -772,9 +775,6 @@ class PluginHost:
                             for tool in self.runtime.mcp.tools_for(scene))
         try:
             directories = found.get(name, [])
-            for directory in directories:
-                for cache in directory.rglob("__pycache__"):
-                    shutil.rmtree(cache)
             self._load(record, directories, record.values, settings.data_directory / name, reserved)
             if self.started or (self.runtime is not None and self.runtime.accepting):
                 await self.start_plugin(record)

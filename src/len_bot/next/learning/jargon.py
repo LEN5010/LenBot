@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..work.materials import finish_file_operation
+
 import asyncio
 import json
 import logging
@@ -302,7 +304,11 @@ class JargonLearner:
                 self.on_update()
             reply = await self._model_call(scene, call_id, messages, estimated)
             proposals = _discovery(reply, {seq: plain_text(message) for seq, message, _ in rows})
-            self.records.complete_discovery(call_id, proposals, exclude_uids=self._exclude_uids(scene))
+            excluded = self._exclude_uids(scene)
+            def complete():
+                with Store(self.config.database, now=self.store.now) as store:
+                    JargonStore(store).complete_discovery(call_id, proposals, exclude_uids=excluded)
+            await finish_file_operation(complete)
         except asyncio.CancelledError as error:
             self.records.fail(call_id, "interrupted", _error_text(error))
             if self.on_update is not None:

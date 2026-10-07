@@ -55,7 +55,7 @@ const save = useAction()
 
 function fromSaved(models) {
   return {
-    providers: Object.entries(models.providers).map(([alias, value]) => ({ alias, api: value.api, base_url: value.base_url, api_key: '', proxy: value.proxy || '', saved: value.api_key_configured })),
+    providers: Object.entries(models.providers).map(([alias, value]) => ({ alias, api: value.api, base_url: value.base_url, api_key: '', proxy: value.proxy || '', saved: value.api_key_configured, key_binding: JSON.stringify([alias, value.api, value.base_url, value.proxy || '']) })),
     roles: clone(models.roles),
   }
 }
@@ -66,7 +66,11 @@ function body(value) {
   }
 }
 watch(() => draft.value?.providers.map(row => JSON.stringify([row.alias, row.api, row.base_url, row.proxy, row.api_key])), (rows, old = []) => {
-  rows?.forEach((value, index) => { if (value !== old[index] && draft.value.providers[index].alias) delete catalog.value[draft.value.providers[index].alias] })
+  rows?.forEach((value, index) => {
+    const row = draft.value.providers[index]
+    row.saved = Boolean(row.key_binding) && row.key_binding === JSON.stringify(JSON.parse(value).slice(0, 4))
+    if (value !== old[index] && draft.value.providers[index].alias) delete catalog.value[draft.value.providers[index].alias]
+  })
 })
 const saved = computed(() => settings.data.value?.saved.models)
 function adopt() { draft.value = fromSaved(saved.value); catalog.value = {} }
@@ -78,6 +82,8 @@ const providerNames = computed(() => draft.value?.providers.map(row => row.alias
 const problem = computed(() => {
   if (!draft.value) return ''
   if (new Set(providerNames.value).size !== draft.value.providers.length) return '服务商名称不能为空，也不能重复'
+  const unbound = draft.value.providers.find(row => !row.saved && !row.api_key)
+  if (unbound) return `服务商 ${unbound.alias} 需要填写 API Key；名称、协议、地址或代理改变后不能沿用旧密钥`
   return ''
 })
 
@@ -103,6 +109,7 @@ function toggleAsr(value) {
   draft.value.roles.asr = value ? { api: 'openai-audio', provider: providerChoices('asr')[0] || '', model: '', timeout_seconds: 60, language: null } : null
 }
 async function submit() {
+  if (problem.value) return
   const result = await save.run(() => api('/api/host/settings/models', { method: 'PUT', body: JSON.stringify(body(draft.value)) }))
   if (result) { settings.data.value = result; adopt(); readPendingRestart(); notify('已保存') }
 }

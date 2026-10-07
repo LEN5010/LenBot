@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import time
+from urllib.parse import urlsplit
 from collections.abc import Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
@@ -35,9 +36,29 @@ def cookie_name(connection: HTTPConnection) -> str:
     return f"lenbot_test_session_p{port}"
 
 
+def require_panel_origin(connection: HTTPConnection) -> None:
+    origin = connection.headers.get('origin')
+    if origin is None:
+        return
+    url = urlsplit(str(connection.url))
+    scheme = {'ws': 'http', 'wss': 'https'}.get(url.scheme, url.scheme)
+    scheme = connection.headers.get('x-forwarded-proto', scheme)
+    if origin != f'{scheme}://{url.netloc}':
+        raise HTTPException(403, '面板请求必须来自当前面板地址')
+
+
 def install_panel_auth(app: FastAPI, settings: PanelSettings, *,
                        on_logout: Callable[[], None]) -> Callable[[Request], str]:
     last_login_at: float | None = None
+
+    @app.middleware('http')
+    async def same_origin(request: Request, call_next):
+        if request.method not in {'GET', 'HEAD', 'OPTIONS'}:
+            try:
+                require_panel_origin(request)
+            except HTTPException as error:
+                return JSONResponse({'detail': error.detail}, status_code=error.status_code)
+        return await call_next(request)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, error: RequestValidationError):
@@ -54,13 +75,14 @@ def install_panel_auth(app: FastAPI, settings: PanelSettings, *,
     @app.post("/api/auth/login")
     async def login(item: Login, request: Request, response: Response):
         nonlocal last_login_at
-        key = f"isolated:{request.client.host}"
-        if login_blocked(key):
-            raise HTTPException(429, "登录尝试过于频繁，请稍后再试")
+        key = f"isolated:{request.client.host if request.client is not None else 'local'}"
+        blocked = login_blocked(key)
         record_login_failure(key)
         password_valid = await asyncio.to_thread(verify_password, item.password, settings.password_hash)
         valid = hmac.compare_digest(item.username.encode('utf-8'), settings.username.encode('utf-8')) and password_valid
         if not valid:
+            if blocked:
+                raise HTTPException(429, "登录尝试过于频繁，请稍后再试")
             raise HTTPException(401, "Invalid username or password")
         clear_login_failures(key)
         last_login_at = time.time()
@@ -86,6 +108,7 @@ def install_panel_auth(app: FastAPI, settings: PanelSettings, *,
 async def changes_socket(websocket: WebSocket, listeners: set[asyncio.Event]) -> None:
     token = websocket.cookies.get(cookie_name(websocket))
     try:
+        require_panel_origin(websocket)
         session_user(token)
     except HTTPException:
         await websocket.close(code=1008)

@@ -148,9 +148,11 @@ class PluginManager:
         """Apply a prepared version; if it fails to load, start or migrate its data, the previous source returns."""
         saved = await asyncio.to_thread(_read_saved, self.root)
         record = self.installer.read(name)
+        candidate_values = self.installer.candidate_values(name)
+        values = saved.plugins.configured[name] if candidate_values is None else candidate_values.values
         applied = False
         try:
-            await self.installer.check_apply(name, saved.plugins.configured[name], saved.scenes)
+            await self.installer.check_apply(name, values, saved.scenes)
             if record.application == 'host':
                 record.requested, record.error = True, None
                 self.installer.write(record)
@@ -160,13 +162,16 @@ class PluginManager:
                     await self.runtime.plugins.stop_plugin(name)
                 finally:
                     self.runtime.refresh_external_tools()
-            await asyncio.to_thread(self.installer.apply_files, name)
+            async with self.write_lock:
+                await asyncio.to_thread(self.installer.apply_files, name)
             applied = True
+            saved = await asyncio.to_thread(_read_saved, self.root)
             await self.apply(name, saved)
             loaded = self.runtime.plugins.plugins[name]
             if loaded.error is not None:
                 raise RuntimeError(loaded.error)
         except Exception as error:
+            applied = applied or self.installer.read(name).installed != record.installed
             if applied and self.installer.read(name).previous is not None:
                 try:
                     result = await self.rollback(name, restore_data=True)
@@ -182,7 +187,7 @@ class PluginManager:
     async def rollback(self, name: str, *, restore_data: bool = False) -> dict:
         """Return to the source replaced by the last apply.
 
-        By default data migrated by the newer version stays, and the older plugin refuses it until
+        Source and configuration return together. By default data migrated by the newer version stays, and the older plugin refuses it until
         its backup is restored by hand. ``restore_data`` puts that backup back; the automatic rollback
         after a failed apply uses it, because the failed version never wrote anything worth keeping.
         """
@@ -192,7 +197,9 @@ class PluginManager:
                 await self.runtime.plugins.stop_plugin(name)
             finally:
                 self.runtime.refresh_external_tools()
-        await asyncio.to_thread(self.installer.rollback_files, name)
+        async with self.write_lock:
+            await asyncio.to_thread(self.installer.rollback_files, name)
+        saved = await asyncio.to_thread(_read_saved, self.root)
         restored = None
         if restore_data and saved.plugins is not None:
             data_dir = saved.plugins.data_directory / name

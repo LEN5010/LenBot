@@ -21,6 +21,7 @@ const fresh = () => ({
   max_calls: 40, max_request_bytes: 8 * 1024 * 1024, max_response_bytes: 64 * 1024 * 1024, max_tokens: null,
   compaction_reserve_tokens: 16384, compaction_keep_recent_tokens: 20000,
   active_timeout_seconds: 1800, input_timeout_seconds: 1800, max_file_bytes: 25 * 1024 * 1024,
+  max_delivery_bytes: 500 * 1024 * 1024,
   input_support: 'text', model_reasoning: null, skills_directory: null, public_browser: false, mcp: false,
   egress: { enabled: true, max_task_bytes: 524288000, max_scene_daily_bytes: 2147483648, max_connections: 16,
     bytes_per_second: 8388608, connect_timeout_seconds: 30, header_timeout_seconds: 30 },
@@ -32,6 +33,7 @@ const advanced = [
   ['max_calls', '每次执行最多调用模型几次'], ['max_request_bytes', '单次模型请求大小上限（字节）'],
   ['max_response_bytes', '单次模型回复大小上限（字节）'], ['active_timeout_seconds', '任务运行超时（秒）'],
   ['input_timeout_seconds', '等待回答追问的时限（秒）'], ['max_file_bytes', '单个交付文件大小上限（字节）'],
+  ['max_delivery_bytes', '每个任务交付文件合计上限（字节）'],
   ['compaction_reserve_tokens', '上下文压缩预留 token'], ['compaction_keep_recent_tokens', '压缩时保留的近期 token'],
 ]
 const network = [

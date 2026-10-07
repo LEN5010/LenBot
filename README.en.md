@@ -39,6 +39,8 @@ Group summaries and the GSUID Core bridge are [standalone plugins (zh)](develope
 
 All three run the same program. On first start without a configuration it prints a link to a web setup wizard: connect OneBot, read the bot account, enter the owner and a model, then continue to the panel.
 
+The wizard defaults to Xiaoran (小然), including her existing profile, voice, boundaries, knowledge and stickers. You can also create a custom persona. The copied persona package can be edited independently in your instance.
+
 | Option | Good for | Notes |
 |---|---|---|
 | Release package | Day-to-day use on Linux, macOS or Windows | Only needs [uv](https://docs.astral.sh/uv/); includes service control; upgrade from the panel and restore if it fails, see [package (zh)](https://lendevs.github.io/LenBot/guide/install-package) |

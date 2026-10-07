@@ -1,5 +1,7 @@
 """A stable parent process selects versioned Python environments."""
 
+import http.client
+
 import json
 import os
 from pathlib import Path
@@ -212,7 +214,7 @@ class Native:
                     return
                 if status['status'] == 'failed':
                     raise RuntimeError('New runtime initialization failed; see the host log')
-            except urllib.error.URLError:
+            except (urllib.error.URLError, OSError, http.client.HTTPException):
                 pass
             time.sleep(0.25)
         raise TimeoutError('New host did not become ready within 90 seconds')

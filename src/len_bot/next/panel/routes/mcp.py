@@ -81,6 +81,8 @@ def register_host_mcp(app: FastAPI, *, root: Path, runtime: NetworkRuntime, runn
                         if value is None:
                             if key not in old:
                                 raise ValueError(f'{field}.{key} 尚未保存，不能用null保持原值')
+                            if any(prior.get(key) != transport.get(key) for key in ('type', 'url', 'command', 'args')):
+                                raise ValueError('MCP 地址或启动命令改变后需要重新填写凭据')
                             values[key] = old[key]
             source.setdefault('mcp', {})[name] = setting
         return await save(edit)

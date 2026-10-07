@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath
+import ipaddress
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
@@ -79,6 +80,18 @@ class OneBotReverse(OneBotCommon):
     mode: Literal["reverse_ws"]
     listen_host: str
     listen_port: int = Field(ge=0, le=65535)
+
+    @model_validator(mode='after')
+    def authenticated_listener(self):
+        if self.listen_host == 'localhost':
+            return self
+        try:
+            local = ipaddress.ip_address(self.listen_host).is_loopback
+        except ValueError:
+            local = False
+        if not local and not self.access_token:
+            raise ValueError('非回环 OneBot 反向监听需要 access_token')
+        return self
 
     @field_validator("listen_host")
     @classmethod

@@ -309,6 +309,8 @@ def _validation_detail(error: ValidationError) -> str:
 
 
 async def _body(request: Request, kind: type[BaseModel]) -> BaseModel:
+    if request.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'application/json':
+        raise HTTPException(415, '请求正文需要 application/json')
     try:
         raw = await request.json()
     except ValueError as error:
@@ -411,7 +413,7 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                 if provider.api_key is None:
                     if alias not in saved.models.providers:
                         raise ValueError(f"models.providers.{alias}.api_key is required for a new provider")
-                    key = saved.models.providers[alias].api_key
+                    key = provider.resolve(saved.models.providers[alias]).api_key
                 else:
                     key = provider.api_key
                 providers[alias] = {"api": provider.api, "base_url": provider.base_url, "api_key": key, "proxy": provider.proxy}
@@ -538,6 +540,10 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
             onebot = None
             if change.onebot is not None:
                 onebot = change.onebot.model_dump(mode="json")
+                if change.access_token is None and saved.onebot is not None:
+                    old = saved.onebot.model_dump(mode='json')
+                    if any(old.get(key) != onebot.get(key) for key in ('mode', 'ws_url', 'http_url')):
+                        raise ValueError('OneBot 连接地址改变后需要重新填写访问令牌')
                 onebot["access_token"] = (
                     "" if saved.onebot is None else saved.onebot.access_token
                 ) if change.access_token is None else change.access_token

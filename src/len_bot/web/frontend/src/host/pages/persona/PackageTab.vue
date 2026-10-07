@@ -19,9 +19,11 @@ async function exportPackage() {
   if (!blob) return
   const url = URL.createObjectURL(blob), link = document.createElement('a')
   link.href = url
-  link.download = `persona-${props.scene.replace(':', '-')}.zip`
+  link.download = `persona-${props.scene.replaceAll(':', '-')}.zip`
+  document.body.appendChild(link)
   link.click()
-  URL.revokeObjectURL(url)
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 const name = ref(''), zip = ref(null), imported = ref(null), upload = useAction()

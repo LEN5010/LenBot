@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 import tomllib
 
-from ..config import load_instance_config
+from ..config import HostConfig, load_instance_config
 from ..instance_lock import instance_lock
 from ..memory.service import LocalMemoryConfig
 from ..plugins.manifest import INTERFACE, Manifest, discover
@@ -51,13 +51,16 @@ def inspect(root: Path, version: str) -> dict:
 def data_paths(root: Path) -> list[str]:
     config = load_instance_config(root)
     paths = [root, config.database, config.database.with_name(config.database.name + '.memory.sqlite3')]
-    if config.plugins is not None:
+    if isinstance(config, HostConfig) and config.plugins is not None:
         paths.extend([config.plugins.data_directory, *config.plugins.paths])
     if isinstance(config.memory, LocalMemoryConfig):
         paths.append(config.memory.local.directory)
     if config.worker is not None:
         paths.extend([config.worker.workspace_root, config.worker.runtime_root, config.worker.delivery_root])
-    paths.extend(value.persona for value in config.scenes.values())
+    if isinstance(config, HostConfig):
+        paths.extend(value.persona for value in config.scenes.values())
+    else:
+        paths.append(config.persona)
     outside = set()
     for path in paths:
         absolute = path.resolve()
@@ -86,7 +89,10 @@ def migrate_instance(root: Path) -> None:
                 migrate_memory_jobs(jobs, backup=False)
             if isinstance(config.memory, LocalMemoryConfig):
                 migrate_local_memory(config.memory.local.directory, backup=False)
-        asyncio.run(install(root))
+        if isinstance(load_instance_config(root), HostConfig):
+            asyncio.run(install(root))
+        else:
+            return
     failed = [item for item in check(root) if item['status'] == 'error']
     if failed:
         raise ValueError('升级后的实例检查未通过，可从升级前快照恢复：\n'

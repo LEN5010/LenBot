@@ -22,8 +22,11 @@ def model_schema(schema: dict | bool) -> dict | bool:
         elif key in {"allOf", "anyOf", "oneOf", "prefixItems"}:
             value = [model_schema(child) for child in value]
         elif key in {"items", "additionalProperties", "unevaluatedProperties", "unevaluatedItems",
-                     "contains", "propertyNames", "not", "if", "then", "else"}:
-            value = model_schema(value)
+                     "additionalItems", "contains", "propertyNames", "not", "if", "then", "else"}:
+            value = [model_schema(child) for child in value] if isinstance(value, list) else model_schema(value)
+        elif key == "dependencies":
+            value = {name: child if isinstance(child, list) else model_schema(child)
+                     for name, child in value.items()}
         result[key] = value
     return result
 

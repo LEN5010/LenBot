@@ -174,6 +174,7 @@ async def worker_session(
     on_container: Callable[[str], None] | None = None,
     task_request: Callable[[str, bytes], Awaitable[dict]] | None = None,
     input_names: tuple[str, ...] = (),
+    public_dns_url: str | None = None,
 ) -> AsyncIterator[WorkerSession]:
     """Start one network-isolated task with host-mediated model access.
 
@@ -206,7 +207,7 @@ async def worker_session(
         )
         if egress_settings.enabled:
             egress = await sandbox.spawn_egress_bridge(
-                handle, settings=egress_settings, fake_ip_networks=fake_ip_networks,
+                handle, settings=egress_settings, fake_ip_networks=fake_ip_networks, public_dns_url=public_dns_url,
                 bytes_per_second=egress_bytes_per_second,
                 before_bytes=before_bytes, on_connection=on_connection,
                 on_bytes=on_bytes,

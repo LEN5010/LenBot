@@ -4,12 +4,11 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import asdict
 import os
-from pathlib import Path
 import stat
 import traceback
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
@@ -19,6 +18,9 @@ from ...runtime.network import NetworkRuntime
 from ...work.files import file_info
 from ...work.store import TERMINAL, TaskStore
 from ...work.tools import DelegateArguments, TaskArguments, perform_task_action
+from ..auth import require_panel_origin
+from .resources import ResourceDownload
+from ...work.resources import TaskResources, ResourceFileRef
 
 
 class WorkspaceDiscard(BaseModel):
@@ -138,12 +140,19 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
     async def download(id: int, file_id: int, scene: str, _: str = Depends(user)):
         scene_exists(scene)
         try:
-            file = records.get_file(scene, id, file_id)
+            records.get_file(scene, id, file_id)
         except ValueError as error:
             raise HTTPException(404, str(error)) from error
-        if not Path(file.path).is_file():
-            raise HTTPException(404, "已登记的交付副本在磁盘上不存在")
-        return FileResponse(file.path, filename=file.name)
+        if runtime.config.worker is None:
+            raise HTTPException(409, '当前没有任务交付目录配置')
+        try:
+            opened = TaskResources(runtime.config.worker, records).open(scene,
+                ResourceFileRef(scope='deliveries', task_id=id, file_id=file_id))
+        except FileNotFoundError as error:
+            raise HTTPException(404, '已登记的交付副本在磁盘上不存在') from error
+        except (ValueError, OSError) as error:
+            raise HTTPException(409, str(error)) from error
+        return ResourceDownload(opened)
 
     @app.get("/api/host/tasks/{id}/session")
     async def session(id: int, scene: str, _: str = Depends(user)):
@@ -180,6 +189,7 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
     async def live(websocket: WebSocket, id: int, scene: str):
         service = runtime.tasks
         try:
+            require_panel_origin(websocket)
             user(websocket)
             scene_exists(scene)
             records.get(scene, id)

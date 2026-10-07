@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 import shutil
 
-from ..config import HostConfig
+from ..config import _load_host_source, load_instance_config
 from ..instance_lock import instance_lock
 
 
@@ -40,6 +40,7 @@ def _relocate(value, source: Path, destination: Path):
 
 def copy_instance(source: Path, destination: Path, panel_port: int) -> None:
     with instance_lock(source):
+        load_instance_config(source)
         config = source / 'lenbot.config.json'
         value = json.loads(config.read_text(encoding='utf-8'))
         database = source / value['database']
@@ -61,9 +62,11 @@ def copy_instance(source: Path, destination: Path, panel_port: int) -> None:
         value = _relocate(value, source, destination)
         value['delivery'] = 'simulated'
         value['onebot'] = None
+        if value.get('panel') is None:
+            raise ValueError('测试副本面板需要原实例配置面板账号')
         value['panel']['port'] = panel_port
         text = json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + '\n'
-        HostConfig.model_validate_json(text)
+        _load_host_source(path, value)
         path.write_text(text, encoding='utf-8')
     print(f'Source: {source}; destination: {destination}; panel port: {panel_port}')
 

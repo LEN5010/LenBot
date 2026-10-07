@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
 import re
 import stat
 from typing import Literal
@@ -13,6 +14,7 @@ import yaml
 
 BUILTIN_DIRECTORY = Path(__file__).resolve().parents[2] / "builtin_skills"
 _NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+MAX_SKILL_BYTES = 1024 * 1024
 
 
 class _FrontmatterLoader(yaml.SafeLoader):
@@ -43,9 +45,13 @@ class Skill:
 def load_skill(path: Path, source: Literal["builtin", "shared", "scene", "task", "plugin"],
                container_path: str) -> Skill:
     file = path / "SKILL.md"
-    if file.is_symlink() or not stat.S_ISREG(file.stat().st_mode):
-        raise ValueError(f"{file}: SKILL.md must be a regular file, not a symbolic link")
-    data = file.read_bytes()
+    descriptor = os.open(file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as source_file:
+        if not stat.S_ISREG(os.fstat(source_file.fileno()).st_mode):
+            raise ValueError(f"{file}: SKILL.md must be a regular file, not a symbolic link")
+        data = source_file.read(MAX_SKILL_BYTES + 1)
+    if len(data) > MAX_SKILL_BYTES:
+        raise ValueError(f"{file}: SKILL.md exceeds {MAX_SKILL_BYTES} bytes")
     try:
         content = data.decode("utf-8").removeprefix("\ufeff")
     except UnicodeDecodeError as error:
@@ -84,7 +90,9 @@ def load_skill(path: Path, source: Literal["builtin", "shared", "scene", "task",
 def _directory(root: Path, source: Literal["builtin", "shared", "scene", "task", "plugin"],
                container_root: str, *, missing_ok: bool,
                public_browser: bool = False) -> tuple[Skill, ...]:
-    if root.resolve(strict=False) != root:
+    if source == 'plugin':
+        root = root.resolve()
+    elif root.resolve(strict=False) != root:
         raise ValueError(f"{root}: skill directory must not traverse a symbolic link")
     try:
         children = sorted(root.iterdir(), key=lambda child: child.name)

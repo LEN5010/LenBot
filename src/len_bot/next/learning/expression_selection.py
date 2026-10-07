@@ -219,7 +219,7 @@ async def open_expression_service(config: HostConfig | LabConfig, store: Store, 
             if key not in shared:
                 provider = config.models.providers[binding.provider]
                 resolved = EmbeddingSettings(**binding.model_dump(), base_url=provider.base_url,
-                                             api_key=provider.api_key)
+                                             api_key=provider.api_key, proxy=provider.proxy)
                 shared[key] = await stack.enter_async_context(EmbeddingClient(resolved))
             clients[scene] = shared[key]
         yield ExpressionService(store, clients, slots=slots)

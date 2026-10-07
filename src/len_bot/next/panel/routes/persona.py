@@ -21,7 +21,7 @@ from ...runtime.network import NetworkRuntime
 from ...tools.skills import select_skills
 from ...plugins.manifest import scene_skill_catalog
 from ...persona.profile import (Example, Persona, PersonaTarget, Style, load_persona, parse_persona_files,
-                      read_persona_files, require_persona_target)
+                      read_persona_files, require_persona_target, save_persona_files)
 from ...persona.knowledge import parse_knowledge_document
 from ...persona.packages import MAX_UPLOAD_BYTES, export_package, import_package
 
@@ -459,15 +459,7 @@ def register_host_persona(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
             require_persona_target(path, change.directory)
             files = profile_files(files, change.profile)
             validate_dependencies(config, path, parse_persona_files(path, files))
-            for filename, content in files.items():
-                descriptor, name = tempfile.mkstemp(prefix='.persona-', dir=path)
-                temporary = Path(name)
-                try:
-                    with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
-                        stream.write(content)
-                    temporary.replace(path / filename)
-                finally:
-                    temporary.unlink(missing_ok=True)
+            save_persona_files(path, files)
         persona = parse_persona_files(path, files)
         return {'directory': str(path), 'id': persona.id,
                 'profile': PersonaProfile.model_validate(persona.model_dump(include={*PROFILE_METADATA, 'voice', 'boundaries', 'examples'})).model_dump(),

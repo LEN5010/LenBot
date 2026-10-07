@@ -7,6 +7,8 @@ endpoint is carried over exec pipes, with ``--network none`` still in effect.
 from __future__ import annotations
 
 import asyncio
+import csv
+from io import StringIO
 from collections.abc import Awaitable, Callable
 import json
 import math
@@ -113,9 +115,9 @@ def _ownership(path: Path) -> str:
 
 
 def _mount(source: Path, target: str, *, readonly: bool = False) -> list[str]:
-    specification = f"type=bind,source={source},target={target}"
-    if readonly:
-        specification += ",readonly"
+    output = StringIO()
+    csv.writer(output, lineterminator='').writerow(['type=bind', f'source={source}', f'target={target}', *(['readonly'] if readonly else [])])
+    specification = output.getvalue()
     return ["--mount", specification]
 
 
@@ -329,6 +331,7 @@ class DockerSandbox:
         on_connection: Callable[[dict], None],
         on_bytes: Callable[[int, str, int], None],
         stderr_path: Path,
+        public_dns_url: str | None = None,
     ) -> EgressTransport:
         """Use a separate exec pipe for public TCP, never a Docker network."""
         command = [
@@ -343,7 +346,7 @@ class DockerSandbox:
             command, cwd=sandbox.workspace, env=_docker_environment(),
             stderr_path=stderr_path, max_connections=settings.max_connections,
             connect_timeout_seconds=settings.connect_timeout_seconds,
-            fake_ip_networks=fake_ip_networks,
+            fake_ip_networks=fake_ip_networks, public_dns_url=public_dns_url,
             bytes_per_second=bytes_per_second, before_bytes=before_bytes,
             on_connection=on_connection, on_bytes=on_bytes,
         )

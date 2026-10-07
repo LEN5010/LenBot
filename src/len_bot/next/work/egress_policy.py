@@ -6,9 +6,13 @@ owns no gateway control, model routing, domain permissions or budget storage.
 from __future__ import annotations
 
 import ipaddress
+import asyncio
+import socket
+from urllib.parse import urlsplit
 from collections.abc import Iterable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+import httpx
 
 _NAT64_PREFIX = ipaddress.ip_network('64:ff9b::/96')
 
@@ -103,6 +107,15 @@ class NetworkSettings(BaseModel):
     # A local proxy in fake-ip mode answers every domain with an address from
     # these ranges and routes the connection by the original domain name.
     fake_ip_networks: list[str] = Field(default_factory=list)
+    public_dns_url: str = 'https://dns.google/resolve'
+
+    @field_validator('public_dns_url')
+    @classmethod
+    def dns_endpoint(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.scheme not in {'http', 'https'} or not parsed.netloc or parsed.username or parsed.password or parsed.fragment:
+            raise ValueError('public_dns_url must be an HTTP(S) DNS JSON endpoint without credentials or fragment')
+        return value
 
     @field_validator('fake_ip_networks')
     @classmethod
@@ -131,3 +144,58 @@ def blocked_resolved_reason(address: str, fake_ip_networks: Iterable[ipaddress.I
     if any(ip.version == network.version and ip in network for network in fake_ip_networks):
         return None
     return blocked_address_reason(address)
+
+
+def parse_public_dns(body: dict, record_type: int) -> list[str]:
+    try:
+        if body['Status'] != 0:
+            raise ValueError(f"DNS status {body['Status']}")
+        addresses = [str(ipaddress.ip_address(answer['data'])) for answer in body.get('Answer', [])
+                     if answer['type'] == record_type]
+        for address in addresses:
+            if ipaddress.ip_address(address).version != (4 if record_type == 1 else 6):
+                raise ValueError('DNS record type differs from its numeric address family')
+            reason = blocked_address_reason(address)
+            if reason is not None:
+                raise EgressBlocked(f'Public DNS returned {address} ({reason})')
+        return addresses
+    except (KeyError, TypeError, ValueError) as error:
+        raise EgressBlocked(f'Invalid public DNS response: {error}; raw={repr(body)[:500]}') from error
+
+
+async def public_addresses(host: str, port: int, fake_ip_networks: tuple, public_dns_url: str | None,
+                           timeout_seconds: float) -> list[str]:
+    """Connect to checked real addresses, never to a domain proxy's stand-in."""
+    answers = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    addresses = list(dict.fromkeys(answer[4][0] for answer in answers))
+    if not addresses:
+        raise EgressBlocked(f'No DNS answers for {host}')
+    literal = False
+    try:
+        ipaddress.ip_address(host)
+        literal = True
+    except ValueError:
+        pass
+    for address in addresses:
+        reason = blocked_address_reason(address) if literal else blocked_resolved_reason(address, fake_ip_networks)
+        if reason is not None:
+            raise EgressBlocked(f'{host} resolved to {address} ({reason})')
+    if not any(any(ipaddress.ip_address(address) in network for network in fake_ip_networks
+                   if ipaddress.ip_address(address).version == network.version) for address in addresses):
+        return addresses
+    if public_dns_url is None:
+        raise EgressBlocked('fake-ip public requests require network.public_dns_url')
+    async with asyncio.timeout(timeout_seconds), httpx.AsyncClient(timeout=timeout_seconds, trust_env=False) as client:
+        responses = await asyncio.gather(*(client.get(public_dns_url, params={'name': host, 'type': kind},
+                                                      headers={'Accept': 'application/dns-json'}) for kind in ('A', 'AAAA')))
+    addresses = []
+    for response, kind in zip(responses, (1, 28), strict=True):
+        response.raise_for_status()
+        try:
+            body = response.json()
+        except ValueError as error:
+            raise EgressBlocked(f'Invalid public DNS JSON: {response.text[:500]}') from error
+        addresses.extend(parse_public_dns(body, kind))
+    if not addresses:
+        raise EgressBlocked(f'Public DNS returned no real addresses for {host}')
+    return addresses

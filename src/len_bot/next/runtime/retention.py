@@ -5,7 +5,8 @@ from contextlib import nullcontext
 import json
 import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from ..storage.store import encode
+from ..storage.store import encode, Store
+from ..work.materials import finish_file_operation
 from ..memory.jobs import MemoryJobs
 
 
@@ -37,15 +38,16 @@ class Retention:
         self.error = None
 
     def batch(self, *, preview: bool = False) -> dict:
-        memory = self.runtime.memory
         path = self.runtime.config.database.with_name(self.runtime.config.database.name + '.memory.sqlite3')
-        context = (nullcontext(memory.jobs) if memory is not None else
-                   MemoryJobs(path) if path.exists() else nullcontext(None))
-        with context as jobs:
-            return self._batch(jobs, preview=preview)
+        context = MemoryJobs(path) if path.exists() else nullcontext(None)
+        with Store(self.runtime.config.database, now=self.runtime.store.now) as store, context as jobs:
+            return self._batch(store, jobs, preview=preview)
 
-    def _batch(self, memory_jobs, *, preview: bool) -> dict:
-        config, store = self.runtime.config, self.runtime.store
+    async def batch_async(self, *, preview: bool = False) -> dict:
+        return await finish_file_operation(self.batch, preview=preview)
+
+    def _batch(self, store, memory_jobs, *, preview: bool) -> dict:
+        config = self.runtime.config
         settings = config.retention
         if settings is None:
             raise ValueError('当前运行配置未启用保留策略')
@@ -142,8 +144,10 @@ class Retention:
                     (cutoff,)).fetchall()
             extraction_jobs = memory_jobs.db.execute(
                 "SELECT j.id,j.details FROM memory_jobs j WHERE j.status='complete' AND j.ended<? "
-                "AND EXISTS(SELECT 1 FROM json_each(j.details,'$.calls') c "
-                "WHERE json_extract(c.value,'$.request.snapshot_expired_at') IS NULL) ORDER BY j.id LIMIT 100",
+                "AND (EXISTS(SELECT 1 FROM json_each(j.details,'$.calls') c "
+                "WHERE json_extract(c.value,'$.request.snapshot_expired_at') IS NULL) "
+                "OR EXISTS(SELECT 1 FROM json_each(j.details,'$.tools') t "
+                "WHERE json_extract(t.value,'$.arguments.snapshot_expired_at') IS NULL)) ORDER BY j.id LIMIT 100",
                 (cutoff,)).fetchall()
         result = {'preview': preview, 'at': now, 'model_snapshots': len(rows),
                   'auxiliary_snapshots': sum(map(len,auxiliary.values())), 'task_snapshots':len(task_calls),
@@ -195,6 +199,9 @@ class Retention:
                     for call in details['calls']:
                         call['request']=expire_request(call['request'],now)
                         call['response']=None
+                    for tool in details.get('tools', []):
+                        tool['arguments'] = {'snapshot_expired_at': now}
+                        tool['result'] = None
                     memory_jobs.db.execute('UPDATE memory_jobs SET details=? WHERE id=?',(encode(details),id))
         self.last_result=result
         return result
@@ -206,7 +213,7 @@ class Retention:
             try:
                 async with self.lock:
                     while True:
-                        result=self.batch()
+                        result=await self.batch_async()
                         self.runtime.notify()
                         if not any(result[key] for key in ('model_snapshots','auxiliary_snapshots','task_snapshots','turns','messages','notices','memory_snapshots','extraction_jobs')):
                             break

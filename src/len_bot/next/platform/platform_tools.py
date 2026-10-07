@@ -135,7 +135,8 @@ async def _expand(call: PlatformCall, forward_id: str, timezone: str, depth: int
         budget[0] -= 1
         clock = datetime.fromtimestamp(node.time, zone).isoformat(sep=" ", timespec="seconds")
         speaker = f"{node.name}({node.uid})" if node.name else f"{node.uid}"
-        lines.append(f"{indent}[{number}] [{clock}] {speaker}：{render_body(node.segments)}")
+        lines.append(f"{indent}[{number}] [{clock}] {speaker}：")
+        lines.extend(f"{indent}  {line}" for line in render_body(node.segments).splitlines())
         for segment in (item for item in node.segments if item.type == "forward"):
             if budget[0] == 0:
                 lines.append(f"{indent}  [其余嵌套转发未展开：已达 {FORWARD_NODES} 条上限]")
