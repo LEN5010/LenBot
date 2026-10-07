@@ -19,7 +19,7 @@ from ..models.limits import LimitReached, check_speech
 from ..platform.messages import ChatMessage, Segment, Sender, SendResult
 from ..persona.profile import Persona
 from ..persona.stickers import PersonaSticker
-from ..plugin import Content, Sent
+from ...plugin import Content, Sent
 from ..plugins.delivery import prepare_parts
 from ..learning.reply_effect_store import ReplyEffectStore
 from ..learning.sticker_assets import CollectedSticker

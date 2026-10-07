@@ -1,7 +1,6 @@
 """Install two real wheel versions and exercise the native update HTTP protocol and snapshot restore."""
 
 import argparse
-import hashlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -16,7 +15,7 @@ import zipfile
 
 from build_deployment import build_deployments
 from release_metadata import write_manifest
-from smoke_install import PLATFORM, check_panel, free_port, request, smoke_package, wait_until_served
+from smoke_install import check_panel, request, smoke_package
 
 ROOT = Path(__file__).resolve().parents[1]
 

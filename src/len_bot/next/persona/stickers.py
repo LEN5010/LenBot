@@ -9,7 +9,7 @@ import stat
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 import yaml
 
-from ..image_assets import MAX_IMAGE_BYTES, inspect_image
+from ...image_assets import MAX_IMAGE_BYTES, inspect_image
 
 
 

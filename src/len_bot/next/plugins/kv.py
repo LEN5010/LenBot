@@ -3,9 +3,10 @@
 from contextlib import closing, contextmanager
 import json
 from pathlib import Path
-import sqlite3
 
 from pydantic import ConfigDict, JsonValue, TypeAdapter
+
+from ..storage.sqlite import connect
 
 
 JSON = TypeAdapter(JsonValue, config=ConfigDict(strict=True, allow_inf_nan=False))
@@ -19,7 +20,7 @@ class PluginKV:
     def connection(self, key: str):
         if not key.strip():
             raise ValueError("插件 KV key 不能为空")
-        with closing(sqlite3.connect(self.path)) as db, db:
+        with closing(connect(self.path)) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             yield db
 

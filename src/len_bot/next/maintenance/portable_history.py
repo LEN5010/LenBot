@@ -64,7 +64,6 @@ def _check_budget(store: Store, config: HostConfig, scene: str, persona: Persona
     system = build_system(local, persona, allowed, platform=config.delivery == "onebot")
     deferred = DEFERRED_NAMES if any(tool["function"]["name"] == "tool_search" for tool in allowed) else frozenset()
     tools = [tool for tool in allowed if tool["function"]["name"] not in deferred]
-    binding = config.models.roles.mind
     trigger = config.compaction.input_tokens
     state = _state(store, config, scene, persona)
     if profile is not None:

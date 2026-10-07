@@ -537,7 +537,6 @@ class SceneRunner:
                 pass  # The known burst/cooldown deadline has arrived.
 
     def batch(self, pending: list[tuple[int, ChatMessage, float]], reason: str) -> tuple[int, list[str]]:
-        binding = self.config.models.roles.mind
         available = (self.config.compaction.input_tokens
                      - estimate_request([{"role": "system", "content": self.chat.context.system}],
                                         self.chat.toolset.tools, 0)

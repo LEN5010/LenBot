@@ -332,7 +332,6 @@ async def open_memory(config: SharedConfig, store: Store, *, active_personas: di
             service = MemoryService(config.memory, backend, jobs=jobs, store=store,
                                     active_personas={} if active_personas is None else active_personas)
             if backend.embedding is not None:
-                binding = config.memory.local.embedding
                 async def embed(source, texts, purpose):
                     async with (slots.slot(scene=source) if slots is not None else nullcontext()):
                         with jobs.db:

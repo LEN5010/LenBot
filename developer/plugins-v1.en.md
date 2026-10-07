@@ -19,12 +19,12 @@ description = "A separate counter for each scene"
 
 All fields above are required. The installed directory must match `name`. Versions use Python packaging's version rules; compatibility ranges are explicit specifiers checked against the actual host and Python versions. Platform names are Python's `sys.platform` values; host packages exist for Linux (`linux`), macOS (`darwin`) and Windows (`win32`). `reload` is `plugin` or `host`. Optional fields are `repository`, `homepage`, `dependencies`, and `config`.
 
-Interface 1 is the supported generation. Additions within it preserve existing signatures and behavior; breaking changes require a new generation. Public imports are `len_bot.next.plugin`, the message types it exposes from `len_bot.next.platform.messages`, `len_bot.next.plugin_testing`, plus `image_assets` and `text_cards` helpers documented below. Internal host modules are not library APIs.
+Interface 1 is the supported generation. Additions within it preserve existing signatures and behavior; breaking changes require a new generation. Public imports are `len_bot.plugin` (including the `ChatMessage`, `Notice`, `Sender` and `Segment` message types it exports), `len_bot.plugin_testing`, plus the `len_bot.image_assets` and `len_bot.text_cards` helpers documented below. Modules under `len_bot.next` are internal and not library APIs.
 
 ## Handlers and lifecycle
 
 ```python
-from len_bot.next.plugin import Plugin, Invocation, command
+from len_bot.plugin import Plugin, Invocation, command
 
 class Example(Plugin):
     @command("hello", "Reply without a model call")
@@ -96,7 +96,7 @@ The discovery page uses a [static catalog](plugin-catalog.md). The first release
 
 ```python
 from pathlib import Path
-from len_bot.next.plugin_testing import PluginTest
+from len_bot.plugin_testing import PluginTest
 
 async def check():
     async with PluginTest(Path("counter"), config={"step": 2}) as bot:

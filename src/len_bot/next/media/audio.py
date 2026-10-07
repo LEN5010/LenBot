@@ -11,7 +11,7 @@ from weakref import WeakValueDictionary
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..models.asr import ASRProtocolError, AudioSettings, transcribe_audio, transcription_tokens
+from ..models.asr import ASRProtocolError, transcribe_audio, transcription_tokens
 from .audio_store import AudioStore
 from ..models.slots import ModelSlots
 from ..platform.platform_tools import PlatformCall

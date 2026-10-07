@@ -46,7 +46,6 @@ cd /tmp/lenbot-test && uv run --project /path/to/LenBot --no-sync len-bot
 | `work/`、`browser/` | 后台任务（Pi 容器）和浏览器协作 |
 | `storage/` | 数据库结构和编解码 |
 | `plugins/` | 插件运行与安装；业务插件位于独立仓库 |
-| `plugin.py`、`plugin_testing.py`、`text_cards.py`、`image_assets.py` | 给插件用的公开接口 |
 | `tools/`、`media/` | 网页、技能、MCP 等工具，图片和语音处理 |
 | `panel/` | 面板后端和首次配置向导 |
 | `maintenance/` | 停机后执行的维护命令：数据升级、重建索引、插件依赖、存储池、测试副本 |
@@ -54,6 +53,7 @@ cd /tmp/lenbot-test && uv run --project /path/to/LenBot --no-sync len-bot
 
 其他目录：
 
+- `src/len_bot/plugin.py`、`plugin_testing.py`、`text_cards.py`、`image_assets.py`：给插件用的公开接口，插件只从这里导入。
 - `src/len_bot/prompts/`：提示词。
 - `src/len_bot/builtin_skills/`：任务技能。
 - `src/len_bot/web/frontend/`：Vue 面板。
@@ -81,6 +81,7 @@ cd /tmp/lenbot-test && uv run --project /path/to/LenBot --no-sync len-bot
 ```sh
 uv run --no-sync pytest -q
 uv run --no-sync python -m compileall -q src/len_bot
+uv run --no-sync ruff check src/len_bot scripts deploy/updater deploy/package
 ```
 
 测试只覆盖外部协议边界（OneBot、Pi RPC、模型与记忆服务的响应解析）、数据迁移、权限和配置校验，样本用脱敏后的真实数据。不 mock 调用过程，不测私有函数，不给提示词做快照。

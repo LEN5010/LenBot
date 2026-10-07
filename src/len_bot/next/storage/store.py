@@ -14,9 +14,10 @@ from typing import Literal
 from uuid import uuid4
 
 from ..platform.messages import Notice, ChatMessage, plain_text
+from .sqlite import connect
 from ..persona.stickers import PersonaSticker
 from ..learning.sticker_assets import CollectedSticker
-from ..image_assets import OriginalImage
+from ...image_assets import OriginalImage
 from ..models.tokens import token_summary
 from ..chat.schedule_time import CronTimeError, next_cron, parse_cron
 from .codec import decode_message, encode
@@ -61,7 +62,7 @@ class Store:
     def __init__(self, path: Path, *, now: Callable[[], float] = time.time):
         self.now = now
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path)
+        self.db = connect(path)
         self.db.row_factory = sqlite3.Row
         try:
             tables = self.db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()

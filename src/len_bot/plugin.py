@@ -16,7 +16,8 @@ from typing import Literal, Protocol
 
 from pydantic import JsonValue
 
-from .platform.messages import ChatMessage, Notice
+# Public message types for plugin authors; explicit re-exports.
+from .next.platform.messages import ChatMessage as ChatMessage, Notice as Notice, Segment as Segment, Sender as Sender
 
 
 INTERFACE = 1

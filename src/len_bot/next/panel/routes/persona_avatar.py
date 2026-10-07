@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, Up
 
 from ...config import HostConfig, load_host_config
 from .persona import finish_role_write
-from ...image_assets import MAX_IMAGE_BYTES, OriginalImage
+from ....image_assets import MAX_IMAGE_BYTES, OriginalImage
 from ...runtime.network import NetworkRuntime
 from ...persona.avatar import avatar_file, load_avatar, parse_avatar
 from ...persona.profile import PersonaTarget, require_persona_target

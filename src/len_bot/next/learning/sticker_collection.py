@@ -22,7 +22,7 @@ from ..models.client import ChatModel, ModelProtocolError, ModelReply
 from ..models.slots import ModelSlots
 from ..trials.replay_images import RecordedImages
 from ..models.tokens import token_record
-from ..image_assets import MAX_IMAGE_BYTES, inspect_image
+from ...image_assets import MAX_IMAGE_BYTES, inspect_image
 from .sticker_store import StickerStore
 from ..storage.store import Store, encode
 

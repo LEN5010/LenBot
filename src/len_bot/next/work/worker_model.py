@@ -15,7 +15,6 @@ import json
 import math
 from typing import Any
 
-import httpx
 
 from ..chat.recap import estimate_text_request
 from ..models.client import ModelProtocolError, ModelSettings

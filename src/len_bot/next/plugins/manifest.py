@@ -17,7 +17,7 @@ from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, Jso
                       TypeAdapter, ValidationError, create_model, field_validator, model_validator)
 from ..configuration.plugin import PLUGIN_NAME, PLUGIN_RESERVED
 from ..config import HostConfig
-from ..plugin import INTERFACE
+from ...plugin import INTERFACE
 from ..platform.identity import validate_scene
 from ..tools.skills import Skill, load_catalog, load_plugin_skills
 from ..storage.store import encode

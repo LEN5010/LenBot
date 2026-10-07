@@ -10,14 +10,14 @@ import time
 from types import SimpleNamespace
 from uuid import uuid4
 
-from .config import HostConfig
-from .platform.identity import validate_scene
-from .platform.messages import ChatMessage, Sender, Segment
+from .next.config import HostConfig
+from .next.platform.identity import validate_scene
+from .next.platform.messages import ChatMessage, Sender, Segment
 from .plugin import Content, Image, Sent, Text
-from .plugins.host import PluginHost
-from .plugins.manifest import parse_manifest
-from .plugins.store import PluginStore
-from .storage.store import Store
+from .next.plugins.host import PluginHost
+from .next.plugins.manifest import parse_manifest
+from .next.plugins.store import PluginStore
+from .next.storage.store import Store
 
 
 @dataclass(frozen=True)

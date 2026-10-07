@@ -13,4 +13,5 @@ jobs:
           version: '0.12.13'
       - run: uv sync --locked
       - run: uv run --no-sync python -m compileall -q src/len_bot scripts deploy/updater deploy/package
+      - run: uv run --no-sync ruff check src/len_bot scripts deploy/updater deploy/package
       - run: uv run --no-sync pytest -q

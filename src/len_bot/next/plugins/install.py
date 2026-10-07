@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Collection, Sequence
 from importlib.metadata import distributions
-import json
 import hashlib
 import os
 import stat
@@ -17,7 +16,7 @@ import sys
 import tempfile
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .manifest import Manifest, discover, parse_manifest, read_manifest
 

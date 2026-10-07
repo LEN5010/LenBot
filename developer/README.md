@@ -12,7 +12,7 @@
 
 ## 写插件
 
-插件接口版本是 **interface = 1**，从 `len_bot.next.plugin` 导入。最快的开始方式是在 GitHub 上用[插件模板](https://github.com/lendevs/lenbot-plugin-template)生成仓库，或者复制[计数插件](examples/counter/)。
+插件接口版本是 **interface = 1**，从 `len_bot.plugin` 导入。最快的开始方式是在 GitHub 上用[插件模板](https://github.com/lendevs/lenbot-plugin-template)生成仓库，或者复制[计数插件](examples/counter/)。
 
 插件是和宿主同进程的可信 Python 代码，适合精确命令、规则接管、后台监测和专用工具。需要在容器里完成的长工作属于后台任务，插件可以通过委派交给它。
 

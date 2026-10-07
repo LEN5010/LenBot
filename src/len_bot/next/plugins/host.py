@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 import importlib.util
@@ -24,16 +24,17 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, Valid
 from ..config import HostConfig
 from ..tools.external_tools import ExternalTool
 from ..platform.messages import ChatMessage
-from ..plugin import (INTERFACE, MARK, Content, GenerationRole, Image, Text,
+from ...plugin import (MARK, Content, GenerationRole, Image, Text,
                      Invocation, Notice, Plugin, PluginContext, Sent)
 from .kv import PluginKV
 from ..models.client import ChatModel, ModelReply
 from ..models.request import request_model
 from ..chat.schedule_time import Cron, next_cron, parse_cron
+from ..chat.request_source import SOURCE_DESCRIPTION, source_message
 from ..tools.skills import Skill, load_plugin_skills
 from .manifest import Manifest, discover, read_manifest, redact_values
 from ..storage.store import encode
-from ..image_assets import MAX_IMAGE_BYTES, inspect_image
+from ...image_assets import MAX_IMAGE_BYTES, inspect_image
 from ..tools.http_read import fetch_public
 from .store import PluginStore
 
@@ -132,8 +133,7 @@ def _arguments(tool: str, function: Callable, *, needs_source: bool) -> type[Bas
     if needs_source:
         if "source_message_id" in fields:
             raise ValueError(f"工具 {tool} 的 source_message_id 由宿主提供，不能声明在处理函数中")
-        fields["source_message_id"] = (str, Field(min_length=1,
-            description="发起这项请求的真实群消息 ID；从聊天记录选择，宿主据此读取实际发送者，不能填写账号 ID"))
+        fields["source_message_id"] = (str, Field(min_length=1, description=SOURCE_DESCRIPTION))
     return create_model(f"PluginTool_{tool}", __config__=STRICT, **fields)
 
 
@@ -338,13 +338,7 @@ class PluginHost:
         return data
 
     def source_message(self, scene: str, platform_id: str) -> ChatMessage:
-        message = self.runtime.store.find_message(scene, platform_id)
-        if (message is None or message.is_self or message.recalled or message.send_status != "received"
-                or message.sender.uid in self.config.scene_config(scene).attention.other_bot_ids):
-            raise ValueError(f"source_message_id 不是当前场景的真实请求消息：{platform_id!r}")
-        if message.sender.uid in self.config.scene_config(scene).permissions.blacklist:
-            raise PermissionError(f"账号 {message.sender.uid} 在当前场景黑名单中")
-        return message
+        return source_message(self.runtime.store, self.config.scene_config(scene), platform_id)
 
     async def send_text(self, plugin: str, scene: str, text: str, reply_to: str | None) -> Sent:
         return await self.send_parts(plugin, scene, [Text(text)], reply_to)

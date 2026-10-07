@@ -46,7 +46,6 @@ The runtime core is in `src/len_bot/next/`. The entry point is `len_bot.next.hos
 | `work/`, `browser/` | Background tasks (Pi containers) and browser cooperation |
 | `storage/` | Database schema and codecs |
 | `plugins/` | Plugin runtime and installation; business plugins live in separate repositories |
-| `plugin.py`, `plugin_testing.py`, `text_cards.py`, `image_assets.py` | Public interfaces for plugins |
 | `tools/`, `media/` | Web, skills, MCP and other tools; image and voice handling |
 | `panel/` | Panel backend and the first-run wizard |
 | `maintenance/` | Commands run while stopped: data upgrades, reindexing, plugin dependencies, storage pools, test copies |
@@ -54,6 +53,7 @@ The runtime core is in `src/len_bot/next/`. The entry point is `len_bot.next.hos
 
 Elsewhere:
 
+- `src/len_bot/plugin.py`, `plugin_testing.py`, `text_cards.py`, `image_assets.py`: public interfaces for plugins; plugins import only from these.
 - `src/len_bot/prompts/`: prompts.
 - `src/len_bot/builtin_skills/`: task skills.
 - `src/len_bot/web/frontend/`: the Vue panel.
@@ -81,6 +81,7 @@ Maintenance commands are run as `python -m len_bot.next.maintenance.<module>`. I
 ```sh
 uv run --no-sync pytest -q
 uv run --no-sync python -m compileall -q src/len_bot
+uv run --no-sync ruff check src/len_bot scripts deploy/updater deploy/package
 ```
 
 Tests cover only external protocol boundaries (parsing OneBot, Pi RPC, model and memory service responses), data migrations, permissions and configuration validation, using anonymized real samples. Do not mock call sequences, test private functions or snapshot prompts.

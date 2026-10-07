@@ -1,6 +1,6 @@
 """A copyable plugin using only the public interface."""
 
-from len_bot.next.plugin import Invocation, Plugin, command, fullmatch, tool
+from len_bot.plugin import Invocation, Plugin, command, fullmatch, tool
 
 
 class Counter(Plugin):

@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 from .types import STRICT, EpochSeconds, _FiniteSeconds, _valid_scene
 

@@ -8,11 +8,11 @@ from contextlib import closing
 from dataclasses import dataclass
 import json
 from pathlib import Path
-import sqlite3
 from types import SimpleNamespace
 
 from .tokens import token_summary
 from ..memory.jobs import processing_records
+from ..storage.sqlite import connect
 
 
 UNBUDGETED_ROLES = frozenset({"asr", "expression_embedding", "memory_embedding"})
@@ -78,7 +78,7 @@ def instance_calls(store, database: Path, scenes: list[str] | None, since: float
         calls = call_records(store, scenes, since, until, memory_db=None if records is None else records.db)
     if trials_root is not None:
         for path in trials_root.glob('*/state.db'):
-            with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+            with closing(connect(path, readonly=True)) as db:
                 with processing_records(path, None) as records:
                     calls.extend(call_records(SimpleNamespace(db=db), scenes, since, until,
                                               memory_db=None if records is None else records.db))

@@ -26,6 +26,9 @@ jobs:
       - name: Compile Python modules
         run: uv run --no-sync python -m compileall -q src/len_bot
 
+      - name: Lint Python
+        run: uv run --no-sync ruff check src/len_bot scripts deploy/updater deploy/package
+
       - name: Run tests
         run: uv run --no-sync pytest -q
 

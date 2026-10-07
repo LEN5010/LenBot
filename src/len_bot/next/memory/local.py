@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .embeddings import EmbeddingBinding, EmbeddingClient
 from .types import MemoryDocument, MemoryNode, MemoryPage
+from ..storage.sqlite import connect
 
 
 _SCENE = re.compile(r"[a-z][a-z0-9_-]*:(group|private):[^:\s/\\]+\Z")
@@ -192,7 +193,7 @@ def scene_overview(root: Path, scene: str) -> str | None:
     if not all(present):
         raise ValueError(f"incomplete memory summary files in {base}: {dict(zip(SUMMARY_FILES, present))}")
     index = root.expanduser().resolve() / _INDEX_NAME
-    with closing(sqlite3.connect(index.as_uri() + "?mode=ro", uri=True)) as db:
+    with closing(connect(index, readonly=True)) as db:
         version = db.execute("PRAGMA user_version").fetchone()[0]
         if version != FORMAT_VERSION:
             raise ValueError(f"local memory index format {version} requires offline migration: {index}; "
@@ -230,10 +231,9 @@ class LocalMemory:
         return self._locks.setdefault(scope, asyncio.Lock())
 
     def _connect(self) -> sqlite3.Connection:
-        db = sqlite3.connect(self.index)
+        db = connect(self.index)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA secure_delete=ON")
-        db.execute("PRAGMA foreign_keys=ON")
         if self.embedding is not None:
             self._load_vec(db)
         return db

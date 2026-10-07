@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import signal
 from .signals import install_stop
 import logging
 import sqlite3
@@ -387,8 +386,6 @@ class NetworkRuntime:
             self._status("stopped")
             return
         self._status("starting")
-        loop = asyncio.get_running_loop()
-        installed: list[signal.Signals] = []
         try:
             if manage_signals:
                 remove_signals = install_stop(self.stop)

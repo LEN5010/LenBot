@@ -15,6 +15,7 @@ import time
 from typing import Iterator
 
 from ..storage.store import encode
+from ..storage.sqlite import connect
 from .embeddings import _reject_constant
 
 
@@ -23,8 +24,7 @@ FORMAT_VERSION = 6
 
 class MemoryJobs:
     def __init__(self, path: Path, *, readonly: bool = False):
-        self.db = (sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
-                   if readonly else sqlite3.connect(path))
+        self.db = connect(path, readonly=readonly)
         self.db.row_factory = sqlite3.Row
         try:
             tables = self.db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()

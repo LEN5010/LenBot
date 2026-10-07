@@ -7,7 +7,7 @@ import pytest
 from len_bot.next.chat.session import Chat
 from len_bot.next.models.client import ChatModel, ToolCall
 from len_bot.next.persona.profile import Persona
-from len_bot.next.plugin_testing import PluginTest
+from len_bot.plugin_testing import PluginTest
 from len_bot.next.plugins.manifest import parse_manifest
 
 SCENE = 'onebot:group:80001'
@@ -26,7 +26,7 @@ def package(tmp_path):
     (directory / 'tools.md').write_text('共享流程：查询返回 JSON；只有回执 sent 表示送达。')
     (directory / '__init__.py').write_text('''from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
-from len_bot.next.plugin import Plugin, Invocation, tool
+from len_bot.plugin import Plugin, Invocation, tool
 
 class SearchRequest(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')

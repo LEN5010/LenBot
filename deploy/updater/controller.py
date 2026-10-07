@@ -3,7 +3,6 @@
 import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import os
 from pathlib import Path
 import secrets
 import shutil

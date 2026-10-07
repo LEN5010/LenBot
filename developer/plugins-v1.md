@@ -2,7 +2,7 @@
 
 ## 最小插件
 
-一个目录包含 `plugin.toml`、`__init__.py`，并恰好定义一个 `Plugin` 子类。可直接复制 [counter](examples/counter/)，只使用 `len_bot.next.plugin`，不需要引用 Chat、Store 或 NetworkRuntime。
+一个目录包含 `plugin.toml`、`__init__.py`，并恰好定义一个 `Plugin` 子类。可直接复制 [counter](examples/counter/)，只使用 `len_bot.plugin`，不需要引用 Chat、Store 或 NetworkRuntime。
 
 清单必填以下字段。`name` 等于安装目录名；仓库根或 ZIP 根不要求预先使用该目录名。公共接口代次为 **1**，同代接口兼容增加，破坏签名或语义时升代。宿主只加载当前代次，不猜旧包字段。
 
@@ -21,7 +21,7 @@ description = "每群独立计数"
 
 `version` 按 Python packaging 版本规范解析和规范化，推荐 X.Y.Z；两个 requires 字段是显式版本范围，与实际宿主和解释器比较。`platforms` 使用 Python 的 `sys.platform` 名称，宿主有 Linux（`linux`）、macOS（`darwin`）和 Windows（`win32`）三种部署包。`reload` 为 `plugin`（允许单插件换版）或 `host`（需要宿主重启）。可选 `repository`、`homepage` 是 HTTP(S) 地址。
 
-`dependencies = ["包名>=版本"]` 声明 Python 依赖，由 uv 解析。当前环境已有版本作为约束，冲突原样报出，不自动换服务或改版本重试。系统软件、外部服务及凭据要求写在插件 README。公开作者入口是 `len_bot.next.plugin`、它返回的 `len_bot.next.platform.messages` 类型，以及下文的 `len_bot.next.plugin_testing`；其他内部模块不承诺兼容。
+`dependencies = ["包名>=版本"]` 声明 Python 依赖，由 uv 解析。当前环境已有版本作为约束，冲突原样报出，不自动换服务或改版本重试。系统软件、外部服务及凭据要求写在插件 README。公开作者入口是 `len_bot.plugin`（含它导出的 `ChatMessage`、`Notice`、`Sender`、`Segment` 消息类型）、下文的 `len_bot.plugin_testing`，以及 `len_bot.image_assets`、`len_bot.text_cards` 辅助模块；`len_bot.next` 下的内部模块不承诺兼容。
 
 ## 安装与维护
 
@@ -41,7 +41,7 @@ description = "每群独立计数"
 ## 入口
 
 ```python
-from len_bot.next.plugin import Plugin, Invocation, command, fullmatch, regex, tool, background, on_notice
+from len_bot.plugin import Plugin, Invocation, command, fullmatch, regex, tool, background, on_notice
 ```
 
 | 装饰器 | async 方法参数 | 行为 |
@@ -143,7 +143,7 @@ instructions = "prompts/tools.md"
 ```python
 from typing import Annotated
 from pydantic import Field
-from len_bot.next.plugin import Invocation, Plugin, tool
+from len_bot.plugin import Invocation, Plugin, tool
 
 class Example(Plugin):
     @tool("recent_count", "统计当前群指定时段的消息数量；不发送。",
@@ -300,7 +300,7 @@ async def publish(self, ctx):
 
 ```python
 from pathlib import Path
-from len_bot.next.plugin_testing import PluginTest
+from len_bot.plugin_testing import PluginTest
 
 async def check():
     async with PluginTest(Path("counter"), config={"step": 2}) as bot:

@@ -4,7 +4,6 @@ import asyncio
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from pathlib import Path
-import signal
 from .runtime.signals import install_stop
 import traceback
 
