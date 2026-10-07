@@ -17,7 +17,6 @@ from ..chat.session import Chat
 from ..chat.tools import tool_catalog
 from ..tools.skills import select_skills
 from ..config import LabConfig, SharedConfig
-from ..configuration.onebot import OneBotForward
 from .logs import credentials, log_context, log_event
 from .lifecycle import HostLifecycle
 from ..platform.messages import Notice
@@ -299,17 +298,19 @@ class NetworkRuntime:
             return True
         if not wait:
             return False
-        if isinstance(self.config.onebot, OneBotForward):
-            return False
-        async with asyncio.TaskGroup() as waiting:
-            connected = waiting.create_task(self.platform.wait_connected(None))
-            stopping = waiting.create_task(self.stopped.wait())
-            try:
-                await asyncio.wait({connected, stopping}, return_when=asyncio.FIRST_COMPLETED)
-            finally:
-                connected.cancel()
-                stopping.cancel()
-        return self.platform.connected
+        # Both transports come back on their own: forward dials again, reverse waits for the peer.
+        connected = asyncio.create_task(self.platform.wait_connected(None))
+        stopping = asyncio.create_task(self.stopped.wait())
+        try:
+            await asyncio.wait({connected, stopping}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            connected.cancel()
+            stopping.cancel()
+            # wait_connected reports a transport closed by the panel or by shutdown; that ends admission.
+            for result in await asyncio.gather(connected, stopping, return_exceptions=True):
+                if isinstance(result, BaseException) and not isinstance(result, (OneBotCallError, asyncio.CancelledError)):
+                    raise result
+        return self.platform.connected and not self.stopped.is_set()
 
     @property
     def can_connect(self) -> bool:

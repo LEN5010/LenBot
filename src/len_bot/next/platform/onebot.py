@@ -23,6 +23,12 @@ from .messages import ChatMessage, SendResult, UploadResult
 from .onebot_messages import parse_send_result, parse_upload_result
 
 
+# A dropped forward connection is dialed again; each attempt doubles the next wait up to the maximum,
+# and a connection that then stays up at least the maximum starts the next series from the initial wait.
+RECONNECT_INITIAL_SECONDS = 1.0
+RECONNECT_MAX_SECONDS = 30.0
+
+
 def _non_json_number(value: str) -> None:
     raise ValueError(f"non-standard JSON constant: {value}")
 
@@ -52,6 +58,8 @@ class OneBot:
         self._sequence = 0
         self._verified_ws: ClientConnection | ServerConnection | None = None
         self._identity_lock = asyncio.Lock()
+        self._closing = asyncio.Event()
+        self._dial: dict | None = None
 
     def _safe(self, text: str) -> str:
         text = re.sub(r"base64://[A-Za-z0-9+/=]+", "base64://[media omitted]", text)
@@ -81,6 +89,7 @@ class OneBot:
             raise RuntimeError("OneBot transport is already started; close it before restarting")
         self._running = True
         self._connection_changed.clear()
+        self._closing.clear()
         headers = ({"Authorization": f"Bearer {self.settings.access_token}"}
                    if self.settings.access_token else {})
         options = dict(
@@ -97,9 +106,10 @@ class OneBot:
                     trust_env=False, follow_redirects=False,
                 )
             if isinstance(self.settings, OneBotForward):
-                websocket = await connect(self.settings.ws_url, additional_headers=headers, proxy=None, **options)
+                self._dial = dict(additional_headers=headers, proxy=None, **options)
+                websocket = await self._connect_forward()
                 self._attach(websocket)
-                self._receiver = asyncio.create_task(self._consume(websocket))
+                self._receiver = asyncio.create_task(self._forward(websocket))
             else:
                 self._server = await serve(
                     self._accept, self.settings.listen_host, self.settings.listen_port,
@@ -115,6 +125,7 @@ class OneBot:
     async def close(self) -> None:
         self._running = False
         self._verified_ws = None
+        self._closing.set()
         self._connection_changed.set()
         if self._server is not None:
             self._server.close()
@@ -133,6 +144,56 @@ class OneBot:
                 if self._http is not None:
                     await self._http.aclose()
                     self._http = None
+
+    async def _forward(self, websocket: ClientConnection) -> None:
+        """Own the forward connection until close(); a dropped peer is dialed again with backoff.
+
+        The first connection is made by start(), so a wrong address still fails the start.
+        Each reconnection is checked again by get_login_info before the next send.
+        """
+        delay = RECONNECT_INITIAL_SECONDS
+        loop = asyncio.get_running_loop()
+        while True:
+            connected_at = loop.time()
+            await self._consume(websocket)
+            if loop.time() - connected_at >= RECONNECT_MAX_SECONDS:
+                delay = RECONNECT_INITIAL_SECONDS
+            while True:
+                if not self._running or await self._stopped_within(delay):
+                    return
+                dialing = asyncio.create_task(self._connect_forward())
+                closing = asyncio.create_task(self._closing.wait())
+                try:
+                    await asyncio.wait({dialing, closing}, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    closing.cancel()
+                    if not dialing.done():
+                        dialing.cancel()
+                    await asyncio.gather(closing, dialing, return_exceptions=True)
+                if dialing.cancelled():
+                    return
+                # Also doubled after a success, so a peer that accepts and drops at once is not dialed every second.
+                delay = min(delay * 2, RECONNECT_MAX_SECONDS)
+                error = dialing.exception()
+                if error is None:
+                    websocket = dialing.result()
+                    if not self._running:
+                        await websocket.close(code=1001, reason="OneBot transport stopped")
+                        return
+                    self._attach(websocket)
+                    break
+                self.on_error(self._safe(f"OneBot reconnect failed, next attempt in {delay:g}s: "
+                                         f"{type(error).__name__}: {error}"))
+
+    async def _connect_forward(self) -> ClientConnection:
+        return await connect(self.settings.ws_url, **self._dial)
+
+    async def _stopped_within(self, seconds: float) -> bool:
+        try:
+            await asyncio.wait_for(self._closing.wait(), seconds)
+        except TimeoutError:
+            return False
+        return True
 
     async def wait_terminated(self) -> None:
         """Wait for the started transport, not a reverse peer's single session."""
