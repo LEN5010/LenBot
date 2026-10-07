@@ -21,6 +21,7 @@ from ...plugin import INTERFACE
 from ..platform.identity import validate_scene
 from ..tools.skills import Skill, load_catalog, load_plugin_skills
 from ..storage.store import encode
+from ..runtime.logs import REDACTED
 
 STRICT = ConfigDict(extra="forbid", strict=True)
 FIELD_TYPES = {"string": str, "secret": str, "integer": int, "number": float, "boolean": bool,
@@ -228,18 +229,23 @@ class Manifest(BaseModel):
         return config_model(f"PluginConfig_{self.name}", self.config, scenes)
 
 
-def redact_values(text: str, manifest: Manifest | None, values: Mapping[str, object]) -> str:
+def secret_values(manifest: Manifest | None, values: Mapping[str, object]) -> set[str]:
+    """A plugin's configured secret values in the encodings they may appear in."""
+    secrets: set[str] = set()
     if manifest is None:
-        return text
-    secrets = set()
+        return secrets
     for key, item in manifest.config.items():
         if item.type != "secret":
             continue
         value = values.get(key, item.default)
         if isinstance(value, str) and value:
             secrets.update((value, encode(value)[1:-1], repr(value)[1:-1], quote(value, safe=""), quote_plus(value)))
-    for value in sorted(secrets, key=len, reverse=True):
-        text = text.replace(value, "[redacted]")
+    return secrets
+
+
+def redact_values(text: str, manifest: Manifest | None, values: Mapping[str, object]) -> str:
+    for value in sorted(secret_values(manifest, values), key=len, reverse=True):
+        text = text.replace(value, REDACTED)
     return text
 
 

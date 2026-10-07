@@ -11,6 +11,7 @@ from ..config import load_instance_config
 from ..instance_lock import instance_lock
 from ..memory.jobs import FORMAT_VERSION
 from .token_backfill import rename_and_backfill, upgrade_memory_job_calls
+from ..runtime.logs import run_maintenance
 
 
 APPLICATION_ID = 0x4C424D4A
@@ -113,5 +114,5 @@ def main() -> None:
 
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    run_maintenance(main, 'migrate_memory_jobs')

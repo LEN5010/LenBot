@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, WebSocket
@@ -26,6 +27,7 @@ from .routes.browser import register_host_browser
 from .routes.permissions import register_host_permissions
 from .routes.settings import register_host_settings
 from ..runtime.lifecycle import HostLifecycle
+from ..runtime.logs import read_records
 from .routes.restart import register_host_restart
 from .routes.updates import register_host_updates
 from .routes.operations import register_host_operations
@@ -172,9 +174,16 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
         return {"status": runtime.status}
 
     @app.get("/api/host/logs")
-    async def logs(_: str = Depends(user)):
-        return {"items": list(reversed(runtime.logs)), "capacity": 500,
-                "scope": "本次进程宿主终端事件；不含第三方日志，重启清空"}
+    async def logs(level: Literal["INFO", "WARNING", "ERROR"] | None = None, source: str | None = None,
+                   event: str | None = None, scene: str | None = None, turn_id: str | None = None,
+                   tool_call_id: str | None = None, plugin: str | None = None, task_id: str | None = None,
+                   limit: int = Query(default=200, ge=1, le=2000), _: str = Depends(user)):
+        """Newest records of the host log, filtered by correlation IDs; one shape for every component."""
+        match = {key: value for key, value in {
+            "source": source, "event": event, "scene": scene, "turn_id": turn_id, "tool_call_id": tool_call_id,
+            "plugin": plugin, "task_id": task_id}.items() if value is not None}
+        items = await asyncio.to_thread(read_records, config.logging.directory, limit=limit, match=match, level=level)
+        return {"items": items, "directory": str(config.logging.directory), "limit": limit}
 
     @app.get("/api/host/overview")
     async def overview(_: str = Depends(user)):

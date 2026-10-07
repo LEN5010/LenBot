@@ -1,8 +1,8 @@
 """Authenticated notice, usage, log and diagnostic views of existing records."""
+import asyncio
 from dataclasses import asdict
 from datetime import datetime, timedelta
 import json
-import re
 import sqlite3
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 from fastapi import Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from ...runtime.logs import log_files, read_records
+from ...work.storage import temporary_paths
 from ...runtime.operations import diagnostic_zip
 from ...work.store import TaskStore
 from ...models.usage import usage
@@ -112,7 +114,9 @@ def register_host_operations(app, *, runtime, user):
         detail = store.turn_detail(scene, turn_id)
         if detail is None:
             raise HTTPException(404, '当前场景没有这一轮')
-        return archive({'turn': detail, 'scope': '实际轮次与调用；输入原话以保存的请求为准，不猜时间窗口关联'})
+        logs = await asyncio.to_thread(read_records, config.logging.directory, limit=2000, match={'turn_id': turn_id})
+        return archive({'turn': detail, 'log': list(reversed(logs)),
+                        'scope': '实际轮次与调用，以及同一轮 ID 的运行日志；输入原话以保存的请求为准'})
 
     @app.get('/api/host/tasks/{task_id}/export')
     async def task_export(task_id: int, scene: str, _: str = Depends(user)):
@@ -126,10 +130,18 @@ def register_host_operations(app, *, runtime, user):
             'SELECT * FROM task_events WHERE scene=? AND task_id=? ORDER BY id', (scene, task_id))]
         for event in events:
             event['body'] = json.loads(event['body'])
+        logs = await asyncio.to_thread(read_records, config.logging.directory, limit=2000,
+                                       match={'scene': scene, 'task_id': str(task_id)})
+        stderr = {} if config.worker is None else {
+            str(path.name): path.read_bytes()[-65536:].decode('utf-8', 'replace')
+            for path, kind in temporary_paths(config.worker, scene, task_id)
+            if kind == 'file' and path.name.endswith('.stderr') and path.is_file()}
         return archive({'task': asdict(task), 'events': events,
                         'files': [dict(row) for row in store.db.execute(
                             'SELECT name,size,note,created FROM task_files WHERE scene=? AND task_id=?',
-                            (scene, task_id))], 'scope': '已保存任务事件与文件清单；不包含文件字节或原生会话文件'})
+                            (scene, task_id))],
+                        'log': list(reversed(logs)), 'container_stderr_tail': stderr,
+                        'scope': '已保存任务事件、文件清单、同一任务的运行日志和容器进程 stderr 末尾 64 KiB；不包含文件字节或原生会话文件'})
 
     @app.get('/api/host/retention')
     async def retention_state(_: str = Depends(user)):
@@ -192,20 +204,17 @@ def register_host_operations(app, *, runtime, user):
             raise HTTPException(422 if isinstance(error, ValueError) else 500,
                                 f'{type(error).__name__}: {error}') from error
 
-    def log_files():
-        if config.logging is None:
-            return []
-        return [path for path in sorted(config.logging.directory.glob('host.log*'), reverse=True)
-                if path.name == 'host.log' or re.fullmatch(r'host\.log\.\d{4}-\d{2}-\d{2}', path.name)]
+    def log_paths():
+        return log_files(config.logging.directory)
 
     @app.get('/api/host/log-files')
     async def files(_: str = Depends(user)):
-        return {'enabled': config.logging is not None, 'timezone': 'UTC',
-                'items': [{'name': p.name, 'bytes': p.stat().st_size} for p in log_files()]}
+        return {'enabled': True, 'timezone': 'UTC',
+                'items': [{'name': p.name, 'bytes': p.stat().st_size} for p in log_paths()]}
 
     @app.get('/api/host/log-files/{name}')
     async def file(name: str, _: str = Depends(user)):
-        paths = {p.name: p for p in log_files()}
+        paths = {p.name: p for p in log_paths()}
         if name not in paths:
             raise HTTPException(404, '没有这一份日志')
         # Diagnostic exports, unlike local files, also mask account-shaped numbers.

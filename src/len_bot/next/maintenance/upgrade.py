@@ -18,6 +18,7 @@ from .migrate_memory_jobs import APPLICATION_ID, FORMAT_VERSION, migrate_memory_
 from .migrate_local_memory import migrate as migrate_local_memory
 from .plugin_dependencies import install
 from .snapshot import create, restore
+from ..runtime.logs import run_maintenance
 
 
 def inspect(root: Path, version: str) -> dict:
@@ -115,4 +116,4 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    run_maintenance(main, 'upgrade')

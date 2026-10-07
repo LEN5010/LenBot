@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from random import choice
@@ -26,6 +27,16 @@ from ..learning.sticker_assets import CollectedSticker
 from ..learning.sticker_store import StickerStore
 from ..storage.store import Store, encode
 from ..plugins.store import PluginStore
+from ..runtime.logs import log_event
+
+logger = logging.getLogger(__name__)
+
+
+def log_sent(seq: int, part: ChatMessage, error: str | None, *, index: int, parts: int, plugin: str | None = None) -> None:
+    """One outbound part: stored seq, platform result and ID; the turn or plugin comes from the log context."""
+    log_event(logger, 'message_sent', level=logging.INFO if part.send_status in {'sent', 'simulated'} else logging.WARNING,
+              message_seq=seq, send_status=part.send_status, platform_message_id=part.platform_message_id,
+              part=index + 1, parts=parts, error=error, **({} if plugin is None else {'plugin': plugin}))
 
 
 class MessageSender(Protocol):
@@ -169,10 +180,13 @@ class ChatExpression:
                                                                        else None if sticker is None
                                                                        else (self.persona.id, sticker)))
                 self.notify()
+                if self.send_message is None:
+                    log_sent(message_seq, part, None, index=index, parts=len(parts))
                 if self.send_message is not None:
                     result = await self.send_message(part, image_bytes=None if sticker is None else sticker.data)
                     part.send_status, part.platform_message_id = result.status, result.platform_message_id
                     errors[-1] = result.error
+                    log_sent(message_seq, part, result.error, index=index, parts=len(parts))
                     content = report_parts(parts, errors, self.context.render)
                     kept = self.store.finish_expression((message_seq, entry_seq), part, prefix + content,
                                                         turn_id=turn_id)
@@ -223,10 +237,12 @@ class ChatExpression:
                         self.exclude_from_memory(seq)
                     self.notify()
                     if self.send_message is None:
+                        log_sent(seq, part, None, index=index, parts=len(parts), plugin=plugin)
                         continue
                     result = await self.send_message(part, image_bytes=None if image is None else image.data)
                     part.send_status, part.platform_message_id = result.status, result.platform_message_id
                     errors[-1] = result.error
+                    log_sent(seq, part, result.error, index=index, parts=len(parts), plugin=plugin)
                     self.store.finish_expression((seq, None), part, "")
                     self.notify()
                     if result.status != "sent":

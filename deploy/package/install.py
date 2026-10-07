@@ -79,8 +79,9 @@ esac
         plist = {'Label': 'local.lenbot', 'ProgramArguments': [str(root / 'run')],
                  'WorkingDirectory': str(instance), 'RunAtLoad': False, 'KeepAlive': False,
                  'ExitTimeOut': 240, 'Umask': 0o077, 'EnvironmentVariables': {'PATH': path},
-                 'StandardOutPath': str(root / 'logs/host.log'),
-                 'StandardErrorPath': str(root / 'logs/host.stderr.log')}
+                 # Only the updater process's own console output; the host's records are in the instance's lenbot.jsonl.
+                 'StandardOutPath': str(root / 'logs/service.stdout.log'),
+                 'StandardErrorPath': str(root / 'logs/service.stderr.log')}
         (root / 'local.lenbot.plist').write_bytes(plistlib.dumps(plist))
         service = '''#!/bin/sh
 set -eu

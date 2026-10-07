@@ -28,7 +28,7 @@ from ..model_access import ProviderDraft, ProviderCandidate, ModelCandidate, pro
 from ...models.providers import PROTOCOLS, list_models
 from ...persona.profile import Persona
 from ...models.asr import AudioSettings
-from ...runtime.operations import LoggingSettings
+from ...runtime.logs import LoggingSettings
 from ...models.limits import ResourceLimits
 from ...work.egress_policy import NetworkSettings
 from ...runtime.retention import RetentionSettings
@@ -48,7 +48,7 @@ class ProcessingChange(BaseModel):
     compaction: Compaction
     images: ImageSettings
     audio: AudioSettings
-    logging: LoggingSettings | None
+    logging: LoggingSettings
 
 
 ProviderChange = ProviderDraft

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import datetime
@@ -34,10 +35,13 @@ from .worker_model import Limits
 from .materials import MaterialName, finish_file_operation, material_directory, save_shared
 from ..storage.pool import worker_pool_usage
 from .inputs import ResourceInput, copy_inputs, create_stage, publish_inputs, remove_stage
-from ..runtime.operations import credentials, diagnostic_value, redact, redact_record
+from ..runtime.logs import credentials, log_context, log_event, redact, redact_record
+from ..runtime.operations import diagnostic_value
 
 if TYPE_CHECKING:
     from ..tools.mcp_host import MCPHost
+
+logger = logging.getLogger(__name__)
 
 
 PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
@@ -310,6 +314,8 @@ class WorkTasks:
                                'reference': selection.reference.model_dump(), 'container_path': f'/inputs/{selection.name}'})
             self._admit_delegate(scene, requester, account_browser)
             item = self._register_delegate(scene, requester, goal, deliverable, context, account_browser, selected)
+            log_event(logger, 'task_created', task_id=item.id, requester=requester, account_browser=account_browser,
+                      inputs=len(selected))
             if stage is not None:
                 inputs = publish_inputs(stage, self.settings, scene, item.id, selected)
                 self.records.add_event(scene, item.id, 'material_inputs', {'directory': str(inputs), 'files': copies})
@@ -359,6 +365,7 @@ class WorkTasks:
         current = self.running[id]
         await current.steer(text)
         self.records.add_event(scene, id, "input", {"requester": requester, "text": text, "mode": "steer"})
+        log_event(logger, 'task_input', task_id=id, requester=requester, mode='steer')
         self._notify(scene)
         return {"id": id, "status": "steering_queued", "text": text}
 
@@ -373,6 +380,7 @@ class WorkTasks:
             self._can_delegate(scene, requester)
             self._limits(item)
             self.records.requeue(scene, id, text, requester=requester)
+            log_event(logger, 'task_input', task_id=id, requester=requester, mode='continue')
             self._notify(scene)
             return self.status(scene, id)
 
@@ -454,6 +462,7 @@ class WorkTasks:
                 raise ValueError("回答必须是当前问题提供的一个选项")
             response = {"value": text}
         self.records.add_event(scene, id, "answer", {"requester": requester, **response})
+        log_event(logger, 'task_input', task_id=id, requester=requester, mode='answer')
         current.submit_answer(response)
         self._notify(scene)
         return {"id": id, "status": "answer_received", "notice": "等待执行槽后继续原任务"}
@@ -466,6 +475,7 @@ class WorkTasks:
         if item.status != "queued" and not self.accepting:
             raise RuntimeError("宿主正在处理活动任务的启动或中断，请待处理结束后查看结果")
         self.records.add_event(scene, id, "cancel", {"requester": requester})
+        log_event(logger, 'task_input', task_id=id, requester=requester, mode='cancel')
         if item.status == "queued":
             self._finish(item, "cancelled", None, f"账号 {requester} 取消排队任务")
         elif item.status in {"running", "waiting_input"}:
@@ -520,6 +530,7 @@ class WorkTasks:
 
     def _fail(self, error: BaseException) -> None:
         self.error = "".join(traceback.format_exception_only(error)).strip()
+        log_event(logger, 'task_service_failed', level=logging.ERROR, error=error)
         self.stop()
         if not self._failure.done():
             self._failure.set_result(error)
@@ -593,7 +604,10 @@ class WorkTasks:
                             notify=self._notify, on_update=self.on_update, notify_live=self._notify_live)
                         self.running[item.id] = current
                         self._notify_live(item.id)
-                        current.start().add_done_callback(lambda job, current=current: self._job_done(current, job))
+                        # The execution task inherits these IDs, so everything it logs names this task.
+                        with log_context(scene=item.scene, task_id=item.id):
+                            log_event(logger, 'task_started', requester=self.records.execution_requester(item))
+                            current.start().add_done_callback(lambda job, current=current: self._job_done(current, job))
                         self.on_update(item.scene)
                 await self.changed.wait()
         except Exception as error:
@@ -616,4 +630,7 @@ class WorkTasks:
         elif status == 'failed' and item.account_browser:
             notice += '\n账号浏览过程未公开；仅根主人可按权限读取原事件。'
         self.records.add_event(item.scene, item.id, "finished", body, notice=notice)
+        with log_context(scene=item.scene, task_id=item.id):
+            log_event(logger, 'task_finished', level=logging.INFO if status == 'done' else logging.WARNING,
+                      status=status, files=len(files), error=error)
         self._notify(item.scene)

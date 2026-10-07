@@ -16,6 +16,7 @@ from ..instance_lock import instance_lock
 from ..storage.store import FORMAT_VERSION, encode
 from ..work.materials import open_regular, require_directory
 from ..work.store import TERMINAL, TaskFile, _task
+from ..runtime.logs import run_maintenance
 
 
 def _reject_constant(value: str) -> None:
@@ -189,4 +190,4 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    run_maintenance(main, 'archive_tasks')

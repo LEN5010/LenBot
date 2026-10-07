@@ -26,9 +26,6 @@ watch(() => JSON.stringify(saved.value), () => { draft.value = clone(saved.value
 const dirty = computed(() => !same(draft.value, saved.value))
 watch(dirty, value => emit('dirty', value), { immediate: true })
 
-function toggleLogging(value) {
-  draft.value.logging = value ? { directory: 'data/logs', retention_days: 14, level: 'INFO' } : null
-}
 async function submit() {
   const result = await save.run(() => api('/api/host/settings/processing', { method: 'PUT', body: JSON.stringify(draft.value) }))
   if (result) emit('saved', result)
@@ -46,9 +43,8 @@ async function submit() {
     </div>
     <div class="group">
       <h3>日志</h3>
-      <v-switch :model-value="draft.logging !== null" label="把运行日志保存到文件" hint="排查问题时有用，每天一个文件" persistent-hint
-        @update:model-value="toggleLogging" />
-      <div v-if="draft.logging" class="form-grid">
+      <p class="hint">运行日志始终保存，每天一个 lenbot.jsonl 文件，可在日志页按场景、一轮对话、插件或任务查看。</p>
+      <div class="form-grid">
         <v-text-field v-model="draft.logging.directory" label="日志目录" hint="相对于 LenBot 实例目录" persistent-hint />
         <v-text-field :model-value="draft.logging.retention_days" type="number" label="保留天数"
           @update:model-value="value => draft.logging.retention_days = numberOrBlank(value)" />
@@ -60,4 +56,5 @@ async function submit() {
 
 <style scoped>
 .group{display:grid;gap:var(--sp-3)}
+.hint{margin:0;color:var(--muted)}
 </style>

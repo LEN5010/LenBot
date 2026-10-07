@@ -15,6 +15,7 @@ from ..memory.service import LocalMemoryConfig, open_memory
 from ..storage.store import Store, encode
 from ..models.slots import ModelSlots
 from ..models.limits import ModelBudget
+from ..runtime.logs import run_maintenance
 
 
 def _backup(index: Path) -> Path | None:
@@ -69,5 +70,5 @@ def main() -> None:
         print(encode(asyncio.run(rebuild(config))), flush=True)
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    run_maintenance(main, 'memory_reindex')

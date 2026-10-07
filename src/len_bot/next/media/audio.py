@@ -17,6 +17,7 @@ from ..models.slots import ModelSlots
 from ..platform.platform_tools import PlatformCall
 from ..platform.onebot_audio import fetch_record
 from ..storage.store import Store, encode
+from ..runtime.logs import log_context
 
 if TYPE_CHECKING:
     from ..config import LabConfig
@@ -164,7 +165,10 @@ class AudioService:
         return 0 if since is None else max(0, since + self.configs[scene].audio.wait_seconds - now)
 
     def start(self) -> None:
-        self.workers = [asyncio.create_task(self.run(scene), name=f"audio:{scene}") for scene in self.changed]
+        self.workers = []
+        for scene in self.changed:
+            with log_context(scene=scene, job='audio'):
+                self.workers.append(asyncio.create_task(self.run(scene), name=f"audio:{scene}"))
 
     async def close(self) -> None:
         self.closing = True

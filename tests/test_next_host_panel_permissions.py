@@ -184,7 +184,7 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path, o
                     assert len(trial.json()['context']) == 1
                     # Offline migrations reload every kept trial as its own instance.
                     trial_root, = (root / '.runtime' / 'chat-tests').iterdir()
-                    assert load_instance_config(trial_root).logging is None
+                    assert load_instance_config(trial_root).logging.directory.is_relative_to(trial_root.resolve())
                     assert '隔离测试原文' in trial.json()['context'][0]
                     prefix = f"/api/host/trials/{trial.json()['id']}"
                     try:

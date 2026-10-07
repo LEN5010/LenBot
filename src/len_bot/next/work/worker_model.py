@@ -24,7 +24,7 @@ from .worker_stream import ChatCompletionStream
 from .native_stream import NativeStream
 from ..models.providers import http_client, auth_headers
 from urllib.parse import quote
-from ..runtime.operations import redact, redact_record
+from ..runtime.logs import redact, redact_record
 
 
 class WorkerModelError(RuntimeError):

@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from importlib.metadata import version
 import logging
+from pathlib import Path
 import re
 import time
 from typing import Literal
@@ -23,6 +24,7 @@ from .external_tools import ExternalTool
 from ..configuration.mcp import MCPService, StdioTransport
 from .mcp_http import SingleHTTP
 from ..storage.store import encode
+from ..runtime.logs import REDACTED, log_event, recorded_errors
 
 LOG = logging.getLogger(__name__)
 
@@ -78,8 +80,11 @@ class Connection:
 
 
 class MCPHost:
-    def __init__(self, settings: dict[str, MCPService], *, reserved_tools: set[str]):
+    def __init__(self, settings: dict[str, MCPService], *, reserved_tools: set[str], log_directory: Path | None = None):
         self.connections = {name: Connection(name, item) for name, item in settings.items()}
+        previous = {} if log_directory is None else recorded_errors(log_directory, 'mcp_error', 'service')
+        for name, connection in self.connections.items():
+            connection.errors.extend(previous.get(name, []))
         self.reserved = reserved_tools
         self.on_update: Callable[[], None] | None = None
 
@@ -93,9 +98,10 @@ class MCPHost:
         secrets = transport.env.values() if isinstance(transport, StdioTransport) else transport.headers.values()
         for value in secrets:
             if value:
-                text = text.replace(value, "[redacted]")
+                text = text.replace(value, REDACTED)
         connection.errors.append({"at": time.time(), "where": where, "error": text})
-        LOG.error("MCP %s %s: %s", connection.name, where, text)
+        log_event(LOG, 'mcp_error', f'MCP {connection.name} {where} 出错', level=logging.ERROR,
+                  error=error, service=connection.name, where=where)
         return text
 
     def failed(self, connection: Connection, error: Exception) -> None:

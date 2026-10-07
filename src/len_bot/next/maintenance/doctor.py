@@ -18,6 +18,7 @@ from ..memory.local import FORMAT_VERSION as LOCAL_INDEX_FORMAT, _APPLICATION_ID
 from ..plugins.manifest import discover, read_manifest
 from ..storage.sqlite import connect
 from ..storage.store import FORMAT_VERSION as BUSINESS_FORMAT
+from ..runtime.logs import run_maintenance
 
 BUSINESS_APPLICATION = 0x4C424E31
 MEMORY_JOBS_APPLICATION = 0x4C424D4A
@@ -102,4 +103,4 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    run_maintenance(main, 'doctor')

@@ -3,7 +3,8 @@
 Run while stopped, before the database migrations, which read the configuration.
 Money limits cannot be turned into token counts, so a configured one stops the
 upgrade with its value and the file is left unchanged.
-Format 2 removes settings whose old-core import and media archive commands retired.
+Format 2 removes settings whose old-core import and media archive commands retired,
+and turns an explicitly disabled log into the default always-on log.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import tempfile
 
 from ..instance_lock import instance_lock
 from ..config import CONFIG_VERSION
+from ..runtime.logs import run_maintenance
 
 
 def _without_prices(source: dict, path: Path) -> dict:
@@ -56,6 +58,9 @@ def migrate_config(path: Path) -> bool:
     tokens_changed = upgraded != source
     for field in ('history_import', 'reminder_import', 'media_import', 'media_archive'):
         upgraded.pop(field, None)
+    # Logging is always on from format 2; an explicit null meant off and now takes the default directory.
+    if 'logging' in upgraded and upgraded['logging'] is None:
+        del upgraded['logging']
     upgraded['config_version'] = CONFIG_VERSION
     backup = path.with_name(path.name + ('.pre-tokens.bak' if tokens_changed else f'.pre-config-v{format_version}.bak'))
     with backup.open("x", encoding="utf-8") as copy:
@@ -88,5 +93,5 @@ def main() -> None:
                   f"{'upgraded; original kept beside the configuration' if changed else 'already current'}")
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    run_maintenance(main, 'migrate_config')

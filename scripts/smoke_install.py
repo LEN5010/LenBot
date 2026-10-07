@@ -153,10 +153,11 @@ def smoke_package(artifacts: Path, work: Path) -> dict:
         result['panel'] = 'logged in'
     except BaseException:
         print(output.tail(), file=sys.stderr)
-        log = root / 'updates/updater.log'
-        if log.exists():
-            print('--- updates/updater.log (controller and host stderr) ---', file=sys.stderr)
-            print(log.read_text(encoding='utf-8', errors='replace')[-6000:], file=sys.stderr)
+        for name, label in (('updater.jsonl', 'updater records'), ('updater.log', 'child process output')):
+            log = root / 'updates' / name
+            if log.exists():
+                print(f'--- updates/{name} ({label}) ---', file=sys.stderr)
+                print(log.read_text(encoding='utf-8', errors='replace')[-6000:], file=sys.stderr)
         raise
     finally:
         if process.poll() is None:

@@ -10,6 +10,7 @@ from ..config import load_instance_config
 from ..instance_lock import instance_lock
 from ..storage.store import FORMAT_VERSION
 from .token_backfill import rename_and_backfill, upgrade_task_events
+from ..runtime.logs import run_maintenance
 
 
 APPLICATION_ID = 0x4C424E31
@@ -66,4 +67,4 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    run_maintenance(main, 'migrate')

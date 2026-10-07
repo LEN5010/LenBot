@@ -147,3 +147,17 @@ def test_config_format1_upgrade_removes_retired_settings_and_preserves_archive(t
     assert json.loads(path.with_name(path.name + '.pre-config-v1.bak').read_text()) == source
     assert original.read_bytes() == b'old-instance-data'
     assert migrate_config(path) is False
+
+
+@pytest.mark.parametrize('logging_value, expected', [
+    (None, None), ({'directory': 'state/logs', 'retention_days': 7, 'level': 'WARNING'}, 'kept')])
+def test_config_format1_upgrade_turns_disabled_logging_into_the_default_log(tmp_path, logging_value, expected):
+    path = tmp_path / 'lenbot.config.json'
+    source = {'config_version': 1, 'models': {'providers': {}, 'roles': {}}, 'logging': logging_value}
+    path.write_text(json.dumps(source))
+    assert migrate_config(path) is True
+    upgraded = json.loads(path.read_text())
+    if expected is None:
+        assert 'logging' not in upgraded
+    else:
+        assert upgraded['logging'] == logging_value

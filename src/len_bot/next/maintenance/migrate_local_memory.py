@@ -9,6 +9,7 @@ from ..config import load_instance_config
 from ..instance_lock import instance_lock
 from ..memory.local import FORMAT_VERSION, SUMMARY_FILES, SUMMARY_SCHEMA, _APPLICATION_ID, _INDEX_NAME
 from ..memory.service import LocalMemoryConfig
+from ..runtime.logs import run_maintenance
 
 
 def migrate(directory: Path) -> None:
@@ -54,4 +55,4 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    run_maintenance(main, 'migrate_local_memory')

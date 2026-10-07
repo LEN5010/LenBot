@@ -74,6 +74,7 @@ Maintenance commands are run as `python -m len_bot.next.maintenance.<module>`. I
 - Parse external data (platform messages, model and service responses, configuration files) once at the entry point. If parsing fails, raise an error that includes the raw snippet.
 - Catch exceptions only at the boundary of one chat turn, one tool or plugin call, or one task; log the original error and end that unit. Tool errors go back to the model verbatim.
 - Leave contextual judgement (who a request belongs to, what a reference points to, who is replying to whom) to the model. The host keeps only real identities and the state needed to execute. When you add a table, a state or a layer, explain in the PR what problem it solves.
+- Log through a module `logging.getLogger(__name__)` and record events with `log_event(logger, 'event', **fields)` from `runtime/logs.py`; do not `print`. Pass exceptions as `error=`; database error columns keep one line `Type: message` (`error_text`). New long-running entry points (background jobs, external callbacks) bind correlation IDs with `log_context`.
 - Runtime settings come only from `lenbot.config.json` in the repository root and are saved by the panel while running. Do not add overrides through environment variables, dotenv, command-line flags or the database.
 
 ## Tests

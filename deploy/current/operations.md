@@ -8,7 +8,7 @@
 |---|---|
 | 首页 | 连接状态、各群概况、最近错误 |
 | 对话测试 | 用当前角色和模型试聊，不发到 QQ |
-| 日志 | 每轮回复的经过、模型调用和宿主日志 |
+| 日志 | 每轮回复的经过，以及按群、一轮、插件、任务筛选的运行日志 |
 | 群聊 | 消息记录、参与节奏、学习、关系说明、本群权限 |
 | 角色 | 设定、说话方式、样例、知识、表情、头像，草稿试聊 |
 | 记忆 | 浏览、修改、删除和遗忘长期记忆 |
@@ -128,6 +128,18 @@ python -m len_bot.next.maintenance.memory_reindex
 正文和修改历史保留，目录摘要会清掉，之后按新正文重新生成。
 
 换了表达学习的向量模型时，停机执行 `python -m len_bot.next.maintenance.reindex_expressions`。
+
+## 运行日志
+
+宿主的所有组件写同一份日志：实例目录下的 `logs/lenbot.jsonl`（目录可在设置 → 上下文、媒体与日志里改），每天轮转一次，默认保留 14 天。每行是一条 JSON 记录：
+
+- `ts`（UTC 时间）、`level`、`source`（产生记录的模块）、`event`（事件名，如 `receipt`、`turn_start`、`tool_call`、`model_call`、`message_sent`、`plugin_error`、`task_finished`）、`message`；
+- 关联 ID：`scene`、`platform_message_id`、`message_seq`、`turn_id`、`tool_call_id`、`tool`、`plugin`、`task_id`、`job`，有就带上；
+- `error`：`type`、`message` 和完整 `traceback`。
+
+一条消息从收到、开始一轮、调用模型和工具、插件处理到发出回复，都能按 `turn_id` 串起来；任务按 `task_id`。面板日志页可以按级别、群、一轮、插件和任务筛选，回复记录里点“这一轮的运行日志”直接跳过去。配置里的密钥、插件的密钥字段会从日志里隐去；下载日志文件和诊断包时还会遮去 5 位以上的数字。
+
+终端只显示简短的一行；完整记录以日志文件为准。维护命令（迁移、升级、`doctor` 等）的开始、结束和失败也写进同一个文件。部署包的更新器另有 `updates/updater.jsonl`（同样格式的更新记录）和 `updates/updater.log`（子进程原始输出），超过 5 MiB 在更新器启动时轮转。
 
 ## 检查实例
 

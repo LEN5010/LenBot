@@ -74,6 +74,7 @@ cd /tmp/lenbot-test && uv run --project /path/to/LenBot --no-sync len-bot
 - 外部数据（平台消息、模型和服务的响应、配置文件）在入口解析一次，解析失败直接报错，错误里带上原始片段。
 - 异常只在一轮对话、一次工具或插件调用、一个任务的边界捕获，记录原文后结束这一轮；工具的错误原文交还给模型。
 - 请求归属、指代、谁在回应谁这类语境判断交给模型，宿主只保存真实身份和执行需要的状态。新增数据表、状态或层级时，在 PR 里写清它解决什么问题。
+- 日志用模块级 `logging.getLogger(__name__)`，事件用 `runtime/logs.py` 的 `log_event(logger, '事件名', **字段)`，不 `print`。异常交给 `error=`，数据库错误列存一行 `Type: message`（`error_text`）。新的长流程入口（新的后台任务、新的外部回调）用 `log_context` 绑定能串起记录的 ID。
 - 运行参数只来自根目录的 `lenbot.config.json`，运行中由面板保存；不加环境变量、dotenv、命令行参数或数据库里的覆盖项。
 
 ## 测试

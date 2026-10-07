@@ -57,7 +57,7 @@ powershell -ExecutionPolicy Bypass -File "$HOME\lenbot\service.ps1" install   # 
 ```
 
 - **Linux**：当前用户的 systemd 服务 `lenbot.service`，日志用 `journalctl --user -u lenbot.service`。没有图形会话的服务器先执行 `loginctl enable-linger`，让用户服务在登出后继续运行。
-- **macOS**：当前用户的 launchd 服务 `local.lenbot`，日志在 `logs/host.log` 和 `logs/host.stderr.log`；也可以双击 `start.command`、`stop.command`、`restart.command`。
+- **macOS**：当前用户的 launchd 服务 `local.lenbot`，服务自身的输出在 `logs/service.stdout.log` 和 `logs/service.stderr.log`，宿主运行日志在实例目录的 `logs/lenbot.jsonl`；也可以双击 `start.command`、`stop.command`、`restart.command`。
 - **Windows**：登录时启动的计划任务 `LenBot`，后台运行；`stop` 通知更新器先停 LenBot 再退出。
 
 服务不开机自启（Windows 是登录时启动）、崩溃后不自动拉起。停止时更新器会等正在进行的更新步骤结束，再停 LenBot。升级不需要重新注册服务。

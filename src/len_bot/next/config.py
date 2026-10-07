@@ -20,7 +20,7 @@ from .models.limits import ResourceLimits
 from .configuration.mcp import MCPService, SERVICE_NAME
 from .memory.service import MemorySettings
 from .models.client import ModelSettings
-from .runtime.operations import LoggingSettings
+from .runtime.logs import LoggingSettings
 from .runtime.retention import RetentionSettings
 from .configuration.tasks import WorkerSettings
 from .tools.web_search import WebSearchSettings
@@ -55,7 +55,7 @@ class SharedConfig(BaseModel):
         # Loader location is not a runtime setting and is not serialized or compared.
         return self.__dict__.get('_source_root')
 
-    logging: LoggingSettings | None = None
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)
     limits: ResourceLimits = Field(default_factory=ResourceLimits)
     retention: RetentionSettings | None = None
     max_model_requests: int = Field(default=4, gt=0, strict=True)
@@ -463,9 +463,9 @@ def _load_lab_source(path: Path, source: dict) -> LabConfig:
                 sets[name] = _resolved_path(
                     root, location, within_root=False, field=f"evaluation.sets.{name}",
                 )
-    if isinstance(source.get("logging"), dict):
-        source["logging"]["directory"] = _resolved_path(root, source["logging"].get("directory"),
-                                                       within_root=True, field="logging.directory")
+    logs = source.setdefault("logging", {})
+    if isinstance(logs, dict):
+        logs["directory"] = _resolved_path(root, logs.get("directory", "logs"), within_root=True, field="logging.directory")
     _resolve_archive_paths(root, source)
     _resolve_memory_path(root, source)
     _resolve_worker_paths(root, source)
@@ -497,9 +497,9 @@ def _load_host_source(path: Path, source: dict) -> HostConfig:
                     if settings.get(name) is not None:
                         settings[name] = _resolved_path(root, settings[name], within_root=True,
                                                         field=f'scenes.{scene}.{name}')
-    if isinstance(source.get("logging"), dict):
-        source["logging"]["directory"] = _resolved_path(root, source["logging"].get("directory"),
-                                                       within_root=True, field="logging.directory")
+    logs = source.setdefault("logging", {})
+    if isinstance(logs, dict):
+        logs["directory"] = _resolved_path(root, logs.get("directory", "logs"), within_root=True, field="logging.directory")
     _resolve_archive_paths(root, source)
     _resolve_memory_path(root, source)
     _resolve_worker_paths(root, source)

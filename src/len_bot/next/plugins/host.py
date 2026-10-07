@@ -31,8 +31,9 @@ from ..models.client import ChatModel, ModelReply
 from ..models.request import request_model
 from ..chat.schedule_time import Cron, next_cron, parse_cron
 from ..chat.request_source import SOURCE_DESCRIPTION, source_message
+from ..runtime.logs import SECRETS, error_text, log_context, log_event, recorded_errors
 from ..tools.skills import Skill, load_plugin_skills
-from .manifest import Manifest, discover, read_manifest, redact_values
+from .manifest import Manifest, discover, read_manifest, redact_values, secret_values
 from ..storage.store import encode
 from ...image_assets import MAX_IMAGE_BYTES, inspect_image
 from ..tools.http_read import fetch_public
@@ -169,9 +170,11 @@ class PluginHost:
             self.available[name] = entries
         if settings is None:
             return
+        previous = recorded_errors(config.logging.directory, 'plugin_error', 'plugin', limit=ERROR_LIMIT)
         for name, values in settings.configured.items():
             scenes = tuple(scene for scene, item in config.scenes.items() if name in item.plugins)
             record = Loaded(name, None, None, scenes, values=values)
+            record.errors.extend(previous.get(name, []))
             self.plugins[name] = record
             if name in settings.disabled:
                 record.status = "stopped"
@@ -190,6 +193,7 @@ class PluginHost:
                              "多个目录提供同名插件：" + "、".join(map(str, directories)))
         record.directory = directory = directories[0]
         record.manifest = manifest = read_manifest(directory)
+        SECRETS.add(secret_values(manifest, values))
         if manifest.model is not None:
             instructions = (directory / manifest.model.instructions).resolve()
             if not instructions.is_relative_to(directory.resolve()):
@@ -462,20 +466,23 @@ class PluginHost:
             self.on_update()
 
     def _record(self, record: Loaded, where: str, error: BaseException) -> str:
-        text = redact_values(f"{type(error).__name__}: {error}", record.manifest, record.values)
+        text = redact_values(error_text(error), record.manifest, record.values)
         where = redact_values(where, record.manifest, record.values)
         record.errors.append({"at": self.now(), "where": where, "error": text})
-        logger.error("插件 %s %s 出错：%s", record.name, where, text)
+        with log_context(plugin=record.name):
+            log_event(logger, 'plugin_error', f'插件 {record.name} {where} 出错', level=logging.ERROR,
+                      error=error, where=where)
         self._notify()
         return text
 
     async def _guard(self, record: Loaded, where: str, call: Awaitable[object]) -> None:
-        try:
-            await call
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            self._record(record, where, error)
+        with log_context(plugin=record.name):
+            try:
+                await call
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self._record(record, where, error)
 
     def _spawn(self, record: Loaded, where: str, call: Coroutine) -> asyncio.Task:
         task = asyncio.get_running_loop().create_task(self._guard(record, where, call), name=f"{record.name}:{where}")
@@ -539,8 +546,9 @@ class PluginHost:
                 parsed = entry.model.model_validate(arguments)
                 values = {key: getattr(parsed, key) for key in entry.model.model_fields}
                 message = self.source_message(scene, values.pop("source_message_id")) if entry.needs_source else None
-                task = asyncio.create_task(getattr(record.instance, entry.method)(
-                    Invocation(record.context, scene, message), **values), name=f"{record.name}:tool:{name}")
+                with log_context(plugin=record.name):
+                    task = asyncio.create_task(getattr(record.instance, entry.method)(
+                        Invocation(record.context, scene, message), **values), name=f"{record.name}:tool:{name}")
                 self.tasks[task] = record.name
                 task.add_done_callback(lambda done: self.tasks.pop(done, None))
                 try:
@@ -673,7 +681,8 @@ class PluginHost:
                 task.add_done_callback(lambda done: self.tasks.pop(done, None))
             self._notify()
 
-        task = asyncio.create_task(start(), name=f"{record.name}:start")
+        with log_context(plugin=record.name):
+            task = asyncio.create_task(start(), name=f"{record.name}:start")
         self.tasks[task] = record.name
         task.add_done_callback(lambda done: self.tasks.pop(done, None))
         try:

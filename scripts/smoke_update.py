@@ -113,7 +113,8 @@ def run(artifacts: Path, work: Path) -> dict:
                     if value['status'] == expected:
                         return value
                     if value['status'] == 'failed' and expected != 'failed':
-                        raise RuntimeError(value['error'] + '\n' + (root / 'updates/updater.log').read_text(encoding='utf-8')[-4000:])
+                        raise RuntimeError(value['error'] + '\n' + (root / 'updates/updater.jsonl').read_text(encoding='utf-8')[-4000:]
+                                           + '\n' + (root / 'updates/updater.log').read_text(encoding='utf-8')[-4000:])
                     if expected == 'failed' and value['status'] == 'complete':
                         raise AssertionError('The synthetic broken release unexpectedly started successfully')
                     time.sleep(0.25)

@@ -25,6 +25,7 @@ from .proactive import PROMPT as PROACTIVE_PROMPT, ProactiveStore, idle_text
 from .quiet import next_quiet_start, quiet_period
 from .schedule import effective_settings, check_creation, platform_role, wake_text
 from ..plugins.store import PluginStore
+from ..runtime.logs import log_context
 from .schedule_store import ScheduleStore
 
 
@@ -321,7 +322,7 @@ class SceneRunner:
         if wake:
             self.offer_message(state, message, now, pending, recent)
         snapshot = asdict(state) if state != self.state else None
-        self.store.enqueue(
+        seq = self.store.enqueue(
             message, raw, now, attention_state=snapshot,
             plugin_claim=plugin_claim,
             collect_stickers=(not blocked and self.config.learning is not None and self.config.learning.collect_stickers
@@ -334,7 +335,7 @@ class SceneRunner:
         if message.is_self:
             self.own_ids.add(message.platform_message_id)
         self.changed.set()
-        receipt = {"status": "queued" if state.pending else "stored",
+        receipt = {"status": "queued" if state.pending else "stored", "message_seq": seq,
                    "platform_message_id": message.platform_message_id,
                    "wake_channel": state.pending.channel if state.pending else None}
         if blocked:
@@ -687,9 +688,11 @@ class SceneRunner:
         state = self.consumed_state()
         contact_before = state.last_contact_at
         self.state, self.resume = state, False
-        result = await self.chat.run_turn(append_new=self.append_during_turn,
-                                          wait_for_messages=self.wait_for_messages,
-                                          attention_state=asdict(state), **turn)
+        # The turn adds its own ID inside; this block drops it again once the turn ends.
+        with log_context(scene=self.config.scene):
+            result = await self.chat.run_turn(append_new=self.append_during_turn,
+                                              wait_for_messages=self.wait_for_messages,
+                                              attention_state=asdict(state), channel=channel, **turn)
         state = copy.deepcopy(self.state)
         own_at = self.store.last_self_time(self.config.scene)
         if own_at is not None:
@@ -765,6 +768,10 @@ class SceneRunner:
                             proactive=(text, local.date().isoformat(), idle_since))
 
     async def run(self) -> None:
+        with log_context(scene=self.config.scene):
+            await self._run()
+
+    async def _run(self) -> None:
         while True:
             if self.ready_for_turn is not None and not await self.ready_for_turn(True):
                 return
