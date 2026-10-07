@@ -1,7 +1,4 @@
 <script setup>
-// Page frame: title, one-line description, page actions. Workbench pages
-// (list beside detail) use `wide`. Pages that show one group (or role) at a time
-// get the in-page switch under the title, from the route's `scene` rule.
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { sceneTarget, showsScene, useCurrentScene } from '../../composables/useCurrentScene.js'

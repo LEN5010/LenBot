@@ -1,6 +1,4 @@
 <script setup>
-// Headline numbers. Items are { label, value, hint, icon, to, series, seriesLabel };
-// `series` draws a small trend line under the number.
 import Sparkline from './Sparkline.vue'
 defineProps({ items: { type: Array, required: true } })
 </script>

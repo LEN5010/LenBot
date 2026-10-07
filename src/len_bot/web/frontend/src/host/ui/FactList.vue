@@ -1,6 +1,4 @@
 <script setup>
-// Label and value pairs. Items are [label, value] or { label, value }; empty
-// values are skipped.
 defineProps({ items: { type: Array, default: () => [] } })
 const pair = item => Array.isArray(item) ? { label: item[0], value: item[1] } : item
 </script>

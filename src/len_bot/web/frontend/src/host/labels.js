@@ -1,4 +1,3 @@
-// Everyday wording for host values. Statuses live in status.js.
 import { statusText } from './status.js'
 
 export const roleOptions = [
@@ -6,7 +5,6 @@ export const roleOptions = [
   { title: '群管理', value: 'group_manager' }, { title: '白名单', value: 'whitelist' },
   { title: '群友', value: 'member' },
 ]
-// Root config fields as named in GET /api/host/pending-restart.
 const sections = {
   bot_id: '连接', owners: '连接', timezone: '连接', onebot: '连接', delivery: '连接',
   max_steps: '连接', turn_timeout_seconds: '连接', text_delivery: '连接', max_model_requests: '连接',

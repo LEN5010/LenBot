@@ -1,5 +1,4 @@
 <script setup>
-// Move a role between hosts as one ZIP, and the raw role files for people who know the format.
 import { computed, ref, watch } from 'vue'
 import { api, sceneName } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'

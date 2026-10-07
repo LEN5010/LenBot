@@ -80,7 +80,6 @@ async function submit() {
   const path = `/api/host/settings/scenes/${encodeURIComponent(props.scene)}`
   const sceneValue = sceneDirty.value ? sceneBody(draft.value, relationships.value) : null
   const tasksValue = tasksDirty.value ? { tasks: taskBody(draft.value) } : null
-  // Two endpoints: whatever was saved stays saved, and an unsaved part keeps its draft.
   const done = await save.run(async () => {
     if (sceneValue) settings.data.value = await api(path, { method: 'PUT', body: JSON.stringify(sceneValue) })
     if (tasksValue) settings.data.value = await api(`${path}/tasks`, { method: 'PUT', body: JSON.stringify(tasksValue) })

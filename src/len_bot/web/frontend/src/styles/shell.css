@@ -1,5 +1,3 @@
-/* Frame shared by the host shell and the isolated test shell: a white sidebar,
-   a white top bar, and pages on the gray background. */
 .shell-nav.v-navigation-drawer { background:var(--surface);border-right:1px solid var(--line) }
 .shell-brand{color:inherit;display:flex;align-items:center;gap:var(--sp-3);height:60px;padding:0 var(--sp-5)}
 .shell-brand img{width:28px;height:28px}

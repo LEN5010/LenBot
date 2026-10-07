@@ -1,5 +1,4 @@
 <script setup>
-// Developer mode only: the saved embedding requests behind memory search.
 import { ref, watch } from 'vue'
 import { api, queryString } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'

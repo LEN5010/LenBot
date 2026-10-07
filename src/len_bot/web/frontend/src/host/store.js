@@ -1,7 +1,3 @@
-// Host-wide facts shared by the shell and every page: one read of the host
-// state and of what needs a restart, refreshed on navigation and after saves.
-// `operator` is the platform account of the person using the panel, which task and reminder
-// permissions are checked against; it is kept while moving between pages.
 import { reactive } from 'vue'
 import { api, sceneTitles } from '../api.js'
 
@@ -21,8 +17,6 @@ export async function readHostState() {
   }
 }
 
-// Group names come from QQ once the connection is up; failures stay visible
-// in developer mode and the scene keeps showing its number.
 export async function readSceneTitles() {
   const own = ++titlesRead
   try {
@@ -36,8 +30,6 @@ export async function readSceneTitles() {
   }
 }
 
-// Today's counts, the last 24 hours and recent activity; the home page and the
-// top bar's count of things to handle both read it.
 export async function readOverview() {
   const own = ++overviewRead
   try {

@@ -1,5 +1,3 @@
-// Times come from the backend as epoch seconds and are shown in the host's
-// business timezone (or a scene's own timezone when it has one).
 import { host } from './store.js'
 
 export function formatTime(seconds, timeZone, { date = true } = {}) {

@@ -1,5 +1,4 @@
 <script setup>
-// Sticky save bar for a page-sized form that is saved in one go.
 import { nextTick } from 'vue'
 import { openRestart } from '../restart.js'
 import ErrorNote from './ErrorNote.vue'

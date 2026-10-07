@@ -39,7 +39,6 @@ watch(filter, () => { wanted.value = 20; rows.value = []; list.reload() })
 function loadMore() { wanted.value += 20; list.reload() }
 const selected = computed(() => /^[1-9][0-9]*$/.test(route.query.id ?? '') ? Number(route.query.id) : null)
 
-// Change notices re-read the list and the open task; drafts in the detail stay as typed.
 const version = ref(0)
 const events = useHostEvents(async () => {
   version.value++

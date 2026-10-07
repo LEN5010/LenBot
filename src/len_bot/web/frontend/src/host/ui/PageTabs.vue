@@ -1,6 +1,4 @@
 <script setup>
-// Sub-sections of a page. By default each tab is a link that sets `?tab=`
-// and drops the object selected inside the old tab; `local` tabs only emit.
 import { useRoute } from 'vue-router'
 const props = defineProps({
   tabs: { type: Array, required: true },

@@ -1,5 +1,4 @@
 <script setup>
-// Stickers the Bot can send, each with a description it picks by.
 import { computed, ref, watch } from 'vue'
 import { mdiPlus } from '@mdi/js'
 import { api } from '../../../api.js'
@@ -22,7 +21,6 @@ const tags = computed(() => [...new Set(entries.value.flatMap(entry => entry.tag
 const image = file => `${base.value}/image?file=${encodeURIComponent(file)}&directory=${encodeURIComponent(listing.data.value.saved_path)}`
 const broken = ref({})
 
-// The dialog edits one entry: an existing one, a loose picture being registered, or a new upload (file null).
 const dialog = ref(false), editing = ref(null)
 watch(dialog, value => emit('dirty', value), { immediate: true })
 function edit(entry) { editing.value = entry; dialog.value = true }
@@ -47,7 +45,6 @@ async function save({ file, description, emotions, tags }) {
       form.append('file', file)
       form.append('directory', directory)
       name = (await api(`${base.value}/image`, { method: 'POST', body: form })).file
-      // The picture is saved now; if the description fails below, saving again only retries the description.
       editing.value = { file: name, description, emotions, tags }
     }
     const entry = { file: name, description, emotions, tags }

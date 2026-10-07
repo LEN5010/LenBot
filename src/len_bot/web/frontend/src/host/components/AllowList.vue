@@ -1,5 +1,4 @@
 <script setup>
-// Either 'all' or an explicit list of names, as role packages store tools and skills.
 import { computed } from 'vue'
 const props = defineProps({
   modelValue: { type: [String, Array], required: true },
@@ -11,7 +10,6 @@ const mode = computed({
   get: () => props.modelValue === 'all' ? 'all' : 'selected',
   set: value => emit('update:modelValue', value === 'all' ? 'all' : props.items.map(item => item.name)),
 })
-// Names saved in the role package that no longer exist stay in the list until removed by hand.
 const missing = computed(() => props.modelValue === 'all' ? []
   : props.modelValue.filter(name => !props.items.some(item => item.name === name)))
 function toggle(name, on) {

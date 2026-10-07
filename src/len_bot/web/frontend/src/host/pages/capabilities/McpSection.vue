@@ -25,7 +25,6 @@ const route = useRoute(), router = useRouter()
 const mcp = useResource(() => api('/api/host/mcp'))
 const save = useAction(), act = useAction()
 const editing = ref(null), original = ref(null), actionError = ref(null)
-// The selected service is `?item=`; `?item=` with an empty value is a new one.
 const selected = computed(() => typeof route.query.item === 'string' ? route.query.item : null)
 const select = item => router.push({ query: { ...route.query, item } })
 const back = () => router.push({ query: { ...route.query, item: undefined } })
@@ -35,7 +34,6 @@ const names = computed(() => mcp.data.value
   ? [...new Set([...Object.keys(mcp.data.value.saved), ...Object.keys(running.value)])].sort() : [])
 const sceneOptions = computed(() => (mcp.data.value?.scenes || []).map(scene => ({ title: sceneName(scene), value: scene })))
 
-// Saved env and header values come back as null; a row left blank keeps the saved value.
 const rows = values => Object.entries(values || {}).map(([key, value]) => ({ key, value: value ?? '', saved: value === null }))
 function form(name, saved) {
   const transport = saved?.transport || { type: 'stdio', command: '', args: [], cwd: '.', env: {} }

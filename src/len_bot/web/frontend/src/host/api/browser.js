@@ -1,4 +1,3 @@
-// Dedicated account-browser configuration, pairing and explicit task-session release.
 import { api, queryString } from '../../api.js'
 
 /**

@@ -21,14 +21,12 @@ export default createVuetify({
     VCombobox: field,
     VFileInput: field,
     VCheckbox: { color: 'primary', density: 'compact', hideDetails: 'auto' },
-    // Switches that are on use the brand pink; it is one of the few places the accent appears.
     VSwitch: { color: 'brand', density: 'compact', hideDetails: 'auto', inset: true },
     VAlert: { density: 'compact', rounded: 'lg', variant: 'tonal' },
     VChip: { size: 'small', variant: 'tonal' },
     VProgressLinear: { color: 'primary', rounded: true },
     VProgressCircular: { color: 'primary' },
     VMenu: { transition: 'fade-transition' },
-    // Drawn like the page tabs (gray track, white selected pill) by styles/base.css.
     VBtnToggle: { density: 'compact', variant: 'text', rounded: 'lg' },
     VDialog: { transition: 'fade-transition' },
     VExpansionPanels: { variant: 'accordion' },

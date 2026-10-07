@@ -1,7 +1,4 @@
 <script setup>
-// A list of objects beside the selected object's detail. Below 900px only one
-// side shows: the list, or the detail with a back button. With `defaultDetail`
-// the detail slot also shows on wide screens when nothing is selected.
 import { mdiArrowLeft } from '@mdi/js'
 defineProps({ selected: Boolean, defaultDetail: Boolean, listWidth: { type: String, default: '320px' }, backLabel: { type: String, default: '返回列表' } })
 defineEmits(['back'])

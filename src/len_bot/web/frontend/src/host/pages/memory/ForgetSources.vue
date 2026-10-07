@@ -1,5 +1,4 @@
 <script setup>
-// Pick the chat messages the forgotten memory came from, so later memory extraction skips them.
 import { computed, ref, watch } from 'vue'
 import { api, queryString } from '../../../api.js'
 import { useResource } from '../../../composables/useResource.js'

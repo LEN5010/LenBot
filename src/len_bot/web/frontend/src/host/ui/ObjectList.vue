@@ -1,6 +1,4 @@
 <script setup>
-// Rows of objects. `divided` draws lines between rows (lists inside a panel);
-// otherwise rows are separate selectable items (a workbench list).
 defineProps({ divided: Boolean })
 </script>
 <template><ul class="object-list" :class="{ divided }"><slot /></ul></template>

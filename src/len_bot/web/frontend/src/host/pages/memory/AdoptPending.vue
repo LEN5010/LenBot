@@ -1,5 +1,4 @@
 <script setup>
-// Files under legacy-import/ came from the old core and are not recalled until a person rewrites them as a real memory.
 import { ref } from 'vue'
 import { api } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'

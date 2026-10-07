@@ -46,7 +46,6 @@ async function disconnectQQ() {
   await readHostState()
 }
 
-// One switch per group: off means messages are still saved but neither the Bot nor its plugins speak there.
 const switching = reactive({})
 const switchError = useAction()
 async function setChat(scene, enabled) {

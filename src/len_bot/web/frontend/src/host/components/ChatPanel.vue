@@ -1,6 +1,4 @@
 <script setup>
-// A test conversation: type as a made-up group member, see the Bot's simulated
-// replies, and open any reply round to see what happened. Nothing goes to QQ.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from '../../api.js'
 import { useAction, useResource } from '../../composables/useResource.js'
@@ -49,7 +47,6 @@ function toggle(turn) {
   if (openTurn.value) detail.reload()
 }
 
-// Change notices from the test's own event stream.
 const live = ref('connecting')
 let socket = null
 function connect() {

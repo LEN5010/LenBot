@@ -1,6 +1,4 @@
 <script setup>
-// The in-page choice of group (or of role) for pages that show one at a time.
-// Groups are chips in one scrollable row; role mode lists each role once, with how many groups use it.
 import { computed } from 'vue'
 import { sceneName } from '../../api.js'
 import { host } from '../store.js'
@@ -17,7 +15,6 @@ const roles = computed(() => {
   }
   return [...groups.values()]
 })
-// One role has nothing to switch to.
 const visible = computed(() => props.mode !== 'role' || roles.value.length > 1)
 function pickRole(role) {
   if (!role.scenes.includes(props.modelValue)) emit('update:modelValue', role.scenes[0])

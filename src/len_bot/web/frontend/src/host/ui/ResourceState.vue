@@ -1,6 +1,4 @@
 <script setup>
-// The states of one useResource read: loading the first time, failed (with
-// retry), empty, or the content. A failed refresh keeps the old content.
 import ErrorNote from './ErrorNote.vue'
 import EmptyState from './EmptyState.vue'
 defineProps({

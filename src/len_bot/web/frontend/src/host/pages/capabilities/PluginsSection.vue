@@ -38,7 +38,6 @@ const installing = ref(false), repository = ref(''), repositoryRef = ref('')
 const catalogDirty = ref(false), updating = ref(null), updateRef = ref('')
 const snapshot = computed(() => plugins.data.value)
 
-// `?view=` picks installed or discover; `?item=` is the open plugin.
 const view = computed(() => route.query.view === 'discover' ? 'discover' : 'installed')
 const selected = computed(() => typeof route.query.item === 'string' ? route.query.item : null)
 const open = name => router.push({ query: { ...route.query, view: undefined, item: name } })
@@ -48,7 +47,6 @@ const running = computed(() => Object.fromEntries((snapshot.value?.running.plugi
 const names = computed(() => snapshot.value ? [...new Set([...Object.keys(snapshot.value.available),
   ...Object.keys(snapshot.value.saved.plugins), ...Object.keys(running.value)])].sort() : [])
 const loaded = computed(() => Object.keys(snapshot.value?.saved.plugins || {}).sort())
-// Running scenes; a scene missing from the saved config cannot be changed here.
 const sceneList = computed(() => Object.keys(snapshot.value?.scenes || {}))
 const sceneSaved = scene => snapshot.value?.scenes[scene]?.saved || []
 const usedIn = name => sceneList.value.filter(scene => sceneSaved(scene).includes(name))
@@ -76,14 +74,12 @@ function reset(part) {
   if (part === 'paths') paths.value = initialPaths()
   else drafts.value[part] = initial(part)
 }
-// A fresh read resets every draft; a save only resets the part that was saved.
 watch(() => plugins.data.value, (value, previous) => {
   if (!value) return
   for (const name of names.value) if (!drafts.value[name]) reset(name)
   if (!previous) reset('paths')
 })
 
-// Leaving a plugin (after the page asked) drops its unsaved parameters.
 watch(selected, (_, previous) => { if (previous && snapshot.value && names.value.includes(previous)) reset(previous) })
 const pluginDirty = name => Boolean(drafts.value[name]) && !same(drafts.value[name], initial(name))
 const pathsDirty = computed(() => paths.value !== null && !same(paths.value, initialPaths()))
@@ -116,7 +112,6 @@ async function send(part, path, body) {
 }
 const savePlugin = name => send(name, `/api/host/plugins/${encodeURIComponent(name)}`,
   () => drafts.value[name].enabled ? { enabled: true, config: configBody(name) } : { enabled: false })
-// Turning a plugin on or off for one scene applies at once (the plugin is reloaded, chat keeps running).
 const switching = ref('')
 async function toggleScene(scene, name, on) {
   switching.value = scene

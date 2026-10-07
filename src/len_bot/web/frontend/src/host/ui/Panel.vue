@@ -1,7 +1,4 @@
 <script setup>
-// A titled block on a page. `flush` removes the inner padding so a list can
-// run edge to edge; `tag="form"` makes the whole block a form; `icon` puts a
-// small gray icon before the title.
 defineProps({
   title: { type: String, default: '' },
   description: { type: String, default: '' },

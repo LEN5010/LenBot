@@ -1,5 +1,4 @@
 <script setup>
-// One independently saved block of settings.
 import { nextTick } from 'vue'
 import { openRestart } from '../restart.js'
 import Panel from './Panel.vue'
@@ -13,10 +12,8 @@ const props = defineProps({
   saving: { type: Boolean, default: false },
   error: { type: [Object, String], default: null },
   saveLabel: { type: String, default: '保存' },
-  // Why the draft cannot be saved yet; shown instead of the save hint.
   problem: { type: String, default: '' },
 })
-// An awaitable handler keeps saving and lifecycle actions separate.
 async function submit(restart = false) {
   await props.onSave()
   await nextTick()

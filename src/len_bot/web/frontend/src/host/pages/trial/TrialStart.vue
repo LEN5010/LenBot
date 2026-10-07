@@ -1,5 +1,4 @@
 <script setup>
-// Start a test chat from a running group, or from an unsaved role draft when `draft` is given.
 import { computed, ref } from 'vue'
 import { api, sceneName } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'

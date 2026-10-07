@@ -23,7 +23,6 @@ const tabs = computed(() => state.value?.enabled
 const tab = computed(() => tabs.value.some(([key]) => key === route.query.tab) ? route.query.tab : tabs.value[0][0])
 const { scene } = useCurrentScene()
 const remembered = computed(() => (state.value?.scenes || []).some(item => item.scene === scene.value))
-// The search tab opens a file by switching to the browse tab with the path in the address.
 const openFile = hit => router.push({ name: 'host-memory', query: { ...route.query, tab: 'browse', path: hit.path, scope: hit.scope } })
 
 const dirty = reactive({})

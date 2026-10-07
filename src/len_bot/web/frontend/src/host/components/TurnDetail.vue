@@ -1,6 +1,4 @@
 <script setup>
-// What happened in one reply: what the mind thought, which tools it used and
-// what came back, and what was actually expressed. Raw exchanges stay in developer mode.
 import { computed } from 'vue'
 import { callRoleLabel, toolLabel } from '../labels.js'
 import { formatTime } from '../time.js'
@@ -25,7 +23,7 @@ function readable(text) {
     const value = JSON.parse(text)
     if (value && typeof value === 'object' && !Array.isArray(value)) return Object.entries(value)
       .map(([key, item]) => `${key}：${typeof item === 'string' ? item : JSON.stringify(item)}`).join('\n')
-  } catch { /* not JSON: show the original text */ }
+  } catch { }
   return text
 }
 const seconds = value => `${Math.round(value * 10) / 10} 秒`

@@ -19,13 +19,10 @@ const sorted = value => value === 'all' ? value : [...value].sort()
 const dirty = computed(() => Boolean(caps.data.value) && !same(sorted(draft.value), sorted(caps.data.value.role_tools.saved)))
 watch(dirty, value => emit('dirty', value), { immediate: true })
 
-// The role permission is already shown by the checkbox, so only other reasons are listed.
 const items = computed(() => (caps.data.value?.tools || []).map(tool => ({
   name: tool.name, label: tool.source ? `${tool.name}（${tool.source}）` : toolLabel(tool.name), tool,
   note: tool.reasons.filter(reason => reason !== '角色没有允许这个工具').join('；'),
 })))
-// The backend refuses these tools without their companions, so they are added together.
-// Tools found on demand need tool_search to be found at all.
 const companions = { schedule: ['schedule_list', 'schedule_cancel'], delegate: ['task'] }
 function update(value) {
   if (value !== 'all' && draft.value !== 'all') {

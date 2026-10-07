@@ -46,7 +46,6 @@ function changeProtocol(row, api) {
 const route = useRoute(), router = useRouter()
 const tabs = [['providers', '服务商'], ['roles', '用途'], ['usage', '用量与上限']]
 const tab = computed(() => tabs.some(([key]) => key === route.query.tab) ? route.query.tab : 'providers')
-// The open provider is `?item=` (its row number in the draft).
 const selected = computed(() => typeof route.query.item === 'string' && draft.value?.providers[Number(route.query.item)] ? Number(route.query.item) : null)
 const select = index => router.push({ query: { ...route.query, item: index === null ? undefined : String(index) } })
 const settings = useResource(() => api('/api/host/settings'))

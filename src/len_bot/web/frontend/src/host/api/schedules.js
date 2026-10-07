@@ -1,4 +1,3 @@
-// Reminder and proactive-wake requests for the current scene.
 import { api, queryString } from '../../api.js'
 
 /**

@@ -1,5 +1,4 @@
 <script setup>
-// Preformatted text: raw records, file contents, logs.
 defineProps({ text: { type: String, default: '' } })
 </script>
 <template><pre class="code-block"><slot>{{ text }}</slot></pre></template>

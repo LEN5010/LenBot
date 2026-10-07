@@ -51,7 +51,6 @@ function refresh() {
 }
 onMounted(refresh)
 watch(() => route.name, refresh)
-// Names are asked for once QQ is connected and while any scene still lacks one.
 watch(() => host.state?.connection.connected && host.state.scenes.some(item => !sceneTitles[item.scene]),
   missing => { if (missing) readSceneTitles() }, { immediate: true })
 watch(mobile, value => { drawer.value = !value })
