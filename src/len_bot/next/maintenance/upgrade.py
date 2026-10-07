@@ -5,6 +5,7 @@ import asyncio
 from contextlib import ExitStack
 import json
 from pathlib import Path
+import sys
 import tomllib
 
 from ..config import load_instance_config
@@ -118,4 +119,10 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    run_maintenance(main, 'upgrade')
+    if sys.argv[1:2] in (['inspect'], ['paths'], ['restore']):
+        # inspect and paths only read, and the container updater mounts the instance read-only for them;
+        # restore replaces the instance, log files included, and Windows cannot remove a file held open.
+        # The updater records these steps in its own log.
+        main()
+    else:
+        run_maintenance(main, 'upgrade')

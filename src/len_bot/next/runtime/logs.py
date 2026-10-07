@@ -173,7 +173,7 @@ class ConsoleFormatter(logging.Formatter):
         line = ' '.join(part for part in (
             entry['ts'][11:19], record.levelname, record.name, str(entry.get('event') or ''),
             '' if entry['message'] == entry.get('event') else entry['message'], ids,
-            '' if error is None else f'{error["type"]}: {error["message"]}') if part)
+            '' if error is None else ': '.join(filter(None, (error.get('type'), error['message'])))) if part)
         return SECRETS.clean(line)
 
 

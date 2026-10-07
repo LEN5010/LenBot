@@ -148,3 +148,21 @@ def test_restore_that_fails_while_copying_leaves_the_instance_unchanged(tmp_path
     restore(root, tmp_path / 'backup')
     assert json.loads((root / 'lenbot.config.json').read_text()) == {'config_version': 1}
     assert (outside / 'memory.md').read_text() == '升级前正文'
+
+
+def test_inspect_and_paths_run_on_a_read_only_instance(tmp_path):
+    """The container updater mounts the instance read-only for these two questions."""
+    import os
+    import stat
+    import subprocess
+    root = tmp_path / 'instance'
+    root.mkdir()
+    (root / 'lenbot.config.json').write_text('{}')
+    os.chmod(root, stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        result = subprocess.run([sys.executable, '-m', 'len_bot.next.maintenance.upgrade', 'inspect', '--version', '0.2.0'],
+                                cwd=root, capture_output=True, text=True, check=False)
+    finally:
+        os.chmod(root, stat.S_IRWXU)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)['blocked_plugins'] == [] and not (root / 'logs').exists()

@@ -85,3 +85,17 @@ def test_unknown_context_field_is_rejected():
     with pytest.raises(ValueError, match='unknown log context'):
         with log_context(user='onebot:70001'):
             pass
+
+
+def test_console_line_shows_recorded_error_text_without_a_type(capsys, tmp_path):
+    settings = LoggingSettings(directory=tmp_path / 'logs')
+    logger = logging.getLogger('len_bot.next.synthetic')
+    with configure_logging(settings, ()):
+        log_event(logger, 'platform_error', level=logging.ERROR, error='OSError: 地址已被占用')
+        try:
+            raise ValueError('synthetic')
+        except ValueError as error:
+            log_event(logger, 'tool_failed', level=logging.WARNING, error=error)
+    err = capsys.readouterr().err
+    assert 'Logging error' not in err
+    assert 'platform_error OSError: 地址已被占用' in err and 'tool_failed ValueError: synthetic' in err
