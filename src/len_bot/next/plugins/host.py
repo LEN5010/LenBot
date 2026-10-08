@@ -39,13 +39,13 @@ from ..storage.store import encode
 from ...image_assets import MAX_IMAGE_BYTES, inspect_image
 from ..tools.http_read import fetch_public
 from .store import PluginStore
+from ..prompt_files import read_prompt
 
 if TYPE_CHECKING:
     from ..runtime.network import NetworkRuntime
 
 
 logger = logging.getLogger(__name__)
-PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
 STRICT = ConfigDict(extra="forbid", strict=True)
 ERROR_LIMIT = 20
 # A plugin's own start() or stop() that never returns would hold the host start (and with it every
@@ -380,7 +380,7 @@ class PluginHost:
         if self.runtime is None:
             raise RuntimeError("插件宿主尚未接入运行中的场景")
         now = datetime.fromtimestamp(self.now(), ZoneInfo(self.scene_timezone(scene)))
-        content = Template((PROMPTS / "next_plugin_event.md").read_text(encoding="utf-8")).substitute(
+        content = Template(read_prompt("next_plugin_event.md")).substitute(
             plugin=plugin, time=now.isoformat(timespec="seconds"), text=self.redact(plugin, text.strip())).strip()
         PluginStore(self.runtime.store).add_plugin_event(scene, plugin, "event", content)
         self.runtime.runners[scene].changed.set()
@@ -619,7 +619,7 @@ class PluginHost:
 
     def message_report(self, message: ChatMessage, matched: Matched, result: str) -> str:
         now = datetime.fromtimestamp(self.now(), ZoneInfo(self.scene_timezone(message.scene)))
-        return Template((PROMPTS / "next_plugin_handled.md").read_text(encoding="utf-8")).substitute(
+        return Template(read_prompt("next_plugin_handled.md")).substitute(
             plugin=matched.record.name, time=now.isoformat(timespec="seconds"),
             message_id=message.platform_message_id, sender_id=message.sender.uid,
             rule=self.redact(matched.record.name, matched.label),

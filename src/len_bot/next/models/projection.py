@@ -1,6 +1,7 @@
 """Request history policy for a verified transport, separate from response storage."""
 
 from typing import Literal
+from ..prompt_files import read_prompt
 
 
 HistoryPolicy = Literal['native', 'omit-reasoning']
@@ -28,11 +29,11 @@ def project_old_results(entries: list[tuple[int, dict]], keep_recent_tokens: int
     """Keep recent results whole; older saved web pages remain readable by document ID."""
     import json
     from math import ceil
-    from pathlib import Path
     from ..storage.codec import encode
 
-    template = (Path(__file__).resolve().parents[2] / 'prompts' / 'next_web_read.md').read_text()
-    prefix, suffix = template.split('$result')
+    from string import Template
+
+    prefix, _, suffix = Template(read_prompt('next_web_read.md')).substitute(result='\0').partition('\0')
     recent, cutoff = 0, 0
     for seq, message in reversed(entries):
         recent += ceil(len(encode(message).encode('utf-8')) / 3)

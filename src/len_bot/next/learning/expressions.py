@@ -8,7 +8,6 @@ import logging
 from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from ..config import HostConfig
@@ -21,10 +20,10 @@ from ..models.slots import ModelSlots
 from ..models.tokens import token_record
 from ..storage.store import Store, encode
 from ..runtime.logs import log_context
+from ..prompt_files import read_prompt
 
 
 LOG = logging.getLogger(__name__)
-PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "next_expression_learning.md"
 WAKE_INTERVAL_SECONDS = 30
 MAX_CANDIDATES = 20
 
@@ -93,7 +92,7 @@ class ExpressionLearner:
         self._retry: set[str] = set()
         self._workers: dict[str, asyncio.Task[None]] = {}
         self.errors: dict[str, BaseException] = {}
-        self._prompt = PROMPT.read_text(encoding="utf-8")
+        self._prompt = read_prompt("next_expression_learning.md")
         for scene in self.scenes:
             self.records.initialize(scene, store.max_message_seq(scene))
             self.records.recover(scene)

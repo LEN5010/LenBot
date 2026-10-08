@@ -1,7 +1,6 @@
 """Scene-local literal history search and complete, paged message reading."""
 
 from datetime import datetime
-from pathlib import Path
 from string import Template
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -11,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from ..platform.messages import ChatMessage, render_message
 from ..storage.store import Store, encode
 from ..media.audio_store import AudioStore
+from ..prompt_files import read_prompt
 
 
 class RecallArguments(BaseModel):
@@ -75,7 +75,6 @@ RECALL_TOOL = {"type": "function", "function": {
                    "分段读全文；context查看前后各3条。who是实际账号，时间须含时区。",
     "parameters": RecallArguments.model_json_schema(),
 }}
-PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "next_recall.md"
 
 
 def message_page(record: int, message: ChatMessage, timezone: str, *, offset: int, size: int,
@@ -128,4 +127,4 @@ def recall_chat(store: Store, scene: str, timezone: str, arguments: RecallArgume
         result = {"action": "context", "center": arguments.record,
                   "previews": [render_page(seq, message)
                                for seq, message in rows]}
-    return Template(PROMPT.read_text()).substitute(scene=scene, result=encode(result))
+    return Template(read_prompt("next_recall.md")).substitute(scene=scene, result=encode(result))

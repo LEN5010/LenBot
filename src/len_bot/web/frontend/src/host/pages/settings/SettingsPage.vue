@@ -15,6 +15,7 @@ import AccountSection from './AccountSection.vue'
 import RetentionSection from './RetentionSection.vue'
 import ProcessingSection from './ProcessingSection.vue'
 import UpdatesSection from './UpdatesSection.vue'
+import PromptsSection from './PromptsSection.vue'
 
 const route = useRoute()
 const tabs = [['connection', '连接'], ['account', '面板账号'], ['retention', '数据保留'], ['updates', '版本与更新'], ['advanced', '高级']]
@@ -44,6 +45,7 @@ function saved(value) {
             />
         </Panel>
         <ProcessingSection :snapshot="data" @saved="saved" @dirty="value => dirty.processing = value" />
+        <PromptsSection @dirty="value => dirty.prompts = value" />
       </template>
     </ResourceState>
   </HostPage>

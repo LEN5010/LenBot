@@ -9,7 +9,6 @@ import xml.etree.ElementTree as ET
 from html import unescape
 from html.parser import HTMLParser
 from datetime import datetime, timezone
-from pathlib import Path
 from string import Template
 from typing import Literal
 from urllib.parse import urlsplit
@@ -17,11 +16,11 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 from ..trials.replay_web import RecordedWeb
+from ..prompt_files import read_prompt
 
 SEARCH_URL = "https://www.bing.com/search"
 MAX_RESPONSE_BYTES = 1_000_000
 ERROR_BYTES = 2048
-PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "next_web_search.md"
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
 
@@ -108,7 +107,7 @@ async def execute_web_search(settings: WebSearchSettings, arguments: WebSearchAr
                   'recording': {'source': recording.data.source,
                                 'fetched_at': datetime.fromtimestamp(item.fetched_at, timezone.utc).isoformat(),
                                 'live_request': False}}
-        return Template((PROMPT.parent / 'next_replay_web_search.md').read_text()).substitute(
+        return Template(read_prompt('next_replay_web_search.md')).substitute(
             result=json.dumps(result, ensure_ascii=False))
     deadline = asyncio.timeout(settings.timeout_seconds)
     try:
@@ -137,4 +136,4 @@ async def execute_web_search(settings: WebSearchSettings, arguments: WebSearchAr
         raise
     rows = _parse_rss(bytes(body), count)
     result = {"provider": "bing_rss", "query": arguments.query, "results": rows}
-    return Template(PROMPT.read_text()).substitute(result=json.dumps(result, ensure_ascii=False))
+    return Template(read_prompt("next_web_search.md")).substitute(result=json.dumps(result, ensure_ascii=False))

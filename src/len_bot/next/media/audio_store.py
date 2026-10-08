@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from string import Template
 from typing import TYPE_CHECKING
 
 from ..storage.codec import encode
+from ..prompt_files import read_prompt
 
 if TYPE_CHECKING:
     from ..storage.store import Store
@@ -90,7 +90,7 @@ class AudioStore:
                 "AND m.seq<=COALESCE((SELECT last_message_seq FROM mind_sessions WHERE scene=?),0) "
                 "ORDER BY a.transcribed_at,a.audio_index", (scene, scene)).fetchall()
             for row in rows:
-                prompt = Template((Path(__file__).resolve().parents[2] / "prompts" / "next_audio_ready.md").read_text())
+                prompt = Template(read_prompt("next_audio_ready.md"))
                 self.store._append(scene, {"role": "user", "content":
                     prompt.substitute(message=row[0], audio=row[1], text=row[2]).strip()})
                 self.db.execute("UPDATE audio_cache SET announced_at=? WHERE scene=? AND platform_id=? AND audio_index=?",
