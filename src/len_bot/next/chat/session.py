@@ -79,14 +79,6 @@ class Chat:
         self.turn_channels: set[str] = set()
         self.on_update = on_update
         self.on_compaction = on_compaction
-        previous = self.store.last_mind_request(config.scene)
-        if previous is not None:
-            current = mind.settings.model_dump(exclude={"api_key"})
-            if any(previous["settings"][key] != current[key] for key in ("api", "base_url", "model")):
-                _, active = self.store.active_history(config.scene)
-                if any(message["role"] in {"assistant", "tool"} for _, message in active):
-                    raise ValueError("聊天模型绑定已改变；当前会话仍含旧提供方原生条目，"
-                                     "请停机执行显式可移植历史转换")
         if (config.models.roles.vision is None) != (vision is None):
             raise ValueError("vision 客户端必须与根配置的视觉模型绑定一起提供")
         self.skills = () if tasks is None else tasks.skills[config.scene]
@@ -264,13 +256,16 @@ class Chat:
         failed_tools = 0
         status, error_text = "step_limit", None
         limit_until = None
+        phase = None
         try:
             async with asyncio.timeout(self.config.turn_timeout_seconds):
                 recalled = None
                 if self.memory is not None and self.memory.settings.auto_recall:
+                    phase = '记忆自动召回'
                     recall = await self.memory.recall(scene, self.store.recent_context_messages(scene, limit=8))
                     if recall["items"]:
                         recalled = encode({"backend": recall["backend"], "items": recall["items"]})
+                phase = None
                 self.expression_ids = None
                 learned = None
                 if self.expression_service is not None and scene in self.expression_service.scenes:
@@ -278,6 +273,7 @@ class Chat:
                     query = "\n".join(self.context.render(message) for message in recent
                                       if not message.is_self and message.sender.uid not in self.config.attention.other_bot_ids)
                     if query:
+                        phase = '群内说法向量检索'
                         selected = await self.expression_service.select(
                             scene, query, turn_id=turn_id, direct=direct,
                             exclude_uids=(self.config.bot_id, *self.config.attention.other_bot_ids))
@@ -285,6 +281,7 @@ class Chat:
                             self.expression_ids = [item["id"] for item in selected]
                             learned = Template(read_prompt("next_learned_expressions.md")).substitute(
                                 expressions=encode([{ "情境": item["situation"], "说法": item["style"] } for item in selected]))
+                phase = None
                 style = select_style(self.persona)
                 expression_style = None
                 if style is not None:
@@ -344,6 +341,8 @@ class Chat:
             status = "limited" if isinstance(error, LimitReached) else "timeout" if isinstance(error, TimeoutError) else "error"
             limit_until = error.until if isinstance(error, LimitReached) else None
             error_text = f"{type(error).__name__}: {error}"
+            if phase is not None:
+                error_text = f'{phase}失败：{error_text}'
         self.store.finish_pending_tools(scene, error_text or status)
         return {"turn_id": turn_id, "status": status, "error": error_text,
                 "delivery": "simulated" if self.expression.send_message is None else "onebot",

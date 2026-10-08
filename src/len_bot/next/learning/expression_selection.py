@@ -65,7 +65,7 @@ class ExpressionService:
             if data is None or binding is None or actual is None:
                 raise ValueError(f"scene {scene} adopted expression {item['id']} lacks a vector; stop and rebuild offline with uv run python -m len_bot.next.maintenance.reindex_expressions")
             stored_binding = json.loads(binding)
-            if any(stored_binding[field] != expected[field] for field in ("provider", "base_url", "model")):
+            if any(stored_binding[field] != expected[field] for field in ("base_url", "model")):
                 raise ValueError(f"scene {scene} expression {item['id']} uses a different embedding binding; "
                                  "stop and rebuild offline with uv run python -m len_bot.next.maintenance.reindex_expressions")
             if expected["dimensions"] is not None and actual != expected["dimensions"]:

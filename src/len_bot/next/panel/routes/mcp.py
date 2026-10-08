@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from ...config import HostConfig, _read_root
 from .settings import _body
 from ...configuration.editing import _prepare, _read_saved
+from ...storage.files import sync_directory
 from ...configuration.mcp import SERVICE_NAME
 from ...runtime.network import NetworkRuntime
 
@@ -51,6 +52,7 @@ def register_host_mcp(app: FastAPI, *, root: Path, runtime: NetworkRuntime, runn
                 path, temporary, _ = await asyncio.to_thread(_prepare, root, edit)
                 try:
                     temporary.replace(path)
+                    sync_directory(path.parent)
                 finally:
                     temporary.unlink(missing_ok=True)
             except (ValueError, OSError) as error:

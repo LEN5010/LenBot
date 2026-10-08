@@ -51,6 +51,23 @@ def test_snapshot_restores_root_and_external_data_without_snapshotting_lock(tmp_
     assert not (root / 'new.json').exists()
 
 
+@pytest.mark.parametrize('corruption', ['missing', 'truncated', 'same-length'])
+def test_corrupt_snapshot_never_replaces_current_instance(tmp_path, corruption):
+    root, snapshot = tmp_path / 'instance', tmp_path / 'backup'
+    root.mkdir()
+    (root / 'note.txt').write_bytes(b'original')
+    create([str(root)], snapshot)
+    (root / 'note.txt').write_bytes(b'current')
+    saved = snapshot / '0/note.txt'
+    if corruption == 'missing':
+        saved.unlink()
+    else:
+        saved.write_bytes(b'orig' if corruption == 'truncated' else b'corrupt!')
+    with pytest.raises(ValueError, match='missing|manifest'):
+        restore(root, snapshot)
+    assert (root / 'note.txt').read_bytes() == b'current'
+
+
 @pytest.mark.skipif(sys.platform == 'win32', reason='emulates the Windows rule on POSIX; Windows CI runs it for real in the update smoke')
 def test_snapshot_syncs_through_the_writing_handle_and_keeps_read_only_files(tmp_path, monkeypatch):
     """Windows rejects fsync on a read-only handle (EBADF); the backup must not rely on it."""

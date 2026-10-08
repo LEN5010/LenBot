@@ -24,9 +24,11 @@ import SaveBar from '../../ui/SaveBar.vue'
 import DevOnly from '../../ui/DevOnly.vue'
 import LimitsSection from './LimitsSection.vue'
 import ProviderTools from './ProviderTools.vue'
+import EmbeddingBindingEditor from './EmbeddingBindingEditor.vue'
+import { credentialBinding, modelChoices, normalizedUrl, providerRows } from '../../providerModels.js'
 
 const roles = [
-  ['mind', '聊天', '更换模型前需要先停机', true],
+  ['mind', '聊天', '', true],
   ['vision', '看图', '', false],
   ['memory', '本地记忆整理', '', false],
   ['learner', '学习', '', false],
@@ -36,15 +38,31 @@ const protocols = useResource(() => api('/api/host/models/protocols'))
 const providerApis = computed(() => (protocols.data.value?.protocols || []).map(row => ({ title: row.title, value: row.api })))
 const catalog = ref({})
 const protocol = api => protocols.data.value?.protocols.find(row => row.api === api)
-const providerFor = alias => draft.value.providers.find(row => row.alias === alias)
-const providerChoices = role => draft.value.providers.filter(row => protocol(row.api)?.roles.includes(role)).map(row => row.alias).filter(Boolean)
+const providerFor = id => draft.value.providers.find(row => row.id === id)
+const providerChoices = role => draft.value.providers.filter(row => protocol(row.api)?.roles.includes(role)).map(row => ({ title: row.alias, value: row.id }))
+const vectorProviders = computed(() => draft.value?.providers.filter(row => protocol(row.api)?.roles.includes('embedding')) || [])
+function normalizeProtocol(binding, api) {
+  if (api !== 'openai-chat') {
+    binding.history_policy = 'native'
+    binding.output_token_field = 'max_completion_tokens'
+  }
+  if (!['anthropic', 'gemini'].includes(api)) binding.thinking_budget_tokens = null
+}
+function chooseRoleProvider(name, id) {
+  const binding = draft.value.roles[name]
+  binding.provider = id
+  normalizeProtocol(binding, providerFor(id).api)
+}
 function changeProtocol(row, api) {
   const previous = protocol(row.api)
   if (!row.base_url || row.base_url === previous?.base_url) row.base_url = protocol(api)?.base_url || ''
   row.api = api
+  for (const binding of Object.values(draft.value.roles)) {
+    if (binding?.provider === row.id && Object.hasOwn(binding, 'history_policy')) normalizeProtocol(binding, api)
+  }
 }
 const route = useRoute(), router = useRouter()
-const tabs = [['providers', '服务商'], ['roles', '用途'], ['usage', '用量与上限']]
+const tabs = [['providers', '服务商'], ['roles', '用途'], ['vectors', '向量模型'], ['usage', '用量与上限']]
 const tab = computed(() => tabs.some(([key]) => key === route.query.tab) ? route.query.tab : 'providers')
 const selected = computed(() => typeof route.query.item === 'string' && draft.value?.providers[Number(route.query.item)] ? Number(route.query.item) : null)
 const select = index => router.push({ query: { ...route.query, item: index === null ? undefined : String(index) } })
@@ -52,26 +70,33 @@ const settings = useResource(() => api('/api/host/settings'))
 const draft = ref(null)
 const save = useAction()
 
-function fromSaved(models) {
+function fromSaved(snapshot) {
   return {
-    providers: Object.entries(models.providers).map(([alias, value]) => ({ alias, api: value.api, base_url: value.base_url, api_key: '', proxy: value.proxy || '', saved: value.api_key_configured, key_binding: JSON.stringify([alias, value.api, value.base_url, value.proxy || '']) })),
-    roles: clone(models.roles),
+    providers: providerRows(snapshot.models),
+    roles: clone(snapshot.models.roles),
+    memory_embedding: clone(snapshot.memory?.local.embedding ?? null),
+    learning_embeddings: Object.fromEntries(Object.entries(snapshot.scenes).filter(([, scene]) => scene.learning !== null)
+      .map(([id, scene]) => [id, clone(scene.learning.embedding)])),
   }
 }
 function body(value) {
+  const binding = item => item === null ? null : { ...item, provider: value.providers.find(row => row.id === item.provider)?.alias || item.provider }
   return {
-    providers: Object.fromEntries(value.providers.map(row => [row.alias, { api: row.api, base_url: row.base_url, api_key: row.api_key || null, proxy: row.proxy || null }])),
-    roles: value.roles,
+    providers: Object.fromEntries(value.providers.map(row => [row.alias, { previous_alias: row.originalAlias,
+      api: row.api, base_url: normalizedUrl(row.base_url), api_key: row.api_key || null, proxy: normalizedUrl(row.proxy) || null }])),
+    roles: Object.fromEntries(Object.entries(value.roles).map(([key, item]) => [key, binding(item)])),
+    memory_embedding: binding(value.memory_embedding),
+    learning_embeddings: Object.fromEntries(Object.entries(value.learning_embeddings).map(([scene, item]) => [scene, binding(item)])),
   }
 }
-watch(() => draft.value?.providers.map(row => JSON.stringify([row.alias, row.api, row.base_url, row.proxy, row.api_key])), (rows, old = []) => {
+watch(() => draft.value?.providers.map(row => JSON.stringify([credentialBinding(row), row.api_key])), (rows, old = []) => {
   rows?.forEach((value, index) => {
     const row = draft.value.providers[index]
-    row.saved = Boolean(row.key_binding) && row.key_binding === JSON.stringify(JSON.parse(value).slice(0, 4))
-    if (value !== old[index] && draft.value.providers[index].alias) delete catalog.value[draft.value.providers[index].alias]
+    row.keyReusable = row.keyConfigured && row.keyBinding === credentialBinding(row)
+    if (value !== old[index]) delete catalog.value[row.id]
   })
 })
-const saved = computed(() => settings.data.value?.saved.models)
+const saved = computed(() => settings.data.value?.saved)
 function adopt() { draft.value = fromSaved(saved.value); catalog.value = {} }
 watch(saved, value => { if (value && !draft.value) adopt() })
 const dirty = computed(() => Boolean(draft.value) && !same(body(draft.value), body(fromSaved(saved.value))))
@@ -81,31 +106,55 @@ const providerNames = computed(() => draft.value?.providers.map(row => row.alias
 const problem = computed(() => {
   if (!draft.value) return ''
   if (new Set(providerNames.value).size !== draft.value.providers.length) return '服务商名称不能为空，也不能重复'
-  const unbound = draft.value.providers.find(row => !row.saved && !row.api_key)
-  if (unbound) return `服务商 ${unbound.alias} 需要填写 API Key；名称、协议、地址或代理改变后不能沿用旧密钥`
+  if (draft.value.providers.some(row => !row.alias.trim() || row.alias !== row.alias.trim())) return '服务商名称不能为空，首尾不能有空白'
+  const unbound = draft.value.providers.find(row => !row.keyReusable && !row.api_key)
+  if (unbound) return `请填写 ${unbound.alias} 的 API Key`
+  const bindings = [...Object.entries(draft.value.roles).map(([role, value]) => [roleTitles[role], role, value]),
+    ['记忆向量', 'embedding', draft.value.memory_embedding],
+    ...Object.entries(draft.value.learning_embeddings).map(([scene, value]) => [`${sceneName(scene)} 学习向量`, 'embedding', value])]
+  for (const [title, role, value] of bindings) {
+    if (value === null) continue
+    const row = providerFor(value.provider)
+    if (!row) return `${title} 需要重新选择服务商`
+    if (!protocol(row.api)?.roles.includes(role)) return `${title} 的服务商协议不支持这个用途，请重新选择`
+    if (!value.model?.trim()) return `${title} 需要填写模型名`
+  }
   return ''
 })
 
 function addProvider() {
-  draft.value.providers.push({ alias: '', api: 'openai-chat', base_url: '', api_key: '', proxy: '', saved: false })
+  draft.value.providers.push({ id: `draft:${crypto.randomUUID()}`, alias: '', originalAlias: null,
+    api: 'openai-chat', base_url: '', api_key: '', proxy: '', keyConfigured: false, keyReusable: false })
   select(draft.value.providers.length - 1)
 }
 async function removeProvider(index) {
   const row = draft.value.providers[index]
-  const users = usedBy(row.alias)
+  const users = usedBy(row.id)
   if (users.length && !await confirm({ title: `删除服务商 ${row.alias}？`, text: `${users.join('、')} 还在用它，保存前要改成别的服务商。`, confirmLabel: '删除', danger: true })) return
   draft.value.providers.splice(index, 1)
   select(null)
 }
 const roleTitles = Object.fromEntries([...roles.map(([name, title]) => [name, title]), ['asr', '语音识别']])
-const usedBy = alias => alias ? Object.entries(draft.value.roles).filter(([, value]) => value?.provider === alias).map(([name]) => roleTitles[name] || name) : []
+const usedBy = id => [...Object.entries(draft.value.roles).filter(([, value]) => value?.provider === id).map(([name]) => roleTitles[name] || name),
+  ...(draft.value.memory_embedding?.provider === id ? ['记忆向量'] : []),
+  ...Object.entries(draft.value.learning_embeddings).filter(([, value]) => value?.provider === id).map(([scene]) => `${sceneName(scene)} 学习向量`)]
 const apiTitle = value => providerApis.value.find(item => item.value === value)?.title.split(' · ')[0] || value
 function toggleRole(name, value) {
-  draft.value.roles[name] = value ? { provider: providerChoices(name)[0] || '', model: '', context_window_tokens: 128000,
+  draft.value.roles[name] = value ? { provider: providerChoices(name)[0]?.value || '', model: '', context_window_tokens: 128000,
     temperature: 0.6, max_output_tokens: 1024, timeout_seconds: 60, reasoning_effort: null, history_policy: 'native' } : null
 }
 function toggleAsr(value) {
-  draft.value.roles.asr = value ? { api: 'openai-audio', provider: providerChoices('asr')[0] || '', model: '', timeout_seconds: 60, language: null } : null
+  draft.value.roles.asr = value ? { api: 'openai-audio', provider: providerChoices('asr')[0]?.value || '', model: '', timeout_seconds: 60, language: null } : null
+}
+function chooseProviderModel(row, model) {
+  if (row.api === 'openai-embeddings') {
+    if (saved.value.memory === null) { notify('先在记忆页开启本地记忆，再配置记忆向量模型'); return }
+    draft.value.memory_embedding = { ...draft.value.memory_embedding, provider: row.id, model,
+      dimensions: draft.value.memory_embedding?.dimensions ?? null }
+  } else if (row.api === 'openai-audio') {
+    draft.value.roles.asr = { api: 'openai-audio', provider: row.id, model, timeout_seconds: 60, language: null }
+  }
+  router.push({ query: { ...route.query, tab: row.api === 'openai-embeddings' ? 'vectors' : 'roles', item: undefined } })
 }
 async function submit() {
   if (problem.value) return
@@ -130,8 +179,8 @@ const count = value => value.toLocaleString('zh-CN')
               <template #actions><v-btn size="small" variant="outlined" :prepend-icon="mdiPlus" @click="addProvider">添加</v-btn></template>
               <ObjectList class="list">
                 <ObjectRow v-for="(row, index) in draft.providers" :key="index" :title="row.alias || '未命名'" clickable :active="selected === index"
-                  :subtitle="`${apiTitle(row.api)}${usedBy(row.alias).length ? ` · ${usedBy(row.alias).join('、')}` : ''}`" @click="select(index)">
-                  <template #meta><StatusBadge dot :text="row.saved || row.api_key ? '密钥已填' : '缺密钥'" :tone="row.saved || row.api_key ? 'success' : 'warning'" /></template>
+                  :subtitle="`${apiTitle(row.api)}${usedBy(row.id).length ? ` · ${usedBy(row.id).join('、')}` : ''}`" @click="select(index)">
+                  <template #meta><StatusBadge dot :text="row.keyReusable || row.api_key ? '密钥已填' : '缺密钥'" :tone="row.keyReusable || row.api_key ? 'success' : 'warning'" /></template>
                 </ObjectRow>
                 <li v-if="!draft.providers.length" class="muted empty">还没有服务商</li>
               </ObjectList>
@@ -141,16 +190,17 @@ const count = value => value.toLocaleString('zh-CN')
           <Panel v-if="selected !== null" :title="draft.providers[selected].alias || '新服务商'">
             <template #actions><v-btn variant="text" color="error" size="small" @click="removeProvider(selected)">删除</v-btn></template>
             <div class="form-grid">
-              <v-text-field v-model="draft.providers[selected].alias" label="名称" :readonly="draft.providers[selected].saved" />
+              <v-text-field v-model="draft.providers[selected].alias" label="名称" />
               <v-select :model-value="draft.providers[selected].api" :items="providerApis" label="原生协议" @update:model-value="value => changeProtocol(draft.providers[selected], value)" />
             </div>
             <v-text-field v-model="draft.providers[selected].base_url" label="接口地址" placeholder="https://api.example.com/v1" />
             <v-text-field v-model="draft.providers[selected].api_key" type="password" autocomplete="new-password" label="密钥"
-              :placeholder="draft.providers[selected].saved ? '已设置，留空保持不变' : ''" persistent-placeholder />
+              :placeholder="draft.providers[selected].keyReusable ? '已设置，留空保持不变' : ''" persistent-placeholder />
             <v-text-field v-model="draft.providers[selected].proxy" label="网络代理（选填）" placeholder="http://127.0.0.1:7890" />
-            <ProviderTools :can-probe="protocol(draft.providers[selected].api)?.roles.includes('mind')" :key="selected" :provider="draft.providers[selected]" :models="catalog[draft.providers[selected].alias] || []" @models="value => catalog[draft.providers[selected].alias] = value" />
+            <ProviderTools :can-probe="protocol(draft.providers[selected].api)?.roles.includes('mind')" :key="selected" :provider="draft.providers[selected]" :models="catalog[draft.providers[selected].id] || []" @models="value => catalog[draft.providers[selected].id] = value"
+              :selection-label="draft.providers[selected].api === 'openai-embeddings' ? '用于记忆向量' : '用于语音识别'"
+              @choose-model="value => chooseProviderModel(draft.providers[selected], value)" />
             <ErrorNote v-if="protocols.error.value" title="读取协议说明失败" :error="protocols.error.value" />
-            <p v-if="usedBy(draft.providers[selected].alias).length" class="muted small">用于：{{ usedBy(draft.providers[selected].alias).join('、') }}</p>
           </Panel>
         </MasterDetail>
 
@@ -161,13 +211,14 @@ const count = value => value.toLocaleString('zh-CN')
             </template>
             <template v-if="draft.roles[name]">
               <div class="form-grid">
-                <v-select v-model="draft.roles[name].provider" :items="providerChoices(name)" label="服务商" />
-                <v-combobox v-model="draft.roles[name].model" :items="(catalog[draft.roles[name].provider] || []).map(item => item.id)" label="模型名（可手动填写）" />
+                <v-select :model-value="draft.roles[name].provider" :items="providerChoices(name)" label="服务商" @update:model-value="value => chooseRoleProvider(name, value)" />
+                <v-combobox v-model="draft.roles[name].model" :items="modelChoices(catalog[draft.roles[name].provider] || [])" :return-object="false" label="模型名" />
                 <v-text-field :model-value="draft.roles[name].context_window_tokens" type="number" label="上下文长度（token）"
                  
                   @update:model-value="value => draft.roles[name].context_window_tokens = numberOrBlank(value)" />
               </div>
-              <ProviderTools v-if="providerFor(draft.roles[name].provider)" :provider="providerFor(draft.roles[name].provider)" :binding="draft.roles[name]" />
+              <ProviderTools v-if="providerFor(draft.roles[name].provider)" :provider="providerFor(draft.roles[name].provider)" :binding="draft.roles[name]" :models="catalog[draft.roles[name].provider] || []"
+                @models="value => catalog[draft.roles[name].provider] = value" @choose-model="value => draft.roles[name].model = value" />
               <AdvancedFields>
                 <v-select v-if="providerFor(draft.roles[name].provider)?.api === 'openai-chat'" v-model="draft.roles[name].history_policy" label="历史续接方式"
                   :items="[{ title: '原生保留', value: 'native' }, { title: '省去可读思考', value: 'omit-reasoning' }]"
@@ -202,6 +253,17 @@ const count = value => value.toLocaleString('zh-CN')
               </AdvancedFields>
             </template>
           </Panel>
+        </template>
+
+        <template v-else-if="tab === 'vectors'">
+          <Panel title="记忆向量模型">
+            <EmbeddingBindingEditor v-if="saved.memory !== null" v-model="draft.memory_embedding" :providers="vectorProviders" />
+            <p v-else>本地记忆未启用</p>
+          </Panel>
+          <Panel v-for="(_, scene) in draft.learning_embeddings" :key="scene" :title="`${sceneName(scene)} · 学习向量模型`">
+            <EmbeddingBindingEditor v-model="draft.learning_embeddings[scene]" :providers="vectorProviders" />
+          </Panel>
+          <p v-if="!Object.keys(draft.learning_embeddings).length">暂无学习向量配置</p>
         </template>
 
         <SaveBar :on-save="submit" :dirty="dirty" :saving="save.busy.value" :error="save.error.value" :problem="problem" label="保存模型设置" @discard="adopt" />

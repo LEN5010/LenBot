@@ -11,7 +11,7 @@ Bot 在聊天时按需检索记忆。后台会定期从聊天记录中整理出�
 
 ## 重建索引
 
-手动修改了记忆文件，或者更换了向量模型后，需要重建索引。停止 LenBot 后，在实例目录中执行下面的命令。
+手动修改了记忆文件，或者更换了向量服务地址、模型或维数后，需要重建索引。普通重启不会重建索引。仅修改服务商名称无需重建。停止 LenBot 后，在实例目录中执行下面的命令。
 
 ```sh
 python -m len_bot.next.maintenance.memory_reindex
@@ -20,3 +20,5 @@ python -m len_bot.next.maintenance.memory_reindex
 正文和修改历史会保留，目录摘要会被清除，之后整理记忆时按新的正文重新生成。
 
 使用部署包时，用 `releases/<版本>/.venv` 中的 python 执行。从源码运行时，写成 `uv run --no-sync python -m ...`。
+
+更换群内说法学习的向量配置后，停机执行 `python -m len_bot.next.maintenance.reindex_expressions`，重算已采纳说法的向量。

@@ -26,7 +26,9 @@ docker compose -f deploy/current/services.compose.yaml up -d embeddings
 docker exec lenbot-embeddings ollama pull bge-m3:567m
 ```
 
-然后在面板中添加 `openai-embeddings` 服务商。地址填 `http://127.0.0.1:11434/v1`，模型填 `bge-m3:567m`，维度为 1024。更换向量模型后，需要停止 LenBot 并[重建索引](./memory#重建索引)。
+然后在面板中添加 `openai-embeddings` 服务商，地址填 `http://127.0.0.1:11434/v1`。在**模型 → 向量模型**中开启记忆向量，选择服务商，模型填 `bge-m3:567m`，维度填 1024。可以读取列表并选择完整模型 ID，也可以手动填写；「测试向量接口」会显示实际返回的维数。
+
+各群开启学习后，也可以在同一页分别配置学习向量。更换地址、模型或维数后，已有索引需要停止 LenBot 并[重建](./memory#重建索引)。重启不会自动重建，仅修改服务商名称无需重建。
 
 ## 语音转写
 

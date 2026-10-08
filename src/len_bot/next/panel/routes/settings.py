@@ -51,13 +51,16 @@ class ProcessingChange(BaseModel):
     logging: LoggingSettings
 
 
-ProviderChange = ProviderDraft
+class ProviderChange(ProviderDraft):
+    previous_alias: str | None = Field(default=None, min_length=1)
 
 class ModelsChange(BaseModel):
     model_config = STRICT
 
     providers: dict[str, ProviderChange]
     roles: Roles
+    memory_embedding: EmbeddingBinding | None = None
+    learning_embeddings: dict[str, EmbeddingBinding | None] = Field(default_factory=dict)
 
 
 class SceneBindingChange(BaseModel):
@@ -409,14 +412,39 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
 
         def edit(source: dict, saved: HostConfig) -> None:
             providers = {}
+            renames = {}
+            origins = set()
             for alias, provider in change.providers.items():
-                if provider.api_key is None:
-                    if alias not in saved.models.providers:
-                        raise ValueError(f"models.providers.{alias}.api_key is required for a new provider")
-                    key = provider.resolve(saved.models.providers[alias]).api_key
+                if not alias.strip() or alias != alias.strip():
+                    raise ValueError('服务商名称不能为空，首尾不能有空白')
+                origin = provider.previous_alias or (alias if alias in saved.models.providers else None)
+                if origin is not None:
+                    if origin not in saved.models.providers or origin in origins:
+                        raise ValueError(f'原服务商 {origin!r} 不存在或被重复使用')
+                    origins.add(origin)
+                    renames[origin] = alias
+                resolved = provider.resolve(None if origin is None else saved.models.providers[origin])
+                providers[alias] = resolved.model_dump(mode='json')
+            memory = source.get('memory')
+            if memory is not None and memory['local'].get('embedding') is not None:
+                binding = memory['local']['embedding']
+                binding['provider'] = renames.get(binding['provider'], binding['provider'])
+            for scene in source['scenes'].values():
+                learning = scene.get('learning')
+                if learning is not None and learning.get('embedding') is not None:
+                    binding = learning['embedding']
+                    binding['provider'] = renames.get(binding['provider'], binding['provider'])
+            if 'memory_embedding' in change.model_fields_set:
+                if memory is None:
+                    if change.memory_embedding is not None:
+                        raise ValueError('先在记忆页开启本地记忆，再配置记忆向量模型')
                 else:
-                    key = provider.api_key
-                providers[alias] = {"api": provider.api, "base_url": provider.base_url, "api_key": key, "proxy": provider.proxy}
+                    memory['local']['embedding'] = (None if change.memory_embedding is None
+                                                   else change.memory_embedding.model_dump(mode='json'))
+            for scene, binding in change.learning_embeddings.items():
+                if scene not in saved.scenes or saved.scenes[scene].learning is None:
+                    raise ValueError(f'场景 {scene!r} 未启用学习，不能配置学习向量模型')
+                source['scenes'][scene]['learning']['embedding'] = None if binding is None else binding.model_dump(mode='json')
             source["models"] = {
                 "providers": providers,
                 "roles": change.roles.model_dump(mode="json"),

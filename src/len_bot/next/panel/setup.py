@@ -29,6 +29,7 @@ from ..models.providers import PROTOCOLS, list_models
 from .setup_plugins import official_plugins, plugin_choices, install_official
 from ..persona.profile import Persona, load_persona
 from len_bot.web.auth import hash_password
+from ..storage.files import sync_directory
 
 DEFAULT_PERSONA_DIRECTORY = Path(__file__).resolve().parents[2] / 'default_personas' / 'companion'
 
@@ -163,6 +164,7 @@ def initialize(root: Path, item: FirstSetup) -> dict:
             os.fsync(stream.fileno())
         # link publishes without replacing a root file created by another process.
         os.link(temporary, config_path)
+        sync_directory(config_path.parent)
     finally:
         temporary.unlink(missing_ok=True)
     return {'saved': True, 'config': str(config_path), 'persona': str(role_path),
