@@ -46,6 +46,7 @@ class PendingWake:
 @dataclass
 class AttentionState:
     focus_started_at: float | None = None
+    focus_closed_at: float | None = None
     last_contact_at: float | None = None
     ambient_last_at: float | None = None
     silence_level: int = 0
@@ -59,9 +60,10 @@ class AttentionState:
 
     def contact(self, at: float, duration: float) -> None:
         if self.last_contact_at is None or at > self.last_contact_at:
-            if self.last_contact_at is None or at > self.last_contact_at + duration:
+            if self.focus_closed_at is not None or self.last_contact_at is None or at > self.last_contact_at + duration:
                 self.focus_started_at = at
             self.last_contact_at = at
+            self.focus_closed_at = None
             self.silence_level = 0
 
     def offer(self, wake: PendingWake) -> None:
@@ -276,6 +278,7 @@ class SceneRunner:
         if words:
             state.offer(PendingWake("named", at, words))
         elif (self.settings.focus_seconds > 0 and state.last_contact_at is not None
+              and (not self.settings.close_focus_on_silence or state.focus_closed_at is None)
               and state.focus_started_at <= at <= state.last_contact_at + self.settings.focus_seconds
               and not addressed_to_others(message, self.config.bot_id)):
             state.offer(PendingWake("focus", at))
@@ -752,6 +755,18 @@ class SceneRunner:
             cap = math.ceil(math.log2(self.settings.ambient_max_interval_seconds)
                             - math.log2(self.settings.ambient_min_interval_seconds))
             state.silence_level = min(state.silence_level + 1, cap)
+            if channel == 'focus' and self.settings.close_focus_on_silence and 'direct' not in self.chat.turn_channels:
+                state.focus_closed_at = self.now()
+                # Messages arriving during the final request must also leave focus.
+                if state.pending is not None and state.pending.channel == 'focus':
+                    first_at = state.pending.first_at
+                    state.pending = None
+                    if self.settings.activity > 0:
+                        pending = self.store.pending_attention_sample(self.config.scene, self.settings.other_bot_ids)
+                        recent = self.store.attention_sample(self.config.scene, exclude_uids=self.settings.other_bot_ids)
+                        score = participation_score(pending, recent, self.settings, self.config.bot_id)
+                        if score > self.settings.ambient_threshold:
+                            state.offer(PendingWake('ambient', first_at, score=score))
         # Preserve restart eligibility without treating a timeout as new input.
         pending_wake = self.store.end_turn(result["turn_id"], result["status"], result["error"],
                                            attention_state=asdict(state))

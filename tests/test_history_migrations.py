@@ -23,6 +23,7 @@ from len_bot.next.memory.jobs import MemoryJobs
 from len_bot.next.memory.local import LocalMemory, LocalMemorySettings
 from len_bot.next.storage.codec import decode_message
 from len_bot.next.storage.store import Store
+from len_bot.next.runtime.retention import expire_request
 from len_bot.next.work.store import TaskStore, _task
 
 HISTORY = Path(__file__).parent / 'fixtures' / 'history'
@@ -104,3 +105,16 @@ def test_local_index_starts_only_from_an_empty_file_or_its_own_format(tmp_path):
     (directory / '.memory-index.sqlite3').unlink()
     LocalMemory(LocalMemorySettings(directory=directory))
     assert _schema(directory / '.memory-index.sqlite3')[0] == (0x4C424D31, 3)
+
+
+def test_wake_migration_keeps_expired_requests_as_unknown(tmp_path):
+    root = tmp_path / 'instance'
+    shutil.copytree(HISTORY / 'config2-business4-jobs6-index3', root)
+    with closing(sqlite3.connect(root / 'state.db')) as db:
+        call_id, request = db.execute("SELECT id,request FROM model_calls WHERE role='mind'").fetchone()
+        expired = expire_request(json.loads(request), 1_790_000_100)
+        db.execute('UPDATE model_calls SET request=?,response=NULL WHERE id=?', (json.dumps(expired), call_id))
+        db.commit()
+    migrate_instance(root)
+    with Store(root / 'state.db') as store:
+        assert store.recent_turns(SCENE)[0]['wake_channel'] == 'unknown'

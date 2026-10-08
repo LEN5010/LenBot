@@ -35,7 +35,8 @@ def replay(db, since: float, until: float, *, scene: str | None, timezone: str, 
     turns = []
     for row in rows:
         turn = dict(row)
-        channel, batch = ('unknown', '') if turn['request'] is None else request_wake(json.loads(turn.pop('request')))
+        request = turn.pop('request')
+        channel, batch = ('unknown', '') if request is None else request_wake(json.loads(request))
         turn['wake_channel'] = turn.get('wake_channel', channel)
         turn['batch'] = batch
         turns.append(turn)
@@ -96,7 +97,7 @@ def replay(db, since: float, until: float, *, scene: str | None, timezone: str, 
             if failed is None and not contact_during:
                 closed.setdefault(key, ended)
     # The reporting query uses the same grouping and token scope as the panel.
-    with closing(connect(':memory:')) as reporting:
+    with closing(sqlite3.connect(':memory:')) as reporting:
         reporting.execute('CREATE TABLE turns(id TEXT,scene TEXT,started REAL,wake_channel TEXT,first_expression_at REAL)')
         reporting.execute('CREATE TABLE model_calls(turn_id TEXT,role TEXT,tokens TEXT)')
         for turn in turns:
@@ -128,7 +129,8 @@ def main() -> None:
         (args.output / f'{name}.json').write_text(json.dumps(records, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     summary = {'date': args.date.isoformat(), 'timezone': zone, 'scene': args.scene,
                'reduced_wakes': len(result['reduced_wakes']), 'avoided_silence': len(result['reduced_wakes']) - len(result['lost_speech']),
-               'lost_speech': len(result['lost_speech']), 'alias_messages': len(result['alias_messages'])}
+               'lost_speech': len(result['lost_speech']), 'alias_messages': len(result['alias_messages']),
+               'unknown_wakes': sum(row['wakes'] for row in result['baseline'] if row['channel'] == 'unknown')}
     (args.output / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(summary, ensure_ascii=False))
 

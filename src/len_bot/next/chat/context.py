@@ -177,6 +177,20 @@ def turn_state(config: LabConfig, store: Store, *, now: float,
     return state
 
 
+def current_attention(config: LabConfig, store: Store) -> str:
+    attention = store.load_attention(config.scene)
+    last = None if attention is None else attention['last_contact_at']
+    closed = None if attention is None else attention.get('focus_closed_at')
+    until = None if last is None else last + config.attention.focus_seconds
+    active = (not config.attention.only_direct and until is not None and until > store.now()
+              and (not config.attention.close_focus_on_silence or closed is None))
+    zone = ZoneInfo(config.timezone)
+    text = ('至 ' + datetime.fromtimestamp(until, zone).strftime('%H:%M:%S') if active else '已关闭')
+    if config.attention.close_focus_on_silence and closed is not None:
+        text += '（' + datetime.fromtimestamp(closed, zone).strftime('%H:%M:%S') + ' 沉默后关闭）'
+    return '<当前关注>\n对话继续：' + text + '\n</当前关注>'
+
+
 class ChatContext:
     """Scene materials shared by model requests, expression and panel views."""
 
@@ -239,4 +253,5 @@ class ChatContext:
         if profile is not None:
             state = {**state, "content": state["content"] + "\n" + Template(
                 read_prompt("next_group_profile.md")).substitute(profile=profile.strip())}
+        state = {**state, 'content': state['content'] + '\n' + current_attention(self.config, self.store)}
         return [{"role": "system", "content": self.system}] + project_history(recap, entries) + [state]

@@ -198,6 +198,7 @@ async function removeScene() {
             <ErrorNote v-if="release.error.value" title="没有放开成功" :error="release.error.value" />
           </template>
           <AdvancedFields label="等待与插话的细节">
+            <v-switch v-model="draft.attention.close_focus_on_silence" label="对话继续时选择沉默，就结束继续留意" />
             <v-text-field v-for="[key, label] in timing" :key="key" :model-value="draft.attention[key]" type="number" :label="label" @update:model-value="value => draft.attention[key] = numberOrBlank(value)" />
           </AdvancedFields>
         </Panel>

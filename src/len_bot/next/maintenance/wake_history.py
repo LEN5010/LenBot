@@ -2,6 +2,8 @@
 
 
 def request_wake(request: dict) -> tuple[str, str]:
+    if 'snapshot_expired_at' in request:
+        return 'unknown', ''
     for message in reversed(request['messages']):
         content = message.get('content')
         if message['role'] != 'user' or not isinstance(content, str):
