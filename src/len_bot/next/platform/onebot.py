@@ -19,6 +19,7 @@ from websockets.http11 import Request, Response
 
 from ..configuration.onebot import OneBotForward, OneBotReverse
 from ..runtime.logs import REDACTED
+from ...image_assets import sticker_bytes
 from .messages import ChatMessage, SendResult, UploadResult
 from .onebot_messages import parse_send_result, parse_upload_result
 
@@ -402,11 +403,14 @@ class OneBot:
             return SendResult("failed", None, self._safe(f"Identity verification failed: {error}"))
         if not self._running or self._ws is not websocket or self._verified_ws is not websocket:
             return SendResult("failed", None, "OneBot WebSocket changed before message send; message was not sent")
+        if any(segment.type == 'image' and segment.data.get('sub_type') == 1 for segment in message.segments):
+            image_bytes = await asyncio.to_thread(sticker_bytes, image_bytes)
         wire_image = (None if image_bytes is None else
                       "base64://" + base64.b64encode(image_bytes).decode("ascii"))
         wire_segments = [
             {"type": "at" if segment.type == "mention" else "record" if segment.type == "audio" else segment.type, "data": (
-                {"file": wire_image}
+                {"file": wire_image, **{key: segment.data[key] for key in ('summary', 'sub_type')
+                                        if key in segment.data}}
                 if segment.type == "image" else
                 {"qq": "all" if segment.data["user"] == "all" else segment.data["user"].split(":", 1)[1]}
                 if segment.type == "mention" else segment.data)}

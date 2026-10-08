@@ -25,6 +25,7 @@ from ..models.request import ChatRequest
 from ..persona.profile import Persona
 from ..persona.knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
 from ..platform.platform_tools import (MEMBER_INFO_TOOL, OPEN_FORWARD_TOOL, MemberInfoArguments,
+                             MESSAGE_REACTION_TOOL, MessageReactionArguments, message_reaction,
                              OpenForwardArguments, PlatformCall, member_info, open_forward)
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from ..trials.replay_images import RecordedImages
@@ -47,6 +48,22 @@ if TYPE_CHECKING:
     from ..runtime.management import HostManagement
 
 
+class StickerChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    emotion: str | None = Field(default=None, min_length=1)
+    query: str | None = Field(default=None, min_length=1)
+    file: str | None = Field(default=None, min_length=1, description="从当前角色素材目录选择真实文件名，直接发送这一张。")
+
+    @model_validator(mode="after")
+    def one_selector(self) -> StickerChoice:
+        selectors = [value for value in (self.file, self.emotion, self.query) if value is not None]
+        if len(selectors) != 1:
+            raise ValueError("file、emotion 与 query 必须三选一")
+        if not selectors[0].strip():
+            raise ValueError("表情检索内容不能为空白")
+        return self
+
+
 class SayArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     content: str = Field(min_length=1)
@@ -54,24 +71,13 @@ class SayArguments(BaseModel):
     reply_to: str | None = Field(default=None, description="默认不填，直接接话。群里同时有几个话头、不引用会让人认错你在回哪句时，才填该平台消息 ID。")
     mention: str | None = Field(default=None, pattern=r"^onebot:[1-9][0-9]*$",
         description="默认不填。要叫不在当前对话里的人，或不 @ 会让人认错对象时，才填平台账号，例如 onebot:70001。")
+    sticker: StickerChoice | None = Field(default=None,
+        description="与正文一起发送在同一条消息里的表情；file、emotion、query 三选一，素材目录见 react。")
 
 
-class ReactArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+class ReactArguments(StickerChoice):
     end_turn: bool = Field(default=False, description="这次表情完成本轮回应，成功后即可结束；还要继续处理时保持 false。")
-    emotion: str | None = Field(default=None, min_length=1)
-    query: str | None = Field(default=None, min_length=1)
-    file: str | None = Field(default=None, min_length=1, description="从当前角色素材目录选择真实文件名，直接发送这一张。")
     reply_to: str | None = None
-
-    @model_validator(mode="after")
-    def one_selector(self) -> ReactArguments:
-        selectors = [value for value in (self.file, self.emotion, self.query) if value is not None]
-        if len(selectors) != 1:
-            raise ValueError("file、emotion 与 query 必须三选一")
-        if not selectors[0].strip():
-            raise ValueError("表情检索内容不能为空白")
-        return self
 
 
 class WaitArguments(BaseModel):
@@ -114,7 +120,7 @@ def tool_catalog(*, platform: bool) -> list[dict]:
     }}
     catalog = [say, REACT_TOOL, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
             *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, DELEGATE_TOOL, TASK_TOOL,
-            SEND_FILE_TOOL, OPEN_FORWARD_TOOL, MEMBER_INFO_TOOL, TRANSCRIBE_TOOL, SCENE_CONTROL_TOOL, HOST_MANAGE_TOOL, TOOL_SEARCH]
+            SEND_FILE_TOOL, OPEN_FORWARD_TOOL, MEMBER_INFO_TOOL, MESSAGE_REACTION_TOOL, TRANSCRIBE_TOOL, SCENE_CONTROL_TOOL, HOST_MANAGE_TOOL, TOOL_SEARCH]
     return [{**tool, "function": {**tool["function"],
              "parameters": model_schema(tool["function"]["parameters"])}} for tool in catalog]
 
@@ -158,9 +164,9 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str, *, 
             reasons.append("模拟发送时不能发文件")
     if name == "persona_knowledge" and not persona.knowledge:
         reasons.append("角色没有资料文件")
-    if name in {"open_forward", "member_info", "transcribe"} and config.delivery != "onebot":
+    if name in {"open_forward", "member_info", "transcribe", "message_reaction"} and config.delivery != "onebot":
         reasons.append("模拟发送时用不了")
-    if name == "member_info" and config.scene.split(":", 2)[1] != "group":
+    if name in {"member_info", "message_reaction"} and config.scene.split(":", 2)[1] != "group":
         reasons.append("只能在群里用")
     return reasons
 
@@ -187,7 +193,14 @@ def build_tools(config: LabConfig, persona: Persona, *, platform: bool, host_man
             parameters = SayArguments.model_json_schema()
             mode = "next_direct.md"
             parameters["properties"]["content"]["description"] = read_prompt(mode).strip()
-            allowed[index] = {**tool, "function": {**function, "parameters": parameters}}
+            description = function['description']
+            if 'react' in names:
+                description += ' 同时需要说话和表情时，优先设置 sticker 合成一条消息；只用图像回应时使用 react。'
+            else:
+                parameters['properties'].pop('sticker')
+                parameters.pop('$defs')
+            allowed[index] = {**tool, "function": {**function, "description": description,
+                                                   "parameters": model_schema(parameters)}}
         elif function["name"] == "react":
             parameters = ReactArguments.model_json_schema()
             catalog = "\n".join(f"{sticker.file}：{sticker.description}"
@@ -245,7 +258,7 @@ class SceneTools:
         self.allowed_tool_names = {tool["function"]["name"] for tool in allowed} | set(self.external)
         if "send_file" in self.allowed_tool_names and upload_file is None:
             raise ValueError("send_file 配置已启用但未接入实际文件上传出口")
-        if self.allowed_tool_names & {"open_forward", "member_info"} and platform_call is None:
+        if self.allowed_tool_names & {"open_forward", "member_info", "message_reaction"} and platform_call is None:
             raise ValueError("平台查询工具已启用但未接入实际 OneBot 调用")
         if "transcribe" in self.allowed_tool_names and self.audio is None:
             raise ValueError("语音工具已启用但未接入实际语音处理服务")
@@ -317,9 +330,11 @@ class SceneTools:
             call = ToolCall(call.id, call.name, with_requester(self.store, self.config, call.arguments))
         if call.name == "say":
             arguments = SayArguments.model_validate(call.arguments)
+            if arguments.sticker is not None and 'react' not in self.allowed_tool_names:
+                raise ValueError('当前角色没有开放表情能力')
             expression = await self.expression.express(turn_id, arguments,
                                                        expression_style=expression_style, direct=direct)
-            return self.expression.context.render(expression), Expression(expression, end_turn=arguments.end_turn), None
+            return self.expression.context.render(expression.message), expression, None
         if call.name == "react":
             expression = self.expression.react(ReactArguments.model_validate(call.arguments))
             return self.expression.context.render(expression.message), expression, None
@@ -369,6 +384,11 @@ class SceneTools:
         if call.name == "member_info":
             return await member_info(self.config.scene, self.config.timezone,
                                      MemberInfoArguments.model_validate(call.arguments), self.platform_call), None, None
+        if call.name == 'message_reaction':
+            arguments = MessageReactionArguments.model_validate(call.arguments)
+            async with self.expression.outlet:
+                self.expression.check_send_available()
+                return await message_reaction(self.store, self.config.scene, arguments, self.platform_call), None, None
         if call.name == "look":
             return await execute_look(
                 self.store, self.config.scene, LookArguments.model_validate(call.arguments), self.config.images,

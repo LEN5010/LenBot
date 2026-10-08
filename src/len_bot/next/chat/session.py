@@ -111,14 +111,14 @@ class Chat:
         resume = self.store.recover(self.config.scene)
         if set(self.store.load_discovered_tools(self.config.scene)) != self.toolset.discovered_tools:
             self.store.save_discovered_tools(self.config.scene, sorted(self.toolset.discovered_tools))
+        notices = []
         if previous is not None and previous["messages"][0]["content"] != self.context.system:
-            self.store.append(self.config.scene, {"role": "user", "content":
-                "宿主启动状态：本次启动已更新角色、表达模式或工具能力；当前系统设定生效，已有聊天原文保留。"})
+            notices.append("本次启动已更新角色、表达模式或工具能力，当前系统设定生效。")
         history = self.store.recent(self.config.scene, 1)
         if history:
             last = datetime.fromtimestamp(history[-1].time, ZoneInfo(self.config.timezone)).isoformat()
-            self.store.append(self.config.scene, {"role": "user", "content":
-                f"宿主启动状态：群会话已恢复，上次保存聊天时间：{last}。离线期间的消息尚未取得。"})
+            notices.append(f"群会话已恢复，上次保存聊天时间：{last}。离线期间的消息尚未取得。")
+        self.context.host_state = "\n".join(notices) or None
         return resume
 
     async def request(self, turn_id: str, role: Literal["mind", "recap", "vision"],
@@ -171,7 +171,8 @@ class Chat:
                     keep_recent_tokens=self.config.compaction.keep_recent_tokens,
                     summary_output_tokens=self.config.compaction.max_output_tokens, recap=recap,
                     summary_template=read_prompt("next_recap.md"),
-                    window_tokens=binding.context_window_tokens, source_entries=entries, token_scale=scale,
+                    window_tokens=binding.context_window_tokens,
+                    source_entries=self.context.conversation_entries(entries), token_scale=scale,
                 )
                 reply = await self.request(turn_id, "recap", plan.request_messages, [], recap_target=plan)
         except BaseException as error:
@@ -215,7 +216,8 @@ class Chat:
                 keep_recent_tokens=self.config.compaction.keep_recent_tokens,
                 summary_output_tokens=self.config.compaction.max_output_tokens,
                 recap=recap, summary_template=read_prompt("next_recap.md"),
-                window_tokens=binding.context_window_tokens, source_entries=entries, token_scale=scale,
+                window_tokens=binding.context_window_tokens,
+                source_entries=self.context.conversation_entries(entries), token_scale=scale,
             )
             await self.request(turn_id, "recap", plan.request_messages, [], recap_target=plan)
             compacted = True
@@ -314,7 +316,12 @@ class Chat:
                                 raise
                         else:
                             if expression is None:
-                                self.store.complete_tool(scene, call.id, content, discovered_tools=discovered)
+                                reaction = call.name == 'message_reaction'
+                                self.store.complete_tool(scene, call.id, content, discovered_tools=discovered,
+                                                         response_turn_id=turn_id if reaction else None)
+                                if reaction:
+                                    expressions.append(content)
+                                    end_turn = end_turn or call.arguments.get('end_turn', True)
                             else:
                                 content, delivery_status = await self.expression.deliver_expression(
                                     call.id, expression, turn_id=turn_id, channels=self.turn_channels,

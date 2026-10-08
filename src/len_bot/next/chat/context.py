@@ -174,6 +174,7 @@ class ChatContext:
                  platform: bool, memory: MemoryService | None):
         self.config, self.persona, self.store = config, persona, store
         self.platform, self.memory = platform, memory
+        self.host_state: str | None = None
         self.system: str
 
     def configure_tools(self, allowed: list[dict], external: list[dict], *, skills: tuple[Skill, ...],
@@ -207,7 +208,14 @@ class ChatContext:
         return render_text(message, reply=quote,
                            audio=AudioStore(self.store).captions(message.scene, message.platform_message_id))
 
+    @staticmethod
+    def conversation_entries(entries: list[tuple[int, dict]]) -> list[tuple[int, dict]]:
+        return [(seq, message) for seq, message in entries
+                if not (message['role'] == 'user' and isinstance(message['content'], str)
+                        and message['content'].startswith('宿主启动状态：'))]
+
     def project_entries(self, entries: list[tuple[int, dict]]) -> list[tuple[int, dict]]:
+        entries = self.conversation_entries(entries)
         return [(seq, projected) for seq, message in project_old_results(
             entries, self.config.compaction.keep_recent_tokens)
             for projected in project_messages([message], self.config.models.roles.mind.history_policy)]
@@ -215,6 +223,8 @@ class ChatContext:
     async def project(self, recap: str | None, entries: list[tuple[int, dict]], state: dict) -> list[dict]:
         self.refresh_tools()
         entries = self.project_entries(entries)
+        if self.host_state is not None:
+            state = {**state, 'content': state['content'] + '\n<宿主恢复状态>\n' + self.host_state + '\n</宿主恢复状态>'}
         profile = None if self.memory is None else await self.memory.read_group_profile(self.config.scene)
         if profile is not None:
             state = {**state, "content": state["content"] + "\n" + Template(

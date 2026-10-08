@@ -23,7 +23,7 @@ export const turnFailed = value => ['error', 'timeout', 'interrupted', 'step_lim
 const tools = {
   say: '发言', wait: '等待', recall_chat: '翻聊天记录', look: '看图', web_search: '搜索网页', web_read: '读网页',
   schedule: '定提醒', schedule_list: '查看提醒', schedule_cancel: '取消提醒', tool_search: '查找工具',
-  memory: '记忆', delegate: '委托任务', task: '任务', send_file: '发送文件', react: '表情回应',
+  memory: '记忆', delegate: '委托任务', task: '任务', send_file: '发送文件', react: '表情回应', message_reaction: '贴表情',
   persona_knowledge: '查角色资料', scene_control: '让 Bot 暂时安静', open_forward: '看合并转发', member_info: '查群成员', transcribe: '转写语音', host_manage: '管理设置',
 }
 const callRoles = { mind: '聊天', voice: '历史表达器', recap: '整理回想', vision: '看图', learner: '学习', worker: '后台任务',
@@ -39,7 +39,7 @@ const toolNotes = {
   web_search: '上网搜索', web_read: '打开网页读内容', schedule: '定提醒和周期安排', schedule_list: '查看定好的提醒',
   schedule_cancel: '取消提醒', tool_search: '用到不常用的工具时先把它找出来', memory: '记住、查找和修改长期记忆',
   delegate: '把耗时的活交给后台任务', task: '查看和追问后台任务', send_file: '把任务做出来的文件发到群里',
-  react: '发表情回应', persona_knowledge: '查角色自带的资料', scene_control: '有人让它安静时暂停一会儿',
+  react: '发表情回应', message_reaction: '给群消息贴表情回应', persona_knowledge: '查角色自带的资料', scene_control: '有人让它安静时暂停一会儿',
   open_forward: '展开合并转发看里面的内容', member_info: '查群成员的名片和头衔', transcribe: '把语音转成文字',
   host_manage: '主人在群里让它改设置',
 }

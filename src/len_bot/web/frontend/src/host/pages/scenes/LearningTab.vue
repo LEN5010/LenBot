@@ -19,6 +19,12 @@ const emit = defineEmits(['dirty'])
 const root = `/api/host/scenes/${encodeURIComponent(props.scene)}`
 
 const config = useResource(() => api(`/api/host/settings/scenes/${encodeURIComponent(props.scene)}/learning`))
+const learning = useResource(() => api(`${root}/learning`))
+const rebuildIndex = useAction()
+async function reindex() {
+  const result = await rebuildIndex.run(() => api(`${root}/learning/reindex`, { method: 'POST' }))
+  if (result) { await learning.reload(); notify(`已重建 ${result.expressions} 条说法的索引`) }
+}
 const draft = ref(null)
 const saveConfig = useAction()
 watch(() => JSON.stringify(config.data.value?.saved), () => { if (config.data.value) draft.value = clone(config.data.value.saved) }, { immediate: true })
@@ -123,11 +129,16 @@ async function learnNow() {
 </script>
 
 <template>
+  <v-alert v-if="learning.data.value?.index?.needs_rebuild" type="warning">
+    <p>说法索引需要重建，当前暂停说法检索。</p>
+    <v-btn variant="outlined" :loading="rebuildIndex.busy.value || learning.data.value.index.rebuilding" @click="reindex">重建索引</v-btn>
+    <ErrorNote v-if="rebuildIndex.error.value" title="重建索引失败" :error="rebuildIndex.error.value" />
+  </v-alert>
   <ResourceState :resource="config" error-title="读取学习设置失败">
     <SettingSection title="学习"
       :dirty="configDirty" :saving="saveConfig.busy.value" :error="saveConfig.error.value" @save="submitConfig">
       <v-switch :model-value="draft !== null" label="开启学习" @update:model-value="toggleLearning" />
-      <v-alert v-if="draft && noLearner" type="warning">
+      <v-alert v-if="draft && (draft.extract || draft.jargon_extract) && noLearner" type="warning">
         还没有给学习分配模型，先到 <RouterLink :to="{ name: 'host-models', query: { tab: 'roles' } }">模型页</RouterLink> 设置，再回来保存。</v-alert>
       <template v-if="draft">
         <div class="form-grid">
@@ -224,6 +235,7 @@ async function learnNow() {
 </template>
 
 <style scoped>
+pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .review-group{display:grid;gap:var(--sp-3)}
 .review-group + .review-group{border-top:1px solid var(--line);padding-top:var(--sp-4)}
 .review-group p{margin:0}

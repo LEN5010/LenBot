@@ -3,12 +3,14 @@ import Panel from '../../ui/Panel.vue'
 import { notify } from '../../store.js'
 import { useAction } from '../../../composables/useResource.js'
 import ErrorNote from '../../ui/ErrorNote.vue'
+import { api } from '../../../api.js'
 
-defineProps({ index: { type: Object, required: true } })
-const command = 'uv run --no-sync python -m len_bot.next.maintenance.memory_reindex'
-const copy = useAction()
-async function copyCommand() {
-  await copy.run(async () => { await navigator.clipboard.writeText(command); notify('已复制') })
+defineProps({ index: { type: Object, required: true }, reindexing: Boolean })
+const emit = defineEmits(['rebuilt'])
+const rebuild = useAction()
+async function rebuildIndex() {
+  const result = await rebuild.run(() => api('/api/host/memory/reindex', { method: 'POST' }))
+  if (result) { emit('rebuilt'); notify(`已重建 ${result.files} 份记忆的索引`) }
 }
 </script>
 
@@ -26,14 +28,7 @@ async function copyCommand() {
     </v-table>
   </Panel>
   <Panel title="重建索引">
-    <p>先停止 LenBot，在实例目录执行重建命令，完成后重新启动。</p>
-    <pre>{{ command }}</pre>
-    <v-btn variant="outlined" :loading="copy.busy.value" @click="copyCommand">复制命令</v-btn>
-    <ErrorNote :error="copy.error.value" />
-    <p>部署包使用当前版本目录中 .venv 的 Python 执行 <code>-m len_bot.next.maintenance.memory_reindex</code>。</p>
+    <v-btn variant="outlined" :loading="rebuild.busy.value || reindexing" @click="rebuildIndex">重建索引</v-btn>
+    <ErrorNote v-if="rebuild.error.value" title="重建索引失败" :error="rebuild.error.value" />
   </Panel>
 </template>
-
-<style scoped>
-pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--fill);padding:var(--sp-4);border-radius:var(--radius)}
-</style>

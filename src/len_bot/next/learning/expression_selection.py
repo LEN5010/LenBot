@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import logging
 import struct
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
@@ -16,6 +17,13 @@ from ..memory.embeddings import EmbeddingBatch, EmbeddingClient, EmbeddingSettin
 from ..models.slots import ModelSlots
 from ..models.tokens import token_record
 from ..storage.store import Store, encode
+from ..runtime.logs import log_event
+
+logger = logging.getLogger(__name__)
+
+
+class ExpressionIndexNeedsRebuild(ValueError):
+    """Adopted expressions cannot use the configured vector index."""
 
 
 def _error_text(error: BaseException) -> str:
@@ -35,6 +43,7 @@ class ExpressionService:
         self.on_update = on_update
         self.scenes = tuple(clients)
         self._locks: dict[str, asyncio.Lock] = {}
+        self.rebuilding: set[str] = set()
 
     def _lock(self, scene: str) -> asyncio.Lock:
         return self._locks.setdefault(scene, asyncio.Lock())
@@ -63,19 +72,24 @@ class ExpressionService:
         for item in adopted:
             data, binding, actual = (item["vector"], item["vector_binding"], item["vector_dimensions"])
             if data is None or binding is None or actual is None:
-                raise ValueError(f"scene {scene} adopted expression {item['id']} lacks a vector; stop and rebuild offline with uv run python -m len_bot.next.maintenance.reindex_expressions")
+                raise ExpressionIndexNeedsRebuild(f"scene {scene} adopted expression {item['id']} lacks a vector")
             stored_binding = json.loads(binding)
             if any(stored_binding[field] != expected[field] for field in ("base_url", "model")):
-                raise ValueError(f"scene {scene} expression {item['id']} uses a different embedding binding; "
-                                 "stop and rebuild offline with uv run python -m len_bot.next.maintenance.reindex_expressions")
+                raise ExpressionIndexNeedsRebuild(f"scene {scene} expression {item['id']} uses a different embedding binding")
             if expected["dimensions"] is not None and actual != expected["dimensions"]:
-                raise ValueError(f"scene {scene} expression {item['id']} differs from configured vector dimensions; "
-                                 "stop and rebuild offline with uv run python -m len_bot.next.maintenance.reindex_expressions")
+                raise ExpressionIndexNeedsRebuild(f"scene {scene} expression {item['id']} differs from configured vector dimensions")
             if dimensions is None:
                 dimensions = actual
             elif actual != dimensions:
-                raise ValueError(f"scene {scene} has mixed expression vector dimensions; stop and rebuild offline")
+                raise ExpressionIndexNeedsRebuild(f"scene {scene} has mixed expression vector dimensions")
         return dimensions
+
+    def index_status(self, scene: str) -> dict:
+        try:
+            self.validate(scene)
+        except ExpressionIndexNeedsRebuild as error:
+            return {'needs_rebuild': True, 'reason': str(error), 'rebuilding': scene in self.rebuilding}
+        return {'needs_rebuild': False, 'reason': None, 'rebuilding': scene in self.rebuilding}
 
     async def _embed(self, scene: str, texts: list[str], *, purpose: Literal["query", "index", "reindex"],
                      turn_id: str | None = None, direct: bool = False) -> EmbeddingBatch:
@@ -105,9 +119,16 @@ class ExpressionService:
 
     async def select(self, scene: str, query: str, *, turn_id: str, direct: bool, exclude_uids: tuple[str, ...] = ()) -> list[dict]:
         """Return up to five ranked candidate facts; the chat model decides relevance and use."""
+        if scene in self.rebuilding:
+            return []
         async with self._lock(scene):
             adopted = self.records.adopted(scene, exclude_uids=exclude_uids)
-            dimensions = self._validate_rows(scene, adopted)
+            try:
+                dimensions = self._validate_rows(scene, adopted)
+            except ExpressionIndexNeedsRebuild as error:
+                log_event(logger, 'expression_index_unavailable', '群内说法索引需要重建',
+                          level=logging.WARNING, scene=scene, error=error)
+                return []
             eligible = adopted
             if not eligible:
                 return []
@@ -117,7 +138,7 @@ class ExpressionService:
                                       direct=direct)
             if batch.dimensions != dimensions:
                 raise ValueError(f"scene {scene} query embedding dimension {batch.dimensions} differs from "
-                                 f"indexed expression dimension {dimensions}; stop and rebuild offline")
+                                 f"indexed expression dimension {dimensions}; rebuild the expression index from the learning page")
             needle = batch.vectors[0]
             needle_norm = math.sqrt(math.fsum(value * value for value in needle))
             ranked = []
@@ -144,7 +165,7 @@ class ExpressionService:
                     batch = await self._embed(scene, [situation], purpose="index")
                     if dimensions is not None and batch.dimensions != dimensions:
                         raise ValueError(f"scene {scene} new expression dimension {batch.dimensions} differs "
-                                         f"from current index dimension {dimensions}; stop and rebuild offline")
+                                         f"from current index dimension {dimensions}; rebuild the expression index from the learning page")
                     vector = self._stored(scene, batch.vectors[0], batch.dimensions)
             item = self.records.update_expression(scene, id, situation=situation, style=style,
                                                   status=status, vector=vector)
@@ -171,7 +192,7 @@ class ExpressionService:
                     batch = await self._embed(scene, [situation for situation, _ in new], purpose="index")
                     if dimensions is not None and batch.dimensions != dimensions:
                         raise ValueError(f"scene {scene} new expression dimension {batch.dimensions} differs "
-                                         f"from current index dimension {dimensions}; stop and rebuild offline")
+                                         f"from current index dimension {dimensions}; rebuild the expression index from the learning page")
                     vectors = {key: self._stored(scene, vector, batch.dimensions)
                                for key, vector in zip(new, batch.vectors, strict=True)}
             self.records.complete(batch_id, candidates, auto_adopt=auto_adopt, vectors=vectors)
@@ -179,8 +200,19 @@ class ExpressionService:
                 self.on_update()
 
     async def rebuild(self, scene: str) -> int:
-        """Explicit offline replacement; never silently repair a running index."""
+        """Explicit replacement, with edits queued and optional recall paused."""
         self._client(scene)
+        if scene in self.rebuilding:
+            raise FileExistsError('说法索引正在重建')
+        self.rebuilding.add(scene)
+        try:
+            return await self._rebuild(scene)
+        finally:
+            self.rebuilding.remove(scene)
+            if self.on_update is not None:
+                self.on_update()
+
+    async def _rebuild(self, scene: str) -> int:
         async with self._lock(scene):
             adopted = self.records.adopted(scene)
             snapshot = [(item["id"], item["situation"]) for item in adopted]

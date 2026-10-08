@@ -48,7 +48,8 @@ from ..runtime.network import NetworkRuntime
 from .auth import changes_socket, install_panel_auth
 
 
-def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifecycle: HostLifecycle | None = None) -> FastAPI:
+def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path,
+               lifecycle: HostLifecycle | None = None, container: bool = False) -> FastAPI:
     if config.panel is None:
         raise ValueError("Multi-scene host panel requires panel configuration in lenbot.config.json")
 
@@ -99,14 +100,14 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
     register_host_persona(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_persona_stickers(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_persona_avatar(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
-    register_host_memory(app, runtime=runtime, user=user)
+    register_host_memory(app, runtime=runtime, user=user, root=root, container=container)
     register_host_tasks(app, runtime=runtime, user=user, host_changes=listeners, write_lock=write_lock)
     register_host_materials(app, runtime=runtime, user=user)
     register_host_resources(app, runtime=runtime, user=user)
     register_host_task_storage(app, runtime=runtime, user=user)
     register_host_skills(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_schedules(app, runtime=runtime, user=user)
-    register_host_learning(app, runtime=runtime, user=user)
+    register_host_learning(app, runtime=runtime, user=user, root=root, container=container)
     register_host_jargon(app, runtime=runtime, user=user)
     register_host_stickers(app, runtime=runtime, user=user)
     register_host_reply_effects(app, runtime=runtime, user=user)

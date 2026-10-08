@@ -51,9 +51,6 @@ async def run() -> None:
             open_memory_ingestor(config, store, memory, [config.scene], slots=slots) as ingestor,
         ):
             budget.memory = memory
-            if expression_service is not None:
-                for scene in expression_service.scenes:
-                    expression_service.validate(scene)
             if config.onebot is not None:
                 await run_network(config, [(config, persona)], store, mind,
                                   vision=vision, memory=memory, ingestor=ingestor, slots=slots, budget=budget,

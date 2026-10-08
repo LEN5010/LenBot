@@ -75,7 +75,7 @@ class ChatExpression:
             raise ValueError(f"平台 group_ban 通知：当前 Bot 禁言至 {until}，未发送")
 
     async def express(self, turn_id: str, arguments: SayArguments, *,
-                      expression_style: str | None = None, direct: bool = False) -> ChatMessage:
+                      expression_style: str | None = None, direct: bool = False) -> Expression:
         self.check_send_available()
         check_speech(self.store, self.config)
         quote = None
@@ -95,7 +95,13 @@ class ChatExpression:
                 raise ValueError(f"提及账号与当前场景平台不同：{arguments.mention!r}")
             segments.append(Segment("mention", {"user": arguments.mention}))
         segments.append(Segment("text", {"text": text}))
-        return self.simulated_message(segments, reply_to=platform_reply)
+        sticker = None
+        if arguments.sticker is not None:
+            selected = self.react(ReactArguments(**arguments.sticker.model_dump()))
+            segments.extend(selected.message.segments)
+            sticker = selected.sticker
+        return Expression(self.simulated_message(segments, reply_to=platform_reply), sticker,
+                          end_turn=arguments.end_turn)
 
     def react(self, arguments: ReactArguments) -> Expression:
         self.check_send_available()
@@ -135,7 +141,7 @@ class ChatExpression:
         segments = []
         if arguments.reply_to is not None:
             segments.append(Segment("reply", {"id": arguments.reply_to}))
-        segments.append(Segment("image", {"summary": summary}))
+        segments.append(Segment("image", {"summary": summary, "sub_type": 1}))
         return Expression(self.simulated_message(segments, reply_to=arguments.reply_to), sticker, end_turn=arguments.end_turn)
 
     async def deliver_expression(self, call_id: str, expression: Expression, *,

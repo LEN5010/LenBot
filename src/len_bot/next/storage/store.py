@@ -614,9 +614,11 @@ class Store:
         return entry_seq
 
     def complete_tool(self, scene: str, call_id: str, content: str, *,
-                      discovered_tools: list[str] | None = None) -> None:
+                      discovered_tools: list[str] | None = None, response_turn_id: str | None = None) -> None:
         with self.db:
             self._append(scene, {"role": "tool", "tool_call_id": call_id, "content": content})
+            if response_turn_id is not None:
+                self._first_expression(response_turn_id, 'sent')
             if discovered_tools is not None:
                 self.db.execute(
                     "INSERT INTO mind_sessions(scene,discovered_tools) VALUES (?,?) "
@@ -649,7 +651,7 @@ class Store:
         return message_seq
 
     def _first_expression(self, turn_id: str, delivery: Literal["simulated", "sent"]) -> None:
-        # Part of the same message/receipt transaction, not an independent event.
+        # Part of the same response/receipt transaction, not an independent event.
         self.db.execute(
             "UPDATE turns SET first_expression_at=?,first_expression_delivery=? "
             "WHERE id=? AND first_expression_at IS NULL", (self.now(), delivery, turn_id),

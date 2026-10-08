@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 from dataclasses import asdict
 from typing import Annotated, Literal, TYPE_CHECKING
 
@@ -158,6 +158,22 @@ class MemoryService:
         self.summarizer: MemorySummarizer | None = None
         # A complete read/generate/write extraction shares this queue with edits.
         self.write_locks: dict[str, asyncio.Lock] = {}
+        self.reindexing = False
+
+    async def rebuild_index(self) -> int:
+        """Rebuild derivations while existing scene queues hold edits and extraction."""
+        if self.reindexing:
+            raise FileExistsError('记忆索引正在重建')
+        self.reindexing = True
+        try:
+            async with AsyncExitStack() as stack:
+                for scene in sorted(set(self.active_personas) | set(self.write_locks) | {'public'}):
+                    await stack.enter_async_context(self.write_lock(scene))
+                if self.backend.embedding is not None:
+                    return await self.backend.reindex_embeddings()
+                return await self.backend.reindex_text()
+        finally:
+            self.reindexing = False
 
     async def read_group_profile(self, scene: str) -> str | None:
         """Read the current derived profile under the backend's existing write/read lock."""
