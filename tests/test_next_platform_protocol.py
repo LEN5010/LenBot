@@ -116,7 +116,8 @@ def test_group_ban_rejects_invalid_duration_at_protocol_entry(duration):
 
 
 @pytest.mark.asyncio
-async def test_onebot_outlet_encodes_qualified_scene_and_mention_without_changing_receipt():
+@pytest.mark.parametrize('image_type', [None, 1])
+async def test_onebot_outlet_encodes_qualified_scene_and_mention_without_changing_receipt(image_type):
     from dataclasses import replace
     from websockets.asyncio.server import serve
     from len_bot.next.configuration.onebot import OneBotForward
@@ -124,6 +125,13 @@ async def test_onebot_outlet_encodes_qualified_scene_and_mention_without_changin
     from len_bot.next.platform.onebot_messages import parse_message
     from len_bot.next.platform.messages import Segment
     import json
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    output = BytesIO()
+    Image.new('RGB', (1024, 1024), 'red').save(output, format='PNG')
+    image_bytes = output.getvalue()
+    image_data = {'summary': '[合成表情]', **({} if image_type is None else {'sub_type': image_type})}
 
     requests = []
 
@@ -149,12 +157,18 @@ async def test_onebot_outlet_encodes_qualified_scene_and_mention_without_changin
             for invalid in ('onebot:all', 'qq:12345', 'onebot:abc', 'onebot:0', 'onebot:007'):
                 rejected = await bot.send_message(replace(message, segments=[Segment('mention', {'user': invalid})]))
                 assert rejected.status == 'failed' and 'Invalid OneBot mention' in rejected.error
-            result = await bot.send_message(message)
+            message = replace(message, segments=[*message.segments, Segment('image', image_data)])
+            result = await bot.send_message(message, image_bytes=image_bytes)
             assert result.status == 'sent' and result.platform_message_id == '12345'
     assert [item['action'] for item in requests] == ['get_login_info', 'send_group_msg']
-    assert requests[1]['params'] == {'group_id': 80001, 'message': [
-        {'type': 'at', 'data': {'qq': '70001'}}, {'type': 'text', 'data': {'text': '合成回复'}},
-    ]}
+    assert requests[1]['params']['group_id'] == 80001
+    segments = requests[1]['params']['message']
+    assert segments[:2] == [
+        {'type': 'at', 'data': {'qq': '70001'}}, {'type': 'text', 'data': {'text': '合成回复'}}]
+    assert {key: value for key, value in segments[2]['data'].items() if key != 'file'} == image_data
+    sent = base64.b64decode(segments[2]['data']['file'].removeprefix('base64://'))
+    with Image.open(BytesIO(sent)) as image:
+        assert image.size == ((320, 320) if image_type == 1 else (1024, 1024))
 
 
 @pytest.mark.parametrize('mention', ['onebot:all', 'qq:12345', 'onebot:abc', 'all', 'onebot:0', 'onebot:007'])

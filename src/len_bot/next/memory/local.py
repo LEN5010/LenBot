@@ -90,8 +90,15 @@ def _recover_files(root: Path, base: Path) -> None:
                                        'AND changed_at=? AND action=?',
                                        (change.scope, change.path, change.changed_at, change.action)).fetchone() is not None
             elif change.action == 'forget':
-                committed = db.execute('SELECT 1 FROM memory_files WHERE scope=? AND path=?',
-                                       (change.scope, change.path)).fetchone() is None
+                committed = (db.execute('SELECT 1 FROM memory_files WHERE scope=? AND path=?',
+                                        (change.scope, change.path)).fetchone() is None
+                             and db.execute('SELECT 1 FROM memory_changes WHERE scope=? AND path=?',
+                                            (change.scope, change.path)).fetchone() is None)
+                summary_paths = {str(Path(relative).parent) for relative in change.files
+                                 if Path(relative).name in SUMMARY_FILES}
+                committed = committed and all(db.execute(
+                    'SELECT 1 FROM memory_summaries WHERE scope=? AND path=?',
+                    (change.scope, '' if path == '.' else path)).fetchone() is None for path in summary_paths)
             else:
                 row = db.execute('SELECT generated_at FROM memory_summaries WHERE scope=? AND path=?',
                                  (change.scope, change.path)).fetchone()
@@ -524,9 +531,11 @@ class LocalMemory:
     def _vector_table_exists(db: sqlite3.Connection) -> bool:
         return db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_vec'").fetchone() is not None
 
-    def _mutation_preflight(self, db: sqlite3.Connection) -> None:
+    def _prepare_mutation(self, db: sqlite3.Connection) -> None:
         if self.embedding is None and self._vector_table_exists(db):
-            raise ValueError("FTS-only mutation requires offline reindex() to remove the old vector index")
+            self._load_vec(db)
+            db.execute('DROP TABLE memory_vec')
+            db.execute('DELETE FROM memory_vector_binding')
 
     def _vector_binding(self, db: sqlite3.Connection) -> int | None:
         """Reject a changed model binding; text/vector rows are updated together."""
@@ -721,7 +730,7 @@ class LocalMemory:
         before = _source_text(target) if target.exists() else None
         changed_at = time.time()
         with self._file_mutation(scope, path, 'write', changed_at, [target]) as db:
-            self._mutation_preflight(db)
+            self._prepare_mutation(db)
             dimensions = self._vector_binding(db)
             if vector is not None:
                 if dimensions is None:
@@ -835,8 +844,36 @@ class LocalMemory:
         for row in rows:
             content = self._read_sync(row["scope"], row["path"]).content
             hits.append(LocalMemoryHit(scope="public" if row["scope"] == "public" else "scene",
-                                       path=row["path"], preview=content[:240], total_chars=len(content)))
+                                       path=row["path"], preview=self._excerpt(content, query, automatic),
+                                       total_chars=len(content)))
         return hits
+
+    @staticmethod
+    def _excerpt(content: str, query: str, automatic: bool) -> str:
+        folded = query.casefold()
+        terms = (tuple(dict.fromkeys(folded[index:index + 3] for index in range(len(folded) - 2)))
+                 if automatic and len(folded) >= 3 else (folded,))
+        text = content.casefold()
+        positions = []
+        for term in terms:
+            position = text.find(term)
+            while position >= 0:
+                positions.append(position)
+                position = text.find(term, position + 1)
+        positions.sort()
+        left, score, anchor = 0, 0, 0
+        for right, position in enumerate(positions):
+            while position - positions[left] > 160:
+                left += 1
+            if right - left + 1 >= score:
+                score, anchor = right - left + 1, positions[left]
+        # Case folding can expand a character; preserve the original spelling.
+        consumed, index = 0, 0
+        while consumed < anchor:
+            consumed += len(content[index].casefold())
+            index += 1
+        start = min(max(0, index - 40), max(0, len(content) - 240))
+        return content[start:start + 240]
 
     def _search_hybrid_sync(self, scene: str, query: str,
                             vector: tuple[float, ...], limit: int,
@@ -874,7 +911,8 @@ class LocalMemory:
         for scope, path in ordered:
             content = self._read_sync(scope, path).content
             hits.append(LocalMemoryHit(scope="public" if scope == "public" else "scene",
-                                       path=path, preview=content[:240], total_chars=len(content)))
+                                       path=path, preview=self._excerpt(content, query, automatic),
+                                       total_chars=len(content)))
         return hits
 
     async def search(self, scene: str, query: str, limit: int = 10, *,
@@ -929,7 +967,7 @@ class LocalMemory:
         before = _source_text(target)
         changed_at = time.time()
         with self._file_mutation(scope, path, 'delete', changed_at, [target]) as db:
-            self._mutation_preflight(db)
+            self._prepare_mutation(db)
             old = self._indexed(db, scope, path, before)
             target.unlink()
             self._put_vector(db, old["id"], scope, None, remove_existing=True)
@@ -948,10 +986,15 @@ class LocalMemory:
     def _forget_sync(self, scope: str, path: str) -> LocalMemoryForget:
         target = self._target(scope, path, file=True)
         before = _source_text(target) if target.exists() else None
-        # Any ancestor summary may repeat the forgotten text; remove it before the file.
-        removed_summaries = self._drop_summaries(scope, path)
-        with self._file_mutation(scope, path, 'forget', time.time(), [target]) as db:
-            self._mutation_preflight(db)
+        parts = _parts(path, file=True)[:-1]
+        summaries = {}
+        for depth in range(len(parts), -1, -1):
+            relative = '/'.join(parts[:depth])
+            directory = self._target(scope, relative, file=False)
+            summaries[relative] = [directory / name for name in SUMMARY_FILES if (directory / name).exists()]
+        targets = [target, *(file for files in summaries.values() for file in files)]
+        with self._file_mutation(scope, path, 'forget', time.time(), targets) as db:
+            self._prepare_mutation(db)
             old = self._indexed(db, scope, path, before)
             if before is not None:
                 target.unlink()
@@ -960,9 +1003,13 @@ class LocalMemory:
             self._remove_index(db, old)
             cursor = db.execute("DELETE FROM memory_changes WHERE scope=? AND path=?", (scope, path))
             removed_history = cursor.rowcount
+            for relative, files in summaries.items():
+                for file in files:
+                    file.unlink()
+                db.execute('DELETE FROM memory_summaries WHERE scope=? AND path=?', (scope, relative))
         return LocalMemoryForget(path=path, removed_current=before is not None,
                                  removed_history_versions=removed_history,
-                                 removed_summaries=removed_summaries)
+                                 removed_summaries=tuple(relative for relative, files in summaries.items() if files))
 
     async def forget(self, scene: str, path: str) -> LocalMemoryForget:
         """Remove current file, index and accessible local versions; not chat logs/backups."""
@@ -1064,18 +1111,3 @@ class LocalMemory:
                 db.execute("DELETE FROM memory_summaries WHERE scope=? AND path=?", (source, path))
         async with self._lock(source):
             await _finish_write_thread(remove)
-
-    def _drop_summaries(self, scope: str, path: str) -> tuple[str, ...]:
-        parts = _parts(path, file=True)[:-1]
-        removed = []
-        for depth in range(len(parts), -1, -1):
-            relative = "/".join(parts[:depth])
-            directory = self._target(scope, relative, file=False)
-            files = [directory / name for name in SUMMARY_FILES if (directory / name).exists()]
-            with self._file_mutation(scope, relative, 'clear-summary', time.time(), files) as db:
-                for file in files:
-                    file.unlink()
-                db.execute("DELETE FROM memory_summaries WHERE scope=? AND path=?", (scope, relative))
-            if files:
-                removed.append(relative)
-        return tuple(removed)

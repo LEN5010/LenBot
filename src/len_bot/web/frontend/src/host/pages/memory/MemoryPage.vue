@@ -42,7 +42,7 @@ useUnsavedChanges(computed(() => Object.values(dirty).some(Boolean)), { onDiscar
       </v-alert>
       <PageTabs v-if="tabs.length > 1" :tabs="tabs" :model-value="tab" label="记忆" />
       <MemorySettings v-if="tab === 'settings'" @dirty="value => dirty.settings = value" />
-      <IndexTab v-else-if="tab === 'index'" :index="index" />
+      <IndexTab v-else-if="tab === 'index'" :index="index" :command="state.reindex_command" :container="state.maintenance_container" />
       <EmptyState v-else-if="scene && !remembered" text="这个群没有使用记忆" />
       <template v-else-if="scene">
         <BrowseTab v-if="tab === 'browse'" :key="`b${scene}`" :scene="scene" :state="state" @dirty="value => dirty.browse = value" />

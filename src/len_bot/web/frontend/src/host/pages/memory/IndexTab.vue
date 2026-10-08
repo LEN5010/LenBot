@@ -4,11 +4,11 @@ import { notify } from '../../store.js'
 import { useAction } from '../../../composables/useResource.js'
 import ErrorNote from '../../ui/ErrorNote.vue'
 
-defineProps({ index: { type: Object, required: true } })
-const command = 'uv run --no-sync python -m len_bot.next.maintenance.memory_reindex'
+const props = defineProps({ index: { type: Object, required: true }, command: { type: String, required: true },
+  container: { type: Boolean, default: false } })
 const copy = useAction()
 async function copyCommand() {
-  await copy.run(async () => { await navigator.clipboard.writeText(command); notify('已复制') })
+  await copy.run(async () => { await navigator.clipboard.writeText(props.command); notify('已复制') })
 }
 </script>
 
@@ -26,11 +26,11 @@ async function copyCommand() {
     </v-table>
   </Panel>
   <Panel title="重建索引">
-    <p>先停止 LenBot，在实例目录执行重建命令，完成后重新启动。</p>
+    <p v-if="container">先停止 LenBot，在挂载同一实例目录的维护容器中执行，完成后重新启动。</p>
+    <p v-else>先停止 LenBot，执行重建命令，完成后重新启动。</p>
     <pre>{{ command }}</pre>
     <v-btn variant="outlined" :loading="copy.busy.value" @click="copyCommand">复制命令</v-btn>
-    <ErrorNote :error="copy.error.value" />
-    <p>部署包使用当前版本目录中 .venv 的 Python 执行 <code>-m len_bot.next.maintenance.memory_reindex</code>。</p>
+    <ErrorNote v-if="copy.error.value" title="复制命令失败" :error="copy.error.value" />
   </Panel>
 </template>
 

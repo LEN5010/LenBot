@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ...configuration.types import STRICT
 from ...learning.store import LearningStore
+from ...maintenance.commands import maintenance_command
 from ...runtime.network import NetworkRuntime
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ class ExpressionChange(BaseModel):
 
 
 def register_host_learning(app: FastAPI, *, runtime: NetworkRuntime,
-                           user: Callable[[Request], str]) -> None:
+                           user: Callable[[Request], str], root, container: bool = False) -> None:
     learning = LearningStore(runtime.store)
 
     def service_state(scene: str) -> dict | None:
@@ -72,6 +73,10 @@ def register_host_learning(app: FastAPI, *, runtime: NetworkRuntime,
         chat = chat_for(scene)
         latest = learning.latest(scene)
         return {"scene": scene, "enabled": active(scene),
+                "index": None if not selection_enabled(scene) else runtime.expression_service.index_status(scene),
+                "reindex_command": maintenance_command(root,
+                    'len_bot.next.maintenance.reindex_expressions'),
+                "maintenance_container": container,
                 "selection_enabled": selection_enabled(scene), "voice_mode": chat.config.voice_mode,
                 "settings": None if chat.config.learning is None else
                 chat.config.learning.model_dump(mode="json"),

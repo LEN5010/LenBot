@@ -16,6 +16,7 @@ from ...runtime.network import NetworkRuntime
 from ...chat.recall import RecallArguments, message_page
 from ...runtime.logs import credentials, redact, redact_record
 from ...memory.jobs import processing_records
+from ...maintenance.commands import maintenance_command
 
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ class DeleteRequest(BaseModel):
         return self
 
 
-def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None:
+def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user, root, container: bool = False) -> None:
     secrets = credentials(runtime.config)
 
     def clean_embedding(value):
@@ -118,6 +119,8 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
             "recall_budget_chars": None if memory is None else memory.settings.recall_budget_chars,
             "summaries": memory is not None and memory.settings.summaries,
             "index": None if memory is None else await asyncio.to_thread(memory.backend.index_status),
+            "reindex_command": maintenance_command(root, 'len_bot.next.maintenance.memory_reindex'),
+            "maintenance_container": container,
             "scenes": [{"scene": scene, "persona": {"id": chat.persona.id, "name": chat.persona.name}}
                        for scene, chat in runtime.chats.items()],
             'persona_ids': {} if memory is None else {scene: sorted(memory.known_persona_ids(scene))

@@ -77,6 +77,16 @@ async def test_optional_vector_binding_keeps_text_recall_and_scope(tmp_path, cap
                 assert result['content_chars'] <= result['budget_chars']
                 assert (await backend.read(scene, 'events/meeting.md')).content == '周五读书会在图书馆二楼。'
                 assert len(await backend.history(scene, 'events/meeting.md')) == 1
+                if mode == 'disabled':
+                    await backend.write(scene, 'events/new.md', '新增全文记忆。', '合成资料')
+                    await backend.write(scene, 'events/meeting.md', '读书会改为图书馆三楼。', '更正')
+                    await backend.delete(scene, 'events/new.md', '删除合成资料')
+                    await backend.write_summary(scene, 'events', '读书会摘要', '读书会详情')
+                    forgotten = await backend.forget(scene, 'events/meeting.md')
+                    assert forgotten.removed_current and forgotten.removed_history_versions == 2
+                    assert (await backend.summary(scene, 'events')).overview is None
+                    assert not backend.index_status()['needs_rebuild']
+                    assert backend.index_status()['stored'] is None
                 if mode != 'disabled':
                     assert '记忆改用全文检索' in caplog.text
                 if mode == 'changed_model':
@@ -114,13 +124,38 @@ async def test_embedding_protocol_failure_uses_text_and_later_recovers(tmp_path,
             backend = LocalMemory(LocalMemorySettings(directory=tmp_path / 'memory',
                 embedding=EmbeddingBinding(provider='vectors', model='synthetic-vector', dimensions=4)), embedding=client)
             scene = 'onebot:group:80001'
-            await backend.write(scene, 'events/meeting.md', '周五读书会在图书馆二楼。', '已确认资料')
+            await backend.write(scene, 'events/meeting.md', '这是与问题无关的记录。' * 80 + '\n周五读书会在图书馆二楼。', '已确认资料')
             for _ in range(2):
                 hits = await backend.search(scene, '群友 90001 说：读书会在哪？', automatic=True,
                                             text_query='读书会在哪？')
                 assert [hit.path for hit in hits] == ['events/meeting.md']
+                assert '图书馆二楼' in hits[0].preview
             assert '记忆改用全文检索' in caplog.text
     assert len(received) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source_exists', [True, False])
+async def test_failed_forget_keeps_source_and_ancestor_summaries(tmp_path, source_exists):
+    memory = LocalMemory(LocalMemorySettings(directory=tmp_path / 'memory'))
+    scene = 'onebot:group:80001'
+    await memory.write(scene, 'events/meeting.md', '读书会在图书馆二楼。', '合成资料')
+    if not source_exists:
+        await memory.delete(scene, 'events/meeting.md', '普通删除')
+    await memory.write_summary(scene, 'events', '读书会摘要', '读书会详情')
+    await memory.write_summary(scene, '', '根摘要', '根详情')
+    with sqlite3.connect(memory.index) as database:
+        table = 'memory_files' if source_exists else 'memory_summaries'
+        database.execute(f"CREATE TRIGGER fail_forget BEFORE DELETE ON {table} "
+                         "BEGIN SELECT RAISE(ABORT, 'synthetic disk transaction failure'); END")
+    with pytest.raises(sqlite3.IntegrityError, match='transaction failure'):
+        await memory.forget(scene, 'events/meeting.md')
+    restored = LocalMemory(memory.settings)
+    if source_exists:
+        assert (await restored.read(scene, 'events/meeting.md')).content == '读书会在图书馆二楼。'
+    assert (await restored.summary(scene, 'events')).overview == '读书会详情'
+    assert (await restored.summary(scene)).overview == '根详情'
+    assert len(await restored.history(scene, 'events/meeting.md')) == (1 if source_exists else 2)
 
 
 def test_pending_files_do_not_take_automatic_search_slots(tmp_path):

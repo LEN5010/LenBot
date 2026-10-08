@@ -1,11 +1,37 @@
-"""Actual original image bytes and their verified format; no content-based identity."""
+"""Verified original images and the resized copies sent as stickers."""
 from dataclasses import dataclass, field
 from io import BytesIO
-from PIL import Image
+from PIL import Image, ImageSequence
 
 MAX_IMAGE_BYTES = 10_000_000
 MAX_IMAGE_PIXELS = 25_000_000
 MIME_TYPES = {"PNG": "image/png", "JPEG": "image/jpeg", "GIF": "image/gif", "WEBP": "image/webp"}
+STICKER_MAX_DIMENSION = 320
+
+
+def sticker_bytes(data: bytes) -> bytes:
+    """Fit a sent sticker copy to one canvas limit, preserving animation and originals."""
+    with Image.open(BytesIO(data)) as image:
+        if max(image.size) <= STICKER_MAX_DIMENSION:
+            return data
+        preview = image.copy()
+        preview.thumbnail((STICKER_MAX_DIMENSION, STICKER_MAX_DIMENSION), Image.Resampling.LANCZOS)
+        size, format = preview.size, image.format
+        frames, durations = [], []
+        for frame in ImageSequence.Iterator(image):
+            mode = 'RGB' if format == 'JPEG' else 'RGBA'
+            frames.append(frame.convert(mode).resize(size, Image.Resampling.LANCZOS))
+            durations.append(frame.info.get('duration', 0))
+        options = {}
+        if len(frames) > 1:
+            options.update(save_all=True, append_images=frames[1:], duration=durations)
+            if 'loop' in image.info:
+                options['loop'] = image.info['loop']
+            if format == 'GIF':
+                options['disposal'] = 2
+        output = BytesIO()
+        frames[0].save(output, format=format, **options)
+        return output.getvalue()
 
 @dataclass(frozen=True, slots=True)
 class OriginalImage:

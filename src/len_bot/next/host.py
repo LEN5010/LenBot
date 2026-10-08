@@ -141,10 +141,6 @@ async def run(lifecycle: HostLifecycle, *, container: bool = False) -> None:
             open_memory_ingestor(config, store, memory, list(config.scenes), slots=slots) as ingestor,
         ):
             budget.memory = memory
-            if expression_service is not None:
-                for scene in expression_service.scenes:
-                    expression_service.validate(scene)
-
             def task_update(scene: str) -> None:
                 runner = runtime.runners.get(scene)
                 if runner is not None:
@@ -203,7 +199,7 @@ async def run(lifecycle: HostLifecycle, *, container: bool = False) -> None:
                         lifecycle.shutdown = None
                         remove_signals()
                 else:
-                    app = create_app(config, runtime, root=Path.cwd(), lifecycle=lifecycle)
+                    app = create_app(config, runtime, root=Path.cwd(), lifecycle=lifecycle, container=container)
                     # log_config=None: Uvicorn's records go through the host's own log handlers.
                     server = HostPanelServer(uvicorn.Config(
                         app, host=config.panel.host, port=config.panel.port, log_config=None,

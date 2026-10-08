@@ -19,6 +19,14 @@ const emit = defineEmits(['dirty'])
 const root = `/api/host/scenes/${encodeURIComponent(props.scene)}`
 
 const config = useResource(() => api(`/api/host/settings/scenes/${encodeURIComponent(props.scene)}/learning`))
+const learning = useResource(() => api(`${root}/learning`))
+const copyIndex = useAction()
+async function copyReindex() {
+  await copyIndex.run(async () => {
+    await navigator.clipboard.writeText(learning.data.value.reindex_command)
+    notify('已复制')
+  })
+}
 const draft = ref(null)
 const saveConfig = useAction()
 watch(() => JSON.stringify(config.data.value?.saved), () => { if (config.data.value) draft.value = clone(config.data.value.saved) }, { immediate: true })
@@ -123,6 +131,14 @@ async function learnNow() {
 </script>
 
 <template>
+  <v-alert v-if="learning.data.value?.index?.needs_rebuild" type="warning">
+    <p>说法索引需要重建，当前暂停说法检索。</p>
+    <p v-if="learning.data.value.maintenance_container">先停止 LenBot，在挂载同一实例目录的维护容器中执行，完成后重新启动。</p>
+    <p v-else>先停止 LenBot，执行重建命令，完成后重新启动。</p>
+    <pre>{{ learning.data.value.reindex_command }}</pre>
+    <v-btn variant="outlined" :loading="copyIndex.busy.value" @click="copyReindex">复制命令</v-btn>
+    <ErrorNote v-if="copyIndex.error.value" title="复制命令失败" :error="copyIndex.error.value" />
+  </v-alert>
   <ResourceState :resource="config" error-title="读取学习设置失败">
     <SettingSection title="学习"
       :dirty="configDirty" :saving="saveConfig.busy.value" :error="saveConfig.error.value" @save="submitConfig">
@@ -224,6 +240,7 @@ async function learnNow() {
 </template>
 
 <style scoped>
+pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .review-group{display:grid;gap:var(--sp-3)}
 .review-group + .review-group{border-top:1px solid var(--line);padding-top:var(--sp-4)}
 .review-group p{margin:0}

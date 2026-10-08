@@ -47,6 +47,22 @@ if TYPE_CHECKING:
     from ..runtime.management import HostManagement
 
 
+class StickerChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    emotion: str | None = Field(default=None, min_length=1)
+    query: str | None = Field(default=None, min_length=1)
+    file: str | None = Field(default=None, min_length=1, description="从当前角色素材目录选择真实文件名，直接发送这一张。")
+
+    @model_validator(mode="after")
+    def one_selector(self) -> StickerChoice:
+        selectors = [value for value in (self.file, self.emotion, self.query) if value is not None]
+        if len(selectors) != 1:
+            raise ValueError("file、emotion 与 query 必须三选一")
+        if not selectors[0].strip():
+            raise ValueError("表情检索内容不能为空白")
+        return self
+
+
 class SayArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     content: str = Field(min_length=1)
@@ -54,24 +70,13 @@ class SayArguments(BaseModel):
     reply_to: str | None = Field(default=None, description="默认不填，直接接话。群里同时有几个话头、不引用会让人认错你在回哪句时，才填该平台消息 ID。")
     mention: str | None = Field(default=None, pattern=r"^onebot:[1-9][0-9]*$",
         description="默认不填。要叫不在当前对话里的人，或不 @ 会让人认错对象时，才填平台账号，例如 onebot:70001。")
+    sticker: StickerChoice | None = Field(default=None,
+        description="与正文一起发送在同一条消息里的表情；file、emotion、query 三选一，素材目录见 react。")
 
 
-class ReactArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+class ReactArguments(StickerChoice):
     end_turn: bool = Field(default=False, description="这次表情完成本轮回应，成功后即可结束；还要继续处理时保持 false。")
-    emotion: str | None = Field(default=None, min_length=1)
-    query: str | None = Field(default=None, min_length=1)
-    file: str | None = Field(default=None, min_length=1, description="从当前角色素材目录选择真实文件名，直接发送这一张。")
     reply_to: str | None = None
-
-    @model_validator(mode="after")
-    def one_selector(self) -> ReactArguments:
-        selectors = [value for value in (self.file, self.emotion, self.query) if value is not None]
-        if len(selectors) != 1:
-            raise ValueError("file、emotion 与 query 必须三选一")
-        if not selectors[0].strip():
-            raise ValueError("表情检索内容不能为空白")
-        return self
 
 
 class WaitArguments(BaseModel):
@@ -187,7 +192,14 @@ def build_tools(config: LabConfig, persona: Persona, *, platform: bool, host_man
             parameters = SayArguments.model_json_schema()
             mode = "next_direct.md"
             parameters["properties"]["content"]["description"] = read_prompt(mode).strip()
-            allowed[index] = {**tool, "function": {**function, "parameters": parameters}}
+            description = function['description']
+            if 'react' in names:
+                description += ' 同时需要说话和表情时，优先设置 sticker 合成一条消息；只用图像回应时使用 react。'
+            else:
+                parameters['properties'].pop('sticker')
+                parameters.pop('$defs')
+            allowed[index] = {**tool, "function": {**function, "description": description,
+                                                   "parameters": model_schema(parameters)}}
         elif function["name"] == "react":
             parameters = ReactArguments.model_json_schema()
             catalog = "\n".join(f"{sticker.file}：{sticker.description}"
@@ -317,9 +329,11 @@ class SceneTools:
             call = ToolCall(call.id, call.name, with_requester(self.store, self.config, call.arguments))
         if call.name == "say":
             arguments = SayArguments.model_validate(call.arguments)
+            if arguments.sticker is not None and 'react' not in self.allowed_tool_names:
+                raise ValueError('当前角色没有开放表情能力')
             expression = await self.expression.express(turn_id, arguments,
                                                        expression_style=expression_style, direct=direct)
-            return self.expression.context.render(expression), Expression(expression, end_turn=arguments.end_turn), None
+            return self.expression.context.render(expression.message), expression, None
         if call.name == "react":
             expression = self.expression.react(ReactArguments.model_validate(call.arguments))
             return self.expression.context.render(expression.message), expression, None

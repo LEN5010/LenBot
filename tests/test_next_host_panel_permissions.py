@@ -83,7 +83,7 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path, o
                     assert (await client.get("/api/panel-context")).json() == {
                         "mode": "isolated-multi", "home": "/host/overview",
                     }
-                    for path in ("/api/auth/me", "/api/host/state", "/api/host/retention", "/api/host/limits", "/api/host/scenes/onebot:group:80001/control", "/api/host/scenes/onebot:group:80001",
+                    for path in ("/api/auth/me", "/api/host/state", "/api/host/memory/state", "/api/host/retention", "/api/host/limits", "/api/host/scenes/onebot:group:80001/control", "/api/host/scenes/onebot:group:80001",
                                  f"/api/host/scenes/onebot:group:80001/turns/{configured_turn}"):
                         assert (await client.get(path)).status_code == 401
                     # The setup page on another loopback port may read readiness; other origins may not.
@@ -116,6 +116,11 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path, o
                     assert state["delivery"] == "simulated"
                     assert [item["scene"] for item in state["scenes"]] == ["onebot:group:80001", "onebot:group:80002"]
                     assert state["connection"]["connected"] is False
+                    memory_state = (await client.get('/api/host/memory/state')).json()
+                    import sys
+                    assert sys.executable in memory_state['reindex_command']
+                    assert str(root) in memory_state['reindex_command']
+                    assert 'uv run' not in memory_state['reindex_command']
 
                     scene = (await client.get("/api/host/scenes/onebot:group:80001")).json()
                     assert scene["scene"] == "onebot:group:80001"
