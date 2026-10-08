@@ -20,6 +20,7 @@ import uvicorn
 import yaml
 
 from ..configuration.models import Binding, Provider
+from ..memory.embeddings import EmbeddingBinding
 from ..configuration.chat import Compaction
 from ..config import CONFIG_VERSION, HostConfig
 from ..configuration.onebot import OneBotSettings
@@ -34,6 +35,13 @@ from ..storage.files import sync_directory
 DEFAULT_PERSONA_DIRECTORY = Path(__file__).resolve().parents[2] / 'default_personas' / 'companion'
 
 
+class SetupEmbedding(BaseModel):
+    model_config = ConfigDict(strict=True, extra='forbid', hide_input_in_errors=True)
+    provider: Provider | None = None
+    model: str = Field(min_length=1)
+    dimensions: int | None = Field(default=None, gt=0)
+
+
 class FirstSetup(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid', hide_input_in_errors=True)
     bot_id: str
@@ -43,6 +51,7 @@ class FirstSetup(BaseModel):
     onebot: OneBotSettings
     provider: Provider
     mind: Binding
+    embedding: SetupEmbedding | None = None
     voice_mode: Literal['direct'] = 'direct'
     compaction: Compaction = Field(default_factory=Compaction)
     scene: str
@@ -104,14 +113,29 @@ class ModelProbe(BaseModel):
     kind: Literal["text", "tools"] = "text"
 
 
+class EmbeddingProbe(BaseModel):
+    model_config = ConfigDict(strict=True, extra='forbid', hide_input_in_errors=True)
+    provider: Provider
+    binding: EmbeddingBinding
+
+
 def setup_source(item: FirstSetup) -> dict:
+    providers = {'primary': item.provider.model_dump(mode='json')}
+    vector = None
+    if item.embedding is not None:
+        alias = 'primary'
+        if item.embedding.provider is not None:
+            alias = 'vectors'
+            providers[alias] = item.embedding.provider.model_dump(mode='json')
+        vector = {'provider': alias, 'model': item.embedding.model, 'dimensions': item.embedding.dimensions}
     return {
         'config_version': CONFIG_VERSION, 'mode': 'isolated-multi', 'bot_id': item.bot_id, 'owners': item.owners,
         'timezone': item.timezone, 'delivery': item.delivery, 'database': 'state/lenbot.sqlite3',
         'onebot': item.onebot.model_dump(mode='json'),
         'compaction': item.compaction.model_dump(mode='json'),
-        'models': {'providers': {'primary': item.provider.model_dump(mode='json')},
+        'models': {'providers': providers,
                    'roles': {'mind': item.mind.model_dump(mode='json')}},
+        'memory': {'backend': 'local', 'local': {'directory': 'state/memory', 'embedding': vector}},
         'plugins': {'paths': ['plugins'], 'data_directory': 'plugins/.data',
                     'disabled': item.install_plugins, **{name: {} for name in item.install_plugins}},
         'panel': {'host': item.panel_host, 'port': item.panel_port, 'username': item.username,
@@ -217,6 +241,13 @@ def create_setup_app(root: Path, token: str, completed: asyncio.Event, *, contai
     @app.get('/api/setup/protocols', dependencies=[Depends(authorize)])
     async def protocols():
         return {'protocols': [p for p in PROTOCOLS if 'mind' in p['roles']]}
+
+    @app.post('/api/setup/embedding', dependencies=[Depends(authorize)])
+    async def probe_embedding(item: EmbeddingProbe):
+        try:
+            return await run_model_probe(item.provider, item.binding, 'embedding')
+        except Exception as error:
+            raise HTTPException(422, f'{type(error).__name__}: {error}') from error
 
     @app.post('/api/setup/models', dependencies=[Depends(authorize)])
     async def models(item: ProviderList):

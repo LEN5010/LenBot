@@ -13,12 +13,15 @@ import BrowseTab from './BrowseTab.vue'
 import SearchTab from './SearchTab.vue'
 import IngestTab from './IngestTab.vue'
 import MemorySettings from './MemorySettings.vue'
+import IndexTab from './IndexTab.vue'
+import { host } from '../../store.js'
 
 const route = useRoute(), router = useRouter()
 const memory = useResource(() => api('/api/host/memory/state'))
 const state = computed(() => memory.data.value)
+const index = computed(() => host.overview?.memory_index ?? state.value?.index)
 const tabs = computed(() => state.value?.enabled
-  ? [['browse', '浏览'], ['search', '搜索'], ['ingest', '后台整理'], ['settings', '设置']]
+  ? [['browse', '浏览'], ['search', '搜索'], ['ingest', '后台整理'], ['index', '索引'], ['settings', '设置']]
   : [['settings', '设置']])
 const tab = computed(() => tabs.value.some(([key]) => key === route.query.tab) ? route.query.tab : tabs.value[0][0])
 const { scene } = useCurrentScene()
@@ -33,8 +36,13 @@ useUnsavedChanges(computed(() => Object.values(dirty).some(Boolean)), { onDiscar
   <HostPage title="记忆" :wide="tab === 'browse'">
     <ResourceState :resource="memory" error-title="读取记忆状态失败">
       <v-alert v-if="!state.enabled" type="info">还没有开启记忆。在下面选择记忆的保存方式，保存后重启 LenBot。</v-alert>
+      <v-alert v-if="index?.needs_rebuild && tab !== 'index'" type="warning">
+        <div class="index-status"><span>向量配置与记忆索引不匹配，当前使用全文检索。</span>
+          <v-btn variant="outlined" :to="{ name: 'host-memory', query: { ...route.query, tab: 'index' } }">重建索引</v-btn></div>
+      </v-alert>
       <PageTabs v-if="tabs.length > 1" :tabs="tabs" :model-value="tab" label="记忆" />
       <MemorySettings v-if="tab === 'settings'" @dirty="value => dirty.settings = value" />
+      <IndexTab v-else-if="tab === 'index'" :index="index" />
       <EmptyState v-else-if="scene && !remembered" text="这个群没有使用记忆" />
       <template v-else-if="scene">
         <BrowseTab v-if="tab === 'browse'" :key="`b${scene}`" :scene="scene" :state="state" @dirty="value => dirty.browse = value" />
@@ -44,3 +52,7 @@ useUnsavedChanges(computed(() => Object.values(dirty).some(Boolean)), { onDiscar
     </ResourceState>
   </HostPage>
 </template>
+
+<style scoped>
+.index-status{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);flex-wrap:wrap}
+</style>

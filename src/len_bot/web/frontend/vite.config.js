@@ -10,10 +10,12 @@ function frontendNotices() {
   return {
     name: 'frontend-notices', apply: 'build',
     configResolved(value) { config = value },
-    closeBundle() {
+    writeBundle() {
       const collector = fileURLToPath(new URL('../../../../scripts/collect_frontend_licenses.cjs', import.meta.url))
       execFileSync(process.execPath, [collector, path.join(config.root, 'node_modules'),
         path.resolve(config.root, config.build.outDir, config.build.assetsDir, 'licenses/frontend')], { stdio: 'inherit' })
+      const recorder = fileURLToPath(new URL('../../../../scripts/frontend_build.cjs', import.meta.url))
+      execFileSync(process.execPath, [recorder, '--record'], { stdio: 'inherit' })
     },
   }
 }

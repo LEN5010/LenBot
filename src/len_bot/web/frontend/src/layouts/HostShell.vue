@@ -84,7 +84,9 @@ async function exit() {
         <div class="shell-nav-heading">{{ group.title }}</div>
         <RouterLink v-for="item in group.areas" :key="item.id" :to="hostTarget(item.name, scene)" class="shell-nav-item"
           :class="{ active: area?.id === item.id }" :aria-current="area?.id === item.id ? 'page' : undefined">
-          <v-icon :icon="icons[item.id]" size="20" />{{ item.title }}</RouterLink>
+          <v-icon :icon="icons[item.id]" size="20" />{{ item.title }}
+          <span v-if="item.id === 'memory' && host.overview?.memory_index?.needs_rebuild" class="memory-index-dot" role="img" aria-label="记忆索引需要重建" />
+        </RouterLink>
       </div>
     </nav>
   </v-navigation-drawer>
@@ -130,3 +132,7 @@ async function exit() {
   <ConfirmHost />
   <v-snackbar v-model="toast" :timeout="3000" location="bottom" color="#1d1b20" rounded="lg">{{ host.toast }}</v-snackbar>
 </template>
+
+<style scoped>
+.memory-index-dot{width:7px;height:7px;flex:none;border-radius:50%;background:#c49a27;margin-left:auto}
+</style>

@@ -9,6 +9,7 @@ overlapping literal trigrams from the recent chat, or a shorter literal query.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import sqlite3
@@ -28,6 +29,7 @@ from pydantic import BaseModel, ConfigDict
 from .embeddings import EmbeddingBinding, EmbeddingClient
 from .types import MemoryDocument, MemoryNode, MemoryPage
 from ..storage.sqlite import connect
+from ..runtime.logs import log_event
 
 
 _SCENE = re.compile(r"[a-z][a-z0-9_-]*:(group|private):[^:\s/\\]+\Z")
@@ -50,6 +52,11 @@ CREATE TABLE memory_summaries (
 _Result = TypeVar("_Result")
 _FILE_LOCK = threading.RLock()
 _PENDING_FILE = '.memory-pending.json'
+logger = logging.getLogger(__name__)
+
+
+class VectorIndexNeedsRebuild(ValueError):
+    """The configured embedding cannot query the existing derived index."""
 
 
 class _FileMutation(BaseModel):
@@ -528,19 +535,19 @@ class LocalMemory:
         row = db.execute("SELECT provider,base_url,model,dimensions FROM memory_vector_binding WHERE id=1").fetchone()
         if row is None:
             if db.execute("SELECT 1 FROM memory_files LIMIT 1").fetchone() is not None:
-                raise ValueError("configured embedding has existing Markdown without vectors; "
+                raise VectorIndexNeedsRebuild("configured embedding has existing Markdown without vectors; "
                                  "停机后在实例目录执行 python -m len_bot.next.maintenance.memory_reindex")
             return None
         settings = self.embedding.settings
         if (row["base_url"] != settings.base_url
                 or row["model"] != settings.model
                 or (settings.dimensions is not None and row["dimensions"] != settings.dimensions)):
-            raise ValueError("记忆向量索引与当前地址/模型/维数不一致；"
+            raise VectorIndexNeedsRebuild("记忆向量索引与当前地址/模型/维数不一致；"
                              f"索引：{row['base_url']} / {row['model']} / {row['dimensions']}；"
                              f"配置：{settings.base_url} / {settings.model} / {settings.dimensions}。"
                              "停机后在实例目录执行 python -m len_bot.next.maintenance.memory_reindex")
         if not self._vector_table_exists(db):
-            raise ValueError("记忆向量索引表缺失；停机后在实例目录执行 python -m len_bot.next.maintenance.memory_reindex")
+            raise VectorIndexNeedsRebuild("记忆向量索引表缺失；停机后在实例目录执行 python -m len_bot.next.maintenance.memory_reindex")
         return row["dimensions"]
 
     def _create_vector_table(self, db: sqlite3.Connection, dimensions: int) -> None:
@@ -568,6 +575,23 @@ class LocalMemory:
     def _vector_preflight(self) -> int | None:
         with self._db() as db:
             return self._vector_binding(db)
+
+    def index_status(self) -> dict:
+        with self._db() as db:
+            row = db.execute('SELECT base_url,model,dimensions FROM memory_vector_binding WHERE id=1').fetchone()
+            stored = None if row is None else dict(row)
+            configured = None if self.embedding is None else {
+                'base_url': self.embedding.settings.base_url, 'model': self.embedding.settings.model,
+                'dimensions': self.embedding.settings.dimensions,
+            }
+            reason = None
+            needs = configured is None and stored is not None
+            try:
+                dimensions = self._vector_binding(db)
+            except VectorIndexNeedsRebuild as error:
+                dimensions, needs, reason = None, True, str(error)
+            return {'stored': stored, 'configured': configured, 'needs_rebuild': needs, 'reason': reason,
+                    'retrieval': 'hybrid' if dimensions is not None and not needs else 'text'}
 
     async def reindex_embeddings(self) -> int:
         """Explicit offline rebuild of text and vector derivations; preserve history."""
@@ -816,12 +840,13 @@ class LocalMemory:
 
     def _search_hybrid_sync(self, scene: str, query: str,
                             vector: tuple[float, ...], limit: int,
-                            include_public: bool, exclude_pending: bool) -> list[LocalMemoryHit]:
+                            include_public: bool, exclude_pending: bool, automatic: bool) -> list[LocalMemoryHit]:
         with self._db() as db:
             dimensions = self._vector_binding(db)
             if dimensions is None or len(vector) != dimensions:
                 raise ValueError(f"memory query vector dimension {len(vector)} differs from index {dimensions}")
-            lexical = self._lexical_rows(db, scene, query, limit, include_public, exclude_pending)
+            search = self._automatic_rows if automatic else self._lexical_rows
+            lexical = search(db, scene, query, limit, include_public, exclude_pending)
             eligible = (" AND rowid IN (SELECT id FROM memory_files WHERE substr(path,1,14)!='legacy-import/')"
                         if exclude_pending else "")
             vector_rows: list[tuple[str, str, float]] = []
@@ -854,25 +879,37 @@ class LocalMemory:
 
     async def search(self, scene: str, query: str, limit: int = 10, *,
                      include_public: bool = True, exclude_pending: bool = False,
-                     automatic: bool = False) -> list[LocalMemoryHit]:
+                     automatic: bool = False, text_query: str | None = None) -> list[LocalMemoryHit]:
         if not query.strip() or not 1 <= limit <= 100:
             raise ValueError("search requires a nonblank query and limit 1..100")
         source = _scene_scope(scene)
+        literal = query if text_query is None else text_query
         async with AsyncExitStack() as locks:
             await locks.enter_async_context(self._lock(source))
             if include_public:
                 await locks.enter_async_context(self._lock("public"))
             if self.embedding is None:
-                return await asyncio.to_thread(self._search_sync, source, query, limit,
+                return await asyncio.to_thread(self._search_sync, source, literal, limit,
                                                include_public, exclude_pending, automatic)
-            dimensions = await asyncio.to_thread(self._vector_preflight)
+            try:
+                dimensions = await asyncio.to_thread(self._vector_preflight)
+            except VectorIndexNeedsRebuild as error:
+                log_event(logger, 'memory_text_retrieval', '记忆改用全文检索', level=logging.WARNING, error=error)
+                return await asyncio.to_thread(self._search_sync, source, literal, limit,
+                                               include_public, exclude_pending, automatic)
             if dimensions is None:
-                return []
-            batch = await self._embedding(source, [query], "query")
-            if batch.dimensions != dimensions:
-                raise ValueError(f"embedding dimensions {batch.dimensions} differ from memory index {dimensions}")
-            return await asyncio.to_thread(self._search_hybrid_sync, source, query,
-                                           batch.vectors[0], limit, include_public, exclude_pending)
+                return await asyncio.to_thread(self._search_sync, source, literal, limit,
+                                               include_public, exclude_pending, automatic)
+            try:
+                batch = await self._embedding(source, [query], "query")
+                if batch.dimensions != dimensions:
+                    raise ValueError(f"embedding dimensions {batch.dimensions} differ from memory index {dimensions}")
+            except (ValueError, TimeoutError) as error:
+                log_event(logger, 'memory_text_retrieval', '记忆改用全文检索', level=logging.WARNING, error=error)
+                return await asyncio.to_thread(self._search_sync, source, literal, limit,
+                                               include_public, exclude_pending, automatic)
+            return await asyncio.to_thread(self._search_hybrid_sync, source, literal,
+                                           batch.vectors[0], limit, include_public, exclude_pending, automatic)
 
     def _history_sync(self, scope: str, path: str) -> list[LocalMemoryChange]:
         self._target(scope, path, file=True)

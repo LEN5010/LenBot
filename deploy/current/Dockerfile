@@ -10,6 +10,7 @@ COPY src/len_bot/web/frontend/package.json src/len_bot/web/frontend/package-lock
 RUN npm ci --no-audit --no-fund
 COPY src/len_bot/web/frontend/ ./
 COPY scripts/collect_frontend_licenses.cjs /build/scripts/collect_frontend_licenses.cjs
+COPY scripts/frontend_build.cjs /build/scripts/frontend_build.cjs
 # vite.config.js writes to ../static/dist, so this lands at
 # /build/src/len_bot/web/static/dist and keeps the repository layout.
 RUN npm run build

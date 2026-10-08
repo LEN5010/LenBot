@@ -14,7 +14,8 @@ from len_bot.web.auth import verify_password
 
 @pytest.mark.parametrize('voice_mode', ['direct'])
 @pytest.mark.parametrize('default_persona', [False, True])
-def test_first_setup_validates_and_never_overwrites(tmp_path: Path, voice_mode: str, default_persona: bool):
+@pytest.mark.parametrize('embedding_mode', ['skip', 'primary', 'separate'])
+def test_first_setup_validates_and_never_overwrites(tmp_path: Path, voice_mode: str, default_persona: bool, embedding_mode: str):
     body = {
         'bot_id':'onebot:90001','owners':['onebot:70001'],'timezone':'Asia/Shanghai','delivery':'simulated',
         'onebot':{'mode':'forward_ws','ws_url':'ws://127.0.0.1:9','access_token':'synthetic-token'},
@@ -26,6 +27,12 @@ def test_first_setup_validates_and_never_overwrites(tmp_path: Path, voice_mode: 
         'voice_text':'简短','boundaries':'合成场景','panel_port':8088,'username':'fixture',
         'password':'synthetic-password',
     }
+    if embedding_mode != 'skip':
+        body['embedding'] = {'model': 'synthetic-vector', 'dimensions': 4,
+            'provider': None if embedding_mode == 'primary' else {
+                'api': 'openai-embeddings', 'base_url': 'http://127.0.0.1:10/v1', 'api_key': 'synthetic-vector-key'}}
+    else:
+        body['embedding'] = None
     if default_persona:
         for name in ('persona_id', 'persona_name', 'brief', 'voice_text', 'boundaries'):
             del body[name]
@@ -46,6 +53,13 @@ def test_first_setup_validates_and_never_overwrites(tmp_path: Path, voice_mode: 
             assert complete.is_set() and 'synthetic-secret' not in response.text
             cfg = load_host_config(tmp_path)
             assert cfg.delivery == 'simulated' and cfg.models.roles.mind.model == 'fixture'
+            assert cfg.memory is not None
+            if embedding_mode == 'skip':
+                assert cfg.memory.local.embedding is None and set(cfg.models.providers) == {'primary'}
+            else:
+                binding = cfg.memory.local.embedding
+                assert binding.model == 'synthetic-vector' and binding.dimensions == 4
+                assert binding.provider == ('primary' if embedding_mode == 'primary' else 'vectors')
             assert cfg.scenes['onebot:group:80001'].voice_mode == voice_mode
             assert response.json()['voice_mode'] == voice_mode
             persona = load_persona(cfg.scenes['onebot:group:80001'].persona)
@@ -62,6 +76,29 @@ def test_first_setup_validates_and_never_overwrites(tmp_path: Path, voice_mode: 
             assert (await client.post('/api/setup', json=body)).status_code == 409
             assert (tmp_path/'lenbot.config.json').read_bytes() == before
     asyncio.run(exercise())
+
+
+@pytest.mark.asyncio
+async def test_setup_vector_probe_auth_and_embedding_protocol(tmp_path):
+    from test_next_native_models import peer_server
+    received = []
+    response = b'{"data":[{"index":0,"embedding":[1,0,0,1]}]}'
+    server = await peer_server([(200, 'application/json', response)], received)
+    async with server:
+        app = create_setup_app(tmp_path, 'fixture-token', asyncio.Event())
+        body = {
+            'provider': {'api': 'openai-embeddings', 'base_url': f'http://127.0.0.1:{server.sockets[0].getsockname()[1]}/v1',
+                         'api_key': 'synthetic-vector-key'},
+            'binding': {'provider': 'vectors', 'model': 'synthetic-vector', 'dimensions': 4},
+        }
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://127.0.0.1') as client:
+            assert (await client.post('/api/setup/embedding', json=body)).status_code == 401
+            client.headers['X-Setup-Token'] = 'fixture-token'
+            result = await client.post('/api/setup/embedding', json=body)
+            assert result.status_code == 200, result.text
+            assert result.json()['dimensions'] == 4
+            assert not (tmp_path / 'lenbot.config.json').exists()
+    assert len(received) == 1 and received[0][2]['model'] == 'synthetic-vector'
 
 
 @pytest.mark.asyncio

@@ -219,7 +219,8 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path, lifec
                 "hourly": runtime.store.hourly_overview(scenes, hour - 23 * 3600, 24, calls=calls),
                 "activity": runtime.store.recent_activity(scenes, 12),
                 "failed_tasks": runtime.store.failed_tasks(scenes, start.timestamp()),
-                "memory_stuck": stuck}
+                "memory_stuck": stuck,
+                "memory_index": None if runtime.memory is None else await asyncio.to_thread(runtime.memory.backend.index_status)}
 
     @app.get("/api/host/scenes/{scene}")
     async def scene_state(scene: str, _: str = Depends(user)):
