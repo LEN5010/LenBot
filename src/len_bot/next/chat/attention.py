@@ -849,7 +849,7 @@ class SceneRunner:
                                if self.chat.tasks is not None and not quiet else [])
                     events = PluginStore(self.store).pending_plugin_events(self.config.scene, include_events=not quiet)
                     audio = not quiet and self.audio_ready()
-                    channel = ("system" if scheduled or notices or events or audio
+                    channel = ("schedule" if scheduled else "task" if notices else "plugin" if events else "audio" if audio
                                else self.state.pending.channel if self.state.pending else "resume")
                     channels = {name for name, present in (
                         ("schedule", scheduled), ("task", notices), ("plugin", events), ("audio", audio), ("resume", self.resume))
@@ -857,7 +857,7 @@ class SceneRunner:
                     if self.state.pending is not None:
                         channels.add(self.state.pending.channel)
                     reason = ("[恢复未结束的对话]" if self.resume
-                              else "[此前未触发唤醒的消息]" if channel == "system" and self.state.pending is None
+                              else "[此前未触发唤醒的消息]" if channel in {"schedule", "task", "plugin", "audio"} and self.state.pending is None
                               else self.wake_reason())
                     batch = self.batch(pending, reason) if pending else None
                     direct = self.state.pending is not None and self.state.pending.channel == "direct"

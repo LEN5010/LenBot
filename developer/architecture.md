@@ -46,6 +46,12 @@ OneBot ──> 平台适配器 ──> 消息入库 ──┬─> 插件规则�
 
 `messages` 保存真实的收发记录，`mind_entries` 保存已经交给模型的批次和完整的工具交换。轮次只是执行单位，一轮结束不会清空会话。
 
+`turns.wake_channel` 保存开轮时的唤醒方式；轮次中合并进来的其他唤醒仍保存在表达的渠道记录中，不改开轮归类。用量页按群、开轮日期和方式统计一次轮次是否有成功表达，以及该轮全部主脑请求的输入和缓存 token。
+
+离线核对注意力规则时，运行 `uv run --no-sync python -m len_bot.next.maintenance.replay_attention . --date 2026-10-08 --output state/attention-replay/2026-10-08 --aliases 小然 然然`。它只读数据库，不调用模型，输出 `baseline.json`、`reduced_wakes.json`（关闭 focus 后会减少的叫醒）、`lost_speech.json`（其中实际曾经发言的轮次，带消息批次和表达原文）、`alias_messages.json` 和 `summary.json`。清单保留在实例目录，不提交真实群聊内容。
+
+回放沿用 Bot 的实际发言和直接叫醒来重新开启 focus，不预测 ambient 会不会插话，也不预测移除一轮后模型会如何回复。`--aliases` 只列出字面匹配的消息供检查，不改变角色，也不跳过点名冷却和场景设置。
+
 ### 请求顺序
 
 请求按以下顺序组装。

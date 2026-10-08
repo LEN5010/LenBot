@@ -19,6 +19,7 @@ from ...work.storage import temporary_paths
 from ...runtime.operations import diagnostic_zip
 from ...work.store import TaskStore
 from ...models.usage import usage
+from ...chat.usage import wake_usage
 from ...models.limits import LimitReached, clear_speech, speech_quota
 from ...models.client import ModelHTTPError, ModelProtocolError
 from ...memory.jobs import processing_records
@@ -227,6 +228,7 @@ def register_host_operations(app, *, runtime, user):
                                start.timestamp(), end.timestamp(), memory=runtime.memory,
                                memory_db=None if records is None else records.db)
                 return {"timezone": zone, "period": period, **result,
+                        'wakes': wake_usage(store, None if scene is None else [scene], start.timestamp(), end.timestamp(), zone),
                         'scope': '当前实例业务及记忆计量；全部范围含public与已移除场景，不含独立保留试聊（预算另含）',
                         'memory_record_source':
                         'not_present' if records is None else 'running_connection' if runtime.memory is not None else 'read_only_existing'}

@@ -28,6 +28,7 @@ FIXTURES = {
     'config0-business1-jobs5-index2': 'a572456',
     'config0-business2-jobs6-index2': 'c9ff238',
     'config2-business3-jobs6-index3': '02fb0ff',
+    'config2-business4-jobs6-index3': '082646db',
 }
 
 WRITER = r'''

@@ -7,7 +7,7 @@ import { confirm } from '../../../composables/useConfirm.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { useUnsavedChanges } from '../../../composables/useUnsavedChanges.js'
 import { notify, readPendingRestart } from '../../store.js'
-import { callRoleLabel } from '../../labels.js'
+import { callRoleLabel, wakeLabel } from '../../labels.js'
 import { clone, numberOrBlank, same } from '../../forms.js'
 import HostPage from '../../ui/HostPage.vue'
 import PageTabs from '../../ui/PageTabs.vue'
@@ -164,6 +164,10 @@ async function submit() {
 
 const period = ref('day')
 const usage = useResource(() => api(`/api/host/usage?period=${period.value}`))
+const wakeScene = ref('')
+const wakeScenes = computed(() => [{ title: '全部群聊', value: '' }, ...[...new Set(
+  (usage.data.value?.wakes || []).map(row => row.scene))].map(scene => ({ title: sceneName(scene), value: scene }))])
+const wakeRows = computed(() => (usage.data.value?.wakes || []).filter(row => !wakeScene.value || row.scene === wakeScene.value))
 watch(period, () => usage.reload())
 const count = value => value.toLocaleString('zh-CN')
 </script>
@@ -284,6 +288,21 @@ const count = value => value.toLocaleString('zh-CN')
                 <td class="num">{{ count(row.input) }}</td><td class="num">{{ count(row.output) }}</td></tr></tbody>
             </v-table>
             <DevOnly label="统计范围与原始数据" :json="data" />
+          </ResourceState>
+        </Panel>
+        <Panel title="叫醒与发言">
+          <ResourceState :resource="usage" error-title="读取叫醒统计失败">
+            <v-select v-model="wakeScene" label="群聊" :items="wakeScenes" />
+            <v-table v-if="wakeRows.length" density="compact" class="usage-table">
+              <thead><tr><th>群聊</th><th>日期</th><th>唤醒方式</th><th class="num">叫醒</th><th class="num">发言</th><th class="num">发言率</th><th class="num">输入 token</th><th class="num">缓存命中</th></tr></thead>
+              <tbody><tr v-for="row in wakeRows" :key="`${row.scene}/${row.day}/${row.channel}`">
+                <td>{{ sceneName(row.scene) }}</td><td>{{ row.day }}</td><td>{{ wakeLabel(row.channel) }}</td>
+                <td class="num">{{ count(row.wakes) }}</td><td class="num">{{ count(row.spoken) }}</td>
+                <td class="num">{{ (row.speech_rate * 100).toFixed(1) }}%</td><td class="num">{{ count(row.input) }}<span v-if="row.unknown_calls" class="muted">（{{ row.unknown_calls }} 次未报告）</span></td>
+                <td class="num">{{ count(row.cached) }}</td>
+              </tr></tbody>
+            </v-table>
+            <p v-else class="muted">这个时段没有叫醒记录。</p>
           </ResourceState>
         </Panel>
         <LimitsSection v-if="settings.data.value" :snapshot="settings.data.value" @dirty="value => limitsDirty = value" @saved="value => { settings.data.value = value; readPendingRestart(); notify('已保存') }" />

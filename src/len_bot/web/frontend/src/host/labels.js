@@ -46,3 +46,6 @@ const toolNotes = {
 export const toolNote = name => toolNotes[name] || ''
 export const callRoleLabel = role => role.startsWith('plugin:') ? `插件 ${role.slice(7)}` : callRoles[role] || role
 export const noticeLabel = kind => notices[kind] || kind
+export const wakeLabel = channel => ({ direct: '被 @ 或回复', named: '点名', focus: '对话继续', ambient: '群里在聊',
+  proactive: '主动开话题', schedule: '提醒', task: '任务', plugin: '插件', audio: '语音就绪', resume: '恢复对话',
+  manual: '手动操作', unknown: '历史未记录' }[channel] || channel)

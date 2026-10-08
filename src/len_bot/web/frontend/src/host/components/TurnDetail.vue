@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { callRoleLabel, toolLabel } from '../labels.js'
+import { callRoleLabel, toolLabel, wakeLabel } from '../labels.js'
 import { formatTime } from '../time.js'
 import ErrorNote from '../ui/ErrorNote.vue'
 import StatusBadge from '../ui/StatusBadge.vue'
@@ -32,6 +32,7 @@ const seconds = value => `${Math.round(value * 10) / 10} 秒`
 <template>
   <div class="turn-detail">
     <div class="inline"><StatusBadge kind="turn" :value="turn.status" />
+      <span>{{ wakeLabel(turn.wake_channel) }}</span>
       <span class="muted small">{{ formatTime(turn.started, timezone) }}<template v-if="turn.ended"> · 用时 {{ seconds(turn.ended - turn.started) }}</template></span></div>
     <ErrorNote v-if="turn.error" title="这次回复出错了" :error="turn.error" />
     <p v-if="!steps.length" class="muted">这次没有调用模型。</p>

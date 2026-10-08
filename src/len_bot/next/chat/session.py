@@ -229,7 +229,7 @@ class Chat:
     @property
     def speech_reserve(self) -> bool:
         """Direct wakes, reminders and task results may still speak after the normal hourly limit."""
-        return self.direct_request or self.turn_channel == "system"
+        return self.direct_request or self.turn_channel in {"schedule", "task", "plugin", "audio"}
 
     def check_limits(self, *, model: bool = False, direct: bool | None = None) -> None:
         check_speech(self.store, self.config, direct=self.speech_reserve if direct is None else direct)
@@ -253,7 +253,8 @@ class Chat:
         turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state,
                                        scheduled=scheduled, task_notices=task_notices,
                                        plugin_events=plugin_events,
-                                       wake_received_at=wake_received_at, proactive=proactive)
+                                       wake_received_at=wake_received_at, proactive=proactive,
+                                       wake_channel=channel or 'resume')
         add_context(turn_id=turn_id)
         # The link from waking input to this turn: message seqs, schedules, task notices and plugin events.
         log_event(logger, 'turn_start', channel=channel, channels=sorted(self.turn_channels), direct=direct,

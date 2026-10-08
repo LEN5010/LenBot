@@ -1,0 +1,1 @@
+{"id": "synthetic", "name": "合成角色", "brief": "历史样本。", "behavior": "正常对话。", "self_reference": ["我"], "aliases": [], "tools": "all", "skills": [], "styles": []}

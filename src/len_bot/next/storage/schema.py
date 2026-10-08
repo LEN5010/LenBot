@@ -41,7 +41,8 @@ CREATE INDEX scene_speech ON speech(scene, time);
 CREATE TABLE turns (
     id TEXT PRIMARY KEY, scene TEXT NOT NULL, started REAL NOT NULL,
     ended REAL, status TEXT NOT NULL, error TEXT,
-    wake_received_at REAL, first_expression_at REAL, first_expression_delivery TEXT
+    wake_received_at REAL, first_expression_at REAL, first_expression_delivery TEXT,
+    wake_channel TEXT NOT NULL DEFAULT 'unknown'
 );
 CREATE TABLE model_calls (
     id INTEGER PRIMARY KEY, turn_id TEXT, role TEXT NOT NULL,

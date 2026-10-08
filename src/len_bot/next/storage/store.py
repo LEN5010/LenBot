@@ -25,7 +25,7 @@ from .schema import create_database
 from ..chat.schedule_store import ScheduleStore
 
 
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 
 
 def turn_record(row: sqlite3.Row) -> dict:
@@ -990,6 +990,7 @@ class Store:
                    task_notices: list[tuple[int, str]] | None = None,
                    plugin_events: list[tuple[int, str]] | None = None,
                    wake_received_at: float | None = None,
+                   wake_channel: str = 'manual',
                    proactive: tuple[str, str, float] | None = None) -> str:
         """Start a turn; ``proactive`` is (wake text, scene-local date, idle since)."""
         turn_id = str(uuid4())
@@ -999,8 +1000,8 @@ class Store:
                 "WHERE scene=? AND ended IS NULL",
                 (self.now(), "Previous turn handed off to a resumed turn", scene),
             )
-            self.db.execute("INSERT INTO turns(id,scene,started,status,wake_received_at) VALUES (?,?,?,'queued',?)",
-                            (turn_id, scene, self.now(), wake_received_at))
+            self.db.execute("INSERT INTO turns(id,scene,started,status,wake_received_at,wake_channel) VALUES (?,?,?,'queued',?,?)",
+                            (turn_id, scene, self.now(), wake_received_at, wake_channel))
             if batch is not None:
                 self._append_batch(scene, batch[0], batch[1])
             if scheduled is not None:
