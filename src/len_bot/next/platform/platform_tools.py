@@ -44,6 +44,36 @@ class MemberInfoArguments(BaseModel):
     user: str = Field(pattern=r"^onebot:[1-9][0-9]*$")
 
 
+class MessageReactionArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    message: str = Field(pattern=r"^-?[1-9][0-9]*$", description='当前群中要回应的平台消息 ID。')
+    emoji_id: str = Field(pattern=r"^[1-9][0-9]*$",
+        description='QQ 表情编号，例如 76 赞、66 爱心、99 鼓掌、182 笑哭、264 捂脸；也可用 128077（👍）。')
+    end_turn: bool = Field(default=True, description='这次贴表情完成本轮回应；还要继续说话时设为 false。')
+
+
+MESSAGE_REACTION_TOOL = {"type": "function", "function": {
+    "name": "message_reaction", "description": "偶尔给本群某条消息贴一个 QQ 表情回应，适合简短认同或接梗。"
+    "这是低频的独立行动；通常仍使用 say 或 react。通过 NapCat、SnowLuma 的消息表情回应接口执行。",
+    "parameters": MessageReactionArguments.model_json_schema(),
+}}
+
+
+async def message_reaction(store: Store, scene: str, args: MessageReactionArguments, call: PlatformCall) -> str:
+    if store.find_message(scene, args.message) is None:
+        raise ValueError(f'当前场景没有平台消息 {args.message}')
+    raw = await call('set_msg_emoji_like', {'message_id': int(args.message), 'emoji_id': args.emoji_id, 'set': True})
+    # SnowLuma returns data=null; NapCat returns the underlying operation result.
+    if not isinstance(raw, dict) or raw.get('status') != 'ok' or raw.get('retcode') != 0:
+        raise ValueError(f'set_msg_emoji_like 失败：{repr(raw)[:500]}')
+    data = raw.get('data')
+    if data is not None:
+        result = data.get('result') if isinstance(data, dict) else None
+        if result is not True and not (type(result) is int and result == 0):
+            raise ValueError(f'set_msg_emoji_like 操作失败：{repr(raw)[:500]}')
+    return encode({'message': args.message, 'emoji_id': args.emoji_id, 'set': True, 'status': 'sent'})
+
+
 OPEN_FORWARD_TOOL = {"type": "function", "function": {
     "name": "open_forward", "description": "展开本场景已保存消息里的合并转发；message 是平台消息 ID，"
     "forward 是该消息第几个转发段，offset 是字符位置，每页 4000 字。嵌套转发最多展开 3 层。",

@@ -43,6 +43,7 @@ class ExpressionService:
         self.on_update = on_update
         self.scenes = tuple(clients)
         self._locks: dict[str, asyncio.Lock] = {}
+        self.rebuilding: set[str] = set()
 
     def _lock(self, scene: str) -> asyncio.Lock:
         return self._locks.setdefault(scene, asyncio.Lock())
@@ -87,8 +88,8 @@ class ExpressionService:
         try:
             self.validate(scene)
         except ExpressionIndexNeedsRebuild as error:
-            return {'needs_rebuild': True, 'reason': str(error)}
-        return {'needs_rebuild': False, 'reason': None}
+            return {'needs_rebuild': True, 'reason': str(error), 'rebuilding': scene in self.rebuilding}
+        return {'needs_rebuild': False, 'reason': None, 'rebuilding': scene in self.rebuilding}
 
     async def _embed(self, scene: str, texts: list[str], *, purpose: Literal["query", "index", "reindex"],
                      turn_id: str | None = None, direct: bool = False) -> EmbeddingBatch:
@@ -118,6 +119,8 @@ class ExpressionService:
 
     async def select(self, scene: str, query: str, *, turn_id: str, direct: bool, exclude_uids: tuple[str, ...] = ()) -> list[dict]:
         """Return up to five ranked candidate facts; the chat model decides relevance and use."""
+        if scene in self.rebuilding:
+            return []
         async with self._lock(scene):
             adopted = self.records.adopted(scene, exclude_uids=exclude_uids)
             try:
@@ -135,7 +138,7 @@ class ExpressionService:
                                       direct=direct)
             if batch.dimensions != dimensions:
                 raise ValueError(f"scene {scene} query embedding dimension {batch.dimensions} differs from "
-                                 f"indexed expression dimension {dimensions}; stop and rebuild offline")
+                                 f"indexed expression dimension {dimensions}; rebuild the expression index from the learning page")
             needle = batch.vectors[0]
             needle_norm = math.sqrt(math.fsum(value * value for value in needle))
             ranked = []
@@ -162,7 +165,7 @@ class ExpressionService:
                     batch = await self._embed(scene, [situation], purpose="index")
                     if dimensions is not None and batch.dimensions != dimensions:
                         raise ValueError(f"scene {scene} new expression dimension {batch.dimensions} differs "
-                                         f"from current index dimension {dimensions}; stop and rebuild offline")
+                                         f"from current index dimension {dimensions}; rebuild the expression index from the learning page")
                     vector = self._stored(scene, batch.vectors[0], batch.dimensions)
             item = self.records.update_expression(scene, id, situation=situation, style=style,
                                                   status=status, vector=vector)
@@ -189,7 +192,7 @@ class ExpressionService:
                     batch = await self._embed(scene, [situation for situation, _ in new], purpose="index")
                     if dimensions is not None and batch.dimensions != dimensions:
                         raise ValueError(f"scene {scene} new expression dimension {batch.dimensions} differs "
-                                         f"from current index dimension {dimensions}; stop and rebuild offline")
+                                         f"from current index dimension {dimensions}; rebuild the expression index from the learning page")
                     vectors = {key: self._stored(scene, vector, batch.dimensions)
                                for key, vector in zip(new, batch.vectors, strict=True)}
             self.records.complete(batch_id, candidates, auto_adopt=auto_adopt, vectors=vectors)
@@ -197,8 +200,19 @@ class ExpressionService:
                 self.on_update()
 
     async def rebuild(self, scene: str) -> int:
-        """Explicit offline replacement; never silently repair a running index."""
+        """Explicit replacement, with edits queued and optional recall paused."""
         self._client(scene)
+        if scene in self.rebuilding:
+            raise FileExistsError('说法索引正在重建')
+        self.rebuilding.add(scene)
+        try:
+            return await self._rebuild(scene)
+        finally:
+            self.rebuilding.remove(scene)
+            if self.on_update is not None:
+                self.on_update()
+
+    async def _rebuild(self, scene: str) -> int:
         async with self._lock(scene):
             adopted = self.records.adopted(scene)
             snapshot = [(item["id"], item["situation"]) for item in adopted]

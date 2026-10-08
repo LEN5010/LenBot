@@ -25,6 +25,7 @@ from ..models.request import ChatRequest
 from ..persona.profile import Persona
 from ..persona.knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
 from ..platform.platform_tools import (MEMBER_INFO_TOOL, OPEN_FORWARD_TOOL, MemberInfoArguments,
+                             MESSAGE_REACTION_TOOL, MessageReactionArguments, message_reaction,
                              OpenForwardArguments, PlatformCall, member_info, open_forward)
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from ..trials.replay_images import RecordedImages
@@ -119,7 +120,7 @@ def tool_catalog(*, platform: bool) -> list[dict]:
     }}
     catalog = [say, REACT_TOOL, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
             *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, DELEGATE_TOOL, TASK_TOOL,
-            SEND_FILE_TOOL, OPEN_FORWARD_TOOL, MEMBER_INFO_TOOL, TRANSCRIBE_TOOL, SCENE_CONTROL_TOOL, HOST_MANAGE_TOOL, TOOL_SEARCH]
+            SEND_FILE_TOOL, OPEN_FORWARD_TOOL, MEMBER_INFO_TOOL, MESSAGE_REACTION_TOOL, TRANSCRIBE_TOOL, SCENE_CONTROL_TOOL, HOST_MANAGE_TOOL, TOOL_SEARCH]
     return [{**tool, "function": {**tool["function"],
              "parameters": model_schema(tool["function"]["parameters"])}} for tool in catalog]
 
@@ -163,9 +164,9 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str, *, 
             reasons.append("模拟发送时不能发文件")
     if name == "persona_knowledge" and not persona.knowledge:
         reasons.append("角色没有资料文件")
-    if name in {"open_forward", "member_info", "transcribe"} and config.delivery != "onebot":
+    if name in {"open_forward", "member_info", "transcribe", "message_reaction"} and config.delivery != "onebot":
         reasons.append("模拟发送时用不了")
-    if name == "member_info" and config.scene.split(":", 2)[1] != "group":
+    if name in {"member_info", "message_reaction"} and config.scene.split(":", 2)[1] != "group":
         reasons.append("只能在群里用")
     return reasons
 
@@ -257,7 +258,7 @@ class SceneTools:
         self.allowed_tool_names = {tool["function"]["name"] for tool in allowed} | set(self.external)
         if "send_file" in self.allowed_tool_names and upload_file is None:
             raise ValueError("send_file 配置已启用但未接入实际文件上传出口")
-        if self.allowed_tool_names & {"open_forward", "member_info"} and platform_call is None:
+        if self.allowed_tool_names & {"open_forward", "member_info", "message_reaction"} and platform_call is None:
             raise ValueError("平台查询工具已启用但未接入实际 OneBot 调用")
         if "transcribe" in self.allowed_tool_names and self.audio is None:
             raise ValueError("语音工具已启用但未接入实际语音处理服务")
@@ -383,6 +384,11 @@ class SceneTools:
         if call.name == "member_info":
             return await member_info(self.config.scene, self.config.timezone,
                                      MemberInfoArguments.model_validate(call.arguments), self.platform_call), None, None
+        if call.name == 'message_reaction':
+            arguments = MessageReactionArguments.model_validate(call.arguments)
+            async with self.expression.outlet:
+                self.expression.check_send_available()
+                return await message_reaction(self.store, self.config.scene, arguments, self.platform_call), None, None
         if call.name == "look":
             return await execute_look(
                 self.store, self.config.scene, LookArguments.model_validate(call.arguments), self.config.images,

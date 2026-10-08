@@ -13,6 +13,7 @@ from ...configuration.types import STRICT
 from ...learning.store import LearningStore
 from ...maintenance.commands import maintenance_command
 from ...runtime.network import NetworkRuntime
+from ...runtime.logs import credentials, redact
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class ExpressionChange(BaseModel):
 def register_host_learning(app: FastAPI, *, runtime: NetworkRuntime,
                            user: Callable[[Request], str], root, container: bool = False) -> None:
     learning = LearningStore(runtime.store)
+    secrets = credentials(runtime.config)
 
     def service_state(scene: str) -> dict | None:
         return runtime.learning.state(scene) if active(scene) else None
@@ -92,6 +94,23 @@ def register_host_learning(app: FastAPI, *, runtime: NetworkRuntime,
                       offset: int = Query(0, ge=0), _: str = Depends(user)):
         chat_for(scene)
         return learning.batches(scene, limit=limit, offset=offset)
+
+    @app.post('/api/host/scenes/{scene}/learning/reindex')
+    async def reindex(scene: str, _: str = Depends(user)):
+        chat_for(scene)
+        if not selection_enabled(scene):
+            raise HTTPException(409, '当前场景未配置说法向量模型')
+        if runtime.stopped.is_set():
+            raise HTTPException(409, '宿主正在停止')
+        runtime.notify()
+        try:
+            return {'expressions': await runtime.expression_service.rebuild(scene)}
+        except Exception as error:
+            logger.exception('说法索引重建失败，场景 %s', scene)
+            raise HTTPException(409 if isinstance(error, FileExistsError) else 500,
+                                redact(f'{type(error).__name__}: {error}', secrets)) from error
+        finally:
+            runtime.notify()
 
     @app.get("/api/host/scenes/{scene}/learning/batches/{id}")
     async def batch(scene: str, id: int, _: str = Depends(user)):

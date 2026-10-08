@@ -316,7 +316,12 @@ class Chat:
                                 raise
                         else:
                             if expression is None:
-                                self.store.complete_tool(scene, call.id, content, discovered_tools=discovered)
+                                reaction = call.name == 'message_reaction'
+                                self.store.complete_tool(scene, call.id, content, discovered_tools=discovered,
+                                                         response_turn_id=turn_id if reaction else None)
+                                if reaction:
+                                    expressions.append(content)
+                                    end_turn = end_turn or call.arguments.get('end_turn', True)
                             else:
                                 content, delivery_status = await self.expression.deliver_expression(
                                     call.id, expression, turn_id=turn_id, channels=self.turn_channels,

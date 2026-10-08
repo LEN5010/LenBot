@@ -14,7 +14,7 @@ import SearchTab from './SearchTab.vue'
 import IngestTab from './IngestTab.vue'
 import MemorySettings from './MemorySettings.vue'
 import IndexTab from './IndexTab.vue'
-import { host } from '../../store.js'
+import { host, readOverview } from '../../store.js'
 
 const route = useRoute(), router = useRouter()
 const memory = useResource(() => api('/api/host/memory/state'))
@@ -27,6 +27,7 @@ const tab = computed(() => tabs.value.some(([key]) => key === route.query.tab) ?
 const { scene } = useCurrentScene()
 const remembered = computed(() => (state.value?.scenes || []).some(item => item.scene === scene.value))
 const openFile = hit => router.push({ name: 'host-memory', query: { ...route.query, tab: 'browse', path: hit.path, scope: hit.scope } })
+async function indexRebuilt() { await Promise.all([memory.reload(), readOverview()]) }
 
 const dirty = reactive({})
 useUnsavedChanges(computed(() => Object.values(dirty).some(Boolean)), { onDiscard: () => { for (const key of Object.keys(dirty)) dirty[key] = false } })
@@ -42,7 +43,7 @@ useUnsavedChanges(computed(() => Object.values(dirty).some(Boolean)), { onDiscar
       </v-alert>
       <PageTabs v-if="tabs.length > 1" :tabs="tabs" :model-value="tab" label="记忆" />
       <MemorySettings v-if="tab === 'settings'" @dirty="value => dirty.settings = value" />
-      <IndexTab v-else-if="tab === 'index'" :index="index" :command="state.reindex_command" :container="state.maintenance_container" />
+      <IndexTab v-else-if="tab === 'index'" :index="index" :reindexing="state.reindexing" @rebuilt="indexRebuilt" />
       <EmptyState v-else-if="scene && !remembered" text="这个群没有使用记忆" />
       <template v-else-if="scene">
         <BrowseTab v-if="tab === 'browse'" :key="`b${scene}`" :scene="scene" :state="state" @dirty="value => dirty.browse = value" />

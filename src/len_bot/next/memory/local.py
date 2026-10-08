@@ -478,9 +478,9 @@ class LocalMemory:
         return files, summaries
 
     def reindex(self) -> int:
-        """Offline text rebuild; clear derived summaries and any old vector index."""
+        """Rebuild text derivations with writers stopped or held by MemoryService."""
         if self.embedding is not None:
-            raise ValueError("configured embedding requires await reindex_embeddings() offline")
+            raise ValueError("configured embedding requires await reindex_embeddings()")
         files, summaries = self._source_files()
         with self._db() as db:
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_vec'").fetchone() is not None:
@@ -499,11 +499,24 @@ class LocalMemory:
                 self._put_index(db, scope, path, content, None)
         return len(files)
 
+    @asynccontextmanager
+    async def _reindex_locks(self, scopes: set[str]):
+        # Searches acquire their scene before public; replacement uses the same order.
+        async with AsyncExitStack() as locks:
+            for scope in [*sorted((scopes | set(self._locks)) - {'public'}), 'public']:
+                await locks.enter_async_context(self._lock(scope))
+            yield
+
+    async def reindex_text(self) -> int:
+        files, _ = self._source_files()
+        async with self._reindex_locks({scope for scope, _ in files}):
+            return self.reindex()
+
     @staticmethod
     def _indexed(db: sqlite3.Connection, scope: str, path: str, current: str | None) -> sqlite3.Row | None:
         row = db.execute("SELECT id, content FROM memory_files WHERE scope=? AND path=?", (scope, path)).fetchone()
         if (row is None) != (current is None) or (row is not None and row["content"] != current.casefold()):
-            raise ValueError(f"local memory Markdown/index mismatch at {scope}/{path}; rebuild offline")
+            raise ValueError(f"local memory Markdown/index mismatch at {scope}/{path}; rebuild the memory index")
         return row
 
     @staticmethod
@@ -545,7 +558,7 @@ class LocalMemory:
         if row is None:
             if db.execute("SELECT 1 FROM memory_files LIMIT 1").fetchone() is not None:
                 raise VectorIndexNeedsRebuild("configured embedding has existing Markdown without vectors; "
-                                 "停机后在实例目录执行 python -m len_bot.next.maintenance.memory_reindex")
+                                 "请在记忆页重建索引")
             return None
         settings = self.embedding.settings
         if (row["base_url"] != settings.base_url
@@ -554,9 +567,9 @@ class LocalMemory:
             raise VectorIndexNeedsRebuild("记忆向量索引与当前地址/模型/维数不一致；"
                              f"索引：{row['base_url']} / {row['model']} / {row['dimensions']}；"
                              f"配置：{settings.base_url} / {settings.model} / {settings.dimensions}。"
-                             "停机后在实例目录执行 python -m len_bot.next.maintenance.memory_reindex")
+                             "请在记忆页重建索引")
         if not self._vector_table_exists(db):
-            raise VectorIndexNeedsRebuild("记忆向量索引表缺失；停机后在实例目录执行 python -m len_bot.next.maintenance.memory_reindex")
+            raise VectorIndexNeedsRebuild("记忆向量索引表缺失；请在记忆页重建索引")
         return row["dimensions"]
 
     def _create_vector_table(self, db: sqlite3.Connection, dimensions: int) -> None:
@@ -603,7 +616,7 @@ class LocalMemory:
                     'retrieval': 'hybrid' if dimensions is not None and not needs else 'text'}
 
     async def reindex_embeddings(self) -> int:
-        """Explicit offline rebuild of text and vector derivations; preserve history."""
+        """Rebuild derivations with writers stopped or held by MemoryService; preserve history."""
         if self.embedding is None:
             raise ValueError("reindex_embeddings requires configured embedding")
         files, summaries = self._source_files()
@@ -624,24 +637,25 @@ class LocalMemory:
                                      f'expected={dimensions}, scope={scope!r}, actual={batch.dimensions}; index not replaced')
                 for index, (path, _) in enumerate(selected):
                     vectors[scope, path] = batch.vectors[index]
-        with self._db() as db:
-            db.execute("BEGIN EXCLUSIVE")
-            for summary in summaries:
-                summary.unlink()
-            db.execute("DELETE FROM memory_summaries")
-            if self._vector_table_exists(db):
-                db.execute("DROP TABLE memory_vec")
-            db.execute("DELETE FROM memory_vector_binding")
-            old_rows = db.execute("SELECT id,content FROM memory_files").fetchall()
-            for row in old_rows:
-                self._remove_index(db, row)
-            if dimensions is not None:
-                self._create_vector_table(db, dimensions)
-            for (scope, path), content in ordered:
-                self._put_index(db, scope, path, content, None)
-                rowid = db.execute("SELECT id FROM memory_files WHERE scope=? AND path=?",
-                                   (scope, path)).fetchone()[0]
-                self._put_vector(db, rowid, scope, vectors[scope, path], remove_existing=False)
+        async with self._reindex_locks(set(partitions)):
+            with self._db() as db:
+                db.execute("BEGIN EXCLUSIVE")
+                for summary in summaries:
+                    summary.unlink()
+                db.execute("DELETE FROM memory_summaries")
+                if self._vector_table_exists(db):
+                    db.execute("DROP TABLE memory_vec")
+                db.execute("DELETE FROM memory_vector_binding")
+                old_rows = db.execute("SELECT id,content FROM memory_files").fetchall()
+                for row in old_rows:
+                    self._remove_index(db, row)
+                if dimensions is not None:
+                    self._create_vector_table(db, dimensions)
+                for (scope, path), content in ordered:
+                    self._put_index(db, scope, path, content, None)
+                    rowid = db.execute("SELECT id FROM memory_files WHERE scope=? AND path=?",
+                                       (scope, path)).fetchone()[0]
+                    self._put_vector(db, rowid, scope, vectors[scope, path], remove_existing=False)
         return len(ordered)
 
     def _browse_sync(self, scope: str, path: str, offset: int, limit: int) -> MemoryPage:
