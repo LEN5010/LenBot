@@ -12,6 +12,7 @@ from len_bot.next.runtime.network import NetworkRuntime
 from len_bot.next.persona.profile import load_persona
 from len_bot.next.panel.setup import FirstSetup, initialize
 from len_bot.next.storage.store import Store
+from len_bot.next.memory.service import open_memory
 
 
 def test_scene_bindings_validate_before_save_and_keep_running_snapshot(tmp_path):
@@ -28,8 +29,8 @@ def test_scene_bindings_validate_before_save_and_keep_running_snapshot(tmp_path)
     config = load_host_config(tmp_path)
     async def run():
         with Store(config.database) as store:
-            async with ChatModel(config.model_settings('mind')) as mind:
-                runtime = NetworkRuntime(config, [(config.scene_config('onebot:group:80001'), load_persona(config.scenes['onebot:group:80001'].persona))], store, mind)
+            async with ChatModel(config.model_settings('mind')) as mind, open_memory(config, store) as memory:
+                runtime = NetworkRuntime(config, [(config.scene_config('onebot:group:80001'), load_persona(config.scenes['onebot:group:80001'].persona))], store, mind, memory=memory)
                 app = create_app(config, runtime, root=tmp_path)
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as client:
                     endpoint = '/api/host/settings/scenes'

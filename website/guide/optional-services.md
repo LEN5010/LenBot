@@ -21,6 +21,8 @@
 
 记忆默认使用全文检索。如果需要按语义检索，需要准备一个 OpenAI 兼容的 embeddings 服务。使用 Ollama 时，可以执行下面的命令。
 
+首次配置的「向量模型」步骤可以跳过，也可以使用聊天服务商的向量接口或填写独立的向量服务商。跳过时启用本地记忆并使用全文检索。
+
 ```sh
 docker compose -f deploy/current/services.compose.yaml up -d embeddings
 docker exec lenbot-embeddings ollama pull bge-m3:567m

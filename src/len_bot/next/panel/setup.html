@@ -149,6 +149,21 @@ a{color:var(--primary);text-decoration:none;font-size:13px}a:hover{text-decorati
   <label for="probe-kind">测试内容</label><select id="probe-kind"><option value="text">只测文本，调用 1 次</option><option value="tools">测工具调用，调用 2 次</option></select>
   <button id="test-model" type="button">测试模型</button><pre id="model-result" role="status" hidden></pre>
 </fieldset>
+<fieldset id="vector-step"><legend>向量模型</legend>
+  <p>向量模型用于按语义检索记忆。跳过后使用全文检索。</p>
+  <label for="vector-mode">向量服务</label><select id="vector-mode"><option value="skip">跳过</option><option value="primary">使用聊天服务商</option><option value="separate">使用其他服务商</option></select>
+  <div id="vector-provider" hidden>
+    <label for="vector-base">接口地址</label><input id="vector-base" type="url" required disabled>
+    <label for="vector-key">API Key</label><input id="vector-key" type="password" autocomplete="off" required disabled>
+    <label for="vector-proxy">网络代理（选填）</label><input id="vector-proxy" type="url" disabled>
+  </div>
+  <div id="vector-model" hidden>
+    <button id="list-vectors" type="button">读取模型列表</button><pre id="vector-list-result" role="status" hidden></pre>
+    <label for="vector-name">向量模型</label><input id="vector-name" required disabled list="vector-options"><datalist id="vector-options"></datalist>
+    <label for="vector-dimensions">向量维数（选填）</label><input id="vector-dimensions" type="number" min="1" disabled placeholder="模型默认值">
+    <button id="test-vector" type="button">测试向量接口</button><pre id="vector-result" role="status" hidden></pre>
+  </div>
+</fieldset>
 <fieldset><legend>角色和第一个群</legend>
   <label for="role-template">用哪个角色</label><select id="role-template"><option value="companion">小然（默认角色）</option><option value="custom">自己写一个</option></select>
   <p class="hint">小然是群里爱吃、爱画画的老朋友，设定、说话方式、资料和表情都配好了，之后在面板里随时能改。</p>
@@ -165,7 +180,7 @@ a{color:var(--primary);text-decoration:none;font-size:13px}a:hover{text-decorati
   <p class="hint lead">勾选的插件会在保存时下载安装，装好后到面板的插件页启用。用不上就直接跳过，之后随时能装。</p>
   <div id="official-plugins"></div><pre id="plugins-result" role="status" hidden></pre>
 </fieldset>
-<div class="actions"><button id="previous" type="button">上一步</button><span class="spacer"></span><button id="skip-plugins" type="button" disabled hidden>跳过插件，直接保存</button><button id="next" class="primary" type="button">下一步</button><button id="save" class="primary" type="submit" disabled hidden>保存并进入面板</button></div>
+<div class="actions"><button id="previous" type="button">上一步</button><span class="spacer"></span><button id="skip-vector" type="button" hidden>跳过向量模型</button><button id="skip-plugins" type="button" disabled hidden>跳过插件，直接保存</button><button id="next" class="primary" type="button">下一步</button><button id="save" class="primary" type="submit" disabled hidden>保存并进入面板</button></div>
 </form>
 <pre id="error" role="alert" hidden></pre>
 <section id="done" hidden>
@@ -185,7 +200,7 @@ const token=supplied||sessionStorage.getItem('lenbot-setup-token');
 if(supplied)sessionStorage.setItem('lenbot-setup-token',supplied);
 history.replaceState(null,'',location.pathname);
 const fields=[...$('setup').querySelectorAll('fieldset')];let step=0,protocols=[];
-const secretFields=new Set(['key','access','password','password-again']);
+const secretFields=new Set(['key','vector-key','access','password','password-again']);
 const stored=JSON.parse(sessionStorage.getItem('lenbot-setup-draft')||'{}');
 for(const [id,text] of Object.entries(stored))if($(id)&&!secretFields.has(id)&&id!=='bot')$(id).value=text;
 let platformReady=false,modelReady=false;
@@ -196,6 +211,8 @@ function replay(element,name){element.classList.remove(name);void element.getBou
 function remember(){const draft={};for(const input of $('setup').querySelectorAll('input,select,textarea'))if(input.id&&!secretFields.has(input.id)&&input.id!=='bot'&&input.type!=='checkbox')draft[input.id]=input.value;draft.install_plugins=[...$('official-plugins').querySelectorAll('input:checked')].map(input=>input.value);sessionStorage.setItem('lenbot-setup-draft',JSON.stringify(draft))}
 function chooseRole(){const custom=value('role-template')==='custom';$('custom-role').hidden=!custom;for(const input of $('custom-role').querySelectorAll('input,textarea'))input.disabled=!custom}
 $('role-template').onchange=chooseRole;chooseRole();
+function chooseVector(){const mode=value('vector-mode');$('vector-provider').hidden=mode!=='separate';$('vector-model').hidden=mode==='skip';for(const input of $('vector-provider').querySelectorAll('input'))input.disabled=mode!=='separate';for(const input of $('vector-model').querySelectorAll('input'))input.disabled=mode==='skip';remember()}
+$('vector-mode').onchange=chooseVector;chooseVector();
 $('setup').addEventListener('input',remember);
 
 $('steps').replaceChildren(...fields.map((field,i)=>{const item=document.createElement('li'),dot=document.createElement('span'),num=document.createElement('span'),label=document.createElement('span');dot.className='dot';num.className='num';num.textContent=i+1;label.className='label';label.textContent=field.querySelector('legend').textContent;dot.append(num);dot.insertAdjacentHTML('beforeend','<svg class="tick" viewBox="0 0 14 14"><path d="M3 7.5l2.5 2.5L11 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>');item.append(dot,label);return item}));
@@ -206,6 +223,7 @@ function showStep(index){
   markSteps(step);if(forward)replay($('mark'),'hop');
   $('bar-fill').style.width=`${(step/(fields.length-1))*100}%`;$('title').hidden=step!==0;$('intro').hidden=step!==0;
   $('previous').hidden=step===0;$('next').hidden=step===fields.length-1;$('save').hidden=step!==fields.length-1;$('skip-plugins').hidden=step!==fields.length-1;
+  $('skip-vector').hidden=fields[step].id!=='vector-step';
   $('progress').textContent=`第 ${step+1} 步，共 ${fields.length} 步`}
 function invalid(input){input.reportValidity();replay(input,'shake');input.addEventListener('animationend',()=>input.classList.remove('shake'),{once:true})}
 function firstInvalid(index){
@@ -218,11 +236,19 @@ function gate(index){
   return null}
 $('previous').onclick=()=>showStep(step-1);
 $('next').onclick=()=>{const input=firstInvalid(step);if(input)return report(input);const blocked=gate(step);if(blocked)return invalid(blocked);showStep(step+1)};
+$('skip-vector').onclick=()=>{$('vector-mode').value='skip';chooseVector();showStep(step+1)};
 showStep(0);
 
 function ready(){$('save').disabled=!token||!platformReady||!modelReady;$('skip-plugins').disabled=$('save').disabled}
 function connection(){const onebot=value('transport')==='forward_ws'?{mode:'forward_ws',ws_url:value('ws')}:{mode:'reverse_ws',listen_host:value('listen'),listen_port:Number(value('wsport'))};onebot.access_token=value('access');onebot.request_timeout_seconds=Number(value('onebottimeout'));return onebot}
 function models(){return {provider:{api:value('api'),base_url:value('base'),api_key:value('key'),proxy:value('proxy')||null},mind:{provider:'primary',model:value('mind'),context_window_tokens:Number(value('mindwindow')),max_output_tokens:Number(value('output')),temperature:value('temperature')===''?null:Number(value('temperature')),reasoning_effort:value('effort')||null,thinking_budget_tokens:value('thinkingbudget')===''?null:Number(value('thinkingbudget')),output_token_field:value('api')==='openai-chat'?value('outputfield'):'max_completion_tokens'}}}
+function vectorProvider(){return value('vector-mode')==='primary'?models().provider:{api:'openai-embeddings',base_url:value('vector-base'),api_key:value('vector-key'),proxy:value('vector-proxy')||null}}
+function vectorBinding(){return {provider:value('vector-mode')==='primary'?'primary':'vectors',model:value('vector-name'),dimensions:value('vector-dimensions')===''?null:Number(value('vector-dimensions'))}}
+function vectorSetup(){if(value('vector-mode')==='skip')return null;const binding=vectorBinding();return {provider:value('vector-mode')==='primary'?null:vectorProvider(),model:binding.model,dimensions:binding.dimensions}}
+for(const id of ['vector-mode','vector-base','vector-key','vector-proxy','api','base','key','proxy'])$(id).addEventListener('input',()=>{$('vector-result').hidden=true;$('vector-list-result').hidden=true;$('vector-options').replaceChildren()});
+for(const id of ['vector-name','vector-dimensions'])$(id).addEventListener('input',()=>{$('vector-result').hidden=true});
+$('list-vectors').onclick=async()=>{busy('list-vectors',true);const provider=vectorProvider(),snapshot=JSON.stringify(provider);note('vector-list-result','正在读取…');try{const result=await post('/api/setup/models',{provider});if(snapshot!==JSON.stringify(vectorProvider()))return;$('vector-options').replaceChildren(...result.models.map(item=>{const option=document.createElement('option');option.value=item.id;return option}));note('vector-list-result',`读取到 ${result.models.length} 个模型。`,'ok')}catch(error){if(snapshot===JSON.stringify(vectorProvider()))note('vector-list-result',error.message,'error')}finally{busy('list-vectors',false)}};
+$('test-vector').onclick=async()=>{busy('test-vector',true);const body={provider:vectorProvider(),binding:vectorBinding()},snapshot=JSON.stringify(body);note('vector-result','正在测试…');try{const result=await post('/api/setup/embedding',body);if(snapshot!==JSON.stringify({provider:vectorProvider(),binding:vectorBinding()}))return;note('vector-result',`${result.model}：${result.dimensions} 维`,'ok')}catch(error){if(snapshot===JSON.stringify({provider:vectorProvider(),binding:vectorBinding()}))note('vector-result',error.message,'error')}finally{busy('test-vector',false)}};
 async function post(path,body){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Setup-Token':token},body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw new Error(typeof result.detail==='string'?result.detail:JSON.stringify(result.detail));return result}
 if(!token){$('error').hidden=false;$('error').textContent='链接不完整，请打开启动时终端里显示的完整链接。'}
 $('transport').onchange=()=>{const forward=value('transport')==='forward_ws';$('forward').hidden=!forward;$('reverse').hidden=forward;$('ws').required=forward;platformReady=false;ready()};
@@ -253,6 +279,7 @@ $('setup').onsubmit=async e=>{e.preventDefault();
   for(let i=0;i<fields.length;i++){const input=firstInvalid(i);if(input){showStep(i);return report(input)}if(gate(i)){showStep(i);return invalid(gate(i))}}
   $('save').disabled=true;$('skip-plugins').disabled=true;$('save').classList.add('busy');$('error').hidden=true;
   const body={bot_id:value('bot'),owners:['onebot:'+value('owner')],timezone:value('zone'),delivery:value('delivery'),onebot:connection(),...models(),voice_mode:'direct',compaction:{input_tokens:Number(value('inputbudget'))},scene:'onebot:'+value('kind')+':'+value('scene'),...(value('role-template')==='companion'?{persona_id:'companion'}:{persona_id:value('roleid'),persona_name:value('name'),brief:value('brief'),voice_text:value('voicetext'),boundaries:value('bounds')}),panel_port:Number(value('port')),username:value('username'),password:value('password'),password_confirmation:value('password-again'),install_plugins:[...$('official-plugins').querySelectorAll('input:checked')].map(input=>input.value)};
+  body.embedding=vectorSetup();
   let result;
   try{if(body.install_plugins.length)note('plugins-result','正在安装插件和依赖，可能要一两分钟…');result=await post('/api/setup',body)}
   catch(error){$('save').classList.remove('busy');$('error').hidden=false;$('error').textContent='没有保存成功：'+error.message;await loadPlugins();ready();return}
@@ -265,7 +292,7 @@ $('open-panel').onclick=()=>{let panel;try{panel=new URL(value('panel-address'))
 
 function budget(){const window=Number(value('mindwindow')),output=Number(value('output'));if(window>output+1024)$('inputbudget').value=Math.floor((window-output)*0.75)}
 $('mindwindow').addEventListener('input',budget);$('output').addEventListener('input',budget);
-function protocolInfo(){const protocol=protocols.find(p=>p.api===value('api'));$('protocol-note').textContent=protocol?.description||'';$('outputfield').disabled=value('api')!=='openai-chat';remember()}
+function protocolInfo(){const protocol=protocols.find(p=>p.api===value('api'));$('protocol-note').textContent=protocol?.description||'';$('outputfield').disabled=value('api')!=='openai-chat';$('vector-mode').querySelector('[value="primary"]').disabled=value('api')!=='openai-chat';if(value('api')!=='openai-chat'&&value('vector-mode')==='primary'){$('vector-mode').value='separate';chooseVector()}remember()}
 $('api').addEventListener('change',()=>{const protocol=protocols.find(p=>p.api===value('api'));$('base').value=protocol.base_url;protocolInfo();modelReady=false;ready()});
 $('list-models').onclick=async()=>{busy('list-models',true);note('list-result','正在读取…');try{const provider=models().provider,snapshot=JSON.stringify(provider);const result=await post('/api/setup/models',{provider});if(snapshot!==JSON.stringify(models().provider))throw Error('服务商设置改过了，请重新读取');$('model-options').replaceChildren(...result.models.map(item=>{const option=document.createElement('option');option.value=item.id;return option}));note('list-result',`读到 ${result.models.length} 个模型，在下面的输入框里选。`,'ok');protocols.catalog=result.models}catch(error){note('list-result',error.message+'\n检查一下地址和 Key，或者直接手动填写模型名。','error')}finally{busy('list-models',false)}};
 $('mind').addEventListener('change',()=>{const item=protocols.catalog?.find(row=>row.id===value('mind'));if(item?.context_window_tokens){$('mindwindow').value=item.context_window_tokens;budget()}});

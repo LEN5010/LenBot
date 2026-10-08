@@ -10,6 +10,7 @@
 !scripts/
 !scripts/collect_python_licenses.py
 !scripts/collect_frontend_licenses.cjs
+!scripts/frontend_build.cjs
 !src/
 !src/len_bot/
 !src/len_bot/**

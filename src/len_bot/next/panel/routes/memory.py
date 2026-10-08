@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 import logging
@@ -116,6 +117,7 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
             "auto_recall": memory is not None and memory.settings.auto_recall,
             "recall_budget_chars": None if memory is None else memory.settings.recall_budget_chars,
             "summaries": memory is not None and memory.settings.summaries,
+            "index": None if memory is None else await asyncio.to_thread(memory.backend.index_status),
             "scenes": [{"scene": scene, "persona": {"id": chat.persona.id, "name": chat.persona.name}}
                        for scene, chat in runtime.chats.items()],
             'persona_ids': {} if memory is None else {scene: sorted(memory.known_persona_ids(scene))

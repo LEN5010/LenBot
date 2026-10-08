@@ -18,6 +18,8 @@ uv run --no-sync len-bot   # 启动；没有配置时打开首次向导
 
 修改前端后，在 `src/len_bot/web/frontend` 执行 `npm run build`。构建产物 `web/static/dist/` 不提交到 Git。开发前端时也可以使用 `npm run dev`。
 
+从 Git 检出运行 `len-bot` 时，启动器会检查前端内容是否变化；缺少面板或内容变化时先执行 `npm ci` 和 `npm run build`，未变化时直接启动。发布包使用打包时构建好的面板，启动不需要 Node.js。
+
 ### 在副本上测试
 
 不希望改动正在使用的数据时，先停止 Bot，再复制一份测试实例。

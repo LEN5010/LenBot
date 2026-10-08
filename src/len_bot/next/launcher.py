@@ -19,6 +19,8 @@ def wait(child: subprocess.Popen) -> int:
 
 def run(*, container: bool = False) -> int:
     root = Path.cwd()
+    project = Path(__file__).resolve().parents[3]
+    source_panel = not container and (project / '.git').exists() and (project / 'src/len_bot/web/frontend').is_dir()
     child: subprocess.Popen | None = None
     stopping = False
 
@@ -30,28 +32,31 @@ def run(*, container: bool = False) -> int:
 
     signals = (signal.SIGINT, signal.SIGTERM) if sys.platform != 'win32' else (signal.SIGINT, signal.SIGTERM, signal.SIGBREAK)
     previous = {sig: signal.signal(sig, stop) for sig in signals}
+
+    def launch(command: list[str], cwd: Path = root) -> int:
+        nonlocal child
+        child = subprocess.Popen(command, cwd=cwd, start_new_session=sys.platform != 'win32',
+                                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0)
+        if stopping:
+            child.terminate()
+        code = wait(child)
+        child = None
+        return code
+
     try:
         while not stopping:
+            if source_panel:
+                code = launch(['node', str(project / 'scripts/frontend_build.cjs')], project)
+                if stopping or code != 0:
+                    return code if code >= 0 else 128 - code
             # This argument enables lifecycle control only; all settings come from the root file.
-            child = subprocess.Popen(
+            code = launch(
                 [sys.executable, '-c', f'from len_bot.next.host import main; main(restartable=True, container={container!r})'],
-                cwd=root, start_new_session=sys.platform != 'win32',
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0,
             )
-            if stopping:
-                child.terminate()
-            code = wait(child)
-            child = None
             if stopping or code != RESTART_EXIT:
                 return code if code >= 0 else 128 - code
             print('LenBot：旧宿主已退出，应用已选插件候选版本。', flush=True)
-            child = subprocess.Popen([sys.executable, '-m', 'len_bot.next.maintenance.apply_plugins'],
-                                     cwd=root, start_new_session=sys.platform != 'win32',
-                                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0)
-            if stopping:
-                child.terminate()
-            code = wait(child)
-            child = None
+            code = launch([sys.executable, '-m', 'len_bot.next.maintenance.apply_plugins'])
             if stopping or code != 0:
                 return code if code >= 0 else 128 - code
             print('LenBot：按根配置重新启动。', flush=True)

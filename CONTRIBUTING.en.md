@@ -18,6 +18,8 @@ The repository root is your local instance: `lenbot.config.json`, the database, 
 
 After changing the frontend, run `npm run build` in `src/len_bot/web/frontend`. The output in `web/static/dist/` is not committed. `npm run dev` works for frontend work too.
 
+When `len-bot` starts from a Git checkout, the launcher checks whether the frontend content has changed. A missing or outdated panel is rebuilt with `npm ci` and `npm run build`; unchanged content starts directly. Release packages use the panel built during packaging and do not need Node.js at runtime.
+
 ### Testing on a copy
 
 To keep the data in use untouched, stop the bot and make a test instance:

@@ -10,6 +10,7 @@ import httpx
 
 from len_bot.next.config import load_host_config
 from len_bot.next.models.client import ChatModel
+from len_bot.next.memory.service import open_memory
 from len_bot.next.panel.app import create_app
 from len_bot.next.panel.setup import FirstSetup, initialize
 from len_bot.next.persona.profile import load_persona
@@ -44,9 +45,9 @@ def test_candidate_cancel_disable_apply_and_rollback_preserve_matching_config(tm
 
     async def run():
         with Store(config.database) as store:
-            async with ChatModel(config.model_settings('mind')) as mind:
+            async with ChatModel(config.model_settings('mind')) as mind, open_memory(config, store) as memory:
                 scene = config.scene_config('onebot:group:80001')
-                runtime = NetworkRuntime(config, [(scene, load_persona(scene.persona))], store, mind)
+                runtime = NetworkRuntime(config, [(scene, load_persona(scene.persona))], store, mind, memory=memory)
                 app = create_app(config, runtime, root=tmp_path)
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as client:
                     assert (await client.post('/api/auth/login', json={'username': 'fixture', 'password': 'synthetic-password'})).status_code == 200

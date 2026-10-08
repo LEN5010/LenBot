@@ -176,8 +176,10 @@ class MemoryService:
     def actions(self) -> list[str]:
         return ["browse", "read", "search", "write", "delete", "history", "forget"]
 
-    async def search(self, scene: str, query: str, limit: int, *, automatic: bool = False) -> list[dict]:
-        hits = await self.backend.search(scene, query, limit, exclude_pending=automatic, automatic=automatic)
+    async def search(self, scene: str, query: str, limit: int, *, automatic: bool = False,
+                     text_query: str | None = None) -> list[dict]:
+        hits = await self.backend.search(scene, query, limit, exclude_pending=automatic,
+                                         automatic=automatic, text_query=text_query)
         return [{**asdict(hit), "score": None} for hit in hits]
 
     async def write(self, scene: str, path: str, content: str, reason: str, *,
@@ -291,8 +293,10 @@ class MemoryService:
         for profile in profiles:
             append("scene", profile.path, profile.content, per_profile)
         query = "\n".join(queries)[-1200:]
+        text_query = "\n".join(plain_text(message) for message in messages
+                               if plain_text(message).strip() and message.send_status in {"received", "sent", "simulated"})[-1200:]
         if query and budget > 0:
-            for hit in await self.search(scene, query, self.settings.recall_limit, automatic=True):
+            for hit in await self.search(scene, query, self.settings.recall_limit, automatic=True, text_query=text_query):
                 append(hit["scope"], hit["path"], hit["preview"], budget,
                        kind="excerpt",
                        source_chars=hit["total_chars"])
