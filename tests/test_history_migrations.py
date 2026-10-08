@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import regex
 
 import pytest
 
@@ -37,10 +38,17 @@ def _schema(path: Path) -> list[tuple]:
         result = []
         for kind, name, table, sql in rows:
             columns = None
+            constraints = None
             if kind == 'table':
                 columns = sorted(tuple(row[1:]) for row in db.execute(f'PRAGMA table_xinfo("{name}")'))
+                checks = sorted(re.sub(r'\s+', ' ', check).strip() for check in
+                                regex.findall(r'\bCHECK\s*(\((?:[^()]|(?1))*\))', sql or '', flags=regex.I))
+                foreign_keys = sorted(tuple(row[1:]) for row in db.execute(f'PRAGMA foreign_key_list("{name}")'))
+                unique = sorted(tuple(col[2] for col in db.execute(f'PRAGMA index_info("{index[1]}")'))
+                                for index in db.execute(f'PRAGMA index_list("{name}")') if index[2] and index[3] == 'u')
+                constraints = checks, foreign_keys, unique
                 sql = None  # ALTER TABLE leaves different text for the same columns.
-            result.append((kind, name, table, None if sql is None else re.sub(r'\s+', ' ', sql), columns))
+            result.append((kind, name, table, None if sql is None else re.sub(r'\s+', ' ', sql), columns, constraints))
         identity = (db.execute('PRAGMA application_id').fetchone()[0], db.execute('PRAGMA user_version').fetchone()[0])
     return [identity, *result]
 

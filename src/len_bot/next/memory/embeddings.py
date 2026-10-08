@@ -165,13 +165,22 @@ class EmbeddingClient:
                 )
         except TimeoutError as error:
             if deadline.expired():
-                raise TimeoutError(f"embedding request exceeded {self.settings.timeout_seconds} seconds") from error
+                raise TimeoutError(f"向量请求（服务商 {self.settings.provider}，模型 {self.settings.model}，"
+                                   f"地址 {self.settings.base_url}）超过 {self.settings.timeout_seconds} 秒") from error
             raise
+        except httpx.RequestError as error:
+            detail = str(error).replace(self.settings.api_key, '[hidden]')
+            raise ValueError(f'向量请求失败（服务商 {self.settings.provider}，模型 {self.settings.model}，'
+                             f'地址 {self.settings.base_url}）：{type(error).__name__}: {detail}') from error
         raw = response.text
+        safe = raw.replace(self.settings.api_key, '[hidden]')
         if response.status_code != 200:
-            raise ValueError(f"embedding HTTP {response.status_code}: {raw[:2000]}")
+            raise ValueError(f"embedding HTTP {response.status_code}: {safe[:2000]}")
         try:
             body = json.loads(raw, parse_constant=_reject_constant)
         except ValueError as error:
-            raise ValueError(f"embedding response invalid JSON: {error}; response fragment: {raw[:500]!r}") from error
-        return parse_embeddings(body, len(texts), self.settings.dimensions)
+            raise ValueError(f"embedding response invalid JSON: {error}; response fragment: {safe[:500]!r}") from error
+        try:
+            return parse_embeddings(body, len(texts), self.settings.dimensions)
+        except ValueError as error:
+            raise ValueError(str(error).replace(self.settings.api_key, '[hidden]')) from error

@@ -228,6 +228,9 @@ class LabConfig(SharedConfig, SceneSettings):
                     and self.learning.embedding.provider not in self.models.providers):
                 raise ValueError("learning.embedding.provider references unknown provider "
                                  f"{self.learning.embedding.provider!r}")
+            if (self.learning.embedding is not None
+                    and self.models.providers[self.learning.embedding.provider].api not in {'openai-chat', 'openai-embeddings'}):
+                raise ValueError('learning embedding requires an openai-chat or openai-embeddings provider')
         if self.proactive is not None:
             raise ValueError("proactive requires the isolated-multi host, not the single-scene lab or replay")
         if self.plugins:
@@ -335,6 +338,9 @@ class HostConfig(SharedConfig):
                         and settings.learning.embedding.provider not in self.models.providers):
                     raise ValueError(f"scenes.{scene}.learning.embedding.provider references unknown provider "
                                      f"{settings.learning.embedding.provider!r}")
+                if (settings.learning.embedding is not None
+                        and self.models.providers[settings.learning.embedding.provider].api not in {'openai-chat', 'openai-embeddings'}):
+                    raise ValueError(f'scenes.{scene}.learning embedding requires an openai-chat or openai-embeddings provider')
         if self.task_archive is not None:
             unknown = set(self.task_archive.scenes) - self.scenes.keys()
             if unknown:

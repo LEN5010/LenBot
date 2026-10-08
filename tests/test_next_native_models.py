@@ -13,6 +13,7 @@ from len_bot.next.configuration.models import Binding, Provider
 from len_bot.next.models.client import ModelSettings, ModelProtocolError
 from len_bot.next.models.protocols import build_request, parse_reply
 from len_bot.next.models.providers import list_models
+from len_bot.next.memory.embeddings import EmbeddingBinding
 from len_bot.next.panel.model_access import probe_model
 from len_bot.next.work.worker_model import WorkerModelProxy, Limits
 
@@ -102,6 +103,23 @@ async def test_native_tool_probe_preserves_ids_signatures_and_real_usage(api):
         assert second['contents'][2]['parts'][0]['functionResponse']['id'] == 'call_fixture'
         assert received[0][1]['x-goog-api-key'] == 'fixture-key'
     assert 'private analysis' not in result['text']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('key', ['fixture-key', '1'])
+async def test_embedding_probe_uses_embedding_protocol_and_checks_actual_dimensions(key):
+    received = []
+    body = {'object': 'list', 'data': [{'object': 'embedding', 'index': 0, 'embedding': [1.0, 0.0, 0.0, 1.0]}],
+            'usage': {'prompt_tokens': 7, 'total_tokens': 7}}
+    server = await peer_server([(200, 'application/json', json.dumps(body).encode())], received)
+    async with server:
+        endpoint = f'http://127.0.0.1:{server.sockets[0].getsockname()[1]}/v1'
+        result = await probe_model(Provider(api='openai-embeddings', base_url=endpoint, api_key=key),
+                                   EmbeddingBinding(provider='fixture', model='fixture-vector', dimensions=4), 'embedding')
+    assert result['calls'] == 1 and result['dimensions'] == 4 and result['model'] == 'fixture-vector'
+    assert received[0][0] == 'POST /v1/embeddings HTTP/1.1'
+    assert received[0][2]['dimensions'] == 4 and 'messages' not in received[0][2]
+    assert result['usage'] == [body['usage']]
 
 
 @pytest.mark.parametrize('api', ['openai-responses', 'anthropic', 'gemini'])

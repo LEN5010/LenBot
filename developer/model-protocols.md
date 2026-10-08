@@ -11,7 +11,7 @@
 | `anthropic` | `https://api.anthropic.com/v1` | 同上 | 保留 Messages 内容块、thinking 和 signature |
 | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | 同上 | Gemini API GenerateContent，保留完整 model parts 与 thoughtSignature |
 | `openai-audio` | 兼容服务的 API 根地址 | asr | audio/transcriptions |
-| `openai-embeddings` | 兼容服务的 API 根地址 | 本地记忆的 embedding | embeddings |
+| `openai-embeddings` | 兼容服务的 API 根地址 | 本地记忆、场景学习的 embedding | embeddings |
 
 协议能够表达工具和图片，并不代表所选的模型具备相应的能力。
 
@@ -32,10 +32,15 @@ Gemini 的模型名填写短名称，带 `models/` 前缀的名称也能解析�
 
 连接测试使用尚未保存的草稿。旧密钥留空时由后端读取，不会回传到浏览器。
 
+已有服务商可以改名。保存请求通过 `previous_alias` 指明原名称，一次保存更新用途、本地记忆和场景学习的引用；这个字段不写入根配置。只改名或补上地址末尾的斜杠可以保留旧密钥，修改协议、地址或代理需要重新填写密钥。模型列表显示名称和完整 ID，选择时写入 ID。
+
 - 文本测试调用一次模型。
 - 工具测试调用两次，确认工具请求和结果能够续接。
+- 向量测试调用一次 embeddings 接口，验证返回的向量与维数，不写入业务索引。
 
 测试不发送 QQ 消息，不验证图片和长上下文，也不验证全部业务效果。测试可能产生费用，服务商报告的用量会显示在结果中，但测试不计入聊天预算。
+
+在「模型 → 向量模型」中分别配置 `memory.local.embedding` 和 `scenes.*.learning.embedding`。两者只能绑定支持 embeddings 的协议，维数留空时使用服务商返回的维数。更换地址、模型或维数后，已有索引需要停机重建；重启本身不重建。`pending-restart` 接口返回已有索引的维护项目。兼容性依据地址、模型和维数判断，服务商别名不影响已有向量。
 
 ### 生成参数
 
@@ -52,6 +57,8 @@ Gemini 的模型名填写短名称，带 `models/` 前缀的名称也能解析�
 ## 会话与工作代理
 
 场景以统一的格式保存可读文本和工具调用，同时保留原生响应和绑定来源。
+
+聊天模型、服务商地址与协议可以在面板中保存，重启后生效。切换到原生协议时，编辑器把兼容聊天专属的续接方式与输出字段恢复为原生默认值。
 
 - 协议、地址和模型都相同时，续接原样使用签名数据。
 - 更换绑定后，已完成的异源工具组会转为历史资料，旧的签名不会发给新模型。

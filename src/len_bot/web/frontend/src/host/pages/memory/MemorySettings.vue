@@ -3,17 +3,19 @@ import { computed, ref, watch } from 'vue'
 import { api } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
 import { notify, readPendingRestart } from '../../store.js'
-import { clone, numberOrBlank, numberOrNull, same } from '../../forms.js'
+import { clone, numberOrBlank, same } from '../../forms.js'
 import SettingSection from '../../ui/SettingSection.vue'
 import ResourceState from '../../ui/ResourceState.vue'
 import AdvancedFields from '../../ui/AdvancedFields.vue'
+import EmbeddingBindingEditor from '../models/EmbeddingBindingEditor.vue'
+import { providerRows } from '../../providerModels.js'
 
 const emit = defineEmits(['dirty'])
 const settings = useResource(() => api('/api/host/settings'))
 const save = useAction()
 const draft = ref(null)
 const saved = computed(() => settings.data.value?.saved)
-const providers = computed(() => Object.keys(saved.value?.models.providers || {}))
+const providers = computed(() => saved.value ? providerRows(saved.value.models).filter(row => ['openai-chat', 'openai-embeddings'].includes(row.api)) : [])
 const noMemoryModel = computed(() => saved.value && saved.value.models.roles.memory === null)
 
 function adopt() { draft.value = clone(saved.value.memory) }
@@ -33,10 +35,6 @@ const enabled = computed({
 const ingestOn = computed({
   get: () => draft.value?.ingest !== null,
   set: on => { draft.value.ingest = on ? { idle_seconds: 1800, min_messages: 50, max_age_seconds: 86400, batch_size: 100, max_steps: 8, timeout_seconds: 180 } : null },
-})
-const vectorOn = computed({
-  get: () => draft.value?.local?.embedding != null,
-  set: on => { draft.value.local.embedding = on ? { provider: providers.value[0] || '', model: '', dimensions: null } : null },
 })
 const ingestFields = [['idle_seconds', '群里安静多久后整理（秒）'], ['min_messages', '至少攒多少条消息'], ['max_age_seconds', '最多等多久就整理（秒）'],
   ['batch_size', '每次最多整理几条消息'], ['max_steps', '每次最多调用模型几步'], ['timeout_seconds', '每次整理超时（秒）']]
@@ -78,13 +76,7 @@ async function submit() {
           <v-text-field v-for="[key, label] in ingestFields" :key="key" :model-value="draft.ingest[key]" type="number" :label="label"
             @update:model-value="value => draft.ingest[key] = numberOrBlank(value)" />
         </template>
-        <v-switch v-model="vectorOn" label="用向量模型搜索记忆" />
-        <template v-if="draft.local.embedding">
-          <v-select v-model="draft.local.embedding.provider" :items="providers" label="向量模型服务商" />
-          <v-text-field v-model="draft.local.embedding.model" label="向量模型名" />
-          <v-text-field :model-value="draft.local.embedding.dimensions ?? ''" type="number" label="向量维数" placeholder="模型默认值"
-            @update:model-value="value => draft.local.embedding.dimensions = numberOrNull(value)" />
-        </template>
+        <EmbeddingBindingEditor v-model="draft.local.embedding" :providers="providers" />
       </AdvancedFields>
     </template>
   </SettingSection>

@@ -4,11 +4,13 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from pydantic import model_validator
 
 from ..configuration.models import Binding, Provider
 from ..configuration.types import STRICT
 from ..models.client import ChatModel, ModelSettings
 from ..models.providers import ProviderAPI
+from ..memory.embeddings import EmbeddingBinding, EmbeddingClient, EmbeddingSettings
 
 
 class ProviderDraft(BaseModel):
@@ -36,11 +38,27 @@ class ProviderCandidate(BaseModel):
 
 
 class ModelCandidate(ProviderCandidate):
-    binding: Binding
-    kind: Literal['text', 'tools'] = 'text'
+    binding: Binding | EmbeddingBinding
+    kind: Literal['text', 'tools', 'embedding'] = 'text'
+
+    @model_validator(mode='after')
+    def binding_kind(self):
+        if (self.kind == 'embedding') != isinstance(self.binding, EmbeddingBinding):
+            raise ValueError('向量测试需要向量绑定，文本和工具测试需要聊天绑定')
+        return self
 
 
-async def probe_model(provider: Provider, binding: Binding, kind: str = 'text') -> dict:
+async def probe_model(provider: Provider, binding: Binding | EmbeddingBinding, kind: str = 'text') -> dict:
+    if kind == 'embedding':
+        if provider.api not in {'openai-chat', 'openai-embeddings'}:
+            raise ValueError('向量测试需要兼容聊天或向量协议')
+        settings = EmbeddingSettings(**binding.model_dump(), base_url=provider.base_url,
+                                     api_key=provider.api_key, proxy=provider.proxy)
+        async with EmbeddingClient(settings) as client:
+            result = await client.embed(['向量连接测试'])
+        return {'model': binding.model, 'kind': kind, 'calls': 1,
+                'text': f'向量接口连接成功，返回 {result.dimensions} 维向量。', 'dimensions': result.dimensions,
+                'usage': [result.usage], 'scope': '验证一次 embeddings 请求；不修改记忆和学习索引'}
     settings = ModelSettings.from_binding(provider, binding)
     messages = [{'role': 'user', 'content': '请回复连接成功。' if kind == 'text' else '请调用 connection_check 工具完成连接测试。不要自行假设工具结果。'}]
     tools = [] if kind == 'text' else [{'type': 'function', 'function': {

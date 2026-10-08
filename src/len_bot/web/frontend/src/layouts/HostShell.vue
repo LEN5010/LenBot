@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import { mdiViewDashboardOutline, mdiChatProcessingOutline, mdiForumOutline, mdiAccountOutline, mdiBookOpenPageVariantOutline,
@@ -18,10 +18,14 @@ import StatusBadge from '../host/ui/StatusBadge.vue'
 import ConfirmHost from '../host/ui/ConfirmHost.vue'
 import RestartDialog from '../host/components/RestartDialog.vue'
 import { restartFlow, openRestart } from '../host/restart.js'
+import { useHostEvents } from '../host/events.js'
+import LiveStatus from '../host/ui/LiveStatus.vue'
 import markUrl from '../assets/lenbot-mark.svg'
 
 const route = useRoute(), router = useRouter(), { mobile } = useDisplay(), auth = useAuth()
 const drawer = ref(!mobile.value), leaving = ref(false), logoutError = ref(null)
+const events = useHostEvents(() => Promise.all([readHostState(), readOverview()]))
+provide('host-events', events)
 const icons = { home: mdiViewDashboardOutline, trial: mdiChatProcessingOutline, scenes: mdiForumOutline, persona: mdiAccountOutline,
   memory: mdiBookOpenPageVariantOutline, tasks: mdiBriefcaseOutline, resources: mdiFolderOutline, capabilities: mdiToolboxOutline, models: mdiChip,
   logs: mdiTimelineTextOutline, settings: mdiCogOutline, plugins: mdiPuzzleOutline }
@@ -95,6 +99,7 @@ async function exit() {
       <RouterLink v-if="newer" :to="{ name: 'host-system', query: { tab: 'updates' } }" class="shell-pill shell-update">
         <span class="shell-update-dot" />新版本 {{ newer }}</RouterLink>
       <span v-if="host.state?.delivery === 'simulated'" class="shell-pill muted">模拟发送</span>
+      <LiveStatus v-if="events.status.value !== 'connected'" :status="events.status.value" @reconnect="events.reconnect" />
       <span class="shell-pill"><StatusBadge dot :pulse="status.tone === 'success'" :kind="status.kind" :value="status.value" :text="status.text" :tone="status.tone" /></span>
       <v-btn :to="{ name: 'host-overview' }" :active="false" variant="text" icon size="small" :aria-label="attention ? `${attention} 件事需要处理` : '没有需要处理的事'">
         <v-badge v-if="attention" :content="attention" color="error" floating><v-icon :icon="mdiBellOutline" /></v-badge>

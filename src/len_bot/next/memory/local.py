@@ -529,16 +529,18 @@ class LocalMemory:
         if row is None:
             if db.execute("SELECT 1 FROM memory_files LIMIT 1").fetchone() is not None:
                 raise ValueError("configured embedding has existing Markdown without vectors; "
-                                 "run reindex_embeddings() offline")
+                                 "停机后在实例目录执行 python -m len_bot.next.maintenance.memory_reindex")
             return None
         settings = self.embedding.settings
-        if (row["provider"] != settings.provider or row["base_url"] != settings.base_url
+        if (row["base_url"] != settings.base_url
                 or row["model"] != settings.model
                 or (settings.dimensions is not None and row["dimensions"] != settings.dimensions)):
-            raise ValueError("memory vector index uses a different provider URL/model/dimension; "
-                             "run reindex_embeddings() offline")
+            raise ValueError("记忆向量索引与当前地址/模型/维数不一致；"
+                             f"索引：{row['base_url']} / {row['model']} / {row['dimensions']}；"
+                             f"配置：{settings.base_url} / {settings.model} / {settings.dimensions}。"
+                             "停机后在实例目录执行 python -m len_bot.next.maintenance.memory_reindex")
         if not self._vector_table_exists(db):
-            raise ValueError("memory vector index table is missing; run reindex_embeddings() offline")
+            raise ValueError("记忆向量索引表缺失；停机后在实例目录执行 python -m len_bot.next.maintenance.memory_reindex")
         return row["dimensions"]
 
     def _create_vector_table(self, db: sqlite3.Connection, dimensions: int) -> None:

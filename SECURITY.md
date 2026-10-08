@@ -24,7 +24,7 @@
 - 完整的配置文件和数据库
 - 聊天记录和媒体文件
 
-面板导出的诊断材料不包含消息正文，但包含业务编号和时间，发送前请检查。确认问题后请停止操作，不要为了收集证据继续访问他人的数据。
+面板导出的诊断材料会保留模型请求、回复和任务事件中的文字，可能包含昵称、私人事实和聊天内容。已知配置凭据、媒体负载和部分数字会被遮盖，这不等于匿名化；发送前请逐项检查。确认问题后请停止操作，不要为了收集证据继续访问他人的数据。
 
 ## 范围
 
@@ -57,5 +57,7 @@ A report should include:
 - steps to reproduce.
 
 Do not send keys, tokens, cookies, full configuration files, databases, chat logs or media. Once an issue is confirmed, stop. Do not access other people's data to gather more evidence.
+
+Dashboard diagnostic exports retain text from model requests, replies and task events, which may contain names, private facts and chat content. Known credentials, media payloads and some numbers are masked; the export is not anonymous. Review its contents before sharing.
 
 In scope: the LenBot host, the panel, built-in plugins, deployment scripts and image recipes. Problems in third-party plugins, OneBot implementations, model services or other separate services belong with their own maintainers. Plugins run in the host process with the host's permissions, so only trusted plugins should be installed. That by itself is not a vulnerability.

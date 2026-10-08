@@ -1,11 +1,10 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, inject, reactive, ref } from 'vue'
 import { mdiMessageTextOutline, mdiSendOutline, mdiChatProcessingOutline, mdiAlarm, mdiCounter, mdiRefresh, mdiLanConnect,
   mdiLanDisconnect, mdiCheckCircleOutline, mdiArrowRight, mdiMagnify } from '@mdi/js'
 import { api, sceneName, sceneNumber, sceneSubtitle } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'
 import { confirm } from '../../../composables/useConfirm.js'
-import { useHostEvents } from '../../events.js'
 import { host, readHostState, readOverview } from '../../store.js'
 import { attentionItems, connectionLabel } from '../../attention.js'
 import { formatAgo } from '../../time.js'
@@ -24,7 +23,7 @@ import DevOnly from '../../ui/DevOnly.vue'
 const day = computed(() => host.overview)
 const state = computed(() => host.state)
 const connect = useAction()
-const events = useHostEvents(() => Promise.all([readHostState(), readOverview()]))
+const events = inject('host-events')
 const online = computed(() => state.value?.connection.connected && state.value.connection.accepting)
 const loading = ref(false)
 
