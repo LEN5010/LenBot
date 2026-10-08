@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from ..media.audio_store import AudioStore
 from ..config import LabConfig
 from .recap import project_history
+from ..models.limits import speech_quota
 from ..models.projection import project_messages, project_old_results
 from ..tools.discovery import DEFERRED_NAMES, discovery_view
 from ..learning.jargon_store import JargonStore
@@ -142,6 +143,15 @@ def turn_state(config: LabConfig, store: Store, *, now: float,
     if muted_until is not None:
         state["content"] += "\n平台通知：当前 Bot 禁言至 " + datetime.fromtimestamp(
             muted_until, ZoneInfo(config.timezone)).isoformat(timespec="seconds")
+    quota = speech_quota(store, config)
+    if quota.limit is not None and quota.remaining * 5 <= quota.limit:
+        state["content"] += f"\n本群最近一小时已发言 {quota.used} 条，上限 {quota.limit} 条"
+        if quota.remaining:
+            state["content"] += f"，还剩 {quota.remaining} 条。"
+        else:
+            back = datetime.fromtimestamp(quota.until(direct=False), ZoneInfo(config.timezone)).strftime("%H:%M")
+            state["content"] += (f"，已用完，{back} 起恢复；被 @、被回复或处理提醒时还能说 {quota.reserve_left} 条。"
+                                 if quota.reserve_left else f"，已用完，{back} 起恢复。")
     schedules = ScheduleStore(store).list_schedules(config.scene, limit=21)
     if schedules:
         state["content"] += "\n<未完成安排>\n" + "\n\n".join(

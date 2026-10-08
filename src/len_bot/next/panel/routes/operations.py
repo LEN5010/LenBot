@@ -3,6 +3,7 @@ import asyncio
 from dataclasses import asdict
 from datetime import datetime, timedelta
 import json
+import logging
 import sqlite3
 import os
 import stat
@@ -13,12 +14,12 @@ from zoneinfo import ZoneInfo
 from fastapi import Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from ...runtime.logs import log_files, read_records
+from ...runtime.logs import log_event, log_files, read_records
 from ...work.storage import temporary_paths
 from ...runtime.operations import diagnostic_zip
 from ...work.store import TaskStore
 from ...models.usage import usage
-from ...models.limits import LimitReached
+from ...models.limits import LimitReached, clear_speech, speech_quota
 from ...models.client import ModelHTTPError, ModelProtocolError
 from ...memory.jobs import processing_records
 
@@ -42,6 +43,8 @@ def stderr_tail(path):
         source.seek(0, os.SEEK_END)
         source.seek(max(0, source.tell() - 65536))
         return source.read(65536).decode('utf-8', 'replace')
+
+logger = logging.getLogger(__name__)
 
 
 def register_host_operations(app, *, runtime, user):
@@ -178,18 +181,32 @@ def register_host_operations(app, *, runtime, user):
             runtime.notify()
             return result
 
+    def limit_state(scene, chat):
+        quota = speech_quota(chat.store, chat.config)
+        speech = {'source': quota.source, 'limit': quota.limit, 'used': quota.used, 'remaining': quota.remaining,
+                  'reserve': quota.reserve, 'reserve_left': quota.reserve_left,
+                  'held_until': quota.until(direct=False), 'blocked_until': quota.until(direct=True)}
+        try:
+            chat.check_limits(model=True, direct=True)
+        except LimitReached as error:
+            return {'scene': scene, 'blocked': True, 'reason': str(error), 'until': error.until, 'speech': speech}
+        return {'scene': scene, 'blocked': False, 'reason': None, 'until': None, 'speech': speech}
+
     @app.get('/api/host/limits')
     async def limits_state(_: str = Depends(user)):
-        items = []
-        for scene, chat in runtime.chats.items():
-            try:
-                chat.check_limits(model=True)
-            except LimitReached as error:
-                items.append({'scene': scene, 'blocked': True, 'reason': str(error), 'until': error.until})
-            else:
-                items.append({'scene': scene, 'blocked': False, 'reason': None, 'until': None})
-        return {'limits': config.limits.model_dump(mode='json'), 'scenes': items,
+        return {'limits': config.limits.model_dump(mode='json'),
+                'scenes': [limit_state(scene, chat) for scene, chat in runtime.chats.items()],
                 'scope': '宿主代理的模型请求，含保留试聊及已移除场景；不含远端服务内部调用'}
+
+    @app.post('/api/host/scenes/{scene}/speech/reset')
+    async def speech_reset(scene: str, operator: str = Depends(user)):
+        scene_exists(scene)
+        chat = runtime.chats[scene]
+        clear_speech(chat.store, scene)
+        log_event(logger, 'speech_limit_reset', scene=scene, operator=operator)
+        runtime.runners[scene].changed.set()
+        runtime.notify()
+        return limit_state(scene, chat)
 
     @app.get('/api/host/usage')
     async def costs(period: Literal['day', 'month'] = 'day', scene: str | None = None,

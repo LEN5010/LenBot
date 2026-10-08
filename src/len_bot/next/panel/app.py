@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response, WebSocket
 from len_bot.web.shell import mount_panel
 from ..config import HostConfig
 from ..configuration.editing import _read_saved
+from ..models.limits import speech_quota
 from ..models.usage import instance_calls
 from .routes.capabilities import register_host_capabilities
 from .routes.persona import register_host_persona
@@ -95,8 +96,14 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path,
     register_host_capabilities(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     releases = register_host_updates(app, root=root, user=user, check_enabled=config.panel.update_check)
     register_host_prompts(app, root=root, user=user)
+    def speech_limits_changed() -> None:
+        for runner in runtime.runners.values():
+            runner.changed.set()
+        notify()
+
     register_host_settings(app, root=root, running=config, user=user, write_lock=write_lock,
-                           personas=lambda: {scene: chat.persona for scene, chat in runtime.chats.items()})
+                           personas=lambda: {scene: chat.persona for scene, chat in runtime.chats.items()},
+                           on_speech_limits=speech_limits_changed)
     register_host_persona(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_persona_stickers(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_persona_avatar(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
@@ -221,6 +228,8 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path,
                 "activity": runtime.store.recent_activity(scenes, 12),
                 "failed_tasks": runtime.store.failed_tasks(scenes, start.timestamp()),
                 "memory_stuck": stuck,
+                "speech_held": {scene: until for scene, chat in runtime.chats.items()
+                                for until in [speech_quota(chat.store, chat.config).until(direct=False)] if until is not None},
                 "memory_index": None if runtime.memory is None else await asyncio.to_thread(runtime.memory.backend.index_status)}
 
     @app.get("/api/host/scenes/{scene}")

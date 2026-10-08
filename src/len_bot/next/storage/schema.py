@@ -34,6 +34,10 @@ CREATE TABLE mind_sessions (
     attention_state TEXT,
     discovered_tools TEXT NOT NULL DEFAULT '[]'
 );
+CREATE TABLE speech (
+    id INTEGER PRIMARY KEY, scene TEXT NOT NULL, time REAL NOT NULL
+);
+CREATE INDEX scene_speech ON speech(scene, time);
 CREATE TABLE turns (
     id TEXT PRIMARY KEY, scene TEXT NOT NULL, started REAL NOT NULL,
     ended REAL, status TEXT NOT NULL, error TEXT,

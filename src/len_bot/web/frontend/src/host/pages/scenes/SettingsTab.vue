@@ -3,7 +3,8 @@ import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, sceneName } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
-import { notify, readHostState, readPendingRestart } from '../../store.js'
+import { host, notify, readHostState, readOverview, readPendingRestart } from '../../store.js'
+import { formatTime } from '../../time.js'
 import { clone, numberOrBlank, numberOrNull, same } from '../../forms.js'
 import { confirm } from '../../../composables/useConfirm.js'
 import Panel from '../../ui/Panel.vue'
@@ -23,6 +24,9 @@ const group = computed(() => props.scene.split(':', 3)[1] === 'group')
 const draft = ref(null), relationships = ref([])
 const save = useAction(), binding = useAction()
 const persona = ref('')
+const speech = ref(null)
+const usage = useResource(() => api('/api/host/limits'))
+const release = useAction()
 
 const timing = [
   ['direct_idle_seconds', '被叫到后等几秒再回'],
@@ -54,17 +58,53 @@ function taskBody(value) {
   const { enabled, max_running, max_daily_tasks, egress_max_task_bytes, egress_max_daily_bytes, egress_bytes_per_second } = value.tasks
   return { enabled, max_running, max_daily_tasks, egress_max_task_bytes, egress_max_daily_bytes, egress_bytes_per_second }
 }
+const globalLimit = computed(() => settings.data.value?.saved.limits.messages_per_hour ?? null)
+const speechSaved = computed(() => {
+  const table = settings.data.value?.saved.limits.scene_messages_per_hour || {}
+  if (!(props.scene in table)) return { mode: 'global', value: null }
+  return table[props.scene] === null ? { mode: 'unlimited', value: null } : { mode: 'custom', value: table[props.scene] }
+})
+const speechModes = computed(() => [
+  { title: `跟随全局（${globalLimit.value === null ? '不限' : `${globalLimit.value} 条`}）`, value: 'global' },
+  { title: '自定义', value: 'custom' }, { title: '不限', value: 'unlimited' }])
+const speechState = computed(() => usage.data.value?.scenes.find(item => item.scene === props.scene)?.speech || null)
+const usageText = computed(() => {
+  const state = speechState.value
+  if (!state) return ''
+  if (state.limit === null) return `最近一小时说了 ${state.used} 条`
+  let text = `最近一小时说了 ${state.used} / ${state.limit} 条`
+  if (state.held_until) {
+    text += `，${formatTime(state.held_until, host.state?.timezone, { date: false })} 前只回被 @ 的消息`
+    text += state.reserve_left ? `，还能回 ${state.reserve_left} 条` : '，余量也已用完'
+  }
+  return text
+})
+function chooseSpeech(mode) {
+  speech.value = { mode, value: mode === 'custom' ? (speech.value.value ?? globalLimit.value ?? 60) : null }
+}
+async function releaseSpeech() {
+  const result = await release.run(() => api(`/api/host/scenes/${encodeURIComponent(props.scene)}/speech/reset`, { method: 'POST' }))
+  if (result) {
+    usage.reload()
+    readOverview()
+    notify('已清零本群最近一小时的发言计数')
+  }
+}
 const savedRows = value => Object.entries(value.scene_persona.relationships).map(([qq, text]) => ({ qq, text }))
 function adopt() {
   draft.value = clone(saved.value)
   relationships.value = savedRows(saved.value)
   persona.value = saved.value.persona
+  speech.value = clone(speechSaved.value)
 }
 watch(saved, value => { if (value && !draft.value) adopt() }, { immediate: true })
 
 const sceneDirty = computed(() => Boolean(draft.value && !same(sceneBody(draft.value, relationships.value), sceneBody(saved.value, savedRows(saved.value)))))
 const tasksDirty = computed(() => Boolean(draft.value && !same(taskBody(draft.value), taskBody(saved.value))))
-const dirty = computed(() => sceneDirty.value || tasksDirty.value)
+const speechDirty = computed(() => Boolean(speech.value && !same(speech.value, speechSaved.value)))
+const dirty = computed(() => sceneDirty.value || tasksDirty.value || speechDirty.value)
+const problem = computed(() => duplicateAccount.value ? '和群友的关系里有重复的账号'
+  : speech.value?.mode === 'custom' && !(Number.isInteger(speech.value.value) && speech.value.value >= 1) ? '每小时发言条数至少 1 条' : '')
 watch(() => dirty.value || Boolean(saved.value && persona.value !== saved.value.persona),
   value => emit('dirty', value), { immediate: true })
 const personaOptions = computed(() => [...new Set(Object.values(settings.data.value?.saved.scenes || {}).map(item => item.persona))])
@@ -80,9 +120,15 @@ async function submit() {
   const path = `/api/host/settings/scenes/${encodeURIComponent(props.scene)}`
   const sceneValue = sceneDirty.value ? sceneBody(draft.value, relationships.value) : null
   const tasksValue = tasksDirty.value ? { tasks: taskBody(draft.value) } : null
+  const speechValue = speechDirty.value ? speech.value : null
   const done = await save.run(async () => {
     if (sceneValue) settings.data.value = await api(path, { method: 'PUT', body: JSON.stringify(sceneValue) })
     if (tasksValue) settings.data.value = await api(`${path}/tasks`, { method: 'PUT', body: JSON.stringify(tasksValue) })
+    if (speechValue) {
+      settings.data.value = await api(`/api/host/settings/limits/scenes/${encodeURIComponent(props.scene)}`, { method: 'PUT', body: JSON.stringify(speechValue) })
+      usage.reload()
+      readOverview()
+    }
     return true
   })
   readPendingRestart()
@@ -139,6 +185,18 @@ async function removeScene() {
               @update:model-value="value => { if (value !== 'notice') draft.attention.quiet_hours.notice_text = null }" />
             <v-text-field v-if="draft.attention.quiet_hours.direct === 'notice'" v-model="draft.attention.quiet_hours.notice_text" label="固定回复的内容" />
           </div>
+          <template v-if="group">
+            <div class="form-grid">
+              <v-select :model-value="speech.mode" label="每小时发言上限" :items="speechModes" @update:model-value="chooseSpeech" />
+              <v-text-field v-if="speech.mode === 'custom'" :model-value="speech.value" type="number" label="每小时最多几条"
+                @update:model-value="value => speech.value = numberOrBlank(value)" />
+            </div>
+            <div v-if="speechState" class="speech-usage">
+              <span :class="{ muted: !speechState.held_until }">{{ usageText }}</span>
+              <v-btn v-if="speechState.held_until" size="small" variant="outlined" :loading="release.busy.value" @click="releaseSpeech">本小时临时放开</v-btn>
+            </div>
+            <ErrorNote v-if="release.error.value" title="没有放开成功" :error="release.error.value" />
+          </template>
           <AdvancedFields label="等待与插话的细节">
             <v-text-field v-for="[key, label] in timing" :key="key" :model-value="draft.attention[key]" type="number" :label="label" @update:model-value="value => draft.attention[key] = numberOrBlank(value)" />
           </AdvancedFields>
@@ -193,7 +251,7 @@ async function removeScene() {
         </Panel>
 
         <SaveBar :on-save="submit" :dirty="dirty" :saving="save.busy.value" :error="save.error.value" label="保存本群设置"
-          :problem="duplicateAccount ? '和群友的关系里有重复的账号' : ''" @discard="adopt" />
+          :problem="problem" @discard="adopt" />
       </form>
 
       <Panel title="角色与移除">
@@ -215,4 +273,5 @@ async function removeScene() {
 .bind-row{display:flex;gap:var(--sp-3);align-items:flex-start;flex-wrap:wrap}
 .bind-row .v-input{flex:1 1 320px}
 .grow{flex:1}
+.speech-usage{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
 </style>

@@ -1,8 +1,10 @@
-"""Admission from actual reported tokens and scene message records, without reservations."""
+"""Admission from actual reported tokens and recorded scene expressions, without reservations."""
 from __future__ import annotations
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .usage import instance_calls, summarize_calls
@@ -14,8 +16,13 @@ class ResourceLimits(BaseModel):
     # Input plus output tokens per local day, counted from what the model services reported.
     daily_tokens: int | None = Field(default=None, gt=0)
     scene_daily_tokens: dict[str, int] = Field(default_factory=dict)
+    # Expressions per group in the last 60 minutes; a split message or one with a sticker counts once.
     messages_per_hour: int | None = Field(default=60, ge=1)
     scene_messages_per_hour: dict[str, int | None] = Field(default_factory=dict)
+    # Extra expressions for direct wakes and reminders after the normal limit is used up.
+    direct_reserve: int = Field(default=5, ge=0)
+    # Sent once per blocked window when a direct wake arrives with nothing left; not counted.
+    speech_notice_text: str | None = Field(default=None, max_length=200)
 
     @field_validator('scene_daily_tokens', 'scene_messages_per_hour')
     @classmethod
@@ -31,6 +38,13 @@ class ResourceLimits(BaseModel):
         if any(value < 1 for value in values.values()):
             raise ValueError('daily token limits must be positive')
         return values
+
+    @field_validator('speech_notice_text')
+    @classmethod
+    def nonblank_notice(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError('speech_notice_text must be nonblank or null')
+        return value
 
     @field_validator('scene_messages_per_hour')
     @classmethod
@@ -51,22 +65,89 @@ def day_window(now: float, timezone: str) -> tuple[float, float]:
     return start.timestamp(), (start + timedelta(days=1)).timestamp()
 
 
-def check_speech(store, config) -> None:
-    scene = config.scene
+SPEECH_WINDOW = 3600
+SPEECH_FIELDS = ('messages_per_hour', 'scene_messages_per_hour', 'direct_reserve', 'speech_notice_text')
+
+
+class SpeechLimitReached(LimitReached):
+    """The scene's hourly expressions are used up; ``direct`` tells whether the reserve is gone too."""
+    def __init__(self, message: str, until: float, *, direct: bool):
+        self.direct = direct
+        super().__init__(message, until)
+
+
+@dataclass(frozen=True)
+class SpeechQuota:
+    source: Literal['global', 'scene', 'unlimited', 'private']
+    limit: int | None
+    reserve: int
+    used: int
+    times: tuple[float, ...]
+
+    @property
+    def remaining(self) -> int | None:
+        return None if self.limit is None else max(0, self.limit - self.used)
+
+    @property
+    def reserve_left(self) -> int:
+        if self.limit is None:
+            return self.reserve
+        return max(0, min(self.reserve, self.limit + self.reserve - self.used))
+
+    def blocked(self, *, direct: bool) -> bool:
+        return self.limit is not None and self.used >= self.limit + (self.reserve if direct else 0)
+
+    def until(self, *, direct: bool) -> float | None:
+        """When enough old expressions leave the window for one more."""
+        if not self.blocked(direct=direct):
+            return None
+        return self.times[self.used - self.limit - (self.reserve if direct else 0)] + SPEECH_WINDOW
+
+
+def speech_quota(store, config, scene: str | None = None) -> SpeechQuota:
+    scene = config.scene if scene is None else scene
+    limits = config.limits
+    if scene.split(':', 2)[1] != 'group':
+        return SpeechQuota('private', None, limits.direct_reserve, 0, ())
+    if scene in limits.scene_messages_per_hour:
+        limit = limits.scene_messages_per_hour[scene]
+        source = 'scene' if limit is not None else 'unlimited'
+    else:
+        limit = limits.messages_per_hour
+        source = 'global' if limit is not None else 'unlimited'
+    times = tuple(row[0] for row in store.db.execute(
+        "SELECT time FROM speech WHERE scene=? AND time>? ORDER BY time", (scene, store.now() - SPEECH_WINDOW)))
+    return SpeechQuota(source, limit, limits.direct_reserve, len(times), times)
+
+
+def check_speech(store, config, *, direct: bool = False) -> None:
+    quota = speech_quota(store, config)
+    if quota.blocked(direct=direct):
+        text = (f'本群最近一小时已发言 {quota.used} 条，被叫到时的余量也已用完，暂停发言。' if direct and quota.reserve
+                else f'本群最近一小时已发言 {quota.used} 条，达到上限 {quota.limit} 条，暂停发言。')
+        raise SpeechLimitReached(text, quota.until(direct=direct), direct=direct)
+
+
+def record_speech(store, scene: str) -> None:
+    """One expression that reached the platform or the simulation, whatever its number of parts."""
     if scene.split(':', 2)[1] != 'group':
         return
-    limit = config.limits.scene_messages_per_hour.get(scene, config.limits.messages_per_hour)
-    if limit is None:
-        return
-    start = (store.now() // 3600) * 3600
-    count = store.db.execute(
-        "SELECT COUNT(*) FROM messages WHERE scene=? AND json_extract(body,'$.is_self')=1 "
-        "AND json_extract(body,'$.time')>=? AND json_extract(body,'$.time')<? "
-        "AND json_extract(body,'$.send_status') IN ('sent','unconfirmed','simulated','received')",
-        (scene, start, start + 3600),
-    ).fetchone()[0]
-    if count >= limit:
-        raise LimitReached(f'本群本小时发言已达 {limit} 条，暂停发言。', start + 3600)
+    now = store.now()
+    with store.db:
+        store.db.execute("DELETE FROM speech WHERE scene=? AND time<=?", (scene, now - SPEECH_WINDOW))
+        store.db.execute("INSERT INTO speech(scene,time) VALUES (?,?)", (scene, now))
+
+
+def clear_speech(store, scene: str) -> None:
+    """Forget the current window so the scene may speak again at once."""
+    with store.db:
+        store.db.execute("DELETE FROM speech WHERE scene=?", (scene,))
+
+
+def apply_speech_limits(running, saved) -> None:
+    """Speech limits are read at every check; take the saved ones without a restart."""
+    for name in SPEECH_FIELDS:
+        setattr(running.limits, name, getattr(saved.limits, name))
 
 
 class ModelBudget:

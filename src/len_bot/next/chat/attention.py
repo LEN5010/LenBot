@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from .session import Chat
 from .recap import estimate_content, estimate_request
 from .scene_control import SceneControlArguments, TemporaryQuiet, require_control
-from ..models.limits import LimitReached
+from ..models.limits import LimitReached, SpeechLimitReached, speech_quota
 from ..configuration.chat import Attention
 from ..platform.delivery import report_parts, split_expression
 from ..platform.messages import ChatMessage, Segment, plain_text
@@ -471,7 +471,8 @@ class SceneRunner:
             self.changed.clear()
             now = self.now()
             try:
-                self.chat.check_limits(model=True)
+                # Only the direct reserve stops every wake; other wakes are held below at the normal limit.
+                self.chat.check_limits(model=True, direct=True)
             except LimitReached as error:
                 if in_turn or self.closing or not wait:
                     return None
@@ -520,6 +521,12 @@ class SceneRunner:
                     if not wait:
                         return None
                     continue
+                held = None if in_turn else self.speech_hold()
+                if held is not None:
+                    if self.closing or not wait:
+                        return None
+                    await self.wait_speech(held, now)
+                    continue
                 pending = self.store.pending_messages(self.config.scene)
                 return (pending, None, []) if pending or resuming else None
             deadline = self.deadline()
@@ -535,6 +542,12 @@ class SceneRunner:
                 deadline = min(deadline, schedule_at)
             delay = deadline - now
             if delay <= 0:
+                held = None if in_turn else self.speech_hold()
+                if held is not None:
+                    if self.closing or not wait:
+                        return None
+                    await self.wait_speech(held, now)
+                    continue
                 if notice_until is None and await self.wait_audio(wait=wait):
                     if not wait:
                         return None
@@ -550,6 +563,21 @@ class SceneRunner:
                 await asyncio.wait_for(self.changed.wait(), timeout=delay)
             except TimeoutError:
                 pass  # The known burst/cooldown deadline has arrived.
+
+    def speech_hold(self) -> float | None:
+        """Until when a wake that is not direct waits for the normal hourly speech limit."""
+        if self.state.pending is not None and self.state.pending.channel == "direct":
+            return None
+        return speech_quota(self.store, self.config).until(direct=False)
+
+    async def wait_speech(self, until: float, now: float) -> None:
+        schedule_at = self.schedule_deadline(now)
+        if schedule_at is not None:
+            until = min(until, schedule_at)
+        try:
+            await asyncio.wait_for(self.changed.wait(), timeout=max(0, until - self.now()))
+        except TimeoutError:
+            pass  # An old expression left the window, or a reminder is due.
 
     def batch(self, pending: list[tuple[int, ChatMessage, float]], reason: str) -> tuple[int, list[str]]:
         available = (self.config.compaction.input_tokens
@@ -642,16 +670,22 @@ class SceneRunner:
             return
         if self.state.limit_notice_until is not None and self.state.limit_notice_until >= error.until:
             return
+        if isinstance(error, SpeechLimitReached):
+            # The operator's own words, or nothing.
+            text = self.config.limits.speech_notice_text
+            if text is None:
+                return
+        else:
+            until = datetime.fromtimestamp(error.until, ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
+            text = f"[宿主额度说明] {error} 本时段截至 {until}，未读消息保留。"
         state = copy.deepcopy(self.state)
         state.limit_notice_until = error.until
-        until = datetime.fromtimestamp(error.until, ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
-        text = f"[宿主额度说明] {error} 本时段截至 {until}，未读消息保留。"
         parts = [self.chat.expression.simulated_message([Segment("text", {"text": text})])]
         entry = self.store.prepare_limit_notice(self.config.scene, asdict(state), text + "（尚未发送）")
         self.state = state
         try:
             async with asyncio.timeout(self.config.turn_timeout_seconds):
-                await self.chat.expression.send_prepared_expression(entry, parts, channels={"limit_notice"}, quota_notice=True)
+                await self.chat.expression.send_prepared_expression(entry, parts, channels={"limit_notice"}, fixed_notice=True)
         except Exception as failure:
             self.store.expression_error(entry, f"{type(failure).__name__}: {failure}")
             self.emit({"type": "limit_notice", "status": "failed", "error": f"{type(failure).__name__}: {failure}"})
@@ -678,7 +712,7 @@ class SceneRunner:
             try:
                 async with asyncio.timeout(self.config.turn_timeout_seconds):
                     content, status = await self.chat.expression.send_prepared_expression(
-                        entry_seq, parts, prefix=prefix, channels={"quiet_notice"})
+                        entry_seq, parts, prefix=prefix, channels={"quiet_notice"}, fixed_notice=True)
             except LimitReached as error:
                 status, error_text = "limited", f"{type(error).__name__}: {error}"
             except TimeoutError as error:
@@ -729,7 +763,9 @@ class SceneRunner:
         result["silence_level"] = state.silence_level
         self.emit(result)
         if result["status"] == "limited" and channel == "direct":
-            await self.limit_notice(LimitReached(result["error"], result["limit_until"]))
+            await self.limit_notice(SpeechLimitReached(result["error"], result["limit_until"], direct=True)
+                                    if result["limit_kind"] == "speech" else
+                                    LimitReached(result["error"], result["limit_until"]))
         if self.chat.toolset.pause_after_turn:
             self.chat.toolset.pause_after_turn = False
             self.set_paused(True)
@@ -755,6 +791,9 @@ class SceneRunner:
         temporary = self.state.temporary_quiet
         if wake_at is not None and temporary is not None and now < temporary.until:
             wake_at = max(wake_at, temporary.until)
+        held = speech_quota(self.store, self.config).until(direct=False)
+        if wake_at is not None and held is not None:
+            wake_at = max(wake_at, held)
         return wake_at, observe_until
 
     async def proactive_turn(self) -> None:

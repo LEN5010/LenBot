@@ -19,7 +19,7 @@ from ..configuration.tasks import TaskSettings, WorkerSettings
 from ..configuration.types import STRICT
 from ..memory.service import LocalMemoryConfig
 from ..models.asr import ASRBinding
-from ..models.limits import ResourceLimits
+from ..models.limits import ResourceLimits, apply_speech_limits
 from ..plugins.manager import PluginManager, plugin_manifest
 from ..plugins.manifest import Manifest, config_model, redact_values
 from ..tools.discovery import model_schema
@@ -154,7 +154,8 @@ class HostManagement:
         current, recorded = self._value(self.running, path, args), self._value(saved, path, args)
         result = {'section': args.section, 'target': list(path), 'description': SECTIONS[args.section],
                   'schema': self._schema(args), 'running': current, 'saved': recorded,
-                  'restart_required': current != recorded, 'applies': 'restart'}
+                  'restart_required': current != recorded,
+                  'applies': 'speech_now_tokens_restart' if args.section == 'limits' else 'restart'}
         if args.section == 'scene':
             result['personas'] = sorted({str(settings.persona) for settings in saved.scenes.values()})
         if args.section in {'memory', 'worker', 'models'}:
@@ -258,6 +259,10 @@ class HostManagement:
 
         async with self.write_lock:
             saved = await asyncio.to_thread(save_config, self.root, self.running, edit)
+            if args.section == 'limits':
+                apply_speech_limits(self.running, saved)
+                for runner in self.runtime.runners.values():
+                    runner.changed.set()
             result = self._describe(saved, path, args)
         result.update(before=before, saved_to='lenbot.config.json')
         if names:

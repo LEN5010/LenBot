@@ -1,6 +1,6 @@
 import { sceneName } from '../api.js'
 import { runtimeLabel, turnFailed } from './labels.js'
-import { formatAgo } from './time.js'
+import { formatAgo, formatTime } from './time.js'
 
 export const connectionLabel = connection => connection.status === 'running' ? 'QQ 未连接' : runtimeLabel(connection.status)
 
@@ -44,6 +44,10 @@ export function attentionItems(state, day) {
         ? `${sceneName(jobs[0].scene)} 的记忆整理${jobs[0].status === 'failed' ? '失败' : '被中断'}，停在这里等你重试`
         : `${jobs.length} 个群的记忆整理停住了，需要逐个重试：${jobs.map(job => sceneName(job.scene)).join('、')}`,
       error: jobs.map(job => `${sceneName(job.scene)}（${job.status === 'failed' ? '失败' : '中断'}）：${job.error}`).join('\n\n') })
+  }
+  for (const [scene, until] of Object.entries(day.speech_held || {})) {
+    items.push({ key: `speech:${scene}`, text: `${sceneName(scene)} 本小时发言已到上限，${formatTime(until, null, { date: false })} 恢复`,
+      to: { name: 'host-scenes', query: { scene, tab: 'settings' } }, action: '查看' })
   }
   for (const [scene, reviews] of Object.entries(day.pending_reviews)) {
     const parts = [['expressions', '条表达'], ['stickers', '张表情']]

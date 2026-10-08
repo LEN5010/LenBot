@@ -16,7 +16,7 @@ from .context import ChatContext
 from .tools import ReactArguments, SayArguments
 from ..config import LabConfig
 from ..platform.delivery import Expression, part_length, report_parts, split_expression
-from ..models.limits import LimitReached, check_speech
+from ..models.limits import LimitReached, check_speech, record_speech
 from ..platform.messages import ChatMessage, Segment, Sender, SendResult
 from ..persona.profile import Persona
 from ..persona.stickers import PersonaSticker
@@ -68,16 +68,21 @@ class ChatExpression:
         self.notify, self.on_reply_sample, self.now = notify, on_reply_sample, now
         # Plugin sends never interleave with a multi-part expression.
         self.outlet = asyncio.Lock()
+        # Whether the current turn may use the direct reserve of the hourly speech limit.
+        self.reserve: Callable[[], bool] = lambda: False
 
     def check_send_available(self) -> None:
         until = self.store.bot_muted_until(self.config.scene, self.config.bot_id)
         if until is not None:
             raise ValueError(f"平台 group_ban 通知：当前 Bot 禁言至 {until}，未发送")
 
+    def check_speech(self) -> None:
+        check_speech(self.store, self.config, direct=self.reserve())
+
     async def express(self, turn_id: str, arguments: SayArguments, *,
                       expression_style: str | None = None, direct: bool = False) -> Expression:
         self.check_send_available()
-        check_speech(self.store, self.config)
+        self.check_speech()
         quote = None
         if arguments.reply_to is not None:
             quote = self.store.find_message(self.config.scene, arguments.reply_to)
@@ -158,15 +163,16 @@ class ChatExpression:
     async def send_prepared_expression(self, entry_seq: int, parts: list[ChatMessage],
                                        *, prefix: str = "", turn_id: str | None = None,
                                        sticker: PersonaSticker | CollectedSticker | None = None,
-                                       channels: set[str], quota_notice: bool = False) -> tuple[str, str]:
+                                       channels: set[str], fixed_notice: bool = False) -> tuple[str, str]:
+        """A fixed host notice is neither limited by nor counted toward the hourly speech limit."""
         async with self.outlet:
             self.check_send_available()
             return await self._send_prepared(entry_seq, parts, prefix=prefix, turn_id=turn_id,
-                                             sticker=sticker, channels=channels, quota_notice=quota_notice)
+                                             sticker=sticker, channels=channels, fixed_notice=fixed_notice)
 
     async def _send_prepared(self, entry_seq: int, parts: list[ChatMessage], *, prefix: str,
                              turn_id: str | None, sticker: PersonaSticker | CollectedSticker | None,
-                             channels: set[str], quota_notice: bool) -> tuple[str, str]:
+                             channels: set[str], fixed_notice: bool) -> tuple[str, str]:
         errors: list[str | None] = []
         settings = self.config.text_delivery
         # Snapshot now: a later append in this turn does not change why this was said.
@@ -178,12 +184,11 @@ class ChatExpression:
                     delay = min(settings.max_interval_seconds,
                                 max(settings.min_interval_seconds, part_length(part) / settings.chars_per_second))
                     await asyncio.sleep(delay)
-                if not quota_notice:
+                self.check_send_available()
+                if index == 0 and not fixed_notice:
                     try:
-                        self.check_send_available()
-                        check_speech(self.store, self.config)
+                        self.check_speech()
                     except LimitReached as error:
-                        content = prefix + report_parts(parts, errors, self.context.render) + "\n" + str(error)
                         self.store.expression_error(entry_seq, str(error))
                         raise
                 part.time = self.now()
@@ -198,6 +203,8 @@ class ChatExpression:
                 self.notify()
                 if self.send_message is None:
                     log_sent(message_seq, part, None, index=index, parts=len(parts))
+                    if index == 0 and not fixed_notice:
+                        record_speech(self.store, self.config.scene)
                 if self.send_message is not None:
                     result = await self.send_message(part, image_bytes=None if sticker is None else sticker.data)
                     part.send_status, part.platform_message_id = result.status, result.platform_message_id
@@ -208,6 +215,8 @@ class ChatExpression:
                                                         turn_id=turn_id)
                     if result.status == "sent":
                         confirmed.append((kept, self.now()))
+                    if index == 0 and not fixed_notice and result.status in {"sent", "unconfirmed"}:
+                        record_speech(self.store, self.config.scene)
                     self.notify()
                     if result.status != "sent":
                         break
@@ -228,7 +237,6 @@ class ChatExpression:
         if reply_to is not None and self.store.find_message(self.config.scene, reply_to) is None:
             raise ValueError(f"当前场景没有平台消息 {reply_to}")
         self.check_send_available()
-        check_speech(self.store, self.config)
         prepared = await prepare_parts(plugin, content, self.config.text_delivery.max_chars, reply_to)
         parts = [self.simulated_message(part.segments, reply_to=reply_to if index == 0 else None)
                  for index, part in enumerate(prepared)]
@@ -242,7 +250,6 @@ class ChatExpression:
                         await asyncio.sleep(min(settings.max_interval_seconds, max(
                             settings.min_interval_seconds, part_length(part) / settings.chars_per_second)))
                     self.check_send_available()
-                    check_speech(self.store, self.config)
                     part.time = self.now()
                     simulate(part, self.send_message is None)
                     errors.append(None)

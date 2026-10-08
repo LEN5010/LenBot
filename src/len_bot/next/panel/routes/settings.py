@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ...configuration.types import STRICT
 from ...configuration.chat import (
@@ -29,7 +29,7 @@ from ...models.providers import PROTOCOLS, list_models
 from ...persona.profile import Persona
 from ...models.asr import AudioSettings
 from ...runtime.logs import LoggingSettings
-from ...models.limits import ResourceLimits
+from ...models.limits import ResourceLimits, apply_speech_limits
 from ...work.egress_policy import NetworkSettings
 from ...runtime.retention import RetentionSettings
 from ...tools.web_search import WebSearchSettings
@@ -128,6 +128,19 @@ class WorkerChange(BaseModel):
     model_config = STRICT
     # The root loader resolves its paths and validates the whole candidate once.
     worker: dict | None
+
+
+class SceneSpeechLimit(BaseModel):
+    """Follow the global hourly speech limit, use this group's own number, or leave the group unlimited."""
+    model_config = STRICT
+    mode: Literal["global", "custom", "unlimited"]
+    value: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def value_only_for_custom(self) -> "SceneSpeechLimit":
+        if (self.mode == "custom") != (self.value is not None):
+            raise ValueError("只有自定义条数需要填写 value")
+        return self
 
 
 class TaskSwitches(BaseModel):
@@ -326,7 +339,8 @@ async def _body(request: Request, kind: type[BaseModel]) -> BaseModel:
 
 def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                            personas: Callable[[], dict[str, Persona]],
-                           user: Callable[[Request], str], write_lock: asyncio.Lock) -> None:
+                           user: Callable[[Request], str], write_lock: asyncio.Lock,
+                           on_speech_limits: Callable[[], None] = lambda: None) -> None:
     def learning_snapshot(scene: str, snapshot: dict) -> dict:
         if scene not in snapshot["saved"]["scenes"]:
             raise HTTPException(404, "此场景已从保存配置移除，运行学习配置保留到重启")
@@ -335,13 +349,16 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
         return {"scene": scene, "running": current, "saved": recorded,
                 "restart_required": current != recorded}
 
-    async def save(edit: Callable[[dict, HostConfig], None]) -> dict:
+    async def save(edit: Callable[[dict, HostConfig], None], *, speech: bool = False) -> dict:
         async with write_lock:
             try:
                 candidate = await asyncio.to_thread(save_config, root, running, edit)
             except (ValueError, OSError) as error:
                 raise HTTPException(422 if isinstance(error, ValueError) else 500,
                                     f"{type(error).__name__}: {error}") from error
+            if speech:
+                apply_speech_limits(running, candidate)
+                on_speech_limits()
             return _snapshot(running, candidate)
 
     @app.get("/api/host/settings")
@@ -371,7 +388,24 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
     @app.put("/api/host/settings/limits")
     async def limits(request: Request, _: str = Depends(user)):
         change = await _body(request, ResourceLimits)
-        return await save(lambda source, saved: source.update(limits=change.model_dump(mode="json")))
+        return await save(lambda source, saved: source.update(limits=change.model_dump(mode="json")), speech=True)
+
+    @app.put("/api/host/settings/limits/scenes/{scene}")
+    async def scene_speech_limit(scene: str, request: Request, _: str = Depends(user)):
+        change = await _body(request, SceneSpeechLimit)
+
+        def edit(source: dict, saved: HostConfig) -> None:
+            if scene not in saved.scenes:
+                raise ValueError(f"保存配置中没有场景 {scene}")
+            if scene.split(":", 2)[1] != "group":
+                raise ValueError("发言上限只用于群聊")
+            table = source.setdefault("limits", {}).setdefault("scene_messages_per_hour", {})
+            if change.mode == "global":
+                table.pop(scene, None)
+            else:
+                table[scene] = change.value
+
+        return await save(edit, speech=True)
 
     @app.put("/api/host/settings/processing")
     async def processing(request: Request, _: str = Depends(user)):

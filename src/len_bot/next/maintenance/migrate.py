@@ -31,9 +31,16 @@ def _qualified_schedule_targets(db: sqlite3.Connection) -> None:
                "WHERE target!='self' AND instr(target,':')=0")
 
 
+def _speech_records(db: sqlite3.Connection) -> None:
+    """Format 3 to 4: hourly speech limits count expressions, not platform message parts."""
+    db.execute("CREATE TABLE IF NOT EXISTS speech (id INTEGER PRIMARY KEY, scene TEXT NOT NULL, time REAL NOT NULL)")
+    db.execute("CREATE INDEX IF NOT EXISTS scene_speech ON speech(scene, time)")
+
+
 BUSINESS = Format('业务数据库', APPLICATION_ID, FORMAT_VERSION, 1, {
     1: _tokens_instead_of_prices,
     2: _qualified_schedule_targets,
+    3: _speech_records,
 })
 
 

@@ -21,7 +21,7 @@ from ..config import LabConfig
 from .recap import CompactionPlan, ContextBudgetError, estimate_content, estimate_text_request, plan_compaction
 from ..learning.expression_selection import ExpressionService
 from ..tools.external_tools import ExternalTool
-from ..models.limits import LimitReached, check_speech
+from ..models.limits import LimitReached, SpeechLimitReached, check_speech
 from ..memory.service import MemoryService
 from ..platform.messages import UploadResult
 from ..models.client import ChatModel, ModelReply
@@ -75,6 +75,7 @@ class Chat:
         self.tasks = tasks
         self.slots = slots
         self.direct_request = False
+        self.turn_channel: str | None = None
         # Actual wake channels seen by the current turn, snapshotted per expression.
         self.turn_channels: set[str] = set()
         self.on_update = on_update
@@ -88,6 +89,7 @@ class Chat:
             send_message=send_message,
             notify=self.notify, on_reply_sample=on_reply_sample, now=now,
             exclude_from_memory=None if memory is None else lambda seq: memory.jobs.exclude_records(config.scene, [seq]))
+        self.expression.reserve = lambda: self.speech_reserve
         self.toolset = SceneTools(
             config, persona, store, expression=self.expression, request=self.request, vision=vision,
             memory=memory, tasks=tasks, audio=audio_service, upload_file=upload_file,
@@ -224,8 +226,13 @@ class Chat:
             if self.on_compaction is not None:
                 self.on_compaction()
 
-    def check_limits(self, *, model: bool = False) -> None:
-        check_speech(self.store, self.config)
+    @property
+    def speech_reserve(self) -> bool:
+        """Direct wakes, reminders and task results may still speak after the normal hourly limit."""
+        return self.direct_request or self.turn_channel == "system"
+
+    def check_limits(self, *, model: bool = False, direct: bool | None = None) -> None:
+        check_speech(self.store, self.config, direct=self.speech_reserve if direct is None else direct)
         if model and self.slots is not None and self.slots.admit is not None:
             self.slots.admit(self.config.scene)
 
@@ -239,6 +246,7 @@ class Chat:
                        channels: set[str] | None = None,
                        proactive: tuple[str, str, float] | None = None, channel: str | None = None) -> dict:
         self.direct_request = direct
+        self.turn_channel = channel
         observed_at = self.now()
         self.turn_channels = set() if channels is None else set(channels)
         scene = self.config.scene
@@ -257,7 +265,7 @@ class Chat:
         extensions = 0
         failed_tools = 0
         status, error_text = "step_limit", None
-        limit_until = None
+        limit_until = limit_kind = None
         phase = None
         try:
             async with asyncio.timeout(self.config.turn_timeout_seconds):
@@ -347,6 +355,8 @@ class Chat:
         except Exception as error:
             status = "limited" if isinstance(error, LimitReached) else "timeout" if isinstance(error, TimeoutError) else "error"
             limit_until = error.until if isinstance(error, LimitReached) else None
+            limit_kind = ("speech" if isinstance(error, SpeechLimitReached) else "tokens"
+                          if isinstance(error, LimitReached) else None)
             error_text = f"{type(error).__name__}: {error}"
             if phase is not None:
                 error_text = f'{phase}失败：{error_text}'
@@ -354,4 +364,4 @@ class Chat:
         return {"turn_id": turn_id, "status": status, "error": error_text,
                 "delivery": "simulated" if self.expression.send_message is None else "onebot",
                 "expressions": expressions, "extensions": extensions,
-                "failed_tools": failed_tools, "limit_until": limit_until}
+                "failed_tools": failed_tools, "limit_until": limit_until, "limit_kind": limit_kind}
